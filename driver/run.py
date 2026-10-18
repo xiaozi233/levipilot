@@ -47,11 +47,11 @@ def _probe_scenario(ticks: int) -> scenario_mod.Scenario:
             "description": "传送到测试平台中心 (0.5, -49, 0.5)，朝向 0/0，前进 N tick。",
             "setup": {
                 "strict": True,
+                "commands": ["tp @s 0.5 -49 0.5 0 0"],
                 "verify": [{"pos": [0, -50, 0], "block": "minecraft:stone"}],
             },
             "steps": [
                 {"type": "tp", "pos": [0.5, -49, 0.5]},
-                {"type": "look", "yaw": 0, "pitch": 0, "settle_ticks": 2},
                 {"type": "wait", "ticks": 5},
                 {"type": "input", "world": [0, 1], "ticks": ticks},
                 {"type": "stop"},

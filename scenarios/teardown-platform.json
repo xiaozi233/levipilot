@@ -1,0 +1,20 @@
+{
+  "name": "teardown-platform",
+  "description": "清掉 setup-platform 铺的测试平台（y=-50 那一层以及上方 8 格），把玩家送回平台中心。",
+  "setup": {
+    "strict": true,
+    "commands": [
+      "fill -32 -50 -32 32 -42 32 air",
+      "tp @s 0.5 -49 0.5 0 0"
+    ],
+    "verify": [
+      { "pos": [0, -50, 0], "block": "air" },
+      { "pos": [32, -50, 32], "block": "air" }
+    ]
+  },
+  "steps": [
+    { "type": "wait", "ticks": 5 }
+  ],
+  "sample": ["pos"],
+  "output": "teardown-platform"
+}

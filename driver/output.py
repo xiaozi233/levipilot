@@ -19,12 +19,47 @@ def _sanitize(name: str) -> str:
 
 
 def _speed(v: Any) -> float:
+    """Length of the raw StateVector velocity vector (pre-drag, see _tick_speeds)."""
     if not isinstance(v, (list, tuple)) or len(v) < 3:
         return 0.0
     try:
         return math.hypot(float(v[0]), float(v[2]))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _tick_speeds(samples: list[dict[str, Any]], jump_steps: set[int] | None = None) -> list[float]:
+    """Horizontal speed in blocks/tick, measured between consecutive samples.
+
+    ``StateVector.vel`` is *not* usable as speed: it holds the velocity before the
+    ground drag is applied, so on normal ground it reads ~0.546x the real per-tick
+    displacement (0.546 = 0.6 slipperiness * 0.91). Only consecutive positions give
+    a friction-independent speed.
+    """
+    speeds: list[float] = []
+    for prev, cur in zip(samples, samples[1:]):
+        if cur.get("t", 0) - prev.get("t", 0) != 1:
+            continue
+        # A teleport between steps is not motion: only measure inside one step.
+        if prev.get("step") != cur.get("step"):
+            continue
+        if jump_steps and (
+            prev.get("step") in jump_steps or cur.get("step") in jump_steps
+        ):
+            continue
+        a, b = prev.get("pos"), cur.get("pos")
+        if not (
+            isinstance(a, (list, tuple))
+            and isinstance(b, (list, tuple))
+            and len(a) == 3
+            and len(b) == 3
+        ):
+            continue
+        try:
+            speeds.append(math.hypot(float(b[0]) - float(a[0]), float(b[2]) - float(a[2])))
+        except (TypeError, ValueError):
+            continue
+    return speeds
 
 
 def _step_windows(marks: list[Mark], samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -37,7 +72,8 @@ def _step_windows(marks: list[Mark], samples: list[dict[str, Any]]) -> list[dict
             window = [nearest]
         first = window[0] if window else {}
         last = window[-1] if window else {}
-        speeds = [_speed(s.get("vel")) for s in window]
+        speeds = _tick_speeds(window)
+        vel_speeds = [_speed(s.get("vel")) for s in window]
         pos_first = first.get("pos")
         pos_last = last.get("pos")
         delta = None
@@ -62,6 +98,14 @@ def _step_windows(marks: list[Mark], samples: list[dict[str, Any]]) -> list[dict
                 "distance": distance,
                 "max_h_speed": max(speeds) if speeds else None,
                 "mean_h_speed": (sum(speeds) / len(speeds)) if speeds else None,
+                "max_vel_h_speed": max(vel_speeds) if vel_speeds else None,
+                # movement step that never moved: the input was applied but the
+                # player stood still (server correction, screen open, stall...).
+                "stalled": bool(
+                    mark.type == "input"
+                    and len(window) >= 10
+                    and max(speeds, default=0.0) < 1e-6
+                ),
                 "on_ground_ratio": (
                     sum(1 for s in window if s.get("on_ground")) / len(window)
                     if window
@@ -80,7 +124,9 @@ def summarize(result: RunResult) -> dict[str, Any]:
 
     first = samples[0] if samples else {}
     last = samples[-1] if samples else {}
-    speeds = [_speed(s.get("vel")) for s in samples]
+    jump_steps = {m.index for m in result.marks if m.type in ("tp", "vel")}
+    speeds = _tick_speeds(samples, jump_steps)
+    vel_speeds = [_speed(s.get("vel")) for s in samples]
     delta = None
     if first.get("pos") and last.get("pos"):
         delta = [last["pos"][i] - first["pos"][i] for i in range(3)]
@@ -99,6 +145,8 @@ def summarize(result: RunResult) -> dict[str, Any]:
         "distance": math.sqrt(sum(d * d for d in delta)) if delta else None,
         "max_h_speed": max(speeds) if speeds else None,
         "mean_h_speed": (sum(speeds) / len(speeds)) if speeds else None,
+        "max_vel_h_speed": max(vel_speeds) if vel_speeds else None,
+        "speed_basis": "pos_delta",
         "on_ground_ratio": (
             sum(1 for s in samples if s.get("on_ground")) / len(samples) if samples else None
         ),

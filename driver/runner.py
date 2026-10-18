@@ -79,7 +79,27 @@ def execute_step(agent: AgentLike, step: Step, command_sender=None) -> Any:
             )
         return result
     if step.type == "look":
-        return _ok(agent.call("set_yaw_pitch", p["yaw"], p["pitch"]), "look")
+        yaw, pitch = p["yaw"], p["pitch"]
+        mode = p.get("mode") or ("command" if command_sender is not None else "memory")
+        if mode == "command":
+            if command_sender is None:
+                raise RunError("look mode=command 需要命令通道（--command-channel none？）")
+            # 记忆里改写 ActorRotation 组件不管用：游戏每帧从相机写回，服务端
+            # 仍按真实朝向解释移动输入，两侧世界方向会分叉（表现为橡皮筋）。
+            # 只有走服务端的 /tp 才能同时改掉客户端与服务端的权威朝向。
+            command_sender(f"tp @s ~ ~ ~ {yaw} {pitch}")
+            agent.call("clear_look")
+            agent.wait_ticks(3)
+            return {"ok": True, "via": "chat", "yaw": yaw, "pitch": pitch}
+        result = _ok(agent.call("set_yaw_pitch", yaw, pitch), "look")
+        if isinstance(result, dict):
+            result = dict(result)
+            result.setdefault(
+                "warning",
+                "look mode=memory 只改组件，服务端仍按真实朝向移动（可能产生橡皮筋）；"
+                "建议使用命令通道",
+            )
+        return result
     if step.type == "vel":
         return _ok(agent.call("set_vel", p["v"][0], p["v"][1], p["v"][2]), "vel")
     if step.type == "input":
@@ -105,38 +125,139 @@ def execute_step(agent: AgentLike, step: Step, command_sender=None) -> Any:
     raise RunError(f"unknown step type {step.type!r}")
 
 
+def _block_label(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "unknown"
+    if not result.get("ok"):
+        return f"error: {result.get('error')}"
+    if result.get("air"):
+        return "air"
+    return str(result.get("name") or "unknown")
+
+
+def _block_matches(expected: str, result: Any) -> bool:
+    want = expected.strip().lower()
+    if not isinstance(result, dict) or not result.get("ok"):
+        return False
+    if want in ("air", "minecraft:air"):
+        return bool(result.get("air"))
+    if result.get("air"):
+        return False
+    name = str(result.get("name") or "").lower()
+    return name in (want, f"minecraft:{want}")
+
+
+def _verify_setup(
+    agent: AgentLike,
+    scenario: Scenario,
+    block_reader,
+    warnings: list[str],
+    strict: bool,
+    *,
+    timeout_ticks: int = 60,
+    interval: int = 5,
+) -> None:
+    """Check the world really matches ``setup.verify`` after the commands ran.
+
+    Commands are executed asynchronously by the server, so every expectation is
+    polled until it holds (or ``timeout_ticks`` is used up).
+    """
+    verify = scenario.setup.get("verify") or []
+    if not verify:
+        return
+    if block_reader is None:
+        message = "setup.verify 未执行：没有方块读取器"
+        scenario.setup["verified"] = False
+        if strict:
+            raise RunError(message)
+        warnings.append(message)
+        return
+
+    failures: list[str] = []
+    for index, item in enumerate(verify):
+        x, y, z = (float(value) for value in item["pos"])
+        expected = str(item["block"])
+        remaining = timeout_ticks
+        result: Any = None
+        error: str | None = None
+        while True:
+            try:
+                result = block_reader(x, y, z)
+                error = None
+            except Exception as exc:  # noqa: BLE001 - surfaced as a verification failure
+                result, error = None, str(exc)
+            if error is None and _block_matches(expected, result):
+                break
+            if remaining <= 0:
+                break
+            agent.wait_ticks(interval)
+            remaining -= interval
+        if error is not None:
+            failures.append(f"setup.verify[{index}] ({x:g},{y:g},{z:g}) 读取失败: {error}")
+        elif not _block_matches(expected, result):
+            failures.append(
+                f"setup.verify[{index}] ({x:g},{y:g},{z:g}) 期望 {expected}"
+                f" 实际 {_block_label(result)}"
+                f"（等待 {timeout_ticks} tick 仍未生效）"
+            )
+    scenario.setup["verified"] = not failures
+    if failures:
+        if strict:
+            raise RunError("; ".join(failures))
+        warnings.extend(failures)
+
+
+def _run_commands(
+    agent: AgentLike,
+    commands: list[str],
+    command_sender,
+    emit,
+    label: str,
+) -> None:
+    for index, command in enumerate(commands):
+        emit(label, index, command)
+        try:
+            outcome = command_sender(command)
+        except Exception as exc:
+            raise RunError(f"{label}[{index}] 失败: {exc}") from exc
+        if isinstance(outcome, dict) and outcome.get("ok") is False:
+            raise RunError(f"{label}[{index}] 失败: {outcome.get('error')}")
+        # commands are typed into chat and executed by the server asynchronously
+        agent.wait_ticks(6)
+
+
 def run_scenario(
     agent: AgentLike,
     scenario: Scenario,
     *,
     log=None,
     command_sender=None,
+    block_reader=None,
 ) -> RunResult:
     """Run all steps, recording every tick. Raises RunError on agent failure.
 
-    ``command_sender`` executes a server command through the game's chat UI.
-    It is used for ``setup.commands`` and ``tp`` steps because client-side
-    position writes are corrected by the server.
+    ``command_sender`` executes a server command through the game's chat box
+    (see ``driver.postmsg``). It is used for ``setup.commands`` and ``tp`` steps
+    because client-side position writes are corrected by the server.
+    ``block_reader`` verifies ``setup.verify`` entries through the block query.
     """
     emit = log or (lambda *_: None)
     warnings: list[str] = []
+    strict = bool(scenario.setup.get("strict"))
 
     setup_commands = scenario.setup.get("commands") or []
     if setup_commands:
         if command_sender is None:
+            message = "setup.commands 未执行：没有可用的命令通道（--command-channel none？）"
             scenario.setup["commands_executed"] = False
-            warnings.append(
-                "setup.commands 未执行：没有可用的命令发送器（--no-chat 或 CUA helper 不可用）"
-            )
+            if strict:
+                raise RunError(message)
+            warnings.append(message)
         else:
-            for index, command in enumerate(setup_commands):
-                emit("setup", index, command)
-                try:
-                    command_sender(command)
-                except Exception as exc:
-                    raise RunError(f"setup.commands[{index}] 失败: {exc}") from exc
-                agent.wait_ticks(3)
+            _run_commands(agent, setup_commands, command_sender, emit, "setup")
             scenario.setup["commands_executed"] = True
+
+    _verify_setup(agent, scenario, block_reader, warnings, strict)
 
     start_tick = agent.call("get_tick_count")
     start_state = agent.call("get_state")
@@ -175,11 +296,20 @@ def run_scenario(
             marks.append(Mark(index, step.type, mark_start, mark_end, result))
         _ok(agent.call("stop_input"), "stop_input")
     finally:
-        # Always release input even if a step failed.
+        # Always release input and clear the test rig, even if a step failed.
         try:
             agent.call("stop_input")
         except Exception:
             pass
+        teardown = scenario.setup.get("teardown") or []
+        if teardown and command_sender is not None:
+            try:
+                _run_commands(agent, teardown, command_sender, emit, "teardown")
+                scenario.setup["teardown_done"] = True
+            except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+                warnings.append(f"teardown 未完成: {exc}")
+        elif teardown:
+            warnings.append("teardown 未执行：没有可用的命令通道")
 
     end_state = agent.call("get_state")
     recording = _ok(agent.call("stop_recording"), "stop_recording")

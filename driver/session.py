@@ -50,6 +50,11 @@ class Session:
             raise HarnessError(f"agent init failed: {init.get('error')}")
         return self
 
+    @property
+    def pid(self) -> int | None:
+        """PID of the attached process (None when closed)."""
+        return getattr(self._session, "pid", None)
+
     def close(self) -> None:
         if self._script is not None:
             try:

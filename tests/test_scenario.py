@@ -106,14 +106,79 @@ class SetupTest(unittest.TestCase):
         )
         self.assertFalse(scen.setup["commands_executed"])
 
-    def test_strict_commands_rejected(self) -> None:
+    def test_strict_commands_allowed(self) -> None:
+        scen = normalize(
+            {
+                "steps": [{"type": "wait", "ticks": 1}],
+                "setup": {"commands": ["tp @s 0 -60 0"], "strict": True},
+            }
+        )
+        self.assertFalse(scen.setup["commands_executed"])
+
+    def test_empty_command_rejected(self) -> None:
         with self.assertRaises(ScenarioError):
             normalize(
                 {
                     "steps": [{"type": "wait", "ticks": 1}],
-                    "setup": {"commands": ["tp @s 0 -60 0"], "strict": True},
+                    "setup": {"commands": ["  "]},
                 }
             )
+
+    def test_verify_accepted(self) -> None:
+        scen = normalize(
+            {
+                "steps": [{"type": "wait", "ticks": 1}],
+                "setup": {"verify": [{"pos": [0, -63, 0], "block": "minecraft:stone"}]},
+            }
+        )
+        self.assertIsNone(scen.setup["verified"])
+
+    def test_verify_requires_block(self) -> None:
+        with self.assertRaises(ScenarioError):
+            normalize(
+                {
+                    "steps": [{"type": "wait", "ticks": 1}],
+                    "setup": {"verify": [{"pos": [0, -63, 0]}]},
+                }
+            )
+
+    def test_verify_requires_xyz(self) -> None:
+        with self.assertRaises(ScenarioError):
+            normalize(
+                {
+                    "steps": [{"type": "wait", "ticks": 1}],
+                    "setup": {"verify": [{"pos": [0, -63], "block": "air"}]},
+                }
+            )
+
+    def test_teardown_accepted(self) -> None:
+        scen = normalize(
+            {
+                "steps": [{"type": "wait", "ticks": 1}],
+                "setup": {"teardown": ["fill 0 -60 0 1 -60 1 air"]},
+            }
+        )
+        self.assertFalse(scen.setup["teardown_done"])
+
+    def test_teardown_must_be_list(self) -> None:
+        with self.assertRaises(ScenarioError):
+            normalize(
+                {
+                    "steps": [{"type": "wait", "ticks": 1}],
+                    "setup": {"teardown": "fill 0 -60 0 1 -60 1 air"},
+                }
+            )
+
+
+class LookModeTest(unittest.TestCase):
+    def test_modes_accepted(self) -> None:
+        for mode in ("command", "memory"):
+            scen = normalize({"steps": [{"type": "look", "yaw": 0, "pitch": 0, "mode": mode}]})
+            self.assertEqual(scen.steps[0].params["mode"], mode)
+
+    def test_unknown_mode_rejected(self) -> None:
+        with self.assertRaises(ScenarioError):
+            normalize({"steps": [{"type": "look", "yaw": 0, "pitch": 0, "mode": "chat"}]})
 
 
 class LoadTest(unittest.TestCase):

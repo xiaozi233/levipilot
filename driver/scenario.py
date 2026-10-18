@@ -112,6 +112,11 @@ def normalize_step(raw: Any, index: int) -> Step:
     if kind == "look":
         params = {"yaw": _num(raw.get("yaw", 0), f"{prefix}.yaw"),
                   "pitch": _num(raw.get("pitch", 0), f"{prefix}.pitch")}
+        if "mode" in raw:
+            mode = raw["mode"]
+            if mode not in {"command", "memory"}:
+                raise ScenarioError(f"{prefix}.mode 必须是 command / memory")
+            params["mode"] = mode
         if "settle_ticks" in raw:
             params["settle_ticks"] = int(raw["settle_ticks"])
         return Step(kind, params)
@@ -219,17 +224,33 @@ def normalize(doc: dict[str, Any], *, source: Path | None = None) -> Scenario:
 
 
 def _validate_setup(scenario: Scenario, *, legacy: bool) -> None:
-    commands = scenario.setup.get("commands")
-    if commands is None:
-        return
-    if not isinstance(commands, list):
-        raise ScenarioError("setup.commands 必须是字符串数组")
-    # The harness cannot execute in-game commands yet. Refuse silently pretending.
-    if scenario.setup.get("strict", False):
-        raise ScenarioError(
-            "setup.commands 目前不会被执行；请用行为包/手动准备场地，或去掉 setup.strict"
-        )
-    scenario.setup["commands_executed"] = False
+    for key in ("commands", "teardown"):
+        commands = scenario.setup.get(key)
+        if commands is None:
+            continue
+        if not isinstance(commands, list):
+            raise ScenarioError(f"setup.{key} 必须是字符串数组")
+        for index, command in enumerate(commands):
+            if not isinstance(command, str) or not command.strip():
+                raise ScenarioError(f"setup.{key}[{index}] 必须是非空字符串")
+
+    verify = scenario.setup.get("verify")
+    if verify is not None:
+        if not isinstance(verify, list):
+            raise ScenarioError("setup.verify 必须是数组")
+        for index, item in enumerate(verify):
+            if not isinstance(item, dict):
+                raise ScenarioError(f"setup.verify[{index}] 必须是对象")
+            pos = item.get("pos")
+            if not isinstance(pos, list) or len(pos) != 3:
+                raise ScenarioError(f"setup.verify[{index}].pos 必须是 [x, y, z]")
+            if not item.get("block"):
+                raise ScenarioError(f"setup.verify[{index}] 缺少 block（期望的方块名或 air）")
+    if scenario.setup.get("commands") or scenario.setup.get("verify"):
+        scenario.setup["commands_executed"] = False
+        scenario.setup["verified"] = None if scenario.setup.get("verify") else "n/a"
+    if scenario.setup.get("teardown"):
+        scenario.setup["teardown_done"] = False
 
 
 def load(path: str | Path) -> Scenario:

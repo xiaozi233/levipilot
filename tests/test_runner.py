@@ -168,5 +168,177 @@ class AttributeStepTest(unittest.TestCase):
         self.assertIsNone(attribute_step(-1, []))
 
 
+class SetupVerifyTest(unittest.TestCase):
+    def _scenario(self, **setup: Any):
+        return normalize({"steps": [{"type": "wait", "ticks": 0}], "setup": setup})
+
+    def test_verify_passes(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(verify=[{"pos": [1, -60, 2], "block": "minecraft:stone"}])
+        reader = lambda x, y, z: {"ok": True, "air": False, "name": "minecraft:stone"}  # noqa: E731
+        result = run_scenario(agent, scen, block_reader=reader)
+        self.assertTrue(scen.setup["verified"])
+        self.assertEqual(result.warnings, [])
+
+    def test_expected_air(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(verify=[{"pos": [1, -60, 2], "block": "air"}])
+        reader = lambda x, y, z: {"ok": True, "air": True, "name": "minecraft:air"}  # noqa: E731
+        run_scenario(agent, scen, block_reader=reader)
+        self.assertTrue(scen.setup["verified"])
+
+    def test_verify_mismatch_warns(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(verify=[{"pos": [1, -60, 2], "block": "minecraft:stone"}])
+        reader = lambda x, y, z: {"ok": True, "air": True, "name": "minecraft:air"}  # noqa: E731
+        result = run_scenario(agent, scen, block_reader=reader)
+        self.assertFalse(scen.setup["verified"])
+        self.assertEqual(len(result.warnings), 1)
+        self.assertIn("期望 minecraft:stone", result.warnings[0])
+        self.assertIn("实际 air", result.warnings[0])
+
+    def test_verify_mismatch_strict_raises(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(
+            strict=True,
+            verify=[{"pos": [1, -60, 2], "block": "minecraft:stone"}],
+        )
+        reader = lambda x, y, z: {"ok": True, "air": True, "name": "minecraft:air"}  # noqa: E731
+        with self.assertRaises(RunError):
+            run_scenario(agent, scen, block_reader=reader)
+
+    def test_verify_without_reader_warns(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(verify=[{"pos": [1, -60, 2], "block": "air"}])
+        result = run_scenario(agent, scen)
+        self.assertFalse(scen.setup["verified"])
+        self.assertTrue(result.warnings)
+
+    def test_verify_read_error_counts_as_failure(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(verify=[{"pos": [1, -60, 2], "block": "air"}])
+
+        def reader(x, y, z):
+            raise RuntimeError("boom")
+
+        result = run_scenario(agent, scen, block_reader=reader)
+        self.assertFalse(scen.setup["verified"])
+        self.assertIn("读取失败", result.warnings[0])
+
+
+class SetupCommandsTest(unittest.TestCase):
+    def _scenario(self, **setup: Any):
+        return normalize(
+            {
+                "steps": [{"type": "wait", "ticks": 0}],
+                "setup": {"commands": ["time set day"], **setup},
+            }
+        )
+
+    def test_commands_reach_the_sender(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario()
+        sent: list[str] = []
+
+        def sender(command: str):
+            sent.append(command)
+            return {"ok": True}
+
+        run_scenario(agent, scen, command_sender=sender)
+        self.assertEqual(sent, ["time set day"])
+        self.assertTrue(scen.setup["commands_executed"])
+
+    def test_failed_command_raises(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario()
+        with self.assertRaises(RunError):
+            run_scenario(agent, scen, command_sender=lambda c: {"ok": False, "error": "nope"})
+
+    def test_missing_sender_warns(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario()
+        result = run_scenario(agent, scen)
+        self.assertFalse(scen.setup["commands_executed"])
+        self.assertTrue(result.warnings)
+
+    def test_missing_sender_strict_raises(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario(strict=True)
+        with self.assertRaises(RunError):
+            run_scenario(agent, scen)
+
+
+class LookTest(unittest.TestCase):
+    def test_command_mode_uses_chat(self) -> None:
+        agent = FakeAgent()
+        scen = normalize({"steps": [{"type": "look", "yaw": 90, "pitch": 10, "ticks": 1}]})
+        sent: list[str] = []
+
+        def sender(command: str):
+            sent.append(command)
+            return {"ok": True}
+
+        result = run_scenario(agent, scen, command_sender=sender)
+        self.assertEqual(sent, ["tp @s ~ ~ ~ 90.0 10.0"])
+        self.assertIn(("clear_look", ()), agent.calls)
+        self.assertNotIn("set_yaw_pitch", [name for name, _ in agent.calls])
+        self.assertEqual(result.marks[0].result["via"], "chat")
+
+    def test_memory_mode_warns(self) -> None:
+        agent = FakeAgent()
+        scen = normalize({"steps": [{"type": "look", "yaw": 0, "pitch": 0, "mode": "memory"}]})
+        result = run_scenario(agent, scen)
+        self.assertIn(("set_yaw_pitch", (0.0, 0.0)), agent.calls)
+        self.assertTrue(any("服务端仍按真实朝向" in w for w in result.warnings), result.warnings)
+
+    def test_memory_mode_without_channel_does_not_warn_about_commands(self) -> None:
+        agent = FakeAgent()
+        scen = normalize({"steps": [{"type": "look", "yaw": 0, "pitch": 0, "mode": "memory"}]})
+        result = run_scenario(agent, scen)
+        self.assertEqual(len(result.warnings), 1)
+
+
+class TeardownTest(unittest.TestCase):
+    def _scenario(self):
+        return normalize(
+            {
+                "steps": [{"type": "wait", "ticks": 0}],
+                "setup": {
+                    "commands": ["fill 0 -60 0 1 -60 1 stone"],
+                    "teardown": ["fill 0 -60 0 1 -60 1 air"],
+                },
+            }
+        )
+
+    def test_teardown_runs_after_steps(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario()
+        sent: list[str] = []
+        run_scenario(agent, scen, command_sender=lambda c: sent.append(c) or {"ok": True})
+        self.assertEqual(sent, ["fill 0 -60 0 1 -60 1 stone", "fill 0 -60 0 1 -60 1 air"])
+        self.assertTrue(scen.setup["teardown_done"])
+
+    def test_teardown_runs_even_if_a_step_fails(self) -> None:
+        agent = FakeAgent()
+        agent.fail_on = {"move_world"}
+        scen = normalize(
+            {
+                "steps": [{"type": "input", "world": [0, 1], "ticks": 1}],
+                "setup": {"teardown": ["fill 0 -60 0 1 -60 1 air"]},
+            }
+        )
+        sent: list[str] = []
+        with self.assertRaises(RunError):
+            run_scenario(agent, scen, command_sender=lambda c: sent.append(c) or {"ok": True})
+        self.assertEqual(sent, ["fill 0 -60 0 1 -60 1 air"])
+
+    def test_teardown_without_channel_warns(self) -> None:
+        agent = FakeAgent()
+        scen = self._scenario()
+        result = run_scenario(agent, scen)
+        self.assertFalse(scen.setup["teardown_done"])
+        self.assertTrue(any("teardown" in w for w in result.warnings), result.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()

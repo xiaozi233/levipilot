@@ -1,0 +1,24 @@
+{
+  "name": "setup-platform",
+  "description": "在 y=-50 铺一块 65x65 的石质测试平台（地表 -49），并把玩家放到平台中心、朝向 0/0。其余场景都在这块台子上跑。",
+  "setup": {
+    "strict": true,
+    "commands": [
+      "fill -32 -50 -32 32 -50 32 stone",
+      "tp @s 0.5 -49 0.5 0 0"
+    ],
+    "verify": [
+      { "pos": [0, -50, 0], "block": "minecraft:stone" },
+      { "pos": [32, -50, 32], "block": "minecraft:stone" },
+      { "pos": [-32, -50, -32], "block": "minecraft:stone" },
+      { "pos": [32, -50, -32], "block": "minecraft:stone" },
+      { "pos": [0, -49, 0], "block": "air" },
+      { "pos": [16, -49, 16], "block": "air" }
+    ]
+  },
+  "steps": [
+    { "type": "wait", "ticks": 5 }
+  ],
+  "sample": ["pos"],
+  "output": "setup-platform"
+}

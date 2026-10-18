@@ -1,13 +1,14 @@
 {
   "name": "example-flat-walk",
-  "description": "在默认测试点 (0.5, -63, 0.5) 朝向 0/0，直走 60 tick 并逐 tick 采样。",
+  "description": "在测试平台中心 (0.5, -49, 0.5) 朝向 0/0，朝 +Z 直走 60 tick 并逐 tick 采样。先跑 scenarios/setup-platform.json 铺好平台。",
   "setup": {
-    "world": "flat",
-    "time": 6000,
-    "weather": "clear"
+    "strict": true,
+    "verify": [
+      { "pos": [0, -50, 0], "block": "minecraft:stone" }
+    ]
   },
   "steps": [
-    { "type": "tp", "pos": [0.5, -63, 0.5] },
+    { "type": "tp", "pos": [0.5, -49, 0.5] },
     { "type": "look", "yaw": 0, "pitch": 0 },
     { "type": "wait", "ticks": 5 },
     { "type": "input", "world": [0, 1], "ticks": 60 },

@@ -68,12 +68,24 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary["ticks_recorded"], 2)
         self.assertAlmostEqual(summary["displacement"][2], 0.1)
         self.assertAlmostEqual(summary["distance"], 0.1)
-        self.assertAlmostEqual(summary["max_h_speed"], 0.2)
-        self.assertAlmostEqual(summary["mean_h_speed"], 0.15)
+        # speed comes from consecutive positions, not from StateVector.vel
+        self.assertAlmostEqual(summary["max_h_speed"], 0.1)
+        self.assertAlmostEqual(summary["mean_h_speed"], 0.1)
+        self.assertAlmostEqual(summary["max_vel_h_speed"], 0.2)
+        self.assertEqual(summary["speed_basis"], "pos_delta")
         self.assertEqual(summary["on_ground_ratio"], 1.0)
         row = summary["steps"][0]
         self.assertEqual(row["type"], "input")
         self.assertAlmostEqual(row["distance"], 0.1)
+        self.assertAlmostEqual(row["max_h_speed"], 0.1)
+
+    def test_speed_skips_tick_gaps(self) -> None:
+        result = make_result()
+        samples = result.recording["samples"]
+        samples[1] = dict(samples[1], t=5, pos=[0.0, 10.0, 3.0])
+        summary = summarize(result)
+        # a 4-tick gap must not be reported as a single-tick speed of 3.0
+        self.assertIsNone(summary["max_h_speed"])
 
     def test_summary_handles_empty_recording(self) -> None:
         result = make_result()

@@ -5,6 +5,7 @@ Usage:
     py -3.11 driver/run.py --diagnose             # 组件/registry 诊断
     py -3.11 driver/run.py --probe                # 前进 40 tick，验证输入注入
     py -3.11 driver/run.py --scenario scenarios/example.json
+    py -3.11 driver/run.py --command "/setblock 2 -60 2 stone"   # 直接发一条命令
     py -3.11 driver/run.py 12345 --scenario ...   # 按 PID
 """
 
@@ -24,6 +25,7 @@ from driver import scenario as scenario_mod  # noqa: E402
 from driver.blocks import format_block, name_for_hash  # noqa: E402
 from driver.native_cua import NativeCua  # noqa: E402
 from driver.output import write_run  # noqa: E402
+from driver.postmsg import PostMessageChannel  # noqa: E402
 from driver.runner import RunError, run_scenario  # noqa: E402
 from driver.scenario import ScenarioError  # noqa: E402
 from driver.session import HarnessError, attach  # noqa: E402
@@ -42,9 +44,13 @@ def _probe_scenario(ticks: int) -> scenario_mod.Scenario:
     return scenario_mod.normalize(
         {
             "name": "probe-forward",
-            "description": "传送到默认点 (0.5, -63, 0.5)，朝向 0/0，前进 N tick。",
+            "description": "传送到测试平台中心 (0.5, -49, 0.5)，朝向 0/0，前进 N tick。",
+            "setup": {
+                "strict": True,
+                "verify": [{"pos": [0, -50, 0], "block": "minecraft:stone"}],
+            },
             "steps": [
-                {"type": "tp", "pos": [0.5, -63, 0.5]},
+                {"type": "tp", "pos": [0.5, -49, 0.5]},
                 {"type": "look", "yaw": 0, "pitch": 0, "settle_ticks": 2},
                 {"type": "wait", "ticks": 5},
                 {"type": "input", "world": [0, 1], "ticks": ticks},
@@ -54,6 +60,48 @@ def _probe_scenario(ticks: int) -> scenario_mod.Scenario:
             "output": "probe-forward",
         }
     )
+
+
+def _block_reader(session):
+    """Read a block, capturing the query accessor once if it is still missing."""
+
+    def read(x: float, y: float, z: float) -> dict:
+        result = session.call("block_at", x, y, z)
+        if not result.get("ok") and "no block query" in str(result.get("error", "")):
+            session.call("move_world", 0.0, 1.0)
+            session.wait_ticks(3)
+            session.call("stop_input")
+            session.wait_ticks(1)
+            result = session.call("block_at", x, y, z)
+        return result
+
+    return read
+
+
+def _command_channel(choice: str, pid: int | None):
+    """Return (sender, label) for the requested chat-command channel."""
+    if choice == "none":
+        return None, "disabled"
+    reasons: list[str] = []
+    if choice in ("auto", "postmsg"):
+        channel = PostMessageChannel(pid=pid)
+        usable, why = channel.available()
+        if usable:
+            # PostMessage needs no foreground window and no external helper.
+            return channel.send_command, "postmessage"
+        reasons.append(f"postmessage: {why}")
+        if choice == "postmsg":
+            return None, "; ".join(reasons)
+    if choice in ("auto", "cua"):
+        try:
+            cua = NativeCua()
+            usable, why = cua.available()
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            usable, why = False, str(exc)
+        if usable:
+            return cua.send_command, "cua"
+        reasons.append(f"cua: {why}")
+    return None, "; ".join(reasons)
 
 
 def _print_summary(summary: dict) -> None:
@@ -79,10 +127,17 @@ def _print_summary(summary: dict) -> None:
     for row in summary.get("steps", []):
         d = row.get("distance")
         d_text = f"{d:.4f}" if d is not None else "n/a"
+        flag = "  ← 未移动（输入已施加）" if row.get("stalled") else ""
         print(
             f"  step {row['index']:>2} {row['type']:<6} "
-            f"ticks={row['step_ticks']:<3} samples={row['samples']:<3} dist={d_text}"
+            f"ticks={row['step_ticks']:<3} samples={row['samples']:<3} dist={d_text}{flag}"
         )
+        if row.get("stalled"):
+            print(
+                f"  warning: step {row['index']} 记录了输入但位移为 0"
+                "（屏幕/暂停、服务端校正或客户端卡顿）",
+                file=sys.stderr,
+            )
     for warning in summary.get("warnings", []):
         print(f"  warning: {warning}", file=sys.stderr)
 
@@ -117,9 +172,19 @@ def main(argv: list[str] | None = None) -> int:
         help="只要求 tick 在跑，不要求已解析到本地玩家",
     )
     parser.add_argument(
+        "--command",
+        help="直接通过聊天通道执行一条命令后退出（用于 /fill /setblock 等场地准备）",
+    )
+    parser.add_argument(
+        "--command-channel",
+        default="auto",
+        choices=["auto", "postmsg", "cua", "none"],
+        help="setup.commands 的执行通道：postmsg 不抢焦点（默认），cua 走原生 helper",
+    )
+    parser.add_argument(
         "--no-chat",
         action="store_true",
-        help="禁用聊天命令通道（setup.commands / tp 将退回 frida 客户端写入，可能无效）",
+        help="等价于 --command-channel none（禁用聊天命令通道）",
     )
     args = parser.parse_args(argv)
 
@@ -136,16 +201,19 @@ def main(argv: list[str] | None = None) -> int:
 
             session.wait_ready(timeout=args.wait, require_player=not args.no_wait_player)
 
+            if args.command:
+                choice = "none" if args.no_chat else args.command_channel
+                sender, label = _command_channel(choice, session.pid)
+                if sender is None:
+                    print(f"error: 没有可用的命令通道: {label}", file=sys.stderr)
+                    return 2
+                print(f"channel: {label}")
+                print(json.dumps(sender(args.command), ensure_ascii=False))
+                return 0
+
             if args.block:
                 bx, by, bz = (float(value) for value in args.block)
-                block = session.call("block_at", bx, by, bz)
-                if not block.get("ok") and "no block query" in str(block.get("error", "")):
-                    # 轻推一下，让游戏产生一次方块查询并缓存 accessor。
-                    session.call("move_world", 0.0, 1.0)
-                    session.wait_ticks(3)
-                    session.call("stop_input")
-                    session.wait_ticks(1)
-                    block = session.call("block_at", bx, by, bz)
+                block = _block_reader(session)(bx, by, bz)
                 if args.json:
                     print(json.dumps(block, ensure_ascii=False, indent=2))
                 else:
@@ -164,12 +232,8 @@ def main(argv: list[str] | None = None) -> int:
                 y_min = args.scan_y_min if args.scan_y_min is not None else feet_y - 8
 
                 # 保证 accessor 已捕获
-                probe = session.call("block_at", x0, y_max, z0)
-                if not probe.get("ok") and "no block query" in str(probe.get("error", "")):
-                    session.call("move_world", 0.0, 1.0)
-                    session.wait_ticks(3)
-                    session.call("stop_input")
-                    session.wait_ticks(1)
+                read = _block_reader(session)
+                read(x0, y_max, z0)
 
                 rows = []
                 legend: dict[str, str] = {}
@@ -197,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
                     for x in range(x0, x1 + 1):
                         surface = None
                         for y in range(y_max, y_min - 1, -1):
-                            result = session.call("block_at", x, y, z)
+                            result = read(x, y, z)
                             if not result.get("ok"):
                                 raise HarnessError(f"block_at 失败: {result.get('error')}")
                             if not result.get("air"):
@@ -233,12 +297,6 @@ def main(argv: list[str] | None = None) -> int:
 
             if not args.json:
                 print(f"scenario: {scen.name} ({scen.total_ticks} ticks, {len(scen.steps)} steps)")
-                if scen.setup.get("commands"):
-                    print(
-                        "note: setup.commands 未执行（当前没有命令派发 RPC）；"
-                        "请用行为包或手动准备场地",
-                        file=sys.stderr,
-                    )
 
             status = session.status()
             if not all(s.get("ok") for s in status.get("signatures", {}).values()):
@@ -249,17 +307,12 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 raise HarnessError(f"版本指纹不匹配: {bad}；不要在该版本上写入")
 
-            command_sender = None
-            if not args.no_chat:
-                try:
-                    cua = NativeCua()
-                    usable, why = cua.available()
-                    if usable:
-                        command_sender = cua.send_command
-                    else:
-                        print(f"note: 未启用聊天命令通道: {why}", file=sys.stderr)
-                except Exception as exc:
-                    print(f"note: 未启用聊天命令通道: {exc}", file=sys.stderr)
+            choice = "none" if args.no_chat else args.command_channel
+            command_sender, channel_label = _command_channel(choice, session.pid)
+            if command_sender is None and choice != "none":
+                print(f"note: 未启用聊天命令通道: {channel_label}", file=sys.stderr)
+            elif command_sender is not None and not args.json:
+                print(f"channel: {channel_label}")
 
             result = run_scenario(
                 session,
@@ -268,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.json
                 else (lambda *a: print(" ".join(str(x) for x in a[1:]))),
                 command_sender=command_sender,
+                block_reader=_block_reader(session),
             )
             jsonl_path, summary_path = write_run(
                 result,

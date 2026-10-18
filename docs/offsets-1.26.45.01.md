@@ -168,24 +168,40 @@ yaw=0 时 forward 必须落在 +Z，因此 `a7 = strafe`、`a8 = forward`。
 - 同一 tick 还会直接写 **客户端和服务端两份** `MoveInput`；只写客户端会导致
   客户端预测 vs 服务端校正来回拉扯（实测位置在 0.5↔1.46 之间跳动）。
 - `stopInput()` 会把两份都写 0；否则服务端会保留上一次的输入，下次运行玩家会自己走。
-- 实测：从 (0.5, -63, 0.5) 世界 +Z 方向 20 tick 前进 **2.2 格**，
-  max 水平速度 **0.1177 格/tick**，停止后位移 0。
+- **注入的输入能复现原版步行速度**：四种组合（local/world × strafe/forward）逐 tick
+  位移都是首 tick **0.098** → 收敛到 **0.2158 格/tick（4.317 m/s）**，
+  符合 `v_{n+1} = 0.546·v_n + 0.098`（0.546 = 地面滑度 0.6 × 0.91）；
+  两轴对称、两轮重复一致，客户端与服务端位置吻合。
+- ⚠️ **`getState().vel` 不是逐 tick 位移**：`StateVector+0x18` 存的是**摩擦前**速度，
+  正常地面上恒为真实位移的 **0.546 倍**（实测比例稳定 1.832 = 1/0.546）。
+  判速度必须用相邻 tick 的位置差；`output.py` 的 `max_h_speed`/`mean_h_speed`
+  已按位置差计算，`max_vel_h_speed` 保留原字段便于对照。
+  早期把它当速度读，才会误以为"注入只有 55% 加速度"。
+- 实测（撞墙场景，自建石质通道）：从 x=0.5 起以世界 +X 前进，位移
+  **(+5.200, 0, 0)**，接地 100%，撞上 x=6 的墙后停在 5.7
+  （墙面 6 − 玩家半宽 0.3），速度立即归零。
 
 ### 5.2 朝向与世界方向移动 `[实测]`
 
-- 直接写 `ActorRotation+0x00/+0x04`（含 prev）只能短暂生效：客户端每 tick 被相机系统回写，
-  服务端另有自己的朝向。所以“改 yaw 再前进”不可靠。
-- 需要指定世界方向时用 `moveWorld(dx, dz)`：
-  - 读服务端 `ActorRotation.yaw`；
-  - 反解 `strafe = dx·cos + dz·sin`、`forward = −dx·sin + dz·cos`；
-  - 写入两份 MoveInput。
-- 实测 `moveWorld(0,1)` → +Z，`moveWorld(0,-1)` → −Z，`moveWorld(-1,0)` → −X，
-  `moveWorld(1,0)` → +X（距离受测试平台边界限制）。
+- 直接写 `ActorRotation+0x00/+0x04`（含 prev）**只能短暂生效**：客户端相机每帧把它写回。
+  更关键的是服务端按**真实相机朝向**解释移动输入，于是两侧世界方向分叉：
+  实测把 yaw 写成 0 后，客户端朝 +X 走，服务端却沿 58.97°（旧相机 yaw）方向走，
+  每前进约 0.83 格就被服务端校正一次（位置跳变，表现为橡皮筋）。
+- **正解：用服务端命令 `/tp @s ~ ~ ~ <yaw> <pitch>` 设朝向**（`look` 步骤的 `command` 模式）。
+  实测之后客户端与服务端 yaw 都稳定、不再被回写，且 forward=1 → 两侧同步 +Z、
+  strafe=1 → 两侧同步 +X、yaw=90 → 两侧同步 −X，逐 tick 位置吻合。
+- 需要指定世界方向时仍可用 `moveWorld(dx, dz)`：读服务端 `ActorRotation.yaw`，
+  反解 `strafe = dx·cos + dz·sin`、`forward = −dx·sin + dz·cos`，写入两份 MoveInput；
+  前提是朝向已用命令对齐，否则两侧又会对不上。
+- 命令通道见 §6.1。
 
 ### 5.3 速度
 
 直接写 `StateVector+0x18/0x1C/0x20`。
 水平速度可生效；写位置/竖直速度会被服务端权威位置覆盖。
+注意 `+0x18` 读出来的是**摩擦前**速度（见 §5.1），不是逐 tick 位移：
+写 0 不影响下一次输入注入的速度曲线（实测带/不带 `set_vel(0,0,0)` 都是 0.2158），
+所以重置场景时不要依赖它来"刹停"，用 `stopInput()` 即可。
 
 ### 5.4 传送：必须走服务端 registry `[实测]`
 
@@ -259,29 +275,52 @@ pause_menu_on_focus_lost:0
 验证：让 ZCode 占据前台、游戏失焦 3 秒，`LocalPlayerPostMoveSystem_Tick` 的计数器
 前进 **65 tick**（满速 20 tps 下约 60 tick）。改完需重启游戏生效。
 
+## 6.1 命令通道（场地准备） `[实测]`
+
+`fill` / `setblock` / `tp … <yaw> <pitch>` 这类只能由服务端执行的命令，走游戏自己的
+聊天框提交。**不需要抢前台窗口**：
+
+- `driver/postmsg.py` 用 `PostMessageW` 把 `WM_KEYDOWN` / `WM_CHAR` 投递给游戏窗口；
+- `lParam` 必须带上 `MapVirtualKeyW(vk, 0)` 得到的扫描码（SDL 用它映射按键），
+  否则按键事件被丢掉；
+- 打开聊天框用 `/` 键（游戏会自动填入 `/`，所以正文的 `/` 不能重复投递）；
+  投递前先发一批退格清空残留文本（聊天框没开时无副作用）；
+- 回车提交：`WM_KEYDOWN(VK_RETURN)` + `WM_CHAR(0x0D)` + `WM_KEYUP`。
+
+验证：窗口 `foreground: False` 时 `/setblock 2 -60 2 stone` 生效，
+`block_at(2,-60,2)` 返回 `minecraft:stone`；随后 `air` 恢复成功。
+这条通道同时解决了 §5.2 的朝向问题——它是唯一能改服务端权威朝向的办法。
+
 ## 7. 运行时验证记录（2026-10-18）
 
 | 项目 | 结果 |
 | --- | --- |
 | `getState` vs HUD | X/Z 精确一致；HUD y=-63 对应 `pos.y=-63`，StateVector eye y=-61.38 |
 | 朝向 | HUD `P/F` 与 ActorRotation 的 pitch/yaw 精确一致 |
-| 直走 20 tick | +Z 2.2 格，max 0.1177 格/tick，on_ground 100% |
+| 命令通道（未聚焦） | `foreground: False` 下 `/setblock` 生效并被 `blockAt` 读到 |
+| 朝向改法 | 命令 `/tp @s ~ ~ ~ 0 0` 后两侧 yaw 稳定；forward→+Z、strafe→+X、yaw90→−X 逐 tick 吻合 |
+| 撞墙（wall-stop 场景） | 位移 (+5.200, 0, 0)，停在 x=5.7，接地 100% |
+| 移动速度 | 逐 tick 位移 0.098 → 0.2158 格/tick（= 原版步行 4.317 m/s），两轴对称、可重复 |
+| `vel` 语义 | 摩擦前速度 = 真实位移 × 0.546（实测比例 1.832），不能当速度用 |
 | 跳跃 | 峰值 +1.17 格，约 5 tick 滞空 |
 | 服务端传送 | (0.5,-63,0.5) → (2.5,-63,2.5)，双端同步 |
 | 方块读取 | `--scan -4 4 -4 4`：stone/grass_block/slime/浆果/玫瑰/虞美人/漏斗/床/竹子/栅栏门 + 2 列 void |
 | 后台 tick | 失焦 3 秒 +65 tick |
 | 客户端写位置 | 无效（服务端覆盖） |
 
-默认测试平台约 2.6×4.8 格（x≈[-1.6,1.0]，z≈[-2.1,2.7]），长距离直走会撞墙。
+测试平台：世界底部是 y=-64（1.18+ 地板），原生地面高度不一、宽度不够跑长距离；
+现已用 `/fill` 在 y=-50 铺 65×65 石台（地表 -49），见
+`scenarios/setup-platform.json` / `teardown-platform.json`。
 
 ## 8. 已知边界
 
 - **不要与 x64dbg 同时挂**：attach 会打死游戏进程。
 - **sneak/sprint 未注入**：它们由服务端状态位控制，当前只记录请求并返回 warning。
-- **chat 通道只用于 setup**：`setup.commands`（如 `/fill`）通过 ZCode 原生 CUA helper
-  的键盘注入执行；传送/移动/观测都不依赖它。
+- **chat 通道不抢焦点但依赖窗口**：游戏窗口必须存在且不是全屏独占；
+  `--command-channel none` 时场地准备与 `look mode=command` 都不可用。
 - **合成鼠标不可用**：Minecraft 的 Raw Input 基本忽略合成鼠标事件；PowerShell 的
-  `GetWindowRect` 还受 DPI 虚拟化影响。UI 操作应使用原生 helper 的键盘路径。
+  `GetWindowRect` 还受 DPI 虚拟化影响。所以 UI 操作只走窗口消息/原生 helper 的键盘路径。
 - **多人服务器**：服务端 registry 可能在远端，`serverTp` 只适用于本地/集成服务器。
 - **方块读取的前置**：`block_at` 依赖先捕获一次方块查询上下文；新会话第一次调用时
   driver 会轻推玩家触发查询，之后 accessor 被缓存。
+

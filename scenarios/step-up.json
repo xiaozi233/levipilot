@@ -1,0 +1,92 @@
+{
+  "name": "step-up",
+  "description": "在测试平台上 x=4 处放一格高的台阶：从平台中心朝 +X 助跑 14 tick 后起跳（起跳点约 x=3.2），测量能否落上台面（脚部 -48）并继续前进。需要先跑 scenarios/setup-platform.json。",
+  "setup": {
+    "strict": true,
+    "commands": [
+      "fill 4 -49 -1 4 -49 1 stone",
+      "tp @s 0.5 -49 0.5 0 0"
+    ],
+    "verify": [
+      {
+        "pos": [
+          0,
+          -49,
+          0
+        ],
+        "block": "air"
+      },
+      {
+        "pos": [
+          2,
+          -49,
+          0
+        ],
+        "block": "air"
+      },
+      {
+        "pos": [
+          4,
+          -49,
+          0
+        ],
+        "block": "minecraft:stone"
+      },
+      {
+        "pos": [
+          4,
+          -48,
+          0
+        ],
+        "block": "air"
+      }
+    ],
+    "teardown": [
+      "fill 4 -49 -1 4 -49 1 air",
+      "tp @s 0.5 -49 0.5 0 0"
+    ]
+  },
+  "steps": [
+    {
+      "type": "tp",
+      "pos": [
+        0.5,
+        -49,
+        0.5
+      ],
+      "settle_ticks": 5
+    },
+    {
+      "type": "wait",
+      "ticks": 5
+    },
+    {
+      "type": "input",
+      "world": [
+        1,
+        0
+      ],
+      "ticks": 14
+    },
+    {
+      "type": "jump",
+      "ticks": 2
+    },
+    {
+      "type": "wait",
+      "ticks": 30
+    },
+    {
+      "type": "stop"
+    }
+  ],
+  "sample": [
+    "pos",
+    "vel",
+    "on_ground",
+    "yaw",
+    "pitch",
+    "input"
+  ],
+  "output": "step-up"
+}

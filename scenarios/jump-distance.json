@@ -1,0 +1,74 @@
+{
+  "name": "jump-distance",
+  "description": "在测试平台上先朝 +Z 加速到步行终端速度，再起跳，测量滞空时间、跳跃峰高与前跳水平距离。需要先跑 scenarios/setup-platform.json。",
+  "setup": {
+    "strict": true,
+    "verify": [
+      {
+        "pos": [
+          0,
+          -50,
+          -10
+        ],
+        "block": "minecraft:stone"
+      },
+      {
+        "pos": [
+          0,
+          -49,
+          0
+        ],
+        "block": "air"
+      }
+    ],
+    "commands": [
+      "tp @s 0.5 -49 -10.5 0 0"
+    ],
+    "teardown": [
+      "tp @s 0.5 -49 -10.5 0 0"
+    ]
+  },
+  "steps": [
+    {
+      "type": "tp",
+      "pos": [
+        0.5,
+        -49,
+        -10.5
+      ],
+      "settle_ticks": 5
+    },
+    {
+      "type": "wait",
+      "ticks": 5
+    },
+    {
+      "type": "input",
+      "world": [
+        0,
+        1
+      ],
+      "ticks": 40
+    },
+    {
+      "type": "jump",
+      "ticks": 2
+    },
+    {
+      "type": "wait",
+      "ticks": 30
+    },
+    {
+      "type": "stop"
+    }
+  ],
+  "sample": [
+    "pos",
+    "vel",
+    "on_ground",
+    "yaw",
+    "pitch",
+    "input"
+  ],
+  "output": "jump-distance"
+}

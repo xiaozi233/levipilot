@@ -4,12 +4,34 @@
   "setup": {
     "strict": true,
     "commands": [
-      "fill 6 -49 -1 6 -47 1 stone"
+      "fill 6 -49 -1 6 -47 1 stone",
+      "tp @s 0.5 -49 0.5 0 0"
     ],
     "verify": [
-      { "pos": [0, -50, 0], "block": "minecraft:stone" },
-      { "pos": [3, -49, 0], "block": "air" },
-      { "pos": [6, -49, 0], "block": "minecraft:stone" }
+      {
+        "pos": [
+          0,
+          -50,
+          0
+        ],
+        "block": "minecraft:stone"
+      },
+      {
+        "pos": [
+          3,
+          -49,
+          0
+        ],
+        "block": "air"
+      },
+      {
+        "pos": [
+          6,
+          -49,
+          0
+        ],
+        "block": "minecraft:stone"
+      }
     ],
     "teardown": [
       "fill 6 -49 -1 6 -47 1 air",
@@ -17,12 +39,38 @@
     ]
   },
   "steps": [
-    { "type": "tp", "pos": [0.5, -49, 0.5], "settle_ticks": 5 },
-    { "type": "look", "yaw": 0, "pitch": 0, "settle_ticks": 2 },
-    { "type": "wait", "ticks": 5 },
-    { "type": "input", "world": [1, 0], "ticks": 80 },
-    { "type": "stop" }
+    {
+      "type": "tp",
+      "pos": [
+        0.5,
+        -49,
+        0.5
+      ],
+      "settle_ticks": 5
+    },
+    {
+      "type": "wait",
+      "ticks": 5
+    },
+    {
+      "type": "input",
+      "world": [
+        1,
+        0
+      ],
+      "ticks": 80
+    },
+    {
+      "type": "stop"
+    }
   ],
-  "sample": ["pos", "vel", "on_ground", "yaw", "pitch", "input"],
+  "sample": [
+    "pos",
+    "vel",
+    "on_ground",
+    "yaw",
+    "pitch",
+    "input"
+  ],
   "output": "wall-stop"
 }

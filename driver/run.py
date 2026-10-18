@@ -127,15 +127,17 @@ def _print_summary(summary: dict) -> None:
     for row in summary.get("steps", []):
         d = row.get("distance")
         d_text = f"{d:.4f}" if d is not None else "n/a"
-        flag = "  ← 未移动（输入已施加）" if row.get("stalled") else ""
+        flag = ""
+        if row.get("freeze_ticks"):
+            flag = f"  ← 中途冻结 {row['freeze_ticks']} tick"
         print(
             f"  step {row['index']:>2} {row['type']:<6} "
             f"ticks={row['step_ticks']:<3} samples={row['samples']:<3} dist={d_text}{flag}"
         )
         if row.get("stalled"):
             print(
-                f"  warning: step {row['index']} 记录了输入但位移为 0"
-                "（屏幕/暂停、服务端校正或客户端卡顿）",
+                f"  warning: step {row['index']} 中途有 {row['freeze_ticks']} tick "
+                "输入在动但位置不动（疑似命令通道引发的冻结，见 README）",
                 file=sys.stderr,
             )
     for warning in summary.get("warnings", []):
@@ -344,6 +346,19 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 3
+            stalled = [row for row in summary.get("steps", []) if row.get("stalled")]
+            if stalled:
+                # 数据不可用：玩家中途被冻结，位移/速度都会被低估。
+                print(
+                    "error: 有 step 中途冻结（输入在动但位置不动）："
+                    + ", ".join(
+                        f"step {row['index']} ({row['freeze_ticks']} tick)"
+                        for row in stalled
+                    )
+                    + "；该次运行的数据请勿使用，重跑即可",
+                    file=sys.stderr,
+                )
+                return 4
             return 0
         finally:
             session.close()

@@ -87,6 +87,43 @@ class SummaryTest(unittest.TestCase):
         # a 4-tick gap must not be reported as a single-tick speed of 3.0
         self.assertIsNone(summary["max_h_speed"])
 
+    def test_freeze_in_the_middle_is_flagged(self) -> None:
+        result = make_result()
+        # move, then stand still for 9 ticks, then move again
+        samples = []
+        z = 0.0
+        for t in range(24):
+            if 6 <= t < 15:
+                pass  # frozen
+            else:
+                z += 0.2
+            samples.append(
+                {"t": t, "ok": True, "pos": [0.0, 10.0, z], "vel": [0.0, 0.0, 0.1],
+                 "on_ground": True, "input": {"x": 0.0, "y": 1.0}}
+            )
+        result.recording["samples"] = samples
+        result.marks = [Mark(0, "input", 0, 24, {"ok": True})]
+        row = summarize(result)["steps"][0]
+        self.assertTrue(row["stalled"])
+        self.assertEqual(row["freeze_ticks"], 9)
+
+    def test_wall_stop_is_not_a_freeze(self) -> None:
+        result = make_result()
+        # move, then stay blocked at a wall until the step ends: not a freeze
+        samples = []
+        z = 0.0
+        for t in range(24):
+            if t < 6:
+                z += 0.2
+            samples.append(
+                {"t": t, "ok": True, "pos": [0.0, 10.0, z], "vel": [0.0, 0.0, 0.1],
+                 "on_ground": True, "input": {"x": 0.0, "y": 1.0}}
+            )
+        result.recording["samples"] = samples
+        result.marks = [Mark(0, "input", 0, 24, {"ok": True})]
+        row = summarize(result)["steps"][0]
+        self.assertFalse(row["stalled"])
+
     def test_summary_handles_empty_recording(self) -> None:
         result = make_result()
         result.recording["samples"] = []

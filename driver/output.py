@@ -62,6 +62,24 @@ def _tick_speeds(samples: list[dict[str, Any]], jump_steps: set[int] | None = No
     return speeds
 
 
+def _longest_freeze(speeds: list[float]) -> int:
+    """Longest run of zero movement that is *resumed* by movement afterwards.
+
+    A run that never resumes is a wall/obstacle stop (normal); a run in the middle
+    is the injected-input freeze, where the player stands still for ~20 ticks and
+    then continues.
+    """
+    longest = 0
+    run = 0
+    for speed in speeds:
+        if speed < 1e-9:
+            run += 1
+            continue
+        longest = max(longest, run)
+        run = 0
+    return longest
+
+
 def _step_windows(marks: list[Mark], samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for mark in marks:
@@ -99,13 +117,10 @@ def _step_windows(marks: list[Mark], samples: list[dict[str, Any]]) -> list[dict
                 "max_h_speed": max(speeds) if speeds else None,
                 "mean_h_speed": (sum(speeds) / len(speeds)) if speeds else None,
                 "max_vel_h_speed": max(vel_speeds) if vel_speeds else None,
-                # movement step that never moved: the input was applied but the
-                # player stood still (server correction, screen open, stall...).
-                "stalled": bool(
-                    mark.type == "input"
-                    and len(window) >= 10
-                    and max(speeds, default=0.0) < 1e-6
-                ),
+                # movement step that stalled in the middle: input was applied but
+                # the player stood still for a while, then continued.
+                "freeze_ticks": _longest_freeze(speeds) if mark.type == "input" else 0,
+                "stalled": bool(mark.type == "input" and _longest_freeze(speeds) >= 8),
                 "on_ground_ratio": (
                     sum(1 for s in window if s.get("on_ground")) / len(window)
                     if window

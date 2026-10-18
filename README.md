@@ -177,6 +177,12 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 - **移动速度**：四种输入（local/world × strafe/forward）逐 tick 位移都是
   首 tick 0.098 → 收敛到 **0.2158 格/tick = 4.317 m/s**，正是原版步行速度；
   两轴对称、两轮重复一致，客户端与服务端位置吻合。
+- **跳跃（`scenarios/jump-distance.json`）**：全速起跳，滞空 4-5 tick，
+  峰高 **+1.166 格**（脚部 -49.000 → -47.834），落地速度归零。
+- **撞台阶（`scenarios/step-up.json`）**：x=4 处一格高的台阶，全速助跑起跳
+  （起跳点约 x=3.2）**跳不上去**：滞空时箱子已越过台阶边缘（x=3.91），
+  但下落时被台阶侧面挤出，落在旁边平台并被挡住（x=3.700）。原因是滞空水平推进
+  只有 **0.630 格**（见「未解决」）。
 - 跳跃：脚部 y 从 -63 升到峰值约 -61.83（+1.17），约 5 tick 后落地。
 - 服务端传送：客户端/服务端位置同步到目标点，`on_ground=true`。
 - 后台：失焦 3 秒 tick 前进 65（20 tps 满速）。
@@ -185,6 +191,15 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
   另有 2 列 void；平台确实高度不一、宽度不够。测试平台已铺在 y=-50。
 - 客户端写位置（StateVector / ActorSetPositionRequest）实测**无效**，会被服务端覆盖。
 
+## 未解决
+
+- **滞空水平推进偏慢**：地面移动能精确复现原版步行速度（0.2158 格/tick），
+  但**滞空**时只有约 0.13-0.15 格/tick、整段弧线水平只推进 **0.630 格**；
+  原版起跳会保留起飞速度（≈0.2 格/tick，整段约 1.0 格），后果就是一格高的台阶
+  跳不上去（见 `step-up`）。怀疑与 `MoveInput+0x60` 的跳/滞空状态位有关——agent
+  只写 `+0x24/+0x28`，滞空分支可能读了别的字段。下一步：dump 滞空期间整个
+  100 字节 `MoveInput`，并用真实长按做对照（CUA helper 目前只有单次按键、没有长按）。
+
 ## 采样口径（易踩的坑）
 
 - **`vel` 不是速度**：`StateVector.vel` 是摩擦前速度，正常地面上约为真实逐 tick 位移的
@@ -192,9 +207,12 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
   "游戏内部速度量"时参考。
 - **tp 与 teardown 不是位移**：跨 step 的位移、`tp`/`vel` 步骤内的位移都不计入速度；
   记录窗口在 teardown 之前关闭。
-- **偶发卡顿（未解释）**：见过一次 step 中途开始"输入在动但位置不动"（客户端与服务端
-  同时冻结，tick 仍在推进），同一场景前后重跑都正常。`output.py` 会给"有输入但零位移"
-  的 step 打 `stalled` 标记并在 summary 里告警，遇到就重跑。
+- **命令通道后有一记卡顿（已定位、已规避）**：聊天命令执行后约 1.5 s，整个进程会卡住
+  ~1.2 s 然后一次性补跑约 24 个 tick，期间玩家的位置不被积分（表现为"输入在动、人不动、
+  tick 号跳号"）。它总落在 look 步骤之后的那个限时 step 里，所以**朝向命令要放进
+  `setup`，并让 setup 之后空转 60 tick 把卡顿吸收掉**——runner 现在会自动这么做
+  （有命令通道时 setup 之后 `wait_ticks(60)`）。怀疑是命令把世界标脏后触发的存档，
+  未证实。
 - **`pos.y` 是脚部**（StateVector 里存的是眼睛 = 脚部 + 1.6200101）。
 - **`tp` 的 `mode=server` 写的是服务端 registry 的 `ActorSetPositionRequest`**，
   客户端会被同步；直接写客户端位置无效。
@@ -211,12 +229,15 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 - [x] 朝向走命令通道（`look mode=command`），修掉移动方向的橡皮筋
 - [x] 65×65 测试平台（`setup-platform.json` / `teardown-platform.json`）
 - [x] 首个回归场景：撞墙停住（`wall-stop.json`）
-- [x] 无游戏单元测试（74 项，含 Python↔JS RPC 契约检查）
+- [x] 回归场景：跳跃距离（`jump-distance.json`）、撞台阶（`step-up.json`）
+- [x] 命令通道卡顿定位 + setup 后自动吸收（`wait_ticks(60)`）
+- [x] 采样完整性：录制缓冲按实际开销放大（不再因前置步骤耗时丢样本）
+- [x] 无游戏单元测试（76 项，含 Python↔JS RPC 契约检查）
 - [x] 版本指纹自检：`check_binary.py` 6/6 匹配安装目录的 EXE
 - [x] 速度口径修正：速度按位置差计算，`vel` 只作参考
+- [ ] 滞空输入标定（见「未解决」）——挡着台阶/跳跃距离类实验的准确性
 - [ ] 命令派发 RPC（进程内发 `CommandRequestPacket`，彻底不依赖窗口消息）
 - [ ] GameTest：`spawnSimulatedPlayer` 与真实输入的等价性实验
-- [ ] 更多可回归场景（台阶 / 跳跃距离 / 落地伤害）
 
 ## 测试
 

@@ -159,11 +159,18 @@ class PostMessageChannel:
         """Backspace spam: harmless when no text field is open."""
         for _ in range(count):
             self._post(WM_CHAR, VK_BACK, self._lparam(VK_BACK))
+            time.sleep(0.002)
         time.sleep(0.05)
 
     def press_enter(self) -> None:
+        """Submit the chat box.
+
+        Only the key pair is posted: an extra ``WM_CHAR(0x0D)`` would be a second
+        Enter, and in Bedrock Enter is also the "open chat" binding — a stray one
+        after the box closed re-opens it and freezes the player (observed as the
+        player standing still while the world keeps ticking at 20 Hz).
+        """
         self._post(WM_KEYDOWN, VK_RETURN, self._lparam(VK_RETURN))
-        self._post(WM_CHAR, VK_RETURN, self._lparam(VK_RETURN))
         self._post(WM_KEYUP, VK_RETURN, self._lparam(VK_RETURN) | (1 << 30) | (1 << 31))
 
     # -- command --------------------------------------------------------------

@@ -259,12 +259,22 @@ def run_scenario(
 
     _verify_setup(agent, scenario, block_reader, warnings, strict)
 
+    # A chat command is followed ~1.5s later by a whole-process hitch (the world
+    # saves; ticks then catch up in a burst and the player is not integrated for
+    # ~20 ticks — observed as "input applied but the player does not move").
+    # Absorb it here, outside the measured steps.
+    if setup_commands and command_sender is not None:
+        agent.wait_ticks(60)
+
     start_tick = agent.call("get_tick_count")
     start_state = agent.call("get_state")
     _ok(start_state, "get_state(start)")
 
-    # +20 ticks of headroom so the tail is not clipped by RPC latency.
-    rec = _ok(agent.call("start_recording", scenario.total_ticks + 20), "start_recording")
+    # Steps cost far more ticks than their nominal length (a chat command needs ~1s
+    # of typing, tp has to settle), so size the recording buffer generously instead
+    # of letting the pre-steps eat the budget.
+    budget = max(400, scenario.total_ticks * 4 + 60)
+    rec = _ok(agent.call("start_recording", budget), "start_recording")
     started_at = _now()
 
     marks: list[Mark] = []

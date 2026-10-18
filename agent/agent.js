@@ -921,6 +921,7 @@ function buildStatus() {
     last_block_query_ret: state.lastBlockQueryRet,
     input: state.input,
     look: state.look,
+    move_input: state.playerMoveInput ? state.playerMoveInput.toString() : null,
     server_move_input: state.serverMoveInput ? state.serverMoveInput.toString() : null,
     server_rot: state.serverRot ? state.serverRot.toString() : null,
     input_applied_ticks: state.inputAppliedTicks,

@@ -1,24 +1,1245 @@
-// frida agent for Minecraft Bedrock 1.26.45.01.
+// frida agent for Minecraft Bedrock 1.26.45.01 (Windows x64).
 //
 // Load: frida -p <pid> -l agent/agent.js
-// 或由 driver/run.py 注入。
+// 或由 driver/session.py 注入。
 //
-// 只做两件事：读状态、写状态。不合成键鼠输入。
-// 每个 export 在对应钩子经过运行期验证后再加，未验证的先留 TODO。
+// 设计约束：
+//   - 只读观测走内存；写操作只经游戏自己的数据通路（组件 / 输入解析器），不合成键鼠。
+//   - 所有地址都是 1.26.45.01 的 VA（image base 0x140000000）。启动时用字节指纹校验，
+//     指纹不符就禁用对应 hook，避免在别的版本上写坏内存。
+
+'use strict';
+
+const IMAGE_BASE = 0x140000000;
+
+const VA = {
+  enttStorageGet: 0x141953860, // (registry, typeId) -> storage
+  enttEmplace: 0x1401FC7B0, // (storage, outPair[2], entityPtr, force) -> outPair
+  localPlayerPostMoveTick: 0x1477705B0, // LocalPlayerPostMoveSystem_Tick，每 tick 一次
+  moveInputResolve: 0x145A5F910, // MoveInput_ResolveDirectionAndSpeedFactor
+  moveInputPipeline: 0x1465D5A50, // MoveInput_RawToResolvedPipeline（仅用于诊断计数）
+};
+
+// 1.26.45.01 函数入口指纹（前 24 字节）。换版本时先更新这里。
+const SIG = {
+  enttStorageGet: '55 56 57 53 48 83 EC 78 48 8D 6C 24 70 48 C7 45 00 FE FF FF FF 48 89 CE',
+  enttEmplace: '41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC 48 44 88 4C 24 3F 4C 89 C3',
+  localPlayerPostMoveTick: '55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 28 04 00 00 48 8D AC 24 80',
+  moveInputResolve: '48 89 C8 F3 0F 10 52 04 F3 0F 10 5A 08 0F 57 C0 0F 2E D0 0F 85 A1 00 00',
+  moveInputPipeline: '55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 78 04 00 00 48 8D AC 24 80',
+};
+
+// 组件 id = FNV-1a-32(组件名)，已用 IDB 里的 id 立即数与 FNV 复算双向核对。
+const CID = {
+  stateVector: 0x1b5d5238,
+  moveInput: 0x018b1887,
+  rawMoveInput: 0x3613e513,
+  playerInputRequest: 0x6b04a058,
+  actorRotation: 0x75df36b7,
+  actorDataFlag: 0xc67426f3,
+  onGroundFlag: 0xc29078a0,
+  localPlayer: 0xacb47b38,
+  player: 0xf95d258f,
+  jumpFromGroundRequest: 0x4ea8c276,
+  localPlayerJumpRequest: 0xda6293f1,
+  triggerJumpRequest: 0xf37efb0f,
+  actorSetPositionRequest: 0x5e3ca211,
+  movementAbilities: 0x6de78dc5,
+};
+
+const STRIDE = {
+  stateVector: 36,
+  moveInput: 100,
+  actorRotation: 16,
+  actorDataFlag: 24,
+  actorSetPositionRequest: 12,
+  movementAbilities: 16,
+};
+
+// sparse_set 相对 storage 指针的偏移（R140 布局，元素寻址由 R121/R140 互证）。
+const SS = {
+  sparseTable: 0x08, // 页指针表 begin（end 在 +0x10）
+  packedBegin: 0x20, // packed 实体表 begin（end 在 +0x28）
+  packedEnd: 0x28,
+  chunkTable: 0x50, // 载荷 chunk 指针表 begin（end 在 +0x58）
+};
+
+// StateVector 偏移。注意 +0x04 的 y 是**眼睛位置**（feet + EYE_HEIGHT），
+// HUD / 命令里的 y 是脚部；对外的 getState/tp 统一用脚部坐标。
+const EYE_HEIGHT = 1.6200101;
+const SV = { pos: 0x00, vel: 0x18 };
+// ActorRotation：{pitch, yaw, prevPitch, prevYaw}
+const ROT = { pitch: 0x00, yaw: 0x04, prevPitch: 0x08, prevYaw: 0x0c };
+// MoveInput：+0x24 = 解析后 strafe(local x)，+0x28 = 解析后 forward(local z)；
+// +0x60 = 第二组标志位。轴序由 AutoJumpSweepCheck 的 yaw 旋转公式反推。
+const MI = { resolvedX: 0x24, resolvedY: 0x28, flags16: 0x60 };
+
+let base = null;
+let moduleName = null;
+let moduleEnd = null;
+
+const state = {
+  signature: {}, // name -> {va, ok, actual, expected}
+  hooks: {}, // name -> listener
+  emplaceFn: null,
+  registry: null,
+  registryCandidates: new Map(), // ptr string -> NativePointer
+  registryFrom: null, // 最近一次捕获时的 type id
+  storageCache: new Map(), // `${registry}:${typeId}` -> NativePointer
+  player: null, // 实体 id (u32 incl. version bits)
+  playerRefreshedAtTick: -1,
+  playerMoveInput: null, // NativePointer
+  serverMoveInput: null, // 服务端 registry 里同一玩家的 MoveInput
+  serverRot: null, // 服务端 registry 里的 ActorRotation
+  playerSync: null,
+  playerRot: null,
+  playerAdf: null,
+  playerOnGround: null,
+  tickCount: 0,
+  getterCalls: 0,
+  pipelineCalls: 0,
+  resolverCalls: 0,
+  serverResolverCalls: 0,
+  lastError: null,
+  inWorld: false,
+  input: { x: 0, y: 0, jump: false, sneak: false, sprint: false },
+  look: null, // {yaw, pitch} 或 null；每 tick 钉住，抵抗相机系统回写
+  inputAppliedTicks: 0,
+  pendingTp: null,
+  pendingServerTp: null,
+  lastTp: null,
+  jumpOnce: false,
+  lastJump: null,
+  recording: { active: false, max: 0, samples: [], dropped: 0, startedTick: 0 },
+};
+
+const log = (level, message, extra) => {
+  try {
+    send({ type: 'log', level, message, extra: extra || null });
+  } catch (e) {
+    // send 在卸载阶段可能失败，忽略
+  }
+};
+
+function resolveBase() {
+  if (base !== null) return base;
+  const modules = Process.enumerateModules();
+  const mod =
+    modules.find((m) => m.name.toLowerCase() === 'minecraft.windows.exe') ||
+    modules.find((m) => m.name.toLowerCase().indexOf('minecraft') >= 0);
+  if (!mod) throw new Error('Minecraft.Windows.exe 未找到');
+  moduleName = mod.name;
+  base = mod.base;
+  moduleEnd = mod.base.add(mod.size);
+  return base;
+}
+
+function addr(va) {
+  return resolveBase().add(va - IMAGE_BASE);
+}
+
+function hex(n) {
+  if (n === null || n === undefined) return null;
+  return '0x' + n.toString(16);
+}
+
+function parseSig(s) {
+  return s.trim().split(/\s+/).map((x) => parseInt(x, 16));
+}
+
+function verifySignatures() {
+  for (const [name, expectedHex] of Object.entries(SIG)) {
+    const expected = parseSig(expectedHex);
+    const target = addr(VA[name]);
+    let actual = null;
+    let ok = false;
+    try {
+      const bytes = new Uint8Array(target.readByteArray(expected.length));
+      actual = Array.from(bytes);
+      ok = expected.every((b, i) => b === actual[i]);
+    } catch (e) {
+      actual = [];
+      ok = false;
+    }
+    state.signature[name] = {
+      va: hex(VA[name]),
+      address: target.toString(),
+      ok,
+      expected: expectedHex,
+      actual: actual.map((b) => b.toString(16).padStart(2, '0')).join(' '),
+    };
+    if (!ok) log('error', `signature mismatch: ${name} @ ${hex(VA[name])}`, actual);
+  }
+  return Object.values(state.signature).every((s) => s.ok);
+}
+
+// ---------------------------------------------------------------------------
+// ECS 访问
+// ---------------------------------------------------------------------------
+
+// registry 哈希表：bucket@registry+0x48, count=(end-begin)/8, 节点池@+0x68，
+// 节点 = {next@0, typeId@8, storage@16}。纯内存遍历，不调用游戏函数。
+function findStorage(registry, typeId) {
+  if (!registry || registry.isNull()) return null;
+  const cacheKey = `${registry}:${typeId >>> 0}`;
+  if (state.storageCache.has(cacheKey)) {
+    const cached = state.storageCache.get(cacheKey);
+    if (cached && !cached.isNull()) return cached;
+  }
+
+  const begin = registry.add(0x48).readPointer();
+  const end = registry.add(0x50).readPointer();
+  if (begin.isNull() || end.isNull()) return null;
+  const bucketCount = end.sub(begin).toInt32() / 8;
+  if (bucketCount <= 0 || (bucketCount & (bucketCount - 1)) !== 0) return null;
+
+  const pool = registry.add(0x68).readPointer();
+  const poolEnd = registry.add(0x70).readPointer();
+  if (pool.isNull()) return null;
+
+  let bucket = begin.add(((typeId >>> 0) & (bucketCount - 1)) * 8);
+  for (let guard = 0; guard < 64; guard++) {
+    const nodeIndex = bucket.readU32();
+    if (nodeIndex === 0xffffffff) return null;
+    const node = pool.add(nodeIndex * 32);
+    if (node.add(8).readU32() === (typeId >>> 0)) {
+      if (node.equals(poolEnd)) return null;
+      const storage = node.add(16).readPointer();
+      if (storage.isNull()) return null;
+      // storage 指向 sparse_set 子对象，头 8 字节是 sparse_set vtable。
+      try {
+        const vt = storage.readPointer();
+        // 只要求 vtable 落在游戏模块内。不同组件族由不同的建存储函数创建，
+        // vtable 可能是 off_14E7B7F10 / off_14E762A60 / 其他专用表。
+        const vtOk = vt.compare(base) >= 0 && vt.compare(moduleEnd) < 0;
+        if (!vtOk) {
+          log('warn', `storage vtable out of module for ${hex(typeId)}`, {
+            storage: storage.toString(),
+            vtable: vt.toString(),
+          });
+          return null;
+        }
+      } catch (e) {
+        return null;
+      }
+      state.storageCache.set(cacheKey, storage);
+      return storage;
+    }
+    bucket = node;
+  }
+  return null;
+}
+
+function packedEntities(storage) {
+  if (!storage) return [];
+  const begin = storage.add(SS.packedBegin).readPointer();
+  const end = storage.add(SS.packedEnd).readPointer();
+  if (begin.isNull() || end.isNull()) return [];
+  const count = end.sub(begin).toInt32() / 4;
+  if (count <= 0 || count > 100000) return [];
+  const out = new Array(count);
+  for (let i = 0; i < count; i++) out[i] = begin.add(i * 4).readU32();
+  return out;
+}
+
+function denseIndexOf(storage, entity) {
+  const sparseBegin = storage.add(SS.sparseTable).readPointer();
+  if (sparseBegin.isNull()) return -1;
+  const pageOffset = (entity & 0x3f800) >>> 8;
+  let page;
+  try {
+    page = sparseBegin.add(pageOffset).readPointer();
+  } catch (e) {
+    return -1;
+  }
+  if (page.isNull()) return -1;
+  const entry = page.add(4 * (entity & 0x7ff)).readU32();
+  if (((entry ^ (entity & 0xfffc0000)) >>> 0) > 0x3fffe) return -1;
+  return entry & 0x3ffff;
+}
+
+function hasComponent(typeId) {
+  const storage = storageFor(typeId);
+  if (!storage || state.player === null) return false;
+  try {
+    return denseIndexOf(storage, state.player) >= 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+function componentAddr(storage, entity, stride) {
+  if (!storage) return null;
+  const dense = denseIndexOf(storage, entity);
+  if (dense < 0) return null;
+  const chunkTable = storage.add(SS.chunkTable).readPointer();
+  if (chunkTable.isNull()) return null;
+  const chunk = chunkTable.add(8 * (dense >> 7)).readPointer();
+  if (chunk.isNull()) return null;
+  return chunk.add(stride * (dense & 0x7f));
+}
+
+function storageFor(typeId) {
+  if (!state.registry) return null;
+  return findStorage(state.registry, typeId);
+}
+
+function component(typeId, stride) {
+  const storage = storageFor(typeId);
+  if (!storage || state.player === null) return null;
+  return componentAddr(storage, state.player, stride);
+}
+
+// 本地世界的服务端 registry：没有 LocalPlayerComponent，但有 PlayerComponent。
+function findServerContext() {
+  for (const [key, reg] of state.registryCandidates) {
+    if (state.registry && reg.equals(state.registry)) continue;
+    const storage = findStorage(reg, CID.player);
+    if (!storage) continue;
+    const entities = packedEntities(storage);
+    if (entities.length === 0) continue;
+    return { registry: reg, entity: entities[0] >>> 0, key };
+  }
+  return null;
+}
+
+function ensureComponentIn(registry, entity, typeId, stride) {
+  const storage = findStorage(registry, typeId);
+  if (!storage) return null;
+  let elem = componentAddr(storage, entity, stride);
+  if (elem) return elem;
+  if (!state.emplaceFn) return null;
+  try {
+    const out = Memory.alloc(16);
+    const ent = Memory.alloc(4);
+    ent.writeU32(entity >>> 0);
+    state.emplaceFn(storage, out, ent, 0);
+    return componentAddr(storage, entity, stride);
+  } catch (e) {
+    log('warn', `server emplace failed for ${hex(typeId)}`, String(e));
+    return null;
+  }
+}
+
+// 服务端权威传送：在服务端 registry 的玩家实体上排队 ActorSetPositionRequest。
+// 实测有效：下一 tick 服务端应用后同步回客户端。
+function serverTeleport(x, y, z) {
+  const pos = [Number(x), Number(y), Number(z)];
+  if (!pos.every(Number.isFinite)) return { ok: false, error: 'position must be finite' };
+  const ctx = findServerContext();
+  if (!ctx) return { ok: false, error: 'server registry not found' };
+  const req = ensureComponentIn(
+    ctx.registry,
+    ctx.entity,
+    CID.actorSetPositionRequest,
+    STRIDE.actorSetPositionRequest,
+  );
+  if (!req) return { ok: false, error: 'server ActorSetPositionRequestComponent unavailable' };
+  writeVec3(req, [pos[0], pos[1] + EYE_HEIGHT, pos[2]]);
+  return {
+    ok: true,
+    via: 'server',
+    registry: ctx.registry.toString(),
+    entity: hex(ctx.entity),
+    ptr: req.toString(),
+    pos,
+  };
+}
+
+// 服务端与客户端各自持有一份玩家 MoveInput/ActorRotation。只写客户端时，
+// 服务端会按零输入校正，表现为位置来回拉扯。这里同时缓存服务端元素地址。
+function refreshServerPointers() {
+  const ctx = findServerContext();
+  if (!ctx) {
+    state.serverMoveInput = null;
+    state.serverRot = null;
+    return;
+  }
+  state.serverMoveInput = componentAddr(
+    findStorage(ctx.registry, CID.moveInput),
+    ctx.entity,
+    STRIDE.moveInput,
+  );
+  state.serverRot = componentAddr(
+    findStorage(ctx.registry, CID.actorRotation),
+    ctx.entity,
+    STRIDE.actorRotation,
+  );
+}
+
+// 读/写前取最新元素地址；失败时强制刷新玩家（重生/换维度后实体会变）。
+function freshComponent(typeId, stride) {
+  let ptr = component(typeId, stride);
+  if (ptr) return ptr;
+  if (refreshPlayer(true) === null) return null;
+  return component(typeId, stride);
+}
+
+function readVec3(p) {
+  return [p.readFloat(), p.add(4).readFloat(), p.add(8).readFloat()];
+}
+
+function writeVec3(p, v) {
+  p.writeFloat(v[0]);
+  p.add(4).writeFloat(v[1]);
+  p.add(8).writeFloat(v[2]);
+}
+
+function isFiniteVec3(v) {
+  return v.every((x) => Number.isFinite(x) && Math.abs(x) < 3.0e7);
+}
+
+// 从 registry 候选里挑出“有且至少一个 LocalPlayer”的那个。
+function resolveRegistry() {
+  if (state.registry && state.player !== null) return state.registry;
+  for (const [key, reg] of state.registryCandidates) {
+    try {
+      const lp = findStorage(reg, CID.localPlayer);
+      if (!lp) continue;
+      const entities = packedEntities(lp);
+      if (entities.length === 0) continue;
+      state.registry = reg;
+      state.registryFrom = 'LocalPlayerComponent';
+      log('info', `registry resolved from ${key}`, {
+        registry: reg.toString(),
+        localPlayers: entities.length,
+      });
+      return reg;
+    } catch (e) {
+      // 候选无效，试下一个
+    }
+  }
+  return null;
+}
+
+function refreshPlayer(force) {
+  if (!resolveRegistry()) return null;
+  if (
+    !force &&
+    state.player !== null &&
+    state.playerRefreshedAtTick >= 0 &&
+    state.tickCount - state.playerRefreshedAtTick < 100
+  ) {
+    return state.player;
+  }
+
+  const svStorage = storageFor(CID.stateVector);
+  const previousPlayer = state.player;
+  const tryTags = [CID.localPlayer, CID.player];
+  for (const tag of tryTags) {
+    const storage = storageFor(tag);
+    if (!storage) continue;
+    const entities = packedEntities(storage);
+    for (const entity of entities) {
+      const sv = componentAddr(svStorage, entity, STRIDE.stateVector);
+      if (!sv) continue;
+      try {
+        if (!isFiniteVec3(readVec3(sv))) continue;
+      } catch (e) {
+        continue;
+      }
+      state.player = entity >>> 0;
+      state.playerRefreshedAtTick = state.tickCount;
+      state.playerSync = sv;
+      state.playerRot = componentAddr(storageFor(CID.actorRotation), entity, STRIDE.actorRotation);
+      state.playerAdf = componentAddr(storageFor(CID.actorDataFlag), entity, STRIDE.actorDataFlag);
+      state.playerOnGround = componentAddr(storageFor(CID.onGroundFlag), entity, 1);
+      state.playerMoveInput = componentAddr(storageFor(CID.moveInput), entity, STRIDE.moveInput);
+      state.inWorld = true;
+      if (previousPlayer !== state.player) {
+        log('info', 'local player resolved', {
+          entity: hex(state.player),
+          via: hex(tag),
+          stateVector: state.playerSync ? state.playerSync.toString() : null,
+          moveInput: state.playerMoveInput ? state.playerMoveInput.toString() : null,
+        });
+      }
+      return state.player;
+    }
+  }
+  state.player = null;
+  state.inWorld = false;
+  state.registry = null;
+  state.storageCache.clear();
+  return null;
+}
+
+function readState() {
+  try {
+    const player = refreshPlayer(false);
+    if (player === null) {
+      return { ok: false, error: 'local player not resolved (not in world?)' };
+    }
+    const sv = freshComponent(CID.stateVector, STRIDE.stateVector);
+    if (!sv) return { ok: false, error: 'StateVectorComponent missing' };
+    state.playerSync = sv;
+    const eyePos = readVec3(sv.add(SV.pos));
+    const pos = [eyePos[0], eyePos[1] - EYE_HEIGHT, eyePos[2]];
+    const vel = readVec3(sv.add(SV.vel));
+
+    let yaw = null;
+    let pitch = null;
+    const rot = freshComponent(CID.actorRotation, STRIDE.actorRotation);
+    if (rot) {
+      state.playerRot = rot;
+      pitch = rot.add(ROT.pitch).readFloat();
+      yaw = rot.add(ROT.yaw).readFloat();
+    }
+
+    let flagsLo = null;
+    let flagsMid = null;
+    let flagsHi = null;
+    const adf = freshComponent(CID.actorDataFlag, STRIDE.actorDataFlag);
+    if (adf) {
+      state.playerAdf = adf;
+      flagsLo = adf.readU64().toString();
+      flagsMid = adf.add(8).readU64().toString();
+      flagsHi = adf.add(16).readU64().toString();
+    }
+
+    const onGround = hasComponent(CID.onGroundFlag);
+
+    let input = null;
+    const mi = freshComponent(CID.moveInput, STRIDE.moveInput);
+    if (mi) {
+      state.playerMoveInput = mi;
+      input = {
+        x: mi.add(MI.resolvedX).readFloat(),
+        y: mi.add(MI.resolvedY).readFloat(),
+        flags: mi.add(MI.flags16).readU16(),
+      };
+    }
+
+    return {
+      ok: true,
+      tick: state.tickCount,
+      entity: player,
+      pos,
+      eye_pos: eyePos,
+      vel,
+      yaw,
+      pitch,
+      on_ground: onGround,
+      flags_lo: flagsLo,
+      flags_mid: flagsMid,
+      flags_hi: flagsHi,
+      input,
+    };
+  } catch (e) {
+    state.lastError = String(e);
+    return { ok: false, error: String(e) };
+  }
+}
+
+function snapshotSample() {
+  const s = readState();
+  if (!s.ok) return { t: state.tickCount, ok: false, error: s.error };
+  return {
+    t: s.tick,
+    ok: true,
+    pos: s.pos,
+    eye_pos: s.eye_pos,
+    vel: s.vel,
+    yaw: s.yaw,
+    pitch: s.pitch,
+    on_ground: s.on_ground,
+    flags_lo: s.flags_lo,
+    flags_mid: s.flags_mid,
+    flags_hi: s.flags_hi,
+    input: s.input,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 写路径
+// ---------------------------------------------------------------------------
+
+function ensureComponent(typeId, stride) {
+  const storage = storageFor(typeId);
+  if (!storage) return null;
+  let elem = componentAddr(storage, state.player, stride);
+  if (elem) return elem;
+  if (!state.emplaceFn) return null;
+  try {
+    const out = Memory.alloc(16);
+    const ent = Memory.alloc(4);
+    ent.writeU32(state.player >>> 0);
+    state.emplaceFn(storage, out, ent, 0);
+    elem = componentAddr(storage, state.player, stride);
+    return elem;
+  } catch (e) {
+    log('warn', `emplace failed for ${hex(typeId)}`, String(e));
+    return null;
+  }
+}
+
+function ensurePresence(typeId) {
+  const storage = storageFor(typeId);
+  if (!storage) return false;
+  if (denseIndexOf(storage, state.player) >= 0) return true;
+  if (!state.emplaceFn) return false;
+  try {
+    const out = Memory.alloc(16);
+    const ent = Memory.alloc(4);
+    ent.writeU32(state.player >>> 0);
+    state.emplaceFn(storage, out, ent, 0);
+    return denseIndexOf(storage, state.player) >= 0;
+  } catch (e) {
+    log('warn', `emplace presence failed for ${hex(typeId)}`, String(e));
+    return false;
+  }
+}
+
+function applyPendingTp() {
+  const tp = state.pendingTp;
+  if (!tp) return;
+  state.pendingTp = null;
+  try {
+    const direct = () => {
+      const sv = freshComponent(CID.stateVector, STRIDE.stateVector);
+      if (!sv) throw new Error('StateVectorComponent missing');
+      state.playerSync = sv;
+      const eyePos = [tp.pos[0], tp.pos[1] + EYE_HEIGHT, tp.pos[2]];
+      writeVec3(sv.add(SV.pos), eyePos);
+      sv.add(SV.vel).writeFloat(0);
+      sv.add(SV.vel + 4).writeFloat(0);
+      sv.add(SV.vel + 8).writeFloat(0);
+    };
+    if (tp.mode === 'direct') {
+      direct();
+      state.lastTp = { ok: true, mode: 'direct', pos: tp.pos, tick: state.tickCount };
+      return;
+    }
+    const req = ensureComponent(CID.actorSetPositionRequest, STRIDE.actorSetPositionRequest);
+    if (req) {
+      writeVec3(req, [tp.pos[0], tp.pos[1] + EYE_HEIGHT, tp.pos[2]]);
+      state.lastTp = { ok: true, mode: 'request', pos: tp.pos, tick: state.tickCount };
+    } else {
+      direct();
+      state.lastTp = { ok: true, mode: 'direct-fallback', pos: tp.pos, tick: state.tickCount };
+    }
+  } catch (e) {
+    state.lastTp = { ok: false, error: String(e), tick: state.tickCount };
+  }
+}
+
+function doJumpRequest() {
+  // JumpFromGroundSystem 每 tick 遍历带 JumpFromGroundRequestComponent 的实体；
+  // 把该组件 emplac 到玩家身上等价于“按一次跳”。组件由系统在消费后移除。
+  // tag 组件可能没有载荷 chunk，因此成功判据是“稀疏集里存在”，不是元素指针非空。
+  const present = ensurePresence(CID.jumpFromGroundRequest);
+  if (present) {
+    state.lastJump = { ok: true, tick: state.tickCount };
+  } else if (!state.lastJump || !state.lastJump.ok) {
+    state.lastJump = {
+      ok: false,
+      tick: state.tickCount,
+      error: 'JumpFromGroundRequestComponent unavailable',
+    };
+  }
+}
+
+function applyLookOverride() {
+  if (!state.look) return;
+  const { yaw, pitch } = state.look;
+  const rot = freshComponent(CID.actorRotation, STRIDE.actorRotation);
+  if (rot) {
+    rot.add(ROT.pitch).writeFloat(pitch);
+    rot.add(ROT.yaw).writeFloat(yaw);
+    rot.add(ROT.prevPitch).writeFloat(pitch);
+    rot.add(ROT.prevYaw).writeFloat(yaw);
+  }
+  const srot = state.serverRot;
+  if (srot) {
+    srot.add(ROT.pitch).writeFloat(pitch);
+    srot.add(ROT.yaw).writeFloat(yaw);
+    srot.add(ROT.prevPitch).writeFloat(pitch);
+    srot.add(ROT.prevYaw).writeFloat(yaw);
+  }
+}
+
+function applyInputOverride() {
+  const inp = state.input;
+  const mi = freshComponent(CID.moveInput, STRIDE.moveInput);
+  if (mi) {
+    state.playerMoveInput = mi;
+    mi.add(MI.resolvedX).writeFloat(inp.x);
+    mi.add(MI.resolvedY).writeFloat(inp.y);
+  }
+  const smi = state.serverMoveInput;
+  if (smi) {
+    smi.add(MI.resolvedX).writeFloat(inp.x);
+    smi.add(MI.resolvedY).writeFloat(inp.y);
+  }
+  state.inputAppliedTicks++;
+}
+
+// ---------------------------------------------------------------------------
+// hooks
+// ---------------------------------------------------------------------------
+
+function installHook(name, handlers) {
+  if (!state.signature[name] || !state.signature[name].ok) {
+    log('warn', `skip hook ${name}: signature mismatch`);
+    return null;
+  }
+  try {
+    const listener = Interceptor.attach(addr(VA[name]), handlers);
+    state.hooks[name] = listener;
+    log('info', `hook installed: ${name} @ ${hex(VA[name])}`);
+    return listener;
+  } catch (e) {
+    log('error', `hook failed: ${name}`, String(e));
+    return null;
+  }
+}
+
+function installHooks() {
+  // registry 捕获：每次取 storage 时记录第一个参数。
+  // 只有玩家未解析时才做 Map 查询；解析后 onEnter 立即返回。
+  installHook('enttStorageGet', {
+    onEnter(args) {
+      state.getterCalls++;
+      try {
+        const reg = args[0];
+        if (
+          !reg.isNull() &&
+          state.registryCandidates.size < 8 &&
+          !state.registryCandidates.has(reg.toString())
+        ) {
+          state.registryCandidates.set(reg.toString(), reg);
+          state.registryFrom = args[1].toUInt32();
+        }
+      } catch (e) {
+        // 忽略
+      }
+    },
+  });
+
+  // 每 tick 一次：tick 计数、采样、延迟写操作、玩家刷新。
+  installHook('localPlayerPostMoveTick', {
+    onEnter() {
+      state.tickCount++;
+      try {
+        if (state.registry === null || state.player === null || state.tickCount % 100 === 0) {
+          refreshPlayer(true);
+        }
+        if (state.player !== null) {
+          refreshServerPointers();
+          if (state.pendingServerTp) {
+            const pending = state.pendingServerTp;
+            const attempt = serverTeleport(pending.pos[0], pending.pos[1], pending.pos[2]);
+            if (attempt.ok) {
+              state.pendingServerTp = null;
+              state.lastTp = attempt;
+            } else if (state.tickCount - pending.queuedTick > 60) {
+              state.pendingServerTp = null;
+              state.lastTp = attempt;
+            }
+          }
+          applyPendingTp();
+          if (state.jumpOnce) {
+            state.jumpOnce = false;
+            doJumpRequest();
+          }
+          if (state.input.jump) doJumpRequest();
+          applyLookOverride();
+          applyInputOverride();
+          if (state.recording.active) {
+            if (state.recording.samples.length < state.recording.max) {
+              state.recording.samples.push(snapshotSample());
+            } else {
+              state.recording.dropped++;
+            }
+          }
+        }
+      } catch (e) {
+        state.lastError = String(e);
+      }
+    },
+  });
+
+  // 输入注入点：三个 MoveInput_ResolveOneEntity 变体都会调用它，
+  // 返回值 buffer = {resolvedX, resolvedY}。onLeave 覆盖结果即可。
+  installHook('moveInputResolve', {
+    onEnter(args) {
+      state.resolverCalls++;
+      this.out = args[0];
+      const client = state.playerMoveInput;
+      const server = state.serverMoveInput;
+      this.isServer =
+        server !== null && !server.isNull() && args[1].equals(server);
+      this.isPlayer =
+        (client !== null && !client.isNull() && args[1].equals(client)) ||
+        this.isServer;
+      if (this.isServer) state.serverResolverCalls++;
+    },
+    onLeave() {
+      if (!this.isPlayer) return;
+      applyLookOverride();
+      try {
+        this.out.writeFloat(state.input.x);
+        this.out.add(4).writeFloat(state.input.y);
+      } catch (e) {
+        state.lastError = String(e);
+      }
+    },
+  });
+
+  if (state.signature.enttEmplace && state.signature.enttEmplace.ok) {
+    state.emplaceFn = new NativeFunction(addr(VA.enttEmplace), 'pointer', [
+      'pointer',
+      'pointer',
+      'pointer',
+      'uint8',
+    ]);
+  }
+
+  installHook('moveInputPipeline', {
+    onEnter() {
+      state.pipelineCalls++;
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RPC
+// ---------------------------------------------------------------------------
+
+function buildStatus() {
+  return {
+    ok: true,
+    module: moduleName,
+    base: base ? base.toString() : null,
+    signatures: state.signature,
+    registry: state.registry ? state.registry.toString() : null,
+    registry_candidates: Array.from(state.registryCandidates.keys()),
+    player: state.player === null ? null : hex(state.player),
+    in_world: state.inWorld,
+    tick: state.tickCount,
+    getter_calls: state.getterCalls,
+    pipeline_calls: state.pipelineCalls,
+    resolver_calls: state.resolverCalls,
+    server_resolver_calls: state.serverResolverCalls,
+    input: state.input,
+    look: state.look,
+    server_move_input: state.serverMoveInput ? state.serverMoveInput.toString() : null,
+    server_rot: state.serverRot ? state.serverRot.toString() : null,
+    input_applied_ticks: state.inputAppliedTicks,
+    jump_once: state.jumpOnce,
+    recording: {
+      active: state.recording.active,
+      count: state.recording.samples.length,
+      max: state.recording.max,
+      dropped: state.recording.dropped,
+    },
+    last_tp: state.lastTp,
+    pending_server_tp: state.pendingServerTp ? state.pendingServerTp.pos : null,
+    last_jump: state.lastJump,
+    last_error: state.lastError,
+  };
+}
 
 rpc.exports = {
   ping() {
-    return "pong";
+    return 'pong';
   },
 
-  // TODO: getState() -> { pos:[x,y,z], vel:[x,y,z], onGround, flags, ... }
-  //   数据源：StateVectorComponent / ActorDataFlagComponent / 各组件存储。
-  // TODO: tp(x, y, z) -> 走引擎提交路径，不直接改渲染位置。
-  // TODO: setVel(vx, vy, vz)
-  // TODO: setInput({ forward, strafe, jump, sneak, sprint })
-  //   写输入组件，不模拟按键。
-  // TODO: setYawPitch(yaw, pitch)
-  //   直接写旋转，绕开 raw input 不生效的问题。
-  // TODO: onTick(cb)
-  //   逐 tick 回调，用于采样与到达序记录。
+  init() {
+    try {
+      resolveBase();
+      const ok = verifySignatures();
+      installHooks();
+      log('info', 'agent initialized', {
+        base: base.toString(),
+        module: moduleName,
+        signatures_ok: ok,
+      });
+      return { ok: true, base: base.toString(), module: moduleName, signatures_ok: ok };
+    } catch (e) {
+      state.lastError = String(e);
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  status() {
+    return buildStatus();
+  },
+
+  diagnose() {
+    try {
+      resolveBase();
+      refreshPlayer(true);
+      const storages = {};
+      const components = {};
+      for (const [name, id] of Object.entries(CID)) {
+        const st = storageFor(id);
+        storages[name] = st
+          ? { id: hex(id), ptr: st.toString(), count: packedEntities(st).length }
+          : null;
+      }
+      const strides = {
+        stateVector: STRIDE.stateVector,
+        actorRotation: STRIDE.actorRotation,
+        actorDataFlag: STRIDE.actorDataFlag,
+        moveInput: STRIDE.moveInput,
+      };
+      for (const [name, stride] of Object.entries(strides)) {
+        const ptr = component(CID[name], stride);
+        components[name] = ptr ? ptr.toString() : null;
+      }
+      const og = hasComponent(CID.onGroundFlag);
+      components.onGroundFlag = og ? 'present' : null;
+      return {
+        ok: true,
+        base: base.toString(),
+        module: moduleName,
+        signatures: state.signature,
+        registry_candidates: Array.from(state.registryCandidates.keys()),
+        registry: state.registry ? state.registry.toString() : null,
+        player: state.player === null ? null : hex(state.player),
+        tick: state.tickCount,
+        storages,
+        components,
+        state: readState(),
+        status: buildStatus(),
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  getTickCount() {
+    return state.tickCount;
+  },
+
+  serverState() {
+    try {
+      const ctx = findServerContext();
+      if (!ctx) return { ok: false, error: 'server registry not found' };
+      const sv = componentAddr(
+        findStorage(ctx.registry, CID.stateVector),
+        ctx.entity,
+        STRIDE.stateVector,
+      );
+      if (!sv) return { ok: false, error: 'server StateVectorComponent missing' };
+      const eye = readVec3(sv.add(SV.pos));
+      const rot = componentAddr(
+        findStorage(ctx.registry, CID.actorRotation),
+        ctx.entity,
+        STRIDE.actorRotation,
+      );
+      return {
+        ok: true,
+        registry: ctx.registry.toString(),
+        entity: hex(ctx.entity),
+        pos: [eye[0], eye[1] - EYE_HEIGHT, eye[2]],
+        eye_pos: eye,
+        vel: readVec3(sv.add(SV.vel)),
+        yaw: rot ? rot.add(ROT.yaw).readFloat() : null,
+        pitch: rot ? rot.add(ROT.pitch).readFloat() : null,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 用世界坐标方向设置移动输入：按服务端当前 yaw 反算 forward/strafe。
+  // 这样不必（也很难）改服务端的相机朝向。
+  moveWorld(dx, dz, yawOverride) {
+    try {
+      let [wx, wz] = [Number(dx), Number(dz)];
+      if (!Number.isFinite(wx) || !Number.isFinite(wz)) {
+        return { ok: false, error: 'world direction must be finite' };
+      }
+      const len = Math.hypot(wx, wz);
+      if (len > 1) {
+        wx /= len;
+        wz /= len;
+      }
+
+      let yaw = Number(yawOverride);
+      if (!Number.isFinite(yaw)) {
+        const ctx = findServerContext();
+        let rot = null;
+        if (ctx) {
+          rot = componentAddr(
+            findStorage(ctx.registry, CID.actorRotation),
+            ctx.entity,
+            STRIDE.actorRotation,
+          );
+        }
+        if (!rot) rot = freshComponent(CID.actorRotation, STRIDE.actorRotation);
+        yaw = rot ? rot.add(ROT.yaw).readFloat() : 0;
+      }
+
+      const rad = (yaw * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      // 游戏内：worldX = strafe*cos - forward*sin, worldZ = strafe*sin + forward*cos
+      const strafe = wx * cos + wz * sin;
+      const forward = -wx * sin + wz * cos;
+      state.input = {
+        x: Math.max(-1, Math.min(1, strafe)),
+        y: Math.max(-1, Math.min(1, forward)),
+        jump: false,
+        sneak: false,
+        sprint: false,
+      };
+      return { ok: true, yaw, strafe: state.input.x, forward: state.input.y, world: [wx, wz] };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 在服务端 registry 上排队一个位置请求。服务端权威，成功后客户端会被同步。
+  serverTp(x, y, z) {
+    try {
+      return serverTeleport(x, y, z);
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 直接写服务端 StateVector（诊断用，可能被服务端移动系统覆盖）。
+  serverTpDirect(x, y, z) {
+    try {
+      const pos = [Number(x), Number(y), Number(z)];
+      if (!pos.every(Number.isFinite)) return { ok: false, error: 'position must be finite' };
+      const ctx = findServerContext();
+      if (!ctx) return { ok: false, error: 'server registry not found' };
+      const sv = componentAddr(
+        findStorage(ctx.registry, CID.stateVector),
+        ctx.entity,
+        STRIDE.stateVector,
+      );
+      if (!sv) return { ok: false, error: 'server StateVectorComponent missing' };
+      writeVec3(sv.add(SV.pos), [pos[0], pos[1] + EYE_HEIGHT, pos[2]]);
+      sv.add(SV.vel).writeFloat(0);
+      sv.add(SV.vel + 4).writeFloat(0);
+      sv.add(SV.vel + 8).writeFloat(0);
+      return {
+        ok: true,
+        registry: ctx.registry.toString(),
+        entity: hex(ctx.entity),
+        pos,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  getState() {
+    return readState();
+  },
+
+  // 诊断：按绝对地址/模块 VA 读内存。
+  dumpMemory(address, size) {
+    try {
+      const p = typeof address === 'string' ? ptr(address) : ptr(Number(address));
+      const n = Math.max(1, Math.min(4096, Number(size) || 64));
+      const bytes = new Uint8Array(p.readByteArray(n));
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) {
+        out += bytes[i].toString(16).padStart(2, '0');
+        if (i % 16 === 15) out += '\n';
+        else if (i % 4 === 3) out += ' ';
+      }
+      return { ok: true, address: p.toString(), size: n, hex: out };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  dumpGlobal(va, size) {
+    try {
+      const p = addr(Number(va));
+      const n = Math.max(1, Math.min(4096, Number(size) || 64));
+      const bytes = new Uint8Array(p.readByteArray(n));
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) {
+        out += bytes[i].toString(16).padStart(2, '0');
+        if (i % 16 === 15) out += '\n';
+        else if (i % 4 === 3) out += ' ';
+      }
+      return { ok: true, address: p.toString(), size: n, hex: out };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 诊断用：列出每个候选 registry 里各组件的存储和实体，寻找服务端 registry。
+  inspectRegistries() {
+    try {
+      const ids = {
+        ...CID,
+        teleportToRequest: 0xf8bdf31c,
+        localConstBlockSourceFactory: 0xc695b914,
+        localSpatialEntityFetcherFactory: 0x5c4c91cf,
+        blockCollisionEvaluationQueue: 0xef62451a,
+      };
+      const out = [];
+      for (const [key, reg] of state.registryCandidates) {
+        const components = {};
+        for (const [name, id] of Object.entries(ids)) {
+          const st = findStorage(reg, id);
+          if (!st) {
+            components[name] = null;
+            continue;
+          }
+          const entities = packedEntities(st);
+          components[name] = {
+            id: hex(id),
+            ptr: st.toString(),
+            count: entities.length,
+            entities: entities.slice(0, 8).map(hex),
+          };
+        }
+        out.push({
+          registry: key,
+          localPlayers: components.localPlayer ? components.localPlayer.entities : [],
+          players: components.player ? components.player.entities : [],
+          components,
+        });
+      }
+      return { ok: true, registries: out };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // {forward, strafe, jump, sneak, sprint}
+  // forward/strafe 在 [-1,1]；sneak/sprint 目前只记录，不伪造状态位。
+  setInput(input) {
+    try {
+      const num = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.max(-1, Math.min(1, n)) : 0;
+      };
+      state.input = {
+        x: num(input && input.strafe),
+        y: num(input && input.forward),
+        jump: !!(input && input.jump),
+        sneak: !!(input && input.sneak),
+        sprint: !!(input && input.sprint),
+      };
+      const warnings = [];
+      if (state.input.sneak) warnings.push('sneak is not injected (state flags are server-owned)');
+      if (state.input.sprint) warnings.push('sprint is not injected (state flags are server-owned)');
+      if (!state.player) warnings.push('local player not resolved yet');
+      return { ok: true, applied: state.input, warnings };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  setYawPitch(yaw, pitch) {
+    try {
+      if (refreshPlayer(false) === null) return { ok: false, error: 'local player not resolved' };
+      const rot = freshComponent(CID.actorRotation, STRIDE.actorRotation);
+      if (!rot) return { ok: false, error: 'ActorRotationComponent missing' };
+      const y = Number(yaw);
+      const p = Number(pitch);
+      if (!Number.isFinite(y) || !Number.isFinite(p)) {
+        return { ok: false, error: 'yaw/pitch must be finite numbers' };
+      }
+      rot.add(ROT.pitch).writeFloat(p);
+      rot.add(ROT.yaw).writeFloat(y);
+      rot.add(ROT.prevPitch).writeFloat(p);
+      rot.add(ROT.prevYaw).writeFloat(y);
+      state.look = { yaw: y, pitch: p };
+      return { ok: true, yaw: y, pitch: p, pinned: true };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  setVel(vx, vy, vz) {
+    try {
+      if (refreshPlayer(false) === null) return { ok: false, error: 'local player not resolved' };
+      const sv = freshComponent(CID.stateVector, STRIDE.stateVector);
+      if (!sv) return { ok: false, error: 'StateVectorComponent missing' };
+      state.playerSync = sv;
+      const v = [Number(vx), Number(vy), Number(vz)];
+      if (!v.every(Number.isFinite)) return { ok: false, error: 'velocity must be finite' };
+      writeVec3(sv.add(SV.vel), v);
+      return { ok: true, vel: v };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  tp(x, y, z, mode) {
+    try {
+      const pos = [Number(x), Number(y), Number(z)];
+      if (!pos.every(Number.isFinite)) return { ok: false, error: 'position must be finite' };
+      if (mode === 'server') {
+        const result = serverTeleport(pos[0], pos[1], pos[2]);
+        if (result.ok) return result;
+        if (result.error === 'server registry not found') {
+          state.pendingServerTp = { pos, queuedTick: state.tickCount };
+          return {
+            ok: true,
+            queued: true,
+            via: 'server',
+            pos,
+            note: '等待服务端 registry 后重试',
+          };
+        }
+        return result;
+      }
+      state.pendingTp = { pos, mode: mode || 'request' };
+      return {
+        ok: true,
+        queued: true,
+        pos,
+        mode: state.pendingTp.mode,
+        tick: state.tickCount,
+        warning:
+          '客户端写位置会被服务端权威位置覆盖；可靠传送请用游戏内 /tp 命令（driver 的 setup.commands 路径）',
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  jump() {
+    state.jumpOnce = true;
+    return { ok: true, queued: true };
+  },
+
+  stopInput() {
+    state.input = { x: 0, y: 0, jump: false, sneak: false, sprint: false };
+    applyInputOverride();
+    return { ok: true };
+  },
+
+  clearLook() {
+    state.look = null;
+    return { ok: true };
+  },
+
+  startRecording(maxTicks) {
+    const max = Math.max(1, Math.min(100000, Number(maxTicks) || 1));
+    state.recording = {
+      active: true,
+      max,
+      samples: [],
+      dropped: 0,
+      startedTick: state.tickCount,
+    };
+    return { ok: true, start_tick: state.tickCount, max };
+  },
+
+  stopRecording() {
+    const rec = state.recording;
+    rec.active = false;
+    return {
+      ok: true,
+      start_tick: rec.startedTick,
+      end_tick: state.tickCount,
+      samples: rec.samples,
+      dropped: rec.dropped,
+    };
+  },
 };

@@ -190,6 +190,11 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 - **`vel` 不是速度**：`StateVector.vel` 是摩擦前速度，正常地面上约为真实逐 tick 位移的
   0.546 倍（0.546 = 0.6 滑度 × 0.91）。判速度用相邻 tick 位置差；`vel` 只在需要
   "游戏内部速度量"时参考。
+- **tp 与 teardown 不是位移**：跨 step 的位移、`tp`/`vel` 步骤内的位移都不计入速度；
+  记录窗口在 teardown 之前关闭。
+- **偶发卡顿（未解释）**：见过一次 step 中途开始"输入在动但位置不动"（客户端与服务端
+  同时冻结，tick 仍在推进），同一场景前后重跑都正常。`output.py` 会给"有输入但零位移"
+  的 step 打 `stalled` 标记并在 summary 里告警，遇到就重跑。
 - **`pos.y` 是脚部**（StateVector 里存的是眼睛 = 脚部 + 1.6200101）。
 - **`tp` 的 `mode=server` 写的是服务端 registry 的 `ActorSetPositionRequest`**，
   客户端会被同步；直接写客户端位置无效。

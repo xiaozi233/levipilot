@@ -1,0 +1,23 @@
+{
+  "name": "example-flat-walk",
+  "description": "超平坦向前走 60 tick，逐 tick 采样。占位示例，尚未运行验证。",
+  "setup": {
+    "world": "flat",
+    "seed": 0,
+    "time": 6000,
+    "weather": "clear",
+    "commands": [
+      "tp @s 0 -60 0 0 0",
+      "fill -8 -61 -8 8 -61 8 minecraft:stone"
+    ]
+  },
+  "input": {
+    "forward": 1.0,
+    "strafe": 0.0,
+    "jump": false,
+    "sneak": false,
+    "sprint": false
+  },
+  "ticks": 60,
+  "sample": ["pos", "vel", "on_ground", "flags"]
+}

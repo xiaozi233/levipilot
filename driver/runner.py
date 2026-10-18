@@ -268,6 +268,7 @@ def run_scenario(
     started_at = _now()
 
     marks: list[Mark] = []
+    failure: BaseException | None = None
     try:
         for index, step in enumerate(scenario.steps):
             mark_start = agent.call("get_tick_count")
@@ -295,25 +296,32 @@ def run_scenario(
             mark_end = agent.call("get_tick_count")
             marks.append(Mark(index, step.type, mark_start, mark_end, result))
         _ok(agent.call("stop_input"), "stop_input")
+    except BaseException as exc:  # remember it, teardown must still run
+        failure = exc
     finally:
-        # Always release input and clear the test rig, even if a step failed.
         try:
             agent.call("stop_input")
         except Exception:
             pass
-        teardown = scenario.setup.get("teardown") or []
-        if teardown and command_sender is not None:
-            try:
-                _run_commands(agent, teardown, command_sender, emit, "teardown")
-                scenario.setup["teardown_done"] = True
-            except Exception as exc:  # noqa: BLE001 - cleanup is best effort
-                warnings.append(f"teardown 未完成: {exc}")
-        elif teardown:
-            warnings.append("teardown 未执行：没有可用的命令通道")
 
+    # Close the measured span *before* cleanup: teardown moves the player and
+    # would otherwise show up as displacement/speed of the run.
     end_state = agent.call("get_state")
     recording = _ok(agent.call("stop_recording"), "stop_recording")
     finished_at = _now()
+
+    teardown = scenario.setup.get("teardown") or []
+    if teardown and command_sender is not None:
+        try:
+            _run_commands(agent, teardown, command_sender, emit, "teardown")
+            scenario.setup["teardown_done"] = True
+        except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+            warnings.append(f"teardown 未完成: {exc}")
+    elif teardown:
+        warnings.append("teardown 未执行：没有可用的命令通道")
+
+    if failure is not None:
+        raise failure
 
     return RunResult(
         scenario=scenario,

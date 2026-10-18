@@ -89,11 +89,14 @@ class RunnerTest(unittest.TestCase):
 
     def test_failure_raises_and_releases_input(self) -> None:
         agent = FakeAgent()
-        agent.fail_on.add("set_vel")
-        scen = normalize({"steps": [{"type": "vel", "v": [1, 2, 3]}]})
+        agent.fail_on = {"move_world"}
+        scen = normalize({"steps": [{"type": "input", "world": [0, 1], "ticks": 1}]})
         with self.assertRaises(RunError):
             run_scenario(agent, scen)
-        self.assertEqual(agent.calls[-1][0], "stop_input")
+        names = [name for name, _ in agent.calls]
+        self.assertIn("stop_input", names)
+        self.assertIn("stop_recording", names)
+        self.assertLess(names.index("stop_input"), names.index("stop_recording"))
 
     def test_warnings_are_collected(self) -> None:
         agent = FakeAgent()
@@ -328,8 +331,15 @@ class TeardownTest(unittest.TestCase):
             }
         )
         sent: list[str] = []
+
+        def sender(command: str):
+            # the measured span must be closed before cleanup runs
+            self.assertIn("stop_recording", [name for name, _ in agent.calls])
+            sent.append(command)
+            return {"ok": True}
+
         with self.assertRaises(RunError):
-            run_scenario(agent, scen, command_sender=lambda c: sent.append(c) or {"ok": True})
+            run_scenario(agent, scen, command_sender=sender)
         self.assertEqual(sent, ["fill 0 -60 0 1 -60 1 air"])
 
     def test_teardown_without_channel_warns(self) -> None:

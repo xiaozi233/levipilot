@@ -1,24 +1,23 @@
 {
   "name": "wall-stop",
-  "description": "在空地上铺一条石质通道并在 x=6 处砌 3 格高的墙，玩家沿 +x 走 80 tick，测量撞墙后的停止位置与速度曲线。setup 用聊天命令搭建，跑完 teardown 清场。",
+  "description": "在测试平台上 x=6 处砌一道 3 格高的墙，玩家从平台中心朝 +X 走 80 tick，测量撞墙停止位置。需要先跑 scenarios/setup-platform.json。",
   "setup": {
     "strict": true,
     "commands": [
-      "fill -3 -60 -1 9 -60 1 stone",
-      "fill 6 -59 -1 6 -57 1 stone",
-      "tp @s 0.5 -59 0.5"
+      "fill 6 -49 -1 6 -47 1 stone"
     ],
     "verify": [
-      { "pos": [0, -60, 0], "block": "minecraft:stone" },
-      { "pos": [3, -59, 0], "block": "air" },
-      { "pos": [6, -59, 0], "block": "minecraft:stone" }
+      { "pos": [0, -50, 0], "block": "minecraft:stone" },
+      { "pos": [3, -49, 0], "block": "air" },
+      { "pos": [6, -49, 0], "block": "minecraft:stone" }
     ],
     "teardown": [
-      "fill -3 -60 -1 9 -57 1 air"
+      "fill 6 -49 -1 6 -47 1 air",
+      "tp @s 0.5 -49 0.5 0 0"
     ]
   },
   "steps": [
-    { "type": "tp", "pos": [0.5, -59, 0.5], "settle_ticks": 5 },
+    { "type": "tp", "pos": [0.5, -49, 0.5], "settle_ticks": 5 },
     { "type": "look", "yaw": 0, "pitch": 0, "settle_ticks": 2 },
     { "type": "wait", "ticks": 5 },
     { "type": "input", "world": [1, 0], "ticks": 80 },

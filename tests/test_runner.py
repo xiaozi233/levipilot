@@ -350,5 +350,24 @@ class TeardownTest(unittest.TestCase):
         self.assertTrue(any("teardown" in w for w in result.warnings), result.warnings)
 
 
+class MoveModeTest(unittest.TestCase):
+    def test_sneak_sets_flags_and_scales_world_input(self) -> None:
+        # 真实潜行 = 输入向量缩到 0.3（标定结论，见 docs §4.1），世界方向也要按 0.3 注入。
+        scen = normalize(
+            {
+                "name": "sneak",
+                "steps": [{"type": "input", "world": [0, 1], "mode": "sneak", "ticks": 3}],
+            }
+        )
+        agent = FakeAgent()
+        run_scenario(agent, scen)
+        flags = [args for name, args in agent.calls if name == "move_flags"]
+        self.assertEqual(flags, [("sneak",)])
+        # 收尾由 stop_input 负责（agent 内部会把 moveMode 清掉），不需要再发一次 none。
+        self.assertTrue(any(name == "stop_input" for name, _ in agent.calls))
+        world = [args for name, args in agent.calls if name == "move_world"]
+        self.assertAlmostEqual(world[0][1], 0.3)
+
+
 if __name__ == "__main__":
     unittest.main()

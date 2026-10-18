@@ -194,16 +194,26 @@ async function moveAndVerify(x, y) {
   }
 
   if (action === "hold") {
-    const key = process.argv[4];
+    const spec = process.argv[4];
     const ms = Number(process.argv[5] || 1000);
-    if (!key) throw new Error('hold needs a key, e.g. "w"');
+    if (!spec) throw new Error('hold needs a key or combo, e.g. "w" / "ctrl+w"');
+    const keys = spec
+      .split("+")
+      .map((k) => k.trim())
+      .filter(Boolean);
     const { app, win } = findMinecraft();
     if (!win) throw new Error("Minecraft has no top-level window");
     addon.activateApplication(app.pid);
     await sleep(700);
-    addon.holdKeyGlobal(key, ms);
+    if (keys.length === 1) {
+      addon.holdKeyGlobal(keys[0], ms);
+    } else {
+      for (const k of keys) addon.keyDownGlobal(k);
+      await sleep(ms);
+      for (const k of keys.slice().reverse()) addon.keyUpGlobal(k);
+    }
     await sleep(ms + 400);
-    console.log(JSON.stringify({ ok: true, key, ms }));
+    console.log(JSON.stringify({ ok: true, keys, ms }));
     return;
   }
 

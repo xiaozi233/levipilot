@@ -31,6 +31,10 @@ from typing import Any
 
 STEP_TYPES = {"tp", "look", "vel", "input", "jump", "wait", "stop"}
 
+# 移动状态：由真实按键标定出来的语义编码。潜行已是原版 0.3 倍速；
+# 疾跑的真实倍率来源还没定位，所以不放进可选值（见 docs/offsets §4.1）。
+MOVE_MODES = {"sneak"}
+
 DEFAULT_SAMPLE = ["pos", "vel", "on_ground", "flags", "yaw", "pitch", "input"]
 
 
@@ -144,6 +148,15 @@ def normalize_step(raw: Any, index: int) -> Step:
                 _num(world[0], f"{prefix}.world[0]"),
                 _num(world[1], f"{prefix}.world[1]"),
             ]
+        if "mode" in raw:
+            # 疾跑/潜行的语义状态（标定见 driver/probe_sprint.py）：
+            # 只写 ADF 位是无效的，必须连输入侧标志一起写，所以做成独立开关。
+            mode = str(raw["mode"])
+            if mode not in MOVE_MODES:
+                raise ScenarioError(
+                    f"{prefix}.mode={mode!r} 不支持；可用: {', '.join(sorted(MOVE_MODES))}"
+                )
+            params["mode"] = mode
         if params["ticks"] < 0:
             raise ScenarioError(f"{prefix}.ticks 不能为负")
         return Step(kind, params)

@@ -35,6 +35,8 @@ py -3.11 driver/run.py --diagnose           # 组件、双 registry 诊断
 py -3.11 driver/run.py --scenario scenarios/setup-platform.json   # 铺 65x65 测试平台
 py -3.11 driver/run.py --probe              # 传送 + 朝 +Z 走 20 tick，验证全链路
 py -3.11 driver/run.py --scenario scenarios/wall-stop.json        # 撞墙停住回归
+py -3.11 driver/run.py --scenario scenarios/walk-sneak.json       # 走 vs 潜行（0.2159 / 0.0648）
+py -3.11 driver/probe_sprint.py                                   # 真实按键标定（走/疾跑/潜行）
 py -3.11 driver/run.py --scenario scenarios/example.json
 py -3.11 driver/run.py --command "setblock 3 -49 3 stone"   # 直接发一条命令（不抢焦点）
 py -3.11 driver/run.py --block 0 -50 0      # 读取单个方块名
@@ -156,7 +158,7 @@ py -3.11 driver/native/crop_png.py out/a.png out/a_zoom.png 300 690 640 780 3   
 | `tp` | `pos`, `mode` (`server`/`request`/`direct`/`chat`), `settle_ticks` | 默认 `server`，走服务端 registry；`chat` 用游戏 `/tp` |
 | `look` | `yaw`, `pitch`, `mode` (`command`/`memory`), `settle_ticks` | 默认 `command`：`/tp @s ~ ~ ~ yaw pitch` 改权威朝向 |
 | `vel` | `v:[x,y,z]`, `settle_ticks` | 直接写 StateVector 速度 |
-| `input` | `world:[dx,dz]` 或 `forward`/`strafe`，`jump`/`sneak`/`sprint`，`ticks` | 推荐 `world`：按世界坐标移动 |
+| `input` | `world:[dx,dz]` 或 `forward`/`strafe`，`jump`/`sneak`/`sprint`，`mode`(`sneak`)，`ticks` | 推荐 `world`：按世界坐标移动；`mode:"sneak"` = 原版 0.3 倍速（输入×0.3） |
 | `jump` | `ticks` | 单次起跳请求 |
 | `wait` | `ticks` | 只等待 |
 | `stop` | — | 清空输入（客户端+服务端都写 0） |
@@ -238,10 +240,12 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 
 ## 未解决
 
-- **sprint / sneak 未注入**：两者是服务端状态位，目前只记录请求并返回 warning。
-  想跑"跑跳上一格台阶"这类原版动作就得先补这个（Bedrock 的 walk-jump 空中推进只有
-  ~0.14 格/tick，跳着走比走路还慢，所以 walk-jump 上不去一格台阶——这一点实测与
-  原版一致，不是注入缺陷；逐字段对比见 `docs/offsets-1.26.45.01.md` §4）。
+- **sprint 未复现（sneak 已注入）**：潜行用"输入向量 ×0.3"就能复现原版 0.3 倍速
+  （实测 0.0648 格/tick），场景写 `"mode": "sneak"`。疾跑的真实倍率来源还没定位：
+  真实 `ctrl+w` 是 0.2805 格/tick（×1.3），但把它的内存差异（ADF bit3、`+0x00` bit8、
+  `+0x54` bit1、`+0x60` bit1）全部注入后仍是走路速度，多半走服务端 sprint 状态
+  （`PlayerInputRequest`/`PlayerActionPacket`），所以 DSL 暂时拒绝 `mode: "sprint"`，
+  避免产出假数据。标定工具：`driver/probe_sprint.py`，详见 `docs/offsets…` §4.1。
 - **命令派发 RPC**：进程内直接发 `CommandRequestPacket`，彻底不依赖窗口消息。
 - **GameTest**：`spawnSimulatedPlayer` 与真实输入的等价性实验。
 
@@ -280,6 +284,8 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 - [x] 无游戏单元测试（76 项，含 Python↔JS RPC 契约检查）
 - [x] 版本指纹自检：`check_binary.py` 6/6 匹配安装目录的 EXE
 - [x] 速度口径修正：速度按位置差计算，`vel` 只作参考
+- [x] 移动状态标定：真实按键 vs 组件字节差分（`probe_sprint.py`），潜行注入（输入×0.3）已验证
+- [ ] 疾跑倍率来源（ADF/输入位都不驱动，疑在服务端 sprint 状态）
 - [ ] 滞空输入标定（见「未解决」）——挡着台阶/跳跃距离类实验的准确性
 - [ ] 命令派发 RPC（进程内发 `CommandRequestPacket`，彻底不依赖窗口消息）
 - [ ] GameTest：`spawnSimulatedPlayer` 与真实输入的等价性实验

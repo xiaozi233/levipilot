@@ -1,0 +1,15 @@
+{
+  "name": "walk-sneak",
+  "description": "同一段路分别走/潜行：验证潜行注入的原版 0.3 倍速（0.0648 格/tick）。疾跑倍率未解，见 docs §4.1",
+  "setup": { "commands": ["tp @s 0.5 -49 0.5 0 0"] },
+  "steps": [
+    { "type": "wait", "ticks": 5 },
+    { "type": "input", "world": [0, 1], "ticks": 30 },
+    { "type": "stop" },
+    { "type": "tp", "pos": [0.5, -49, 0.5], "settle_ticks": 5 },
+    { "type": "input", "world": [0, 1], "mode": "sneak", "ticks": 30 },
+    { "type": "stop" }
+  ],
+  "sample": ["pos", "vel", "on_ground", "yaw", "input"],
+  "output": "walk-sneak"
+}

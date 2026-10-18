@@ -103,19 +103,33 @@ def execute_step(agent: AgentLike, step: Step, command_sender=None) -> Any:
     if step.type == "vel":
         return _ok(agent.call("set_vel", p["v"][0], p["v"][1], p["v"][2]), "vel")
     if step.type == "input":
+        mode = p.get("mode")
+        # 每个 input 步骤都完整指定状态：没写 mode 就是普通走路（清掉上一个步骤的疾跑/潜行）。
+        agent.call("move_flags", mode or "none")
+        # 真实潜行时游戏把输入向量本身缩到 0.3（标定：+0x28 由 1.0 → 0.3），
+        # 所以潜行直接用 0.3 倍的输入即可，速度自然是 0.3 倍。
+        scale = 0.3 if mode == "sneak" else 1.0
         if p.get("world") is not None:
             return _ok(
-                agent.call("move_world", p["world"][0], p["world"][1]),
+                agent.call(
+                    "move_world",
+                    p["world"][0] * scale,
+                    p["world"][1] * scale,
+                ),
                 "input(world)",
             )
         payload = {
-            "forward": p["forward"],
-            "strafe": p["strafe"],
+            "forward": p["forward"] * scale,
+            "strafe": p["strafe"] * scale,
             "jump": p["jump"],
             "sneak": p["sneak"],
             "sprint": p["sprint"],
         }
-        return _ok(agent.call("set_input", payload), "input")
+        result = _ok(agent.call("set_input", payload), "input")
+        if isinstance(result, dict) and mode:
+            result = dict(result)
+            result["move_mode"] = mode
+        return result
     if step.type == "jump":
         return _ok(agent.call("jump"), "jump")
     if step.type == "wait":

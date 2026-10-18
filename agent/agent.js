@@ -94,6 +94,12 @@ const state = {
   serverMoveInput: null, // 服务端 registry 里同一玩家的 MoveInput
   serverRot: null, // 服务端 registry 里的 ActorRotation
   serverAdf: null, // 服务端 registry 里的 ActorDataFlag（sneak/sprint 状态位）
+  serverAbilities: null, // 服务端 registry 里的 MovementAbilities
+  serverEntityId: null, // 服务端 registry 里同一玩家的实体 id
+  includeRaw: false, // 采样时是否附带组件原始字节（标定用）
+  inputPassthrough: false, // true = 不写输入，让真实按键透传（标定用）
+  moveMode: null, // 'sprint' / 'sneak'（标定得到的语义状态，见 MOVE_FLAGS）
+  moveFlagsApplied: 0, // 语义状态写入次数
   stateFlagsApplied: 0, // 状态位写入次数
   adfOverride: null, // 实验用 ADF 位覆盖（word/bit/mask）
   rawInput: null, // 实验用：连原始输入字段一起写
@@ -368,8 +374,11 @@ function refreshServerPointers() {
     state.serverMoveInput = null;
     state.serverRot = null;
     state.serverAdf = null;
+    state.serverAbilities = null;
+    state.serverEntityId = null;
     return;
   }
+  state.serverEntityId = ctx.entity >>> 0;
   state.serverMoveInput = componentAddr(
     findStorage(ctx.registry, CID.moveInput),
     ctx.entity,
@@ -385,6 +394,47 @@ function refreshServerPointers() {
     ctx.entity,
     STRIDE.actorDataFlag,
   );
+  state.serverAbilities = componentAddr(
+    findStorage(ctx.registry, CID.movementAbilities),
+    ctx.entity,
+    STRIDE.movementAbilities,
+  );
+}
+
+// 组件原始字节：标定用（对比"真实按键"与"注入"时内存里到底哪些字节不同）。
+function hexBytes(ptr, len) {
+  if (!ptr) return null;
+  try {
+    const parts = [];
+    for (let i = 0; i < len; i += 1) {
+      parts.push(('0' + ptr.add(i).readU8().toString(16)).slice(-2));
+    }
+    return parts.join('');
+  } catch (e) {
+    state.lastError = String(e);
+    return null;
+  }
+}
+
+function readRawComponents() {
+  refreshServerPointers();
+  if (state.player === null) return null;
+  refreshPlayer(false);
+  const clientAbilities = component(CID.movementAbilities, STRIDE.movementAbilities);
+  return {
+    client: {
+      entity: state.player >>> 0,
+      move_input: hexBytes(state.playerMoveInput, STRIDE.moveInput),
+      adf: hexBytes(state.playerAdf, STRIDE.actorDataFlag),
+      abilities: hexBytes(clientAbilities, STRIDE.movementAbilities),
+    },
+    server: {
+      entity: state.serverEntityId,
+      move_input: hexBytes(state.serverMoveInput, STRIDE.moveInput),
+      adf: hexBytes(state.serverAdf, STRIDE.actorDataFlag),
+      abilities: hexBytes(state.serverAbilities, STRIDE.movementAbilities),
+    },
+  };
 }
 
 // 读/写前取最新元素地址；失败时强制刷新玩家（重生/换维度后实体会变）。
@@ -571,7 +621,7 @@ function readState() {
 function snapshotSample() {
   const s = readState();
   if (!s.ok) return { t: state.tickCount, ok: false, error: s.error };
-  return {
+  const sample = {
     t: s.tick,
     ok: true,
     pos: s.pos,
@@ -585,6 +635,8 @@ function snapshotSample() {
     flags_hi: s.flags_hi,
     input: s.input,
   };
+  if (state.includeRaw) sample.raw = readRawComponents();
+  return sample;
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +748,10 @@ function applyLookOverride() {
 }
 
 function applyInputOverride() {
+  // 标定用透传：让玩家的**真实按键**原样进入游戏。
+  // 默认不是透传——agent 每 tick 都会把 state.input 写进两份 MoveInput，
+  // 而 state.input 默认是 0，所以挂着 agent 时真实按键会被零输入覆盖掉。
+  if (state.inputPassthrough) return;
   const inp = state.input;
   const mi = freshComponent(CID.moveInput, STRIDE.moveInput);
   if (mi) {
@@ -745,6 +801,77 @@ function applyStateFlags() {
     state.lastError = String(e);
   }
   if (wrote) state.stateFlagsApplied++;
+}
+
+// 移动状态的**语义**编码，由真实按键标定得到（见 driver/probe_sprint.py 与 docs §4.1）：
+//   潜行（真实按住 shift+w）——**已验证**：把输入向量缩到 0.3 即可复现原版 0.3 倍速；
+//       同时真实潜行还会置 ADF word0 bit1、ADF word1 bit9、MoveInput +0x60 bit0/bit3，
+//       这些是状态/姿态位（速度倍率来自输入缩放，不是它们）。
+//   疾跑（真实按住 ctrl+w）——**尚未复现**：真实疾跑会把下面这些都置上，但注入后速度仍是
+//       0.2159（= 走路），说明 1.3 倍不是由这些位驱动的，多半来自服务端 sprint 状态
+//       （PlayerInputRequest / PlayerActionPacket 那条路径，我们还没接）：
+//         MoveInput +0x00 raw flags bit8、+0x54 bit1、+0x60 bit1、ADF word0 bit3。
+//       在找到真正的驱动位之前，move_flags("sprint") 会明确报错，避免产出"看起来在跑、
+//       其实还是走"的假数据。
+const MOVE_FLAGS = {
+  sneak: { bits16: 0x09, adf: [[0, 0x02], [1, 0x200]] },
+};
+const MOVE_FLAGS_KNOWN_UNSUPPORTED = {
+  sprint: "真实疾跑置 ADF bit3 / +0x00 bit8 / +0x54 bit1 / +0x60 bit1，但注入后仍为走路速度；1.3 倍来源未定位（见 docs §4.1）",
+};
+
+function applyMoveFlagsInputFlags() {
+  // 必须在**输入解析**的时机写 +0x60：这个标志字游戏每 tick 都会重算，
+  // 在 post-move 阶段写会被下一 tick 的解析覆盖掉，看起来就像"完全没生效"。
+  const spec = MOVE_FLAGS[state.moveMode];
+  if (!spec) return;
+  try {
+    if (state.playerMoveInput) {
+      if (spec.rawFlags) {
+        const raw = state.playerMoveInput.add(0x00);
+        raw.writeU32(raw.readU32() | spec.rawFlags);
+      }
+      const at = state.playerMoveInput.add(MI.flags16);
+      at.writeU16(at.readU16() | spec.bits16);
+      if (spec.status54) {
+        const st = state.playerMoveInput.add(0x54);
+        st.writeU32(st.readU32() | spec.status54);
+      }
+    }
+    if (state.serverMoveInput) {
+      if (spec.rawFlags) {
+        const raw = state.serverMoveInput.add(0x00);
+        raw.writeU32(raw.readU32() | spec.rawFlags);
+      }
+      const at = state.serverMoveInput.add(MI.flags16);
+      at.writeU16(at.readU16() | spec.bits16);
+      if (spec.status54) {
+        const st = state.serverMoveInput.add(0x54);
+        st.writeU32(st.readU32() | spec.status54);
+      }
+    }
+  } catch (e) {
+    state.lastError = String(e);
+  }
+}
+
+function applyMoveFlagsAdf() {
+  // ADF 不会被每 tick 重算，放在 post-move 写就够了。
+  const spec = MOVE_FLAGS[state.moveMode];
+  if (!spec) return;
+  try {
+    for (const [word, mask] of spec.adf) {
+      const client = freshComponent(CID.actorDataFlag, STRIDE.actorDataFlag);
+      if (client) {
+        state.playerAdf = client;
+        orAdfMask(client, word, mask);
+      }
+      if (state.serverAdf) orAdfMask(state.serverAdf, word, mask);
+    }
+    state.moveFlagsApplied++;
+  } catch (e) {
+    state.lastError = String(e);
+  }
 }
 
 // 实验用：把 mask OR 进 ActorDataFlag 的第 word 个 u64（两份都写）。
@@ -828,6 +955,7 @@ function installHooks() {
           applyLookOverride();
           applyInputOverride();
           applyStateFlags();
+          applyMoveFlagsAdf();
           if (state.recording.active) {
             if (state.recording.samples.length < state.recording.max) {
               state.recording.samples.push(snapshotSample());
@@ -860,9 +988,16 @@ function installHooks() {
     onLeave() {
       if (!this.isPlayer) return;
       applyLookOverride();
+      // 透传模式下**不要**覆盖解析结果：这个 hook 每 tick 都会把 state.input
+      // （默认 0）写进 MoveInput，是一次性覆盖游戏刚解析出的真实按键的地方。
+      // 标定/手动操作时要开 input_passthrough，否则按 WASD 看起来"没反应"。
+      if (state.inputPassthrough) return;
       try {
         this.out.writeFloat(state.input.x);
         this.out.add(4).writeFloat(state.input.y);
+        // 疾跑/潜行的输入侧标志必须在这一刻（解析结果刚出来）补上。
+        applyMoveFlagsInputFlags();
+        applyMoveFlagsAdf();
       } catch (e) {
         state.lastError = String(e);
       }
@@ -981,6 +1116,9 @@ function buildStatus() {
     server_move_input: state.serverMoveInput ? state.serverMoveInput.toString() : null,
     server_rot: state.serverRot ? state.serverRot.toString() : null,
     input_applied_ticks: state.inputAppliedTicks,
+    input_passthrough: state.inputPassthrough,
+    move_mode: state.moveMode,
+    move_flags_applied: state.moveFlagsApplied,
     state_flags_applied: state.stateFlagsApplied,
     adf_override: state.adfOverride,
     raw_input: state.rawInput,
@@ -1487,9 +1625,31 @@ rpc.exports = {
 
   stopInput() {
     state.input = { x: 0, y: 0, jump: false, sneak: false, sprint: false };
+    state.moveMode = null;
     applyInputOverride();
     applyStateFlags();
     return { ok: true };
+  },
+
+  // 移动状态注入（疾跑/潜行）：语义编码见 MOVE_FLAGS，标定见 driver/probe_sprint.py。
+  moveFlags(mode) {
+    const name = mode === null || mode === undefined ? 'none' : String(mode);
+    if (name === 'none' || name === '') {
+      state.moveMode = null;
+      return { ok: true, mode: null };
+    }
+    if (!MOVE_FLAGS[name]) {
+      const known = MOVE_FLAGS_KNOWN_UNSUPPORTED[name];
+      return {
+        ok: false,
+        error: known
+          ? `move mode ${name} 尚未复现：${known}`
+          : `unknown move mode ${name}`,
+        known: Object.keys(MOVE_FLAGS),
+      };
+    }
+    state.moveMode = name;
+    return { ok: true, mode: name };
   },
 
   clearLook() {
@@ -1497,27 +1657,44 @@ rpc.exports = {
     return { ok: true };
   },
 
-  startRecording(maxTicks) {
+  startRecording(maxTicks, includeRaw) {
     const max = Math.max(1, Math.min(100000, Number(maxTicks) || 1));
+    state.includeRaw = !!includeRaw;
     state.recording = {
       active: true,
       max,
+      includeRaw: state.includeRaw,
       samples: [],
       dropped: 0,
       startedTick: state.tickCount,
     };
-    return { ok: true, start_tick: state.tickCount, max };
+    return { ok: true, start_tick: state.tickCount, max, include_raw: state.includeRaw };
   },
 
   stopRecording() {
     const rec = state.recording;
     rec.active = false;
+    state.includeRaw = false;
     return {
       ok: true,
       start_tick: rec.startedTick,
       end_tick: state.tickCount,
+      include_raw: !!rec.includeRaw,
       samples: rec.samples,
       dropped: rec.dropped,
     };
+  },
+
+  // 标定用：一次性 dump 两套 registry 里玩家组件的原始字节。
+  dumpComponents() {
+    const raw = readRawComponents();
+    if (!raw) return { ok: false, error: 'player not resolved' };
+    return { ok: true, ...raw };
+  },
+
+  // 标定用：打开后 agent 不再写 MoveInput，真实按键可以透传到游戏。
+  inputPassthrough(on) {
+    state.inputPassthrough = !!on;
+    return { ok: true, input_passthrough: state.inputPassthrough };
   },
 };

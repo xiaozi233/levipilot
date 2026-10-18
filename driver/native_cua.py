@@ -109,6 +109,21 @@ class NativeCua:
             message = (proc.stderr or proc.stdout or "").strip()
             raise NativeCuaError(message or "could not bring the game window to the foreground")
 
+    def action(self, *args: str) -> dict[str, Any]:
+        """Run one ``cua.js`` action and parse its JSON result.
+
+        Example: ``action("hold", "ctrl+w", "2000")`` or
+        ``action("point", "795", "480")``. Used by calibration runs that need
+        real key input (see ``driver/probe_sprint.py``).
+        """
+        if not args:
+            raise NativeCuaError("action needs at least an action name")
+        out = self._run(*args)
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as exc:
+            raise NativeCuaError(f"bad {args[0]} output: {exc}") from exc
+
     def send_command(self, command: str) -> dict[str, Any]:
         """Bring the game forward and execute one command through chat."""
         command = command.strip().lstrip("/")

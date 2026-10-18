@@ -2,8 +2,10 @@
 
 Minecraft Bedrock **1.26.45.01** 的实验驱动 harness。
 
-目标：不再依赖 Computer Use / 合成键鼠输入，通过 frida RPC 和游戏内 ECS 组件
-控制实验、逐 tick 采样，把“操作游戏”换成“调用游戏”。
+目标：**实验控制**不再依赖 Computer Use / 合成键鼠输入，通过 frida RPC 和游戏内 ECS 组件
+控制实验、逐 tick 采样，把“操作游戏”换成“调用游戏”。**游戏 UI**（启动、进存档、菜单、
+对话框）仍需要真正的桌面操作，那部分走电脑操作 helper 的键盘路径，见 skill
+`mcbe-desktop-control`。
 
 ## 约束
 
@@ -11,7 +13,9 @@ Minecraft Bedrock **1.26.45.01** 的实验驱动 harness。
   `%APPDATA%\levilauncher.exe\versions\1.26.45.01`
 - 实验控制不发合成键鼠输入，也不抢前台窗口。场地准备用 `/` 命令时，是把 `WM_CHAR`
   消息直接投递给游戏窗口（游戏在后台、未聚焦也能收到），不是模拟设备输入。
-- 观测走内存/钩子，不靠截图；截图只用于最终视觉验收。
+- UI 操作不算实验控制，可以用合成键鼠（helper 的 `pressKeyGlobal`/`holdKeyGlobal`），
+  但它会抢前台焦点；实验中的位移/朝向一律仍然走 RPC。
+- 观测走内存/钩子，不靠截图；截图只用于 UI 操作确认和最终视觉验收。
 - 客户端与 BDS 必须同为 1.26.45.01，否则行为常数可能不同。
 
 ## 环境
@@ -38,6 +42,25 @@ py -3.11 driver/run.py --scan -4 4 -4 4     # 扫描区域，输出每列表面�
 py -3.11 driver/run.py --scenario scenarios/teardown-platform.json  # 清场
 py -3.11 driver/run.py 12345 --probe        # 按 PID
 ```
+
+### 游戏 UI：启动 / 进存档 / 退档 / 走路
+
+实验之外还需要真人式操作（菜单、世界列表、对话框）时走电脑操作 helper。
+Minecraft **不响应合成鼠标点击**，所以一律用键盘 + 截图确认焦点环：
+
+```bash
+cua() { ELECTRON_RUN_AS_NODE=1 D:/ZCode/ZCode.exe driver/native/cua.js \
+  "D:/ZCode/resources/tools/cua-helper/build/Release/ax_native.node" "$@"; }
+cua shot out/ui.png     # 窗口级截图（读坐标只看这张图）
+cua key Return          # 按键；菜单导航的每一步都配一次 shot 看焦点环
+cua hold w 1500         # 游戏内走路兜底（1.5 s ≈ +6.69 格）
+py -3.11 driver/native/check_cua_pipes.py   # 官方 computerUse 路径是否已接上
+```
+
+（`ELECTRON_RUN_AS_NODE=1` 必须是真正的环境变量前缀，放进字符串变量会 `command not found`。）
+
+进存档的完整按键序列、卡片焦点顺序、坐标契约和排查顺序见 skill
+**`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
 
 ## 运行时模型（重要）
 
@@ -74,6 +97,14 @@ py -3.11 driver/run.py 12345 --probe        # 按 PID
    打开聊天框用 `/` 键，之后按字符投递、回车提交。**游戏不需要在前台**：实测
    `foreground: False` 时 `/setblock` 生效并被 `blockAt` 读到。
    原生 CUA helper（会抢焦点）保留为回退：`--command-channel cua`。
+8. **UI 操作（菜单 / 世界列表 / 对话框）走电脑操作 helper**：`driver/native/cua.js`
+   现在有 `info / shot / click / key / hold / type` 六个动作。实测两条硬结论：
+   Minecraft **不响应合成鼠标点击**（Raw Input——`moveTo` 能把光标准确落在按钮上，
+   随后 `clickAtPoint` 返回成功但按钮毫无反应），而**键盘可用、菜单有焦点环**，
+   所以导航一律走"按键 → 截图确认焦点环 → 再按 Return"。
+   冷启动游戏、主菜单进存档、暂停菜单保存并退出、游戏内走路（`hold w`）的完整按键序列，
+   以及 ZCode 官方 in-session bridge（`agent.computerUse`）为何在这台机器上不可用，
+   都记在 skill **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
 
 ## 目录
 
@@ -82,7 +113,7 @@ py -3.11 driver/run.py 12345 --probe        # 按 PID
 | `agent/` | frida agent，暴露 RPC（ECS 读写 + tick hook） |
 | `driver/` | Python 场景驱动器（session / scenario / runner / output） |
 | `driver/postmsg.py` | 命令通道：窗口消息投递，不抢焦点（默认） |
-| `driver/native/` | ZCode 原生 CUA helper 的最小封装，命令通道的回退路径 |
+| `driver/native/` | ZCode 电脑操作 helper 的封装（`info/shot/click/key/hold/type`）：命令通道回退 + 菜单/进存档等 UI 流程；流程细节见 skill `mcbe-desktop-control` |
 | `scenarios/` | 场景 DSL（JSON） |
 | `behavior_pack/` | GameTest / mcfunction 场景准备 |
 | `docs/` | 1.26.45.01 的地址、组件 id、字段偏移、运行时结论 |

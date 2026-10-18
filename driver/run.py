@@ -16,6 +16,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -38,6 +39,43 @@ def _target(value: str | None) -> int | str | None:
         return int(value)
     except ValueError:
         return value
+
+
+def _coerce(text: str) -> Any:
+    """Best-effort literal for --rpc arguments."""
+    lowered = text.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("null", "none"):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _parse_rpc(value: str) -> tuple[str, list]:
+    """Parse a --rpc value: either a bare name or a JSON object.
+
+    ``--rpc get_state``
+    ``--rpc '{"name": "adf_override", "args": [0, 15]}'``
+    """
+    text = value.strip()
+    if not text:
+        raise ValueError("--rpc 不能为空")
+    if text.startswith("{"):
+        doc = json.loads(text)
+        name = str(doc["name"])
+        args = list(doc.get("args") or [])
+    else:
+        parts = text.split()
+        name = parts[0]
+        args = [_coerce(part) for part in parts[1:]]
+    return name, args
 
 
 def _probe_scenario(ticks: int) -> scenario_mod.Scenario:
@@ -178,6 +216,13 @@ def main(argv: list[str] | None = None) -> int:
         help="直接通过聊天通道执行一条命令后退出（用于 /fill /setblock 等场地准备）",
     )
     parser.add_argument(
+        "--rpc",
+        action="append",
+        metavar="NAME|JSON",
+        help="直接调用 agent RPC 并打印结果；可重复。"
+        "例：--rpc get_state 或 --rpc '{\"name\":\"adf_override\",\"args\":[0,15]}'",
+    )
+    parser.add_argument(
         "--command-channel",
         default="auto",
         choices=["auto", "postmsg", "cua", "none"],
@@ -202,6 +247,22 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if report.get("ok") else 2
 
             session.wait_ready(timeout=args.wait, require_player=not args.no_wait_player)
+
+            if args.rpc:
+                for spec in args.rpc:
+                    try:
+                        name, rpc_args = _parse_rpc(spec)
+                    except (ValueError, KeyError, json.JSONDecodeError) as exc:
+                        print(f"error: 无法解析 --rpc {spec!r}: {exc}", file=sys.stderr)
+                        return 2
+                    try:
+                        result = session.call(name, *rpc_args)
+                    except HarnessError as exc:
+                        print(f"error: {name}: {exc}", file=sys.stderr)
+                        return 2
+                    print(json.dumps({"rpc": name, "args": rpc_args, "result": result},
+                                     ensure_ascii=False, default=str))
+                return 0
 
             if args.command:
                 choice = "none" if args.no_chat else args.command_channel

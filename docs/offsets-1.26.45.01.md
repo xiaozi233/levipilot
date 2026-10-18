@@ -336,6 +336,11 @@ pause_menu_on_focus_lost:0
 | 方块读取 | `--scan -4 4 -4 4`：stone/grass_block/slime/浆果/玫瑰/虞美人/漏斗/床/竹子/栅栏门 + 2 列 void |
 | 后台 tick | 失焦 3 秒 +65 tick |
 | 客户端写位置 | 无效（服务端覆盖） |
+| 合成鼠标 | `moveTo` 光标准确落在按钮上，`clickAtPoint` 返回成功但按钮无反应（Raw Input 忽略点击） |
+| 坐标契约 | verified 截图 1591×962；`bounds[0..1] + 光栅坐标` → 点击落在目标按钮上（实测命中） |
+| 菜单键盘导航 | 焦点环可见；主菜单→进存档 5 步按键连续 3 次复现（含冷进/退档后再进） |
+| 世界内走路（CUA） | `hold w 1500` 前进 +6.69 格 = 4.46 格/秒，与原版走速一致 |
+| 合成鼠标移动副作用 | 暂停菜单里 `moveTo` 后重进世界，yaw 0.0000 → -5.4492（移动漂视角、点击无效） |
 
 测试平台：世界底部是 y=-64（1.18+ 地板），原生地面高度不一、宽度不够跑长距离；
 现已用 `/fill` 在 y=-50 铺 65×65 石台（地表 -49），见
@@ -347,9 +352,37 @@ pause_menu_on_focus_lost:0
 - **sneak/sprint 未注入**：它们由服务端状态位控制，当前只记录请求并返回 warning。
 - **chat 通道不抢焦点但依赖窗口**：游戏窗口必须存在且不是全屏独占；
   `--command-channel none` 时场地准备与 `look mode=command` 都不可用。
-- **合成鼠标不可用**：Minecraft 的 Raw Input 基本忽略合成鼠标事件；PowerShell 的
-  `GetWindowRect` 还受 DPI 虚拟化影响。所以 UI 操作只走窗口消息/原生 helper 的键盘路径。
+- **合成鼠标点击不可用**：Minecraft 的 Raw Input 忽略合成鼠标**点击**。实测 `moveTo` 能把光标
+  精确落在"设置"按钮上（截图里光标就停在按钮上），紧接着的 `clickAtPoint` 返回成功但按钮
+  毫无反应。PowerShell 的 `GetWindowRect` 还受 DPI 虚拟化影响，别用它算坐标。
+  UI 操作只走**键盘**（窗口消息，或 helper 的 `pressKeyGlobal`/`holdKeyGlobal`），见 §9。
 - **多人服务器**：服务端 registry 可能在远端，`serverTp` 只适用于本地/集成服务器。
 - **方块读取的前置**：`block_at` 依赖先捕获一次方块查询上下文；新会话第一次调用时
   driver 会轻推玩家触发查询，之后 accessor 被缓存。
+
+## 9. 桌面操作：菜单 / 进存档 / 世界内走路 `[实测]`
+
+`driver/native/cua.js`（ZCode 电脑操作 helper 的封装）动作：`info / shot / click / key / hold / type`。
+完整流程、调用契约和排查顺序见 skill **`mcbe-desktop-control`**
+（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。核心事实：
+
+- 截图是窗口内容的物理像素（1591×962）；`info` 的 `bounds = [left, top, width, height]`，
+  其中 width/height 含窗口边框（比截图大），**只有原点是可信的**：
+  屏幕坐标 = `(bounds[0] + raster_x, bounds[1] + raster_y)`。
+- 菜单有**焦点环**，导航就是"按键 → 截图看焦点环 → 再按 Return"。
+- **主菜单 → 进存档**（连续 3 次复现，含冷进和退档后再进）：
+  `Return`（进"游戏"屏）→ `Down`（世界标签 → 创建新世界）→ `Left`（→ 排序按钮 ⣿）
+  → `Down`（→ 第一张存档卡的"游玩"区）→ `Return`（加载 20–30 s）。
+  在"游戏"屏上 `Return` 对标签是**空操作**（实测），但落在"创建新世界"上会真的新建世界，
+  所以每步都要确认焦点环。
+- 卡片行内顺序是 `[卡片1游玩][卡片1铅笔][卡片2游玩][卡片2铅笔]…`：从卡片 1 游玩区
+  `Right` 到的是**同一张卡的铅笔**（世界设置），再 `Right` 才到卡片 2。
+- **游戏内 → 主菜单**：`Escape`（暂停菜单，焦点在"继续游戏"）→ `Down×3`（保存并退出）→ `Return`。
+- **世界内走路**（CUA 兜底，不是实验手段）：`hold w 1500` 实测前进 **+6.69 格 / 1.5 s**
+  ≈ 4.46 格/秒，与原版走速一致。
+- 每次世界切换都会销毁 frida script，进世界后必须重新 attach
+  （`py -3.11 driver/run.py --wait 30`，看到 `local player resolved` 才算好）。
+- **合成鼠标"移动"会漂视角**：点击无效，但移动有副作用——实测在暂停菜单里 `moveTo` 之后
+  重进世界，HUD yaw 从 `0.0000` 变成 `-5.4492`。游戏内别发合成鼠标移动，实验前一律用
+  `/tp @s ~ ~ ~ <yaw> <pitch>` 重置朝向。
 

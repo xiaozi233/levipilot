@@ -31,11 +31,30 @@ WM_CHAR = 0x0102
 WM_SYSKEYDOWN = 0x0104
 
 VK_BACK = 0x08
+VK_TAB = 0x09
 VK_RETURN = 0x0D
+VK_ESCAPE = 0x1B
+VK_SPACE = 0x20
+VK_LEFT = 0x25
+VK_UP = 0x26
+VK_RIGHT = 0x27
+VK_DOWN = 0x28
 VK_T = 0x54
 VK_OEM_2 = 0xBF  # '/'
 VK_CONTROL = 0x11
 VK_A = 0x41
+
+NAMED_KEYS = {
+    "enter": VK_RETURN,
+    "tab": VK_TAB,
+    "escape": VK_ESCAPE,
+    "space": VK_SPACE,
+    "back": VK_BACK,
+    "left": VK_LEFT,
+    "right": VK_RIGHT,
+    "up": VK_UP,
+    "down": VK_DOWN,
+}
 
 MAPVK_VK_TO_VSC = 0
 
@@ -162,6 +181,18 @@ class PostMessageChannel:
             time.sleep(0.002)
         time.sleep(0.05)
 
+    def press_named(self, name: str) -> int:
+        """Press one named key (see NAMED_KEYS); used for UI navigation."""
+        key = name.strip().lower()
+        if key not in NAMED_KEYS:
+            raise ValueError(f"unknown key {name!r}; known: {', '.join(sorted(NAMED_KEYS))}")
+        vk = NAMED_KEYS[key]
+        self._post(WM_KEYDOWN, vk, self._lparam(vk))
+        time.sleep(0.05)
+        self._post(WM_KEYUP, vk, self._lparam(vk) | (1 << 30) | (1 << 31))
+        time.sleep(0.12)
+        return vk
+
     def press_enter(self) -> None:
         """Submit the chat box.
 
@@ -223,6 +254,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--info", action="store_true", help="只打印窗口信息")
     parser.add_argument("--no-open", action="store_true", help="假设聊天框已经打开")
+    parser.add_argument(
+        "--key",
+        action="append",
+        metavar="NAME",
+        help=f"按下具名按键（可重复）：{'/'.join(sorted(NAMED_KEYS))}",
+    )
     args = parser.parse_args(argv)
 
     channel = PostMessageChannel(args.title, pid=args.pid, open_with=args.open_with)
@@ -230,6 +267,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"window: {info}")
     if not info.get("ok"):
         return 2
+    if args.key:
+        for name in args.key:
+            try:
+                vk = channel.press_named(name)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(f"key   : {name} (vk=0x{vk:02X})")
+        return 0
     if args.info or not args.command:
         return 0
     print(f"send  : {args.command!r} (open_with={args.open_with})")

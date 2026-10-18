@@ -93,6 +93,10 @@ const state = {
   playerMoveInput: null, // NativePointer
   serverMoveInput: null, // 服务端 registry 里同一玩家的 MoveInput
   serverRot: null, // 服务端 registry 里的 ActorRotation
+  serverAdf: null, // 服务端 registry 里的 ActorDataFlag（sneak/sprint 状态位）
+  stateFlagsApplied: 0, // 状态位写入次数
+  adfOverride: null, // 实验用 ADF 位覆盖（word/bit/mask）
+  rawInput: null, // 实验用：连原始输入字段一起写
   playerSync: null,
   playerRot: null,
   playerAdf: null,
@@ -363,6 +367,7 @@ function refreshServerPointers() {
   if (!ctx) {
     state.serverMoveInput = null;
     state.serverRot = null;
+    state.serverAdf = null;
     return;
   }
   state.serverMoveInput = componentAddr(
@@ -374,6 +379,11 @@ function refreshServerPointers() {
     findStorage(ctx.registry, CID.actorRotation),
     ctx.entity,
     STRIDE.actorRotation,
+  );
+  state.serverAdf = componentAddr(
+    findStorage(ctx.registry, CID.actorDataFlag),
+    ctx.entity,
+    STRIDE.actorDataFlag,
   );
 }
 
@@ -692,13 +702,58 @@ function applyInputOverride() {
     state.playerMoveInput = mi;
     mi.add(MI.resolvedX).writeFloat(inp.x);
     mi.add(MI.resolvedY).writeFloat(inp.y);
+    if (state.rawInput) writeRawInput(mi, inp);
   }
   const smi = state.serverMoveInput;
   if (smi) {
     smi.add(MI.resolvedX).writeFloat(inp.x);
     smi.add(MI.resolvedY).writeFloat(inp.y);
+    if (state.rawInput) writeRawInput(smi, inp);
   }
   state.inputAppliedTicks++;
+}
+
+// 实验用：连同"原始输入"字段（+0x00 标志、+0x04/+0x08 原始轴）一起写。
+// 解析器只读 +0x24/+0x28，但输入源标志位可能在 +0x00 的 bit0（见 docs §4）。
+function writeRawInput(mi, inp) {
+  try {
+    mi.add(0x00).writeU32(state.rawInput.flags >>> 0);
+    mi.add(0x04).writeFloat(inp.x);
+    mi.add(0x08).writeFloat(inp.y);
+  } catch (e) {
+    state.lastError = String(e);
+  }
+}
+
+// 实验用状态位覆盖：把 mask OR 进 ActorDataFlag 的第 word 个 u64，两份都写。
+// 注意：ADF bit1/bit3（按 Java ActorFlags 的 sneaking/sprinting）实测对速度**无影响**，
+// 真正改变速度的位见 docs/offsets §4.1（语义未知的经验表）。
+function applyStateFlags() {
+  const extra = state.adfOverride;
+  if (!extra) return;
+  let wrote = false;
+  try {
+    const client = freshComponent(CID.actorDataFlag, STRIDE.actorDataFlag);
+    if (client) {
+      state.playerAdf = client;
+      wrote = orAdfMask(client, extra.word, extra.mask) || wrote;
+    }
+    if (state.serverAdf) {
+      wrote = orAdfMask(state.serverAdf, extra.word, extra.mask) || wrote;
+    }
+  } catch (e) {
+    state.lastError = String(e);
+  }
+  if (wrote) state.stateFlagsApplied++;
+}
+
+// 实验用：把 mask OR 进 ActorDataFlag 的第 word 个 u64（两份都写）。
+function orAdfMask(adf, word, mask) {
+  if (!adf || word < 0 || word > 2) return false;
+  const at = adf.add(word * 8);
+  const value = at.readU64().or(uint64(String(mask >>> 0)));
+  at.writeU64(value);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +827,7 @@ function installHooks() {
           if (state.input.jump) doJumpRequest();
           applyLookOverride();
           applyInputOverride();
+          applyStateFlags();
           if (state.recording.active) {
             if (state.recording.samples.length < state.recording.max) {
               state.recording.samples.push(snapshotSample());
@@ -925,6 +981,9 @@ function buildStatus() {
     server_move_input: state.serverMoveInput ? state.serverMoveInput.toString() : null,
     server_rot: state.serverRot ? state.serverRot.toString() : null,
     input_applied_ticks: state.inputAppliedTicks,
+    state_flags_applied: state.stateFlagsApplied,
+    adf_override: state.adfOverride,
+    raw_input: state.rawInput,
     jump_once: state.jumpOnce,
     recording: {
       active: state.recording.active,
@@ -1309,10 +1368,43 @@ rpc.exports = {
         sprint: !!(input && input.sprint),
       };
       const warnings = [];
-      if (state.input.sneak) warnings.push('sneak is not injected (state flags are server-owned)');
-      if (state.input.sprint) warnings.push('sprint is not injected (state flags are server-owned)');
+      if (state.input.sneak) {
+        warnings.push('sneak 未生效：写 ADF bit1 实测无效，用 adf_override/raw_input 做实验');
+      }
+      if (state.input.sprint) {
+        warnings.push('sprint 未生效：写 ADF bit3 实测无效，用 adf_override/raw_input 做实验');
+      }
       if (!state.player) warnings.push('local player not resolved yet');
+      applyStateFlags();
       return { ok: true, applied: state.input, warnings };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 实验用：是否连同原始输入字段一起写；flags 是 +0x00 的 dword 值。
+  rawInput(on, flags) {
+    state.rawInput = on ? { flags: Number(flags) || 0 } : null;
+    return { ok: true, raw_input: state.rawInput };
+  },
+
+  // 实验用：持续把 ADF 某一位 OR 进去（word 0..2，bit 0..63）。传 null 取消。
+  adfOverride(word, bit) {
+    try {
+      if (word === null || word === undefined) {
+        state.adfOverride = null;
+        return { ok: true, override: null };
+      }
+      const w = Number(word);
+      const b = Number(bit);
+      if (!Number.isInteger(w) || w < 0 || w > 2) {
+        return { ok: false, error: 'word must be 0..2' };
+      }
+      if (!Number.isInteger(b) || b < 0 || b > 63) {
+        return { ok: false, error: 'bit must be 0..63' };
+      }
+      state.adfOverride = { word: w, bit: b, mask: Math.pow(2, b) };
+      return { ok: true, override: state.adfOverride };
     } catch (e) {
       return { ok: false, error: String(e) };
     }
@@ -1396,6 +1488,7 @@ rpc.exports = {
   stopInput() {
     state.input = { x: 0, y: 0, jump: false, sneak: false, sprint: false };
     applyInputOverride();
+    applyStateFlags();
     return { ok: true };
   },
 

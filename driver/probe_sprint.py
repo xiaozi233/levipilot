@@ -111,6 +111,12 @@ def main() -> int:
     parser.add_argument("--out", default="out/sprint-calib")
     parser.add_argument("--no-rotation", action="store_true")
     parser.add_argument("--settle", type=int, default=60, help="开局 /tp 后空转的 tick 数")
+    parser.add_argument(
+        "--dump-cid",
+        default=None,
+        help="额外整块 dump 这个组件 storage 的原始字节（hex，例如 0x6b04a058 = PlayerInputRequest）",
+    )
+    parser.add_argument("--dump-len", type=int, default=2048)
     args = parser.parse_args()
 
     phases = parse_phases(args.phases)
@@ -137,6 +143,9 @@ def main() -> int:
         # 挂着 agent 时真实按键会被零输入覆盖，所以标定期间必须开透传。
         passthrough = agent.call("input_passthrough", True)
         print(f"input passthrough: {passthrough}")
+        if args.dump_cid:
+            dumped = agent.call("set_dump_cid", int(str(args.dump_cid), 0), args.dump_len)
+            print(f"dump component: {dumped}")
         start = agent.call("start_recording", 4000, True)
         print(f"recording from tick {start.get('start_tick')} (raw={start.get('include_raw')})")
 
@@ -221,6 +230,14 @@ def main() -> int:
                     continue
                 ratio = row["median"] / other["median"] if other["median"] else float("nan")
                 print(f"\n  [{other['key']}] -> [{row['key']}]  x{ratio:.3f}")
+                stored_a = (sa["raw"].get("storage") or {}).get("hex")
+                stored_b = (sb["raw"].get("storage") or {}).get("hex")
+                stored_diff = diff_bytes(stored_a, stored_b)
+                if stored_diff:
+                    cid = (sb["raw"].get("storage") or {}).get("cid", "?")
+                    listed = ", ".join(fmt_diff(*d) for d in stored_diff[:20])
+                    more = "" if len(stored_diff) <= 20 else f" (+{len(stored_diff) - 20} more)"
+                    print(f"    storage({cid}) {listed}{more}")
                 for reg in REGISTRIES:
                     for comp in COMPONENTS:
                         before = (sa["raw"].get(reg) or {}).get(comp)

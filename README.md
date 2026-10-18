@@ -23,6 +23,9 @@ Minecraft Bedrock **1.26.45.01** 的实验驱动 harness。
 - Python 3.11（`py -3.11`），已装 frida 17.18.0。
 - Python 3.14 默认解释器没有 frida，不要用它跑 driver。
 - 地址与组件布局见 [`docs/offsets-1.26.45.01.md`](docs/offsets-1.26.45.01.md)。
+- frida 每次加载 script 都会在 `%TEMP%` 建一个 `frida-*` 目录（~44 MB），detach 后不自动消失。
+  `driver/session.py` 现在会在 `close()` 时**只删本次 attach 新建的那些**（实测 3 次 attach 残留 0），
+  不会再像以前那样累积到几个 GB。
 
 ## 快速开始
 
@@ -246,6 +249,8 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
   `+0x54` bit1、`+0x60` bit1）全部注入后仍是走路速度，多半走服务端 sprint 状态
   （`PlayerInputRequest`/`PlayerActionPacket`），所以 DSL 暂时拒绝 `mode: "sprint"`，
   避免产出假数据。标定工具：`driver/probe_sprint.py`，详见 `docs/offsets…` §4.1。
+  已排除的位置：ADF 各位、`MoveInput +0x00/+0x54/+0x60`、`PlayerInputRequest` 前 2 KB
+  （整块 storage dump 只有浮点累加字段在变，没有布尔位）。
 - **命令派发 RPC**：进程内直接发 `CommandRequestPacket`，彻底不依赖窗口消息。
 - **GameTest**：`spawnSimulatedPlayer` 与真实输入的等价性实验。
 

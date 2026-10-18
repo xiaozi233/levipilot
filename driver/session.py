@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +13,18 @@ import frida
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT = ROOT / "agent" / "agent.js"
+
+
+def _frida_temp_dirs() -> set[Path]:
+    """frida 每加载一次 script 都会在 %TEMP% 建一个 frida-<hash> 目录（约 44 MB）。
+
+    detach 之后它不会自己消失，反复 attach 会把 C 盘吃满（实测 165 个目录 = 7 GB）。
+    """
+    tmp = Path(tempfile.gettempdir())
+    try:
+        return {p for p in tmp.glob("frida-*") if p.is_dir()}
+    except OSError:
+        return set()
 
 
 class HarnessError(RuntimeError):
@@ -26,9 +40,12 @@ class Session:
         self.logs: list[dict[str, Any]] = []
         self._session = None
         self._script = None
+        self._temps_before: set[Path] | None = None
 
     # -- lifecycle ---------------------------------------------------------
     def open(self) -> "Session":
+        # 只清理"本次 attach 新产生"的临时目录，绝不碰别的 frida 进程正在用的。
+        self._temps_before = _frida_temp_dirs()
         try:
             self._session = frida.attach(self.target)
         except frida.ProcessNotFoundError as exc:
@@ -68,6 +85,21 @@ class Session:
             except Exception:
                 pass
             self._session = None
+        self._cleanup_temp()
+
+    def _cleanup_temp(self) -> None:
+        """删掉本次 attach 新建的 frida 临时目录（detach 后一般就能删）。"""
+        if self._temps_before is None:
+            return
+        for path in _frida_temp_dirs() - self._temps_before:
+            # script 刚 unload 时 frida-agent 的 dll 可能还被短暂映射着，
+            # 删不掉就等 200ms 再试；实在删不掉就留给系统清理。
+            for attempt in range(4):
+                shutil.rmtree(path, ignore_errors=True)
+                if not path.exists():
+                    break
+                time.sleep(0.2)
+        self._temps_before = None
 
     def __enter__(self) -> "Session":
         return self.open()

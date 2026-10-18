@@ -207,6 +207,15 @@ agent 逐 tick 采样组件原始字节（`start_recording(..., include_raw=True
   onLeave hook 每 tick 都会把 `state.input`（默认 0）写进解析结果，
   **真实按键会被零输入覆盖**（表现为按 WASD 没反应）。这也是一个容易误判成
   "游戏坏了"的坑。
+- 进一步用"整块 storage dump"（`set_dump_cid(0x6b04a058)` = `PlayerInputRequest`，
+  2048 B/chunk，不依赖 stride）对比走/疾跑：该组件里只有两处浮点型字段在变
+  （`+0x14` 附近 0→≈0.371、`+0x1C` 附近），**没有布尔状态位**。
+  另外 `MoveInput+0x54` 在不同 run 里出现过 `0x69/0x6A/0x68/0x85`，**不是稳定的状态字**
+  （之前把它当状态位来读是过度解读）。
+  结论：疾跑的 ×1.3 既不在 ADF、也不在这几个 MoveInput 位、也不在
+  `PlayerInputRequest` 的前 2 KB 里 → 更可能在客户端发给服务端的
+  `PlayerAuthInput`/`PlayerActionPacket`（由客户端自己的输入源构造，不是我们写的
+  ECS 字段），或移动速度属性。下一步要接的是那条包/属性路径。
 
 ## 5. 写路径与实测结论
 

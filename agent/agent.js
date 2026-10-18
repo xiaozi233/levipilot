@@ -98,6 +98,8 @@ const state = {
   serverEntityId: null, // 服务端 registry 里同一玩家的实体 id
   includeRaw: false, // 采样时是否附带组件原始字节（标定用）
   inputPassthrough: false, // true = 不写输入，让真实按键透传（标定用）
+  dumpCid: null, // 标定用：额外 dump 这个组件 id 的 storage chunk
+  dumpLen: 2048,
   moveMode: null, // 'sprint' / 'sneak'（标定得到的语义状态，见 MOVE_FLAGS）
   moveFlagsApplied: 0, // 语义状态写入次数
   stateFlagsApplied: 0, // 状态位写入次数
@@ -421,7 +423,7 @@ function readRawComponents() {
   if (state.player === null) return null;
   refreshPlayer(false);
   const clientAbilities = component(CID.movementAbilities, STRIDE.movementAbilities);
-  return {
+  const out = {
     client: {
       entity: state.player >>> 0,
       move_input: hexBytes(state.playerMoveInput, STRIDE.moveInput),
@@ -435,6 +437,33 @@ function readRawComponents() {
       abilities: hexBytes(state.serverAbilities, STRIDE.movementAbilities),
     },
   };
+  // 实验用：整块 dump 某个组件 storage 的 chunk（stride 未知时也能拿到字节）。
+  if (state.dumpCid !== null) {
+    out.storage = {
+      cid: `0x${(state.dumpCid >>> 0).toString(16)}`,
+      hex: storageChunkBytes(state.dumpCid, state.dumpLen),
+    };
+  }
+  return out;
+}
+
+// 直接把玩家所在 chunk 的前 length 字节读出来：不依赖 stride，
+// 用于"不知道组件布局、但想知道真实按键改了哪些字节"的标定。
+function storageChunkBytes(typeId, length) {
+  try {
+    const storage = storageFor(typeId);
+    if (!storage || state.player === null) return null;
+    const dense = denseIndexOf(storage, state.player);
+    if (dense < 0) return null;
+    const chunkTable = storage.add(SS.chunkTable).readPointer();
+    if (chunkTable.isNull()) return null;
+    const chunk = chunkTable.add(8 * (dense >> 7)).readPointer();
+    if (chunk.isNull()) return null;
+    return hexBytes(chunk, length);
+  } catch (e) {
+    state.lastError = String(e);
+    return null;
+  }
 }
 
 // 读/写前取最新元素地址；失败时强制刷新玩家（重生/换维度后实体会变）。
@@ -1696,5 +1725,16 @@ rpc.exports = {
   inputPassthrough(on) {
     state.inputPassthrough = !!on;
     return { ok: true, input_passthrough: state.inputPassthrough };
+  },
+
+  // 标定用：指定要整块 dump 的组件 id（0 或 null 取消）。逐 tick 采样会带上 raw.storage。
+  setDumpCid(cid, length) {
+    if (cid === null || cid === undefined || Number(cid) === 0) {
+      state.dumpCid = null;
+      return { ok: true, dump_cid: null };
+    }
+    state.dumpCid = Number(cid) >>> 0;
+    state.dumpLen = Math.max(16, Math.min(8192, Number(length) || 2048));
+    return { ok: true, dump_cid: `0x${state.dumpCid.toString(16)}`, dump_len: state.dumpLen };
   },
 };

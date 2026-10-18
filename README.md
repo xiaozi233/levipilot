@@ -114,8 +114,11 @@ py -3.11 driver/native/crop_png.py out/a.png out/a_zoom.png 300 690 640 780 3   
    - 坐标是**截图坐标**：`point`/`click` 自动换算屏幕物理像素（实测偏移 +9px 左边框），
      还会回读 `cursorPoint` 打印 `offset` 供核对；PowerShell 截屏受 DPI 虚拟化影响，别用。
    冷启动游戏、主菜单进存档、暂停菜单保存并退出、游戏内走路（`hold w`）的完整流程，
-   以及 ZCode 官方 in-session bridge（`agent.computerUse`）为何在这台机器上不可用，
+   以及官方 bridge 与 helper 两条通道怎么选（含 `unavailable` 的排查），
    都记在 skill **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
+   官方路径（`mcp__node_repl__js` + `agent.computerUse`）在**重启 ZCode 后实测可用**
+   （bootstrap → `listApps` → `getScreenshot` → `click` 悬停 → `pressKey("Return")` 全通）；
+   注意官方光栅是缩放过的 1280×774，而 helper 的 `shot` 是物理像素 1591×962，两套坐标别混。
 
 ## 目录
 

@@ -348,6 +348,7 @@ pause_menu_on_focus_lost:0
 | 悬停+回车 | 悬停"游戏指南"图标 → Return 打开游戏指南；悬停"设置" → Return 打开设置（两次独立确认） |
 | 世界内走路（CUA） | `hold w 1500` 前进 +6.69 格 = 4.46 格/秒，与原版走速一致 |
 | 停输入后的滑行 | `stop` 后还会滑 **0.4755 格**（静止 Z=9.13436 vs 录制窗口末 8.6589），= 0.2158 × 1/(1−0.546)，再次印证 0.546 摩擦因子 |
+| 官方 bridge | 重启 ZCode 后 `agent.computerUse` 全通：`listApps` / `getAXState`（仅 7 个窗口边框元素）/ `getScreenshot`（1280×774）/ `click` 悬停 / `pressKey("Return")` 打开游戏指南 |
 | 光标可控范围 | 菜单里 `point` 精确命中（offset [0,0]）；世界内被游戏夺走（offset [-743,48]），移动变成转视角 |
 
 测试平台：世界底部是 y=-64（1.18+ 地板），原生地面高度不一、宽度不够跑长距离；
@@ -374,6 +375,15 @@ pause_menu_on_focus_lost:0
 `info / shot / cursor / point / click / key / hold / type`。
 完整流程、调用契约和排查顺序见 skill **`mcbe-desktop-control`**
 （`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。核心事实：
+
+- **两条通道**：官方 `agent.computerUse`（`mcp__node_repl__js` + bootstrap，重启 ZCode 后实测
+  全通）与本地 helper CLI（`cua.js`，同一套底层 helper）。UI 操作优先官方，它报
+  `Computer Use is unavailable for this node_repl session` 时说明该会话的 node-repl 宿主
+  启动时没拿到 CUA 权限代理（长寿命进程，只能重启 ZCode），再退回 helper CLI。
+- **两套坐标空间别混**：官方光栅 1280×774（相对物理 1591×962 缩放 ≈0.805，缩放由 CUA 内部处理）；
+  helper 的 `shot` 是**物理像素** 1591×962 且要自己加 `(9, 0)` 偏移。各自只按各自返回的图数像素。
+- **Minecraft 不暴露无障碍元素**：官方 `getAXState` 只有 7 个元素，全是窗口边框
+  （标题栏/关闭/最大化/最小化/系统菜单）⇒ 必须走坐标。
 
 - **推荐做法：悬停 + 回车**。合成鼠标**悬停生效并接管键盘焦点**，所以
   `point <截图坐标>` 把光标放到目标上 → `key Return` 激活。两次独立确认：

@@ -220,6 +220,29 @@ yaw=0 时 forward 必须落在 +Z，因此 `a7 = strafe`、`a8 = forward`。
 实测（y=-63 平台）：脚部 y 依次为 -63 → -62.580 → -62.247 → -61.999 → -61.834，
 随后落地；峰值约 **+1.17 格**，滞空约 5 tick。
 
+### 5.6 方块读取（`block_at` / `--scan`） `[实测]`
+
+链路：
+
+1. hook 方块查询包装 `0x144767E30`（AABB 查询）。它的第 4 个参数是查询上下文；
+   从 `ctx+456` 取 holder，调 `holder 虚表+96` 得到 block accessor，缓存。
+2. `accessor 虚表+16(BlockPos{int x,y,z})` 返回 `Block*`。
+3. `Block*+0x68` = `BlockLegacy*`。
+4. `BlockLegacy+0xE0` = 8 字节名字哈希（**FNV-1-64**("minecraft:xxx")，
+   与 HashedString 算法一致）；`BlockLegacy+0xE8` = 完整名字 `std::string`
+   （MSVC 布局 `{buf/ptr, size, capacity}`，size ≤ 15 时内联，否则首字段是指针）。
+
+实测：
+
+- `minecraft:air` 哈希 `0xBD584BAF00003448`，`minecraft:stone` 哈希 `0x2727739C84AA7913`，
+  `minecraft:cobblestone` 哈希 `0x3E53526998BB823E`；`block_at` 返回的名字与游戏内一致。
+- `--scan -4 4 -4 4`：平台表面以 `stone`（y=-64）为主，混有 `grass_block`、`slime`、
+  `sweet_berry_bush`、`rose_bush`、`poppy`、`hopper`、`bed`、`bamboo`、`acacia_fence_gate`，
+  另有 2 列 void ⇒ 平台高度确实不一。
+
+限制：accessor 需要至少一次已发生的方块查询（移动/碰撞时游戏会查询）；
+driver 首次调用会轻推玩家一下，之后可对任意坐标查询。
+
 ## 6. 后台运行（关闭失焦暂停） `[实测]`
 
 `options.txt` 中的开关：
@@ -245,6 +268,7 @@ pause_menu_on_focus_lost:0
 | 直走 20 tick | +Z 2.2 格，max 0.1177 格/tick，on_ground 100% |
 | 跳跃 | 峰值 +1.17 格，约 5 tick 滞空 |
 | 服务端传送 | (0.5,-63,0.5) → (2.5,-63,2.5)，双端同步 |
+| 方块读取 | `--scan -4 4 -4 4`：stone/grass_block/slime/浆果/玫瑰/虞美人/漏斗/床/竹子/栅栏门 + 2 列 void |
 | 后台 tick | 失焦 3 秒 +65 tick |
 | 客户端写位置 | 无效（服务端覆盖） |
 
@@ -259,3 +283,5 @@ pause_menu_on_focus_lost:0
 - **合成鼠标不可用**：Minecraft 的 Raw Input 基本忽略合成鼠标事件；PowerShell 的
   `GetWindowRect` 还受 DPI 虚拟化影响。UI 操作应使用原生 helper 的键盘路径。
 - **多人服务器**：服务端 registry 可能在远端，`serverTp` 只适用于本地/集成服务器。
+- **方块读取的前置**：`block_at` 依赖先捕获一次方块查询上下文；新会话第一次调用时
+  driver 会轻推玩家触发查询，之后 accessor 被缓存。

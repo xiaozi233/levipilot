@@ -18,6 +18,7 @@ const VA = {
   localPlayerPostMoveTick: 0x1477705B0, // LocalPlayerPostMoveSystem_Tick，每 tick 一次
   moveInputResolve: 0x145A5F910, // MoveInput_ResolveDirectionAndSpeedFactor
   moveInputPipeline: 0x1465D5A50, // MoveInput_RawToResolvedPipeline（仅用于诊断计数）
+  blockQuery: 0x144767E30, // 方块 AABB 查询包装：可捕获 BlockSource 指针
 };
 
 // 1.26.45.01 函数入口指纹（前 24 字节）。换版本时先更新这里。
@@ -27,6 +28,7 @@ const SIG = {
   localPlayerPostMoveTick: '55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 28 04 00 00 48 8D AC 24 80',
   moveInputResolve: '48 89 C8 F3 0F 10 52 04 F3 0F 10 5A 08 0F 57 C0 0F 2E D0 0F 85 A1 00 00',
   moveInputPipeline: '55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 78 04 00 00 48 8D AC 24 80',
+  blockQuery: '55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 98 01 00 00 48 8D AC 24 80',
 };
 
 // 组件 id = FNV-1a-32(组件名)，已用 IDB 里的 id 立即数与 FNV 复算双向核对。
@@ -100,6 +102,14 @@ const state = {
   pipelineCalls: 0,
   resolverCalls: 0,
   serverResolverCalls: 0,
+  blockQueryCalls: 0,
+  blockQueryCandidates: new Map(),
+  blockAccessor: null,
+  blockHolder: null,
+  blockAccessorVtable: null,
+  lastBlock: null,
+  lastBlockQuery: null,
+  lastBlockQueryRet: null,
   lastError: null,
   inWorld: false,
   input: { x: 0, y: 0, jump: false, sneak: false, sprint: false },
@@ -387,6 +397,23 @@ function writeVec3(p, v) {
 
 function isFiniteVec3(v) {
   return v.every((x) => Number.isFinite(x) && Math.abs(x) < 3.0e7);
+}
+
+// 读 MSVC std::string：{buf/ptr(16), size(8), capacity(8)}；size<=15 时数据内联。
+function readStdString(base, offset) {
+  try {
+    const field = base.add(offset);
+    const size = field.add(0x10).readU64().toNumber();
+    if (!(size > 0 && size <= 512)) return null;
+    const dataPtr = size <= 15 ? field : field.readPointer();
+    if (dataPtr.isNull()) return null;
+    const bytes = new Uint8Array(dataPtr.readByteArray(size));
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return out;
+  } catch (e) {
+    return null;
+  }
 }
 
 // 从 registry 候选里挑出“有且至少一个 LocalPlayer”的那个。
@@ -800,6 +827,71 @@ function installHooks() {
       state.pipelineCalls++;
     },
   });
+
+  // 方块查询包装：参数里通常带 BlockSource/Dimension 指针。
+  // 只记录候选，不改变任何行为。
+  installHook('blockQuery', {
+    onEnter(args) {
+      state.blockQueryCalls++;
+      const pairs = [
+        ['a0', args[0]],
+        ['a1', args[1]],
+        ['a2', args[2]],
+        ['a3', args[3]],
+      ];
+      for (const [name, p] of pairs) {
+        if (p.isNull()) continue;
+        const key = p.toString();
+        if (state.blockQueryCandidates.has(key)) continue;
+        if (state.blockQueryCandidates.size >= 12) continue;
+        let vtable = null;
+        let inModule = false;
+        try {
+          vtable = p.readPointer();
+          inModule = vtable.compare(base) >= 0 && vtable.compare(moduleEnd) < 0;
+        } catch (e) {
+          vtable = null;
+        }
+        state.blockQueryCandidates.set(key, {
+          arg: name,
+          ptr: key,
+          vtable: vtable ? vtable.toString() : null,
+          vtable_in_module: inModule,
+        });
+      }
+      state.lastBlockQuery = {
+        a0: args[0].toString(),
+        a1: args[1].toString(),
+        a2: args[2].toString(),
+        a3: args[3].toString(),
+        tick: state.tickCount,
+      };
+
+      // 从查询上下文推导并缓存方块访问器：
+      // [ctx+456] -> 虚表+96() = accessor， accessor 虚表+16(BlockPos) = Block*。
+      if (!state.blockAccessor || state.blockQueryCalls % 200 === 0) {
+        try {
+          const holder = args[3].add(456).readPointer();
+          if (!holder.isNull()) {
+            const holderVtable = holder.readPointer();
+            const getAccessorFn = holderVtable.add(96).readPointer();
+            const getAccessor = new NativeFunction(getAccessorFn, 'pointer', ['pointer']);
+            const accessor = getAccessor(holder);
+            if (!accessor.isNull()) {
+              state.blockHolder = holder;
+              state.blockAccessor = accessor;
+              state.blockAccessorVtable = accessor.readPointer();
+            }
+          }
+        } catch (e) {
+          // 保持上一次缓存
+        }
+      }
+    },
+    onLeave(retval) {
+      state.lastBlockQueryRet = retval.toString();
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -821,6 +913,12 @@ function buildStatus() {
     pipeline_calls: state.pipelineCalls,
     resolver_calls: state.resolverCalls,
     server_resolver_calls: state.serverResolverCalls,
+    block_query_calls: state.blockQueryCalls,
+    block_query_candidates: Array.from(state.blockQueryCandidates.values()),
+    block_accessor: state.blockAccessor ? state.blockAccessor.toString() : null,
+    last_block: state.lastBlock,
+    last_block_query: state.lastBlockQuery,
+    last_block_query_ret: state.lastBlockQueryRet,
     input: state.input,
     look: state.look,
     server_move_input: state.serverMoveInput ? state.serverMoveInput.toString() : null,
@@ -944,8 +1042,94 @@ rpc.exports = {
     }
   },
 
-  // 用世界坐标方向设置移动输入：按服务端当前 yaw 反算 forward/strafe。
+  // 按方块坐标读取方块。返回 name_hash（FNV-1-64("minecraft:xxx")）。
+  // 依赖至少一次已捕获的方块查询（移动/碰撞时会产生），accessor 会被缓存。
+  blockAt(x, y, z) {
+    try {
+      if (!state.blockAccessor) {
+        return { ok: false, error: 'no block query captured yet; move or collide first' };
+      }
+      const vtable = state.blockAccessorVtable || state.blockAccessor.readPointer();
+      const getBlockFn = vtable.add(16).readPointer();
+      const getBlock = new NativeFunction(getBlockFn, 'pointer', ['pointer', 'pointer']);
+      const blockPos = Memory.alloc(12);
+      blockPos.writeS32(Number(x) | 0);
+      blockPos.add(4).writeS32(Number(y) | 0);
+      blockPos.add(8).writeS32(Number(z) | 0);
+      const block = getBlock(state.blockAccessor, blockPos);
+      const pos = [Number(x) | 0, Number(y) | 0, Number(z) | 0];
+      if (block.isNull()) {
+        state.lastBlock = { ok: true, pos, block: null, name_hash: null, air: false };
+        return state.lastBlock;
+      }
+      const legacy = block.add(0x68).readPointer();
+      let nameHash = null;
+      let name = null;
+      if (!legacy.isNull()) {
+        nameHash = legacy.add(0xe0).readU64().toString();
+        name = readStdString(legacy, 0xe8);
+      }
+      state.lastBlock = {
+        ok: true,
+        pos,
+        block: block.toString(),
+        legacy: legacy.isNull() ? null : legacy.toString(),
+        name_hash: nameHash,
+        name,
+        air: nameHash === '13643738286110291016',
+      };
+      return state.lastBlock;
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 诊断：用最近一次方块查询的上下文推导 BlockSource/BlockAccessor，
+  // 再按 BlockPos 调虚表+16 取方块。成功后可以扩展成 blockAt/scan。
+  probeBlockAt(x, y, z) {
+    try {
+      const last = state.lastBlockQuery;
+      if (!last) return { ok: false, error: 'no block query captured; move/collide first' };
+      const ctx = ptr(last.a3);
+      const holder = ctx.add(456).readPointer();
+      if (holder.isNull()) return { ok: false, error: 'query ctx +456 is null' };
+      const holderVtable = holder.readPointer();
+      const getAccessorFn = holderVtable.add(96).readPointer();
+      const getAccessor = new NativeFunction(getAccessorFn, 'pointer', ['pointer']);
+      const accessor = getAccessor(holder);
+      if (accessor.isNull()) return { ok: false, error: 'accessor is null' };
+      const accessorVtable = accessor.readPointer();
+      const getBlockFn = accessorVtable.add(16).readPointer();
+      const getBlock = new NativeFunction(getBlockFn, 'pointer', ['pointer', 'pointer']);
+      const blockPos = Memory.alloc(12);
+      blockPos.writeS32(Number(x) | 0);
+      blockPos.add(4).writeS32(Number(y) | 0);
+      blockPos.add(8).writeS32(Number(z) | 0);
+      const block = getBlock(accessor, blockPos);
+      let head = null;
+      if (!block.isNull()) {
+        const bytes = new Uint8Array(block.readByteArray(64));
+        head = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+      }
+      return {
+        ok: true,
+        ctx: ctx.toString(),
+        holder: holder.toString(),
+        holder_vtable: holderVtable.toString(),
+        get_accessor: getAccessorFn.toString(),
+        accessor: accessor.toString(),
+        accessor_vtable: accessorVtable.toString(),
+        get_block: getBlockFn.toString(),
+        block_pos: [Number(x) | 0, Number(y) | 0, Number(z) | 0],
+        block: block.isNull() ? null : block.toString(),
+        block_head: head,
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
   // 这样不必（也很难）改服务端的相机朝向。
+  // 用世界坐标方向设置移动输入：按服务端当前 yaw 反算 forward/strafe。
   moveWorld(dx, dz, yawOverride) {
     try {
       let [wx, wz] = [Number(dx), Number(dz)];

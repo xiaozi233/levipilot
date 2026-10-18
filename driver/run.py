@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver import scenario as scenario_mod  # noqa: E402
+from driver.blocks import format_block, name_for_hash  # noqa: E402
 from driver.native_cua import NativeCua  # noqa: E402
 from driver.output import write_run  # noqa: E402
 from driver.runner import RunError, run_scenario  # noqa: E402
@@ -92,6 +94,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--probe", action="store_true", help="运行内置前进探针")
     parser.add_argument("--probe-ticks", type=int, default=40, help="探针前进 tick 数")
     parser.add_argument("--diagnose", action="store_true", help="打印组件/registry 诊断")
+    parser.add_argument(
+        "--block",
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        help="读取指定方块并打印方块名（需要先有一次移动/碰撞以捕获 accessor）",
+    )
+    parser.add_argument(
+        "--scan",
+        nargs=4,
+        metavar=("X0", "X1", "Z0", "Z1"),
+        help="扫描区域，输出每列的表面方块（顶层非空气方块）",
+    )
+    parser.add_argument("--scan-y-min", type=int, default=None, help="扫描最低 y（默认脚部-8）")
+    parser.add_argument("--scan-y-max", type=int, default=None, help="扫描最高 y（默认脚部+2）")
     parser.add_argument("--wait", type=float, default=20.0, help="等待进入世界的秒数")
     parser.add_argument("--out-dir", default=str(ROOT / "out"), help="输出目录")
     parser.add_argument("--json", action="store_true", help="以 JSON 打印诊断/状态")
@@ -119,6 +135,93 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if report.get("ok") else 2
 
             session.wait_ready(timeout=args.wait, require_player=not args.no_wait_player)
+
+            if args.block:
+                bx, by, bz = (float(value) for value in args.block)
+                block = session.call("block_at", bx, by, bz)
+                if not block.get("ok") and "no block query" in str(block.get("error", "")):
+                    # 轻推一下，让游戏产生一次方块查询并缓存 accessor。
+                    session.call("move_world", 0.0, 1.0)
+                    session.wait_ticks(3)
+                    session.call("stop_input")
+                    session.wait_ticks(1)
+                    block = session.call("block_at", bx, by, bz)
+                if args.json:
+                    print(json.dumps(block, ensure_ascii=False, indent=2))
+                else:
+                    print(format_block(block))
+                return 0 if block.get("ok") else 2
+
+            if args.scan:
+                x0, x1, z0, z1 = (int(value) for value in args.scan)
+                if x1 < x0:
+                    x0, x1 = x1, x0
+                if z1 < z0:
+                    z0, z1 = z1, z0
+                state_now = session.call("get_state")
+                feet_y = int(math.floor(float(state_now["pos"][1])))
+                y_max = args.scan_y_max if args.scan_y_max is not None else feet_y + 2
+                y_min = args.scan_y_min if args.scan_y_min is not None else feet_y - 8
+
+                # 保证 accessor 已捕获
+                probe = session.call("block_at", x0, y_max, z0)
+                if not probe.get("ok") and "no block query" in str(probe.get("error", "")):
+                    session.call("move_world", 0.0, 1.0)
+                    session.wait_ticks(3)
+                    session.call("stop_input")
+                    session.wait_ticks(1)
+
+                rows = []
+                legend: dict[str, str] = {}
+
+                def label_for(result: dict) -> str:
+                    if result.get("air"):
+                        return "air"
+                    name = result.get("name")
+                    if not name:
+                        raw = result.get("name_hash")
+                        name = name_for_hash(int(raw)) if raw else None
+                    if not name:
+                        raw = result.get("name_hash")
+                        if raw is None:
+                            return "?"
+                        value = int(raw)
+                        label = f"h{value & 0xFFFFFFFF:08X}"
+                        legend[label] = f"unmapped 0x{value:016X}"
+                        return label
+                    legend[name] = name
+                    return name
+
+                for z in range(z0, z1 + 1):
+                    cells = []
+                    for x in range(x0, x1 + 1):
+                        surface = None
+                        for y in range(y_max, y_min - 1, -1):
+                            result = session.call("block_at", x, y, z)
+                            if not result.get("ok"):
+                                raise HarnessError(f"block_at 失败: {result.get('error')}")
+                            if not result.get("air"):
+                                surface = (y, label_for(result))
+                                break
+                        cells.append(surface)
+                    rows.append((z, cells))
+
+                print(f"scan x=[{x0},{x1}] z=[{z0},{z1}] y=[{y_min},{y_max}]")
+                print("  z\\x " + " ".join(f"{x:>16}" for x in range(x0, x1 + 1)))
+                for z, cells in rows:
+                    parts = []
+                    for surface in cells:
+                        if surface is None:
+                            parts.append(f"{'void':>16}")
+                        else:
+                            y, label = surface
+                            parts.append(f"{y:>6} {label[-9:]:>9}")
+                    print(f"{z:>5} " + " ".join(parts))
+                if legend:
+                    print("legend:")
+                    for label in sorted(legend):
+                        print(f"  {label:<16} {legend[label]}")
+                return 0
 
             if args.probe:
                 scen = _probe_scenario(max(1, args.probe_ticks))

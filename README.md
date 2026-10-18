@@ -30,6 +30,8 @@ py -3.11 driver/run.py                      # 状态 / registry / 签名检查
 py -3.11 driver/run.py --diagnose           # 组件、双 registry 诊断
 py -3.11 driver/run.py --probe              # 传送 + 朝 +Z 走 20 tick，验证全链路
 py -3.11 driver/run.py --scenario scenarios/example.json
+py -3.11 driver/run.py --block 0 -63 0      # 读取单个方块名
+py -3.11 driver/run.py --scan -4 4 -4 4     # 扫描区域，输出每列表面方块
 py -3.11 driver/run.py 12345 --probe        # 按 PID
 ```
 
@@ -50,6 +52,10 @@ py -3.11 driver/run.py 12345 --probe        # 按 PID
 5. **失焦自动暂停已关闭**：
    `options.txt` 里 `pause_menu_on_focus_lost` 已改为 `0`（两个用户目录都改了）。
    实测游戏失焦 3 秒仍前进 65 tick，可以后台运行。
+6. **方块读取**：hook 方块查询包装 `0x144767E30` 捕获查询上下文，缓存 accessor
+   （`[ctx+456] → 虚表+96`）；`accessor 虚表+16(BlockPos) → Block*`；
+   `Block+0x68 → BlockLegacy`，`+0xE0` 是名字的 FNV-1-64，`+0xE8` 是完整名字 `std::string`。
+   首次需要一次移动/碰撞来捕获 accessor，之后 `block_at`/`--scan` 可直接查询。
 
 ## 目录
 
@@ -122,6 +128,7 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 | `set_vel(x,y,z)` | `setVel` | 写 StateVector 速度 |
 | `server_state()` | `serverState` | 服务端实体的位置/速度/yaw |
 | `server_tp(x,y,z)` | `serverTp` | 服务端传送（`tp` 的底层） |
+| `block_at(x,y,z)` | `blockAt` | 读取方块：名字、FNV-1-64 哈希、Block/Legacy 指针 |
 | `inspect_registries()` | `inspectRegistries` | 列出所有 registry 的组件/实体 |
 | `start_recording(n)` / `stop_recording()` | `startRecording` / `stopRecording` | 逐 tick 采样 |
 | `status()` / `diagnose()` | `status` / `diagnose` | 诊断 |
@@ -133,15 +140,18 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
 - 跳跃：脚部 y 从 -63 升到峰值约 -61.83（+1.17），约 5 tick 后落地。
 - 服务端传送：客户端/服务端位置同步到目标点，`on_ground=true`。
 - 后台：失焦 3 秒 tick 前进 65（20 tps 满速）。
+- 方块读取：`--scan -4 4 -4 4` 得到平台表面 `stone`(-64) 为主，混有 `grass_block`/`slime`/
+  `sweet_berry_bush`/`rose_bush`/`poppy`/`hopper`/`bed`/`bamboo`/`acacia_fence_gate`，
+  另有 2 列 void；平台确实高度不一。
 - 客户端写位置（StateVector / ActorSetPositionRequest）实测**无效**，会被服务端覆盖。
 
 ## 状态
 
 - [x] 仓库与目录骨架
-- [x] frida agent：读状态、tick 采样、输入、世界方向移动、跳跃、服务端传送
-- [x] driver：scenario JSON、逐步执行、逐 tick 采样、JSONL + summary
+- [x] frida agent：读状态、tick 采样、输入、世界方向移动、跳跃、服务端传送、方块读取
+- [x] driver：scenario JSON、逐步执行、逐 tick 采样、JSONL + summary、`--block` / `--scan`
 - [x] 失焦暂停关闭与后台 tick
-- [x] 无游戏单元测试（33 项，含 Python↔JS RPC 契约检查）
+- [x] 无游戏单元测试（39 项，含 Python↔JS RPC 契约检查）
 - [x] 版本指纹自检：`check_binary.py` 5/5 匹配安装目录的 EXE
 - [ ] 命令派发 RPC（目前 setup 的 `/fill` 等仍走聊天）
 - [ ] GameTest：`spawnSimulatedPlayer` 与真实输入的等价性实验

@@ -3,18 +3,31 @@
 // Usage (ELECTRON_RUN_AS_NODE=1 ZCode.exe cua.js <ax_native.node> <action> ...):
 //   info
 //   shot  <outPath>     窗口级 verified 截图（需要窗口在前台）
-//   click <x> <y>       激活窗口后按物理屏幕像素点击
+//   cursor              读当前光标屏幕坐标（标定/排查用）
+//   point <rx> <ry>     把光标移到截图里的某个像素（光栅坐标）
+//   click <rx> <ry>     同 point，再点一下左键
 //   key   <combo>       激活窗口后按键（"Return" / "Down" / "ctrl+a"），可重复
 //   hold  <key> <ms>    按住某个键一段时间（游戏内走路/前进的兜底手段）
 //   type  <text>        激活窗口后输入文本
 //   chat <command without leading slash>
 //
+// 坐标一律用**截图里的光栅坐标**（就是在 shot 出的那张 png 上数出来的像素），
+// 由本脚本换算成屏幕物理坐标，见 RASTER_EDGE_*。
+// 不要用 PowerShell 截屏（DPI 虚拟化）再乘缩放系数，那正是之前点错的原因。
+//
 // 菜单/对话框导航优先用 key：Minecraft 的 UI 收键盘消息，但对合成鼠标
 // （Raw Input）不响应，点不到的时候不要反复点，换键盘。
-//
-// 坐标一律用**物理屏幕像素**：verified 截图返回的就是窗口的物理像素，
-// 加窗口 bounds 原点即可得到 click 的坐标。不要用 PowerShell 截屏（DPI 虚拟化）
-// 再乘缩放系数，那正是之前点错的原因。
+
+// 截图（窗口内容）原点相对窗口 bounds 原点的偏移，单位物理像素，实测得出。
+// 显示器 2560x1600 @ scale 1.5；窗口 bounds=[528,144,1609,971]，截图 1591x962：
+//   bounds 比截图宽 18、高 9，即左右各有 9px 不可见的 DWM 拖拽边框，
+//   下面的 9px 边框不在截图里 ⇒ 水平偏移 +9、垂直偏移 0。
+// 标定方法：moveTo 到两个已知屏幕点 → 各截一图 → 差分定位光标箭头（工具见
+// driver/native/check_cua_pipes.py 同目录的思路，脚本在 out/_calib.js）：
+//   屏幕 (1228,944) → 光栅箭头左上 (691,800)
+//   屏幕 (1428,944) → 光栅箭头左上 (891,800)   ⇒ 尺度 1.0、偏移 (537,144)-(528,144)=(+9,0)
+const RASTER_EDGE_X = 9;
+const RASTER_EDGE_Y = 0;
 //
 // The helper is only used for server-authoritative setup commands (/tp, /fill)
 // and for the rare UI step; movement, look and sampling stay on the frida RPC path.
@@ -38,6 +51,26 @@ function findMinecraft() {
   const windows = addon.listWindows(app.pid) || [];
   const win = windows.find((w) => w.main) || windows[0] || null;
   return { app, windows, win };
+}
+
+// 截图光栅坐标 → 屏幕物理坐标。bounds = [left, top, width, height]（含边框）。
+function rasterToScreen(win, rx, ry) {
+  return [win.bounds[0] + RASTER_EDGE_X + rx, win.bounds[1] + RASTER_EDGE_Y + ry];
+}
+
+// 移动并回读光标位置，返回 {want, got, dx, dy}；dx/dy 非 0 说明坐标系变了。
+async function moveAndVerify(x, y) {
+  addon.moveTo(x, y);
+  await sleep(120);
+  let got = null;
+  try {
+    got = addon.cursorPoint();
+  } catch (err) {
+    return { want: [x, y], got: null };
+  }
+  const dx = got && typeof got.x === "number" ? got.x - x : null;
+  const dy = got && typeof got.y === "number" ? got.y - y : null;
+  return { want: [x, y], got, dx, dy };
 }
 
 (async () => {
@@ -100,16 +133,35 @@ function findMinecraft() {
     return;
   }
 
-  if (action === "click") {
-    const x = Number(process.argv[4]);
-    const y = Number(process.argv[5]);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      throw new Error("click needs numeric x y (physical pixels)");
+  if (action === "cursor") {
+    console.log(JSON.stringify(addon.cursorPoint()));
+    return;
+  }
+
+  if (action === "point" || action === "click") {
+    const rx = Number(process.argv[4]);
+    const ry = Number(process.argv[5]);
+    if (!Number.isFinite(rx) || !Number.isFinite(ry)) {
+      throw new Error(`${action} needs numeric rx ry (screenshot pixels)`);
     }
     const { app, win } = findMinecraft();
     if (!win) throw new Error("Minecraft has no top-level window");
     addon.activateApplication(app.pid);
     await sleep(700);
+    const [x, y] = rasterToScreen(win, rx, ry);
+    const moved = await moveAndVerify(x, y);
+    const report = {
+      ok: true,
+      raster: [rx, ry],
+      screen: [x, y],
+      cursor: moved.got,
+      offset: [moved.dx, moved.dy],
+      bounds: win.bounds,
+    };
+    if (action === "point") {
+      console.log(JSON.stringify(report));
+      return;
+    }
     const windows = addon.listWindows(app.pid) || [];
     const active = windows.find((w) => w.main) || windows[0] || {};
     if (!active.focused) {
@@ -118,11 +170,9 @@ function findMinecraft() {
         `window did not take focus (pid=${app.pid}); activate it first, then retry`,
       );
     }
-    addon.moveTo(x, y);
-    await sleep(80);
-    const clicked = await addon.clickAtPoint(x, y, "left", 1);
+    report.clicked = await addon.clickAtPoint(x, y, "left", 1);
     await sleep(150);
-    console.log(JSON.stringify({ ok: true, x, y, clicked, bounds: win.bounds }));
+    console.log(JSON.stringify(report));
     return;
   }
 

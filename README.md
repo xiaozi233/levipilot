@@ -46,20 +46,27 @@ py -3.11 driver/run.py 12345 --probe        # 按 PID
 ### 游戏 UI：启动 / 进存档 / 退档 / 走路
 
 实验之外还需要真人式操作（菜单、世界列表、对话框）时走电脑操作 helper。
-Minecraft **不响应合成鼠标点击**，所以一律用键盘 + 截图确认焦点环：
+**按按钮的正确姿势是"悬停 + 回车"**：合成鼠标的**悬停**生效并接管键盘焦点，
+而**点击会被游戏丢弃**；所以流程是截图 → 在图上读目标像素 → `point` 悬停 → `Return`。
 
 ```bash
 cua() { ELECTRON_RUN_AS_NODE=1 D:/ZCode/ZCode.exe driver/native/cua.js \
   "D:/ZCode/resources/tools/cua-helper/build/Release/ax_native.node" "$@"; }
-cua shot out/ui.png     # 窗口级截图（读坐标只看这张图）
-cua key Return          # 按键；菜单导航的每一步都配一次 shot 看焦点环
-cua hold w 1500         # 游戏内走路兜底（1.5 s ≈ +6.69 格）
+cua shot  out/a.png     # 窗口级截图；所有坐标都在这张图上数
+cua point 795 480       # 悬停到截图像素 (795,480)（气泡/高亮确认目标对）
+cua key   Return        # 回车激活它
+cua hold  w 1500        # 游戏内走路兜底（1.5 s ≈ +6.69 格）
+cua cursor              # 读光标屏幕坐标（排查坐标问题时用）
+py -3.11 driver/run.py --wait 30            # 进世界后重新 attach frida
 py -3.11 driver/native/check_cua_pipes.py   # 官方 computerUse 路径是否已接上
+py -3.11 driver/native/crop_png.py out/a.png out/a_zoom.png 300 690 640 780 3   # 局部放大复核
 ```
 
+`point`/`click` 收的是**截图坐标**（自动换算屏幕物理像素，并回读 `cursorPoint` 打印
+`offset`），所以窗口挪位置、缩放变了都不用改数字。
 （`ELECTRON_RUN_AS_NODE=1` 必须是真正的环境变量前缀，放进字符串变量会 `command not found`。）
 
-进存档的完整按键序列、卡片焦点顺序、坐标契约和排查顺序见 skill
+进存档的完整流程、像素参考表、坐标标定数据和排查顺序见 skill
 **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
 
 ## 运行时模型（重要）
@@ -98,11 +105,15 @@ py -3.11 driver/native/check_cua_pipes.py   # 官方 computerUse 路径是否已
    `foreground: False` 时 `/setblock` 生效并被 `blockAt` 读到。
    原生 CUA helper（会抢焦点）保留为回退：`--command-channel cua`。
 8. **UI 操作（菜单 / 世界列表 / 对话框）走电脑操作 helper**：`driver/native/cua.js`
-   现在有 `info / shot / click / key / hold / type` 六个动作。实测两条硬结论：
-   Minecraft **不响应合成鼠标点击**（Raw Input——`moveTo` 能把光标准确落在按钮上，
-   随后 `clickAtPoint` 返回成功但按钮毫无反应），而**键盘可用、菜单有焦点环**，
-   所以导航一律走"按键 → 截图确认焦点环 → 再按 Return"。
-   冷启动游戏、主菜单进存档、暂停菜单保存并退出、游戏内走路（`hold w`）的完整按键序列，
+   现在有 `info / shot / cursor / point / click / key / hold / type` 七个动作。实测三条硬结论：
+   - 合成鼠标**悬停生效**（按钮高亮、出 tooltip）**并且会接管键盘焦点** ⇒
+     把光标 `point` 到目标上再按 `Return` 就能"按"到它（两次独立确认）。
+   - 合成鼠标**点击被游戏丢弃**（`clickAtPoint` 返回成功但屏幕毫无跳转），所以别用点击。
+   - `point`/`click` **只在菜单里有效**：世界内游戏捕获鼠标、自己接管光标（实测 offset
+     从 `[0,0]` 变成 `[-743,48]`），那段位移还会被当成转视角。要操作 UI 先开菜单。
+   - 坐标是**截图坐标**：`point`/`click` 自动换算屏幕物理像素（实测偏移 +9px 左边框），
+     还会回读 `cursorPoint` 打印 `offset` 供核对；PowerShell 截屏受 DPI 虚拟化影响，别用。
+   冷启动游戏、主菜单进存档、暂停菜单保存并退出、游戏内走路（`hold w`）的完整流程，
    以及 ZCode 官方 in-session bridge（`agent.computerUse`）为何在这台机器上不可用，
    都记在 skill **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
 

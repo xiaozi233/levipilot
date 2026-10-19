@@ -537,3 +537,25 @@ pause_menu_on_focus_lost:0
 PlayerAction 包 → 服务端 handler。下一步要么 hook `PlayerActionType` 的处理分支
 （在巨型分派函数里按枚举值找 case），要么在服务端 `Player` 对象上找 `mIsSprinting`
 成员（需要先拿到 Actor*/Player* 指针，tag 组件给不了）。
+
+### 10.1 两个被证伪/收紧的点（2026-10-19 晚）
+
+- **`CommandRequest` 的 FNV 哈希不是分派键**。引用点 `0x147C2A13A` 之后的代码是：
+  算 `FNV-1a("CommandRequest")` → 写 `{type=2, hash}` 记录 → `sub_140161E10`
+  （日志/序列化），随后是 `sub_140BAC1E0` 的通用记录写入。也就是说哈希只是
+  **日志里的 message id**，按它搜立即数 `5F 79 99 F2` 在全二进制里 0 命中也印证了这一点。
+  包的真正分派不是"名字哈希 switch"，别再沿这条线找。
+- **registry 的构造链**：`sub_1433590B0`（0x390 B）在 `0x14335936C` 调用
+  `sub_1418A94D0(this, &var_70, &var_D0, rsi)`，而后者就是 registry 的初始化
+  （内部 `sub_144336530(this, …)` 注册全部命令）。`sub_1433590B0` 的 `this` 从更外层传入，
+  不是全局单例直接可见——运行时拿 registry 指针仍需从持有者对象（ServerInstance 一类的成员）
+  出发，或 hook 一个**每条命令都会走**的 registry 方法（目前找到的都是启动期注册方法）。
+
+**下一步的现实选择**：
+1. 命令：改找**客户端聊天提交**（`sendChatMessage(const std::string&)`）——只需一个字符串参数，
+   不用构造 `CommandOrigin`；入口可以用"提交一条带唯一标记的命令 + 动态 hook 候选函数"来找。
+2. 或者放弃命令派发，改做**方块写入**（`BlockSource` 的 setBlock）来替代 `/setblock` `/fill`；
+   读取路径已知（accessor vtable+16），写入大概在同一 vtable 的邻近槽位，但盲调有崩溃风险，
+   需要先在存档上验证。
+3. 疾跑：走 `PlayerActionType` 枚举值 → 在服务端 PlayerAction 处理里找 case；
+   需要先拿到 `Actor*`/`Player*`（tag 组件给不了），或从 `Level` 的实体表出发。

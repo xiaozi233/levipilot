@@ -84,6 +84,50 @@ def representative(
     return samples[ids[len(ids) // 2]]
 
 
+def pick_segments(
+    rows: list[tuple[float, list[int]]],
+    *,
+    min_samples: int = 10,
+    ref_speed: float | None = None,
+    top_speed: float | None = None,
+) -> tuple[float, float, list[int], list[int], float]:
+    """选"最慢的常见段"作参考、"最快的常见段"作对比（walk vs sprint）。
+
+    不能取"样本最多"的簇：疾跑往往比走路跑得更久，会自己和自己比。
+    """
+    by_center = {round(c, 3): ids for c, ids in rows}
+    eligible = [(c, ids) for c, ids in rows if len(ids) >= min_samples and c >= 0.05]
+    if not eligible:
+        eligible = [(c, ids) for c, ids in rows if c >= 0.05] or rows
+    ref_c = ref_speed if ref_speed is not None else min(c for c, _ in eligible)
+    top_c = top_speed if top_speed is not None else max(c for c, _ in eligible)
+    ref_ids = by_center.get(round(ref_c, 3), rows[0][1])
+    top_ids = by_center.get(round(top_c, 3), [])
+    ratio = (top_c / ref_c) if ref_c else float("nan")
+    return ref_c, top_c, ref_ids, top_ids, ratio
+
+
+def control_hits(
+    all_a: dict, all_b: dict, all_c: dict
+) -> list[tuple[int, str, str, list[tuple[int, int, int]], list[tuple[int, int, int]]]]:
+    """A=参考段前半、B=参考段后半（控制组）、C=对比段。
+
+    返回"只在 C 出现或明显更多"的变化；A->B 也有的变化（位移/时间噪声）被过滤掉。
+    """
+    hits = []
+    for reg in ("client", "server"):
+        ma, mb, mc = all_a.get(reg) or {}, all_b.get(reg) or {}, all_c.get(reg) or {}
+        for cid in sorted(set(ma) & set(mc)):
+            d_test = diff_bytes(ma[cid], mc[cid])
+            d_ctrl = diff_bytes(ma[cid], mb.get(cid))
+            if not d_test:
+                continue
+            if not d_ctrl or len(d_test) > len(d_ctrl) + 1:
+                hits.append((len(d_test) - len(d_ctrl), reg, cid, d_test, d_ctrl))
+    hits.sort(reverse=True)
+    return hits
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path")
@@ -109,16 +153,15 @@ def main() -> int:
         print(f"  ~{center:.3f}  ticks={len(ids):<4} 区间 {ids[0]}..{ids[-1]}")
 
     by_center = {round(c, 3): ids for c, ids in rows}
-    eligible = [(c, ids) for c, ids in rows if len(ids) >= args.min_samples and c >= 0.05]
-    if not eligible:
-        eligible = [(c, ids) for c, ids in rows if c >= 0.05] or rows
-    ref_c = args.ref_speed if args.ref_speed is not None else min(c for c, _ in eligible)
-    top_c = args.top_speed if args.top_speed is not None else max(c for c, _ in eligible)
-    ref_ids = by_center.get(round(ref_c, 3), rows[0][1])
-    top_ids = by_center.get(round(top_c, 3), [])
+    ref_c, top_c, ref_ids, top_ids, ratio = pick_segments(
+        rows,
+        min_samples=args.min_samples,
+        ref_speed=args.ref_speed,
+        top_speed=args.top_speed,
+    )
     print(f"\n参考段 ~{ref_c:.3f} ({len(ref_ids)} ticks)  vs  对比段 ~{top_c:.3f} ({len(top_ids)} ticks)")
     if ref_ids and top_ids and abs(top_c - ref_c) > 0.005:
-        print(f"倍率: x{top_c / ref_c:.3f}")
+        print(f"倍率: x{ratio:.3f}")
     else:
         print("两段速度相同，没有可对比的状态差异")
 
@@ -156,18 +199,7 @@ def main() -> int:
         all_a = (ca.get("raw") or {}).get("all") or {}
         all_b = (cb.get("raw") or {}).get("all") or {}
         all_c = (ct.get("raw") or {}).get("all") or {}
-        hits = []
-        for reg in ("client", "server"):
-            ma, mb, mc = all_a.get(reg) or {}, all_b.get(reg) or {}, all_c.get(reg) or {}
-            for cid in sorted(set(ma) & set(mc)):
-                d_test = diff_bytes(ma[cid], mc[cid])
-                d_ctrl = diff_bytes(ma[cid], mb.get(cid))
-                if not d_test:
-                    continue
-                # 控制组没有变化，或疾跑的变化明显更多 → 候选
-                if not d_ctrl or len(d_test) > len(d_ctrl) + 1:
-                    hits.append((len(d_test) - len(d_ctrl), reg, cid, d_test, d_ctrl))
-        hits.sort(reverse=True)
+        hits = control_hits(all_a, all_b, all_c)
         if not hits:
             print("  没有找到疾跑专有的组件差异（说明倍率可能在包/属性路径，不在组件里）")
         for score, reg, cid, d_test, d_ctrl in hits[:12]:

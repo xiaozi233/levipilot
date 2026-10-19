@@ -268,6 +268,11 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
   仍是 0.2159（潜行能靠 0.3 倍输入，是因为它在 [0,1] 内）。下一步去非 ECS 路径找：
   `PlayerAuthInput`/`PlayerActionPacket` 包或属性容器。
 - **命令派发 RPC**：进程内直接发 `CommandRequestPacket`，彻底不依赖窗口消息。
+  静态入口已定位（见 `docs §10`）：命令名字符串、注册函数 `sub_14437CBF0`、
+  注册总入口 `sub_144336530`/`sub_14433B5E0`。IDA 访问方式：`driver/ida_call.py`
+  （直连 supervisor 的 MCP HTTP，默认 8745，支持 `find_bytes`/`xrefs_to`/`decompile`/`disasm`）。
+  下一步是找客户端聊天提交函数（`sendChatMessage(const std::string&)`）或 registry vtable 里的
+  `executeCommand`；后者还要构造 `CommandOrigin`，前者更省事。
 - **GameTest**：`spawnSimulatedPlayer` 与真实输入的等价性实验。
 
 ## 采样口径（易踩的坑）

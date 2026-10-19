@@ -498,3 +498,28 @@ pause_menu_on_focus_lost:0
 - 每次世界切换都会销毁 frida script，进世界后必须重新 attach
   （`py -3.11 driver/run.py --wait 30`，看到 `local player resolved` 才算好）。
 
+
+## 10. 命令派发（静态分析入口，2026-10-19）
+
+> IDA MCP 的 ZCode 工具子集里有 `find_regex`，但在 34 万条字符串上会超过 30 秒上限；
+> `find_bytes` / `py_eval` / `xrefs_to` 没有暴露。用 `driver/ida_call.py` 直连 supervisor
+> 的 MCP HTTP 端点（`--port 8745`，`idb_open` 打开既有 `.i64`，不重跑分析）后可用。
+
+已定位的静态地标（地址为 imagebase `0x140000000` 下的 VA）：
+
+| 地标 | 地址 | 说明 |
+| --- | --- | --- |
+| `"setblock"` 字符串 | `0x14EC103C3` | 全二进制仅 1 处（`find_bytes`） |
+| 引用它的函数 | `sub_14B48AC80`（0x1450 B） | 命令**名称/描述注册表**：里面能看到 `sub_1442F1530(..., "commands.setblock.description", ...)` |
+| 命令注册 helper | `sub_14437CBF0` / `sub_14437A970` | `(registry, "setblock", flags, description, overload..., &args)`；flags 形如 `0x1C00000001`（权限/来源位） |
+| 注册调用者 | `sub_14433B5E0`（0x4040 B） | 连续注册大量命令（`setblock` 有 3 个重载） |
+| 注册表函数的调用者 | `sub_144336530`（0x3770 B） | 调用 `sub_14B48AC80`（描述表）——大概率是 `ServerCommandRegistry::registerCommands` |
+
+下一步（未完成）：从 `sub_14433B5E0` 的调用点找出 CommandRegistry 的来源（全局单例或成员），
+拿 vtable 后在其中定位 `executeCommand`；更省事的替代是找**客户端聊天提交函数**
+（`sendChatMessage(const std::string&)`），进程内调用它就能复用完整命令链路，不必自己构造
+`CommandOrigin`。
+
+工具：`py -3.11 driver/ida_call.py <tool> --arg k=v`
+（例：`find_bytes --arg 'patterns=["73 65 74 62 6C 6F 63 6B 00"]'`、
+`xrefs_to --arg 'addrs=["0x14ec103c3"]'`、`decompile --arg 'addr=0x14b48ac80'`）。

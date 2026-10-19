@@ -1,5 +1,9 @@
 """用"真实按键"标定 sprint / sneak 的内存编码，再用注入复现。
 
+已不推荐：它用 helper CLI 按真实键。现在请用
+`record_probe.py`（被动录制）+ 官方 `agent.computerUse` 的 `pressKey(holdSeconds)`
++ `analyze_probe.py`，完全不依赖 helper。本脚本保留作参考。
+
 之前的做法是猜 ADF 的位（按 Java ActorFlags 的 sneaking/sprinting），扫了三个 word
 的所有位都没有得到原版 130% / 30% 的倍率。这里换个方向：**让电脑操作 helper 真的按住
 按键**（`w` / `ctrl+w` / `shift+w`），同时 agent 逐 tick 采样（含两套 registry 的组件

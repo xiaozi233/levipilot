@@ -169,9 +169,21 @@ yaw=0 时 forward 必须落在 +Z，因此 `a7 = strafe`、`a8 = forward`。
 
 ### 4.1 移动状态（疾跑 / 潜行）标定 `[实测]`
 
-做法：用电脑操作 helper **真的按住**按键（`w` / `ctrl+w` / `shift+w`），
+做法：用电脑操作**按住真实按键**（`w` / `ctrl+w` / `shift+w`），
 agent 逐 tick 采样组件原始字节（`start_recording(..., include_raw=True)`），
 再逐字节对比。工具：`py -3.11 driver/probe_sprint.py`。
+
+**只用官方电脑操作的标定流程**（推荐，不依赖 helper CLI）：
+
+1. 后台跑 `py -3.11 driver/record_probe.py --seconds 45 --out out/probe.jsonl
+   [--dump-cid 0x3613e513]`，它会 reset 朝向、开 `input_passthrough`、开始录制并打印 `READY`；
+2. 用 `agent.computerUse` 的 `pressKey("w", {holdSeconds: 2})`、`pressKey("ctrl+w", {holdSeconds: 3})`
+   分段按真实键（官方光栅/键盘接口，不需要 helper）；
+3. `py -3.11 driver/analyze_probe.py out/probe.jsonl`：按逐 tick 速度自动聚类分段，
+   取"最慢段 vs 最快段"做字节差分。
+
+实测这一套得到 walk ≈0.210–0.220、sprint **0.280**（×1.33），差分与下表一致；
+另外 `rawMoveInput`（`0x3613e513`）storage 的 `+0x01` 也随疾跑 `0x20→0x21`（原始标志字节）。
 
 **真实按键测出来的速度（原版基准）**：
 

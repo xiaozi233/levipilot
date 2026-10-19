@@ -33,14 +33,16 @@ Minecraft Bedrock **1.26.45.01** 的实验驱动 harness。
 
 ```bash
 py -3.11 driver/check_binary.py             # 不连游戏：校验 EXE 与 agent 指纹
-py -3.11 driver/bringup.py --launch --enter-world   # 重启后一键回到可实验状态（启动+进存档+等 agent）
+py -3.11 driver/bringup.py --launch --enter-world   # 重启后一键回到可实验状态（离线兜底）
 py -3.11 driver/run.py                      # 状态 / registry / 签名检查
 py -3.11 driver/run.py --diagnose           # 组件、双 registry 诊断
 py -3.11 driver/run.py --scenario scenarios/setup-platform.json   # 铺 65x65 测试平台
 py -3.11 driver/run.py --probe              # 传送 + 朝 +Z 走 20 tick，验证全链路
 py -3.11 driver/run.py --scenario scenarios/wall-stop.json        # 撞墙停住回归
 py -3.11 driver/run.py --scenario scenarios/walk-sneak.json       # 走 vs 潜行（0.2159 / 0.0648）
-py -3.11 driver/probe_sprint.py                                   # 真实按键标定（走/疾跑/潜行）
+py -3.11 driver/record_probe.py --seconds 45 --out out/probe.jsonl  # 被动录制（按键由官方 CUA 按）
+py -3.11 driver/analyze_probe.py out/probe.jsonl                  # 按速度自动分段 + 逐字节差分
+py -3.11 driver/probe_sprint.py                                   # 旧版标定（需要 helper 按键，已不推荐）
 py -3.11 driver/run.py --scenario scenarios/example.json
 py -3.11 driver/run.py --command "setblock 3 -49 3 stone"   # 直接发一条命令（不抢焦点）
 py -3.11 driver/run.py --block 0 -50 0      # 读取单个方块名

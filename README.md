@@ -51,36 +51,38 @@ py -3.11 driver/run.py 12345 --probe        # 按 PID
 
 ### 游戏 UI：启动 / 进存档 / 退档 / 走路
 
-实验之外还需要真人式操作（菜单、世界列表、对话框）时走电脑操作 helper。
-**按按钮的正确姿势是"悬停 + 回车"**：合成鼠标的**悬停**生效并接管键盘焦点，
-而**点击会被游戏丢弃**；所以流程是截图 → 在图上读目标像素 → `point` 悬停 → `Return`。
+UI 操作**只用 ZCode 官方电脑操作** `agent.computerUse`（`mcp__node_repl__js` + bootstrap），
+由 agent 在会话里调用。**按按钮的正确姿势是"悬停 + 回车"**：合成鼠标的**悬停**生效并接管
+键盘焦点，而**点击会被游戏丢弃**；所以流程是"截图 → 在返回的光栅上读目标像素 → `click([x,y])`
+悬停 → `pressKey("Return")`"。
 
-```bash
-cua() { ELECTRON_RUN_AS_NODE=1 D:/ZCode/ZCode.exe driver/native/cua.js \
-  "D:/ZCode/resources/tools/cua-helper/build/Release/ax_native.node" "$@"; }
-cua shot  out/a.png     # 窗口级截图；所有坐标都在这张图上数
-cua point 795 480       # 悬停到截图像素 (795,480)（气泡/高亮确认目标对）
-cua key   Return        # 回车激活它
-cua hold  w 1500        # 游戏内走路兜底（1.5 s ≈ +6.69 格）
-cua cursor              # 读光标屏幕坐标（排查坐标问题时用）
-py -3.11 driver/run.py --wait 30            # 进世界后重新 attach frida
-py -3.11 driver/native/check_cua_pipes.py   # 官方 computerUse 路径是否已接上
-py -3.11 driver/native/crop_png.py out/a.png out/a_zoom.png 300 690 640 780 3   # 局部放大复核
+```js
+// 每个 cell 都要重新 bootstrap
+const root = process.env.ZCODE_CUA_PLUGIN_ROOT;
+const { join } = await import("node:path");
+const { pathToFileURL } = await import("node:url");
+const { setupComputerUseRuntime } = await import(
+  pathToFileURL(join(root, "scripts", "computer-use-client.mjs")).href,
+);
+await setupComputerUseRuntime({ globals: globalThis });
+const listed = await agent.computerUse.listApps({ emit: false });
+const list = Array.isArray(listed) ? listed : listed.apps;   // emit:false 时直接是数组
+const app = await agent.computerUse.getApp({ pid: list.find(a => /Minecraft\.Windows\.exe$/i.test(a.bundle_id || "")).pid });
+await app.click([640, 385]);   // 悬停"游戏"（官方光栅 1280×774 的像素）
+await app.pressKey("Return");  // 激活
+await app.getScreenshot();     // 官方截图会自己显示
 ```
 
-`point`/`click` 收的是**截图坐标**（自动换算屏幕物理像素，并回读 `cursorPoint` 打印
-`offset`），所以窗口挪位置、缩放变了都不用改数字。
-（`ELECTRON_RUN_AS_NODE=1` 必须是真正的环境变量前缀，放进字符串变量会 `command not found`。）
+- 官方光栅是**缩放过的**（本机 1280×774，对应窗口内容 1591×962，≈0.805），缩放由 CUA
+  内部处理；坐标只按**这次返回的光栅**读，窗口挪了也不用改数字。**不要**混用 helper 的物理像素。
+- Minecraft **不暴露无障碍元素**（`getAXState` 只有 7 个窗口边框元素），所以只能按坐标操作。
+- 世界内游戏会捕获鼠标：悬停无效，鼠标位移会变成转视角。要操作 UI 先 `Escape` 开菜单。
+- 官方路径报 `Computer Use is unavailable for this node_repl session` 时，说明本会话的
+  node-repl 宿主没拿到 CUA 权限代理（长寿命进程，补不上）→ **重启 ZCode**，重新 bootstrap。
+- `driver/bringup.py`（Python 脚本）走的是 helper CLI，官方 bridge 无法被脚本调用；
+  它现在只作为**离线兜底**，日常 UI 操作不要用它。
 
-**两条通道怎么选**：底层是同一个 helper（`ax_native.node`）。
-- **脚本里用 helper CLI**（`driver/native/cua.js`、`driver/native_cua.py`）：
-  它是普通子进程，Python 能直接调，`driver/bringup.py` 就是这么做的。
-- **我在会话里交互操作时用官方 `agent.computerUse`**（`mcp__node_repl__js` + bootstrap）：
-  它只存在于模型的 node-repl 沙箱里，Python 脚本无法调用；好处是不抢焦点、
-  自带无障碍信息和缩放后的光栅。
-两者对 Minecraft 的结论完全一致（点击被丢弃、悬停接管焦点、世界内鼠标被抢）。
-
-进存档的完整流程、像素参考表、坐标标定数据和排查顺序见 skill
+进存档的完整流程、像素参考表、退出确认框的处理和排查顺序见 skill
 **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
 
 ## 运行时模型（重要）
@@ -118,21 +120,20 @@ py -3.11 driver/native/crop_png.py out/a.png out/a_zoom.png 300 690 640 780 3   
    打开聊天框用 `/` 键，之后按字符投递、回车提交。**游戏不需要在前台**：实测
    `foreground: False` 时 `/setblock` 生效并被 `blockAt` 读到。
    原生 CUA helper（会抢焦点）保留为回退：`--command-channel cua`。
-8. **UI 操作（菜单 / 世界列表 / 对话框）走电脑操作 helper**：`driver/native/cua.js`
-   现在有 `info / shot / cursor / point / click / key / hold / type` 七个动作。实测三条硬结论：
+8. **UI 操作（菜单 / 世界列表 / 对话框）只用官方 `agent.computerUse`**：
+   `mcp__node_repl__js` + bootstrap 后 `click([x,y])` 悬停、`pressKey("Return")` 激活。
+   实测三条硬结论：
    - 合成鼠标**悬停生效**（按钮高亮、出 tooltip）**并且会接管键盘焦点** ⇒
-     把光标 `point` 到目标上再按 `Return` 就能"按"到它（两次独立确认）。
-   - 合成鼠标**点击被游戏丢弃**（`clickAtPoint` 返回成功但屏幕毫无跳转），所以别用点击。
-   - `point`/`click` **只在菜单里有效**：世界内游戏捕获鼠标、自己接管光标（实测 offset
-     从 `[0,0]` 变成 `[-743,48]`），那段位移还会被当成转视角。要操作 UI 先开菜单。
-   - 坐标是**截图坐标**：`point`/`click` 自动换算屏幕物理像素（实测偏移 +9px 左边框），
-     还会回读 `cursorPoint` 打印 `offset` 供核对；PowerShell 截屏受 DPI 虚拟化影响，别用。
-   冷启动游戏、主菜单进存档、暂停菜单保存并退出、游戏内走路（`hold w`）的完整流程，
-   以及官方 bridge 与 helper 两条通道怎么选（含 `unavailable` 的排查），
-   都记在 skill **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
-   官方路径（`mcp__node_repl__js` + `agent.computerUse`）在**重启 ZCode 后实测可用**
-   （bootstrap → `listApps` → `getScreenshot` → `click` 悬停 → `pressKey("Return")` 全通）；
-   注意官方光栅是缩放过的 1280×774，而 helper 的 `shot` 是物理像素 1591×962，两套坐标别混。
+     悬停目标再按 `Return` 就能"按"到它（两次独立确认）。
+   - 合成鼠标**点击被游戏丢弃**（返回成功但屏幕毫无跳转），所以别用点击。
+   - **世界内鼠标被捕获**：悬停无效，位移会变成转视角。要操作 UI 先开菜单。
+   - 坐标只按**官方返回的光栅**读（本机 1280×774，缩放 ≈0.805）；不要混用物理像素，
+     也不要用 PowerShell 截屏（DPI 虚拟化）。
+   冷启动游戏、主菜单进存档、暂停菜单保存并退出、退出确认框、游戏内走路
+   （`pressKey("w", {holdSeconds: 1.5})`，实测 +6.47 格）的完整流程，以及
+   `unavailable` 的排查（重启 ZCode），都记在 skill **`mcbe-desktop-control`**
+   （`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
+   helper CLI（`driver/native/cua.js`）只作为离线兜底，日常不再使用。
 
 ## 目录
 

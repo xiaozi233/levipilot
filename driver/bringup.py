@@ -1,5 +1,9 @@
 """把游戏带到"可以跑实验"的状态：必要时启动进程、从主菜单进存档、等 agent 就绪。
 
+注意：UI 操作已经改为**只用 ZCode 官方 `agent.computerUse`**（见 skill
+`mcbe-desktop-control`）。这个脚本因为是 Python 进程、调不到官方 bridge，只能用
+helper CLI，属于**离线兜底**；日常请让 agent 用官方接口操作 UI。
+
 这一串手动操作每次游戏重启都要重来一遍（实测很容易卡在主菜单/世界列表），
 所以固化成脚本。流程与坐标都是实测过的：
 

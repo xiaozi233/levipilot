@@ -100,6 +100,11 @@ const state = {
   inputPassthrough: false, // true = 不写输入，让真实按键透传（标定用）
   dumpCid: null, // 标定用：额外 dump 这个组件 id 的 storage chunk
   dumpLen: 2048,
+  dumpAllEvery: 0, // >0 时每 N tick 把所有已知 storage 的 chunk 一起 dump（枚举组件用）
+  dumpAllLen: 512,
+  storageSeen: new Map(), // 客户端 registry: typeId -> storage
+  storageSeenServer: new Map(), // 服务端 registry: typeId -> storage
+  serverRegistry: null,
   adfAtTickStart: null, // 诊断：本 tick 开始时的 ADF word0（游戏留下的值）
   moveMode: null, // 'sprint' / 'sneak'（标定得到的语义状态，见 MOVE_FLAGS）
   moveFlagsApplied: 0, // 语义状态写入次数
@@ -379,8 +384,10 @@ function refreshServerPointers() {
     state.serverAdf = null;
     state.serverAbilities = null;
     state.serverEntityId = null;
+    state.serverRegistry = null;
     return;
   }
+  state.serverRegistry = ctx.registry;
   state.serverEntityId = ctx.entity >>> 0;
   state.serverMoveInput = componentAddr(
     findStorage(ctx.registry, CID.moveInput),
@@ -648,6 +655,74 @@ function readState() {
   }
 }
 
+// 直接遍历 registry 的 entt 哈希表枚举所有组件（不调用 enttStorageGet，避免改状态）。
+// 布局见 docs §2.1：bucket 表 registry+0x48/0x50，节点池 +0x68/0x70，节点 32B：
+//   +0x00 next(u32) | +0x08 typeId(u32) | +0x10 storage(ptr)
+function enumerateStorages(registry) {
+  const out = [];
+  if (!registry || registry.isNull()) return out;
+  try {
+    const begin = registry.add(0x48).readPointer();
+    const end = registry.add(0x50).readPointer();
+    const pool = registry.add(0x68).readPointer();
+    const poolEnd = registry.add(0x70).readPointer();
+    if (begin.isNull() || end.isNull() || pool.isNull()) return out;
+    const span = end.sub(begin);
+    if (span.compare(0) <= 0) return out;
+    const count = Math.min(1 << 20, span.toUInt32() / 8);
+    for (let b = 0; b < count; b += 1) {
+      let idx = begin.add(8 * b).readU32();
+      let guard = 0;
+      while (idx !== 0xffffffff && guard < 65536) {
+        guard += 1;
+        const node = pool.add(32 * idx);
+        if (!poolEnd.isNull() && node.compare(poolEnd) >= 0) break;
+        const typeId = node.add(8).readU32();
+        const storage = node.add(16).readPointer();
+        if (!storage.isNull()) out.push({ typeId, storage });
+        idx = node.readU32();
+      }
+    }
+  } catch (e) {
+    state.lastError = String(e);
+  }
+  return out;
+}
+
+// 把某个 registry 里"玩家所在"的所有 storage 的 chunk 各读 length 字节。
+// 用来枚举组件：不知道 stride 也能靠差分看出哪些组件随状态变化。
+function dumpStorageList(list, entity, length) {
+  const out = {};
+  if (entity === null || entity === undefined) return out;
+  for (const item of list) {
+    try {
+      const { typeId, storage } = item;
+      const dense = denseIndexOf(storage, entity);
+      if (dense < 0) continue; // 玩家不在这个组件里
+      const chunkTable = storage.add(SS.chunkTable).readPointer();
+      if (chunkTable.isNull()) continue;
+      const chunk = chunkTable.add(8 * (dense >> 7)).readPointer();
+      if (chunk.isNull()) continue;
+      const bytes = hexBytes(chunk, length);
+      if (bytes) out['0x' + (typeId >>> 0).toString(16).padStart(8, '0')] = bytes;
+    } catch (e) {
+      // 单个组件读失败不影响其它
+    }
+  }
+  return out;
+}
+
+function dumpAllStorages(length) {
+  return {
+    client: dumpStorageList(enumerateStorages(state.registry), state.player, length),
+    server: dumpStorageList(
+      enumerateStorages(state.serverRegistry),
+      state.serverEntityId,
+      length,
+    ),
+  };
+}
+
 function snapshotSample() {
   const s = readState();
   if (!s.ok) return { t: state.tickCount, ok: false, error: s.error };
@@ -668,6 +743,9 @@ function snapshotSample() {
   if (state.includeRaw) {
     sample.raw = readRawComponents();
     sample.adf_start = state.adfAtTickStart;
+    if (state.dumpAllEvery > 0 && state.tickCount % state.dumpAllEvery === 0) {
+      sample.raw.all = dumpAllStorages(state.dumpAllLen);
+    }
   }
   return sample;
 }
@@ -947,6 +1025,8 @@ function installHooks() {
       state.getterCalls++;
       try {
         const reg = args[0];
+        this.reg = reg;
+        this.typeId = args[1].toUInt32();
         if (
           !reg.isNull() &&
           state.registryCandidates.size < 8 &&
@@ -954,6 +1034,20 @@ function installHooks() {
         ) {
           state.registryCandidates.set(reg.toString(), reg);
           state.registryFrom = args[1].toUInt32();
+        }
+      } catch (e) {
+        // 忽略
+      }
+    },
+    onLeave(retval) {
+      // 顺手记录 typeId -> storage，之后可以"枚举全部组件"做差分。
+      try {
+        if (!this.typeId || !retval || retval.isNull()) return;
+        const key = '0x' + (this.typeId >>> 0).toString(16).padStart(8, '0');
+        if (state.registry && this.reg.equals(state.registry)) {
+          if (!state.storageSeen.has(key)) state.storageSeen.set(key, retval);
+        } else if (state.serverRegistry && this.reg.equals(state.serverRegistry)) {
+          if (!state.storageSeenServer.has(key)) state.storageSeenServer.set(key, retval);
         }
       } catch (e) {
         // 忽略
@@ -1760,5 +1854,64 @@ rpc.exports = {
     state.dumpCid = Number(cid) >>> 0;
     state.dumpLen = Math.max(16, Math.min(8192, Number(length) || 2048));
     return { ok: true, dump_cid: `0x${state.dumpCid.toString(16)}`, dump_len: state.dumpLen };
+  },
+
+  // 标定用：每 N tick 把所有已知 storage 的 chunk 一起 dump（枚举组件做差分）。
+  setDumpAll(every, length) {
+    state.dumpAllEvery = Math.max(0, Math.min(100, Number(every) || 0));
+    state.dumpAllLen = Math.max(64, Math.min(4096, Number(length) || 512));
+    return {
+      ok: true,
+      every: state.dumpAllEvery,
+      len: state.dumpAllLen,
+      client_storages: enumerateStorages(state.registry).length,
+      server_storages: enumerateStorages(state.serverRegistry).length,
+    };
+  },
+
+  // 看看枚举到多少组件（确认 registry 哈希表遍历是否正常）。
+  listStorages() {
+    const client = enumerateStorages(state.registry);
+    const server = enumerateStorages(state.serverRegistry);
+    return {
+      ok: true,
+      client_count: client.length,
+      server_count: server.length,
+      client: client.map((x) => '0x' + (x.typeId >>> 0).toString(16).padStart(8, '0')),
+      server: server.map((x) => '0x' + (x.typeId >>> 0).toString(16).padStart(8, '0')),
+    };
+  },
+
+  // 枚举到的组件里，读写玩家元素所在 chunk 的某个 float（stride 未知时的实验手段）。
+  // 只在 dense 索引为 0 时位置才严格等于 chunk+offset；其它情况会返回 dense 供判断。
+  storageFloat(cid, offset, value) {
+    try {
+      const typeId = Number(cid) >>> 0;
+      const storage = storageFor(typeId);
+      if (!storage) return { ok: false, error: 'component storage not found' };
+      if (state.player === null) return { ok: false, error: 'player not resolved' };
+      const dense = denseIndexOf(storage, state.player);
+      if (dense < 0) return { ok: false, error: 'player not in component' };
+      const chunkTable = storage.add(SS.chunkTable).readPointer();
+      if (chunkTable.isNull()) return { ok: false, error: 'no chunk table' };
+      const chunk = chunkTable.add(8 * (dense >> 7)).readPointer();
+      if (chunk.isNull()) return { ok: false, error: 'no chunk' };
+      const at = chunk.add(Number(offset) || 0);
+      const before = at.readFloat();
+      if (value === null || value === undefined) {
+        return { ok: true, cid: `0x${typeId.toString(16)}`, offset, dense, value: before };
+      }
+      at.writeFloat(Number(value));
+      return {
+        ok: true,
+        cid: `0x${typeId.toString(16)}`,
+        offset,
+        dense,
+        before,
+        after: at.readFloat(),
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
   },
 };

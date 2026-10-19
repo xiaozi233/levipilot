@@ -60,10 +60,27 @@ def diff_bytes(a: str | None, b: str | None) -> list[tuple[int, int, int]]:
     return out
 
 
-def representative(samples: list[dict], speed: list[float | None], ids: list[int]) -> dict | None:
-    """在给定下标里挑速度最接近该簇中心、且带 raw 的那一帧。"""
+def representative(
+    samples: list[dict], ids: list[int], *, need_all: bool = False
+) -> dict | None:
+    """在给定下标里挑中间那一帧；need_all 时只接受带 raw.all 的帧。
+
+    dump 是每 N tick 做一次，某个速度簇可能整段都没撞上 dump 帧；这时退回到
+    **离该簇中点最近**的带 all 的帧，避免整块分析被跳过。
+    """
     if not ids:
         return None
+    if need_all:
+        have = [i for i in ids if (samples[i].get("raw") or {}).get("all")]
+        if not have:
+            candidates = [
+                i for i in range(len(samples)) if (samples[i].get("raw") or {}).get("all")
+            ]
+            if not candidates:
+                return None
+            mid = ids[len(ids) // 2]
+            return samples[min(candidates, key=lambda i: abs(i - mid))]
+        ids = have
     return samples[ids[len(ids) // 2]]
 
 
@@ -72,7 +89,7 @@ def main() -> int:
     parser.add_argument("path")
     parser.add_argument("--ref-speed", type=float, default=None, help="参考段速度（默认取样本最多的簇）")
     parser.add_argument("--top-speed", type=float, default=None, help="对比段速度（默认取最快且样本>=3 的簇）")
-    parser.add_argument("--min-samples", type=int, default=3)
+    parser.add_argument("--min-samples", type=int, default=10)
     args = parser.parse_args()
 
     meta, samples = load(Path(args.path))
@@ -105,8 +122,8 @@ def main() -> int:
     else:
         print("两段速度相同，没有可对比的状态差异")
 
-    sa = representative(samples, speed, ref_ids)
-    sb = representative(samples, speed, top_ids)
+    sa = representative(samples, ref_ids)
+    sb = representative(samples, top_ids)
     if not sa or not sb:
         return 0
     print("\n组件字节差分：")
@@ -127,6 +144,56 @@ def main() -> int:
         listed = ", ".join(f"+0x{o:02X} {a:#04x}->{b:#04x}" for o, a, b in diffs[:24])
         more = "" if len(diffs) <= 24 else f" (+{len(diffs) - 24} more)"
         print(f"  storage({cid}) {listed}{more}")
+
+    # 疾跑专有差异：把"走"参考段按时间一分为二当作控制组。
+    # A->B 的差异只来自位移/时间，A->C（疾跑）里额外出现的差异才是疾跑专有。
+    half = len(ref_ids) // 2
+    ca = representative(samples, ref_ids[:half], need_all=True)
+    cb = representative(samples, ref_ids[half:], need_all=True)
+    ct = representative(samples, top_ids, need_all=True)
+    if ca and cb and ct:
+        print("\n疾跑专有差异（A=走前半 / B=走后半 控制组 / C=疾跑）：")
+        all_a = (ca.get("raw") or {}).get("all") or {}
+        all_b = (cb.get("raw") or {}).get("all") or {}
+        all_c = (ct.get("raw") or {}).get("all") or {}
+        hits = []
+        for reg in ("client", "server"):
+            ma, mb, mc = all_a.get(reg) or {}, all_b.get(reg) or {}, all_c.get(reg) or {}
+            for cid in sorted(set(ma) & set(mc)):
+                d_test = diff_bytes(ma[cid], mc[cid])
+                d_ctrl = diff_bytes(ma[cid], mb.get(cid))
+                if not d_test:
+                    continue
+                # 控制组没有变化，或疾跑的变化明显更多 → 候选
+                if not d_ctrl or len(d_test) > len(d_ctrl) + 1:
+                    hits.append((len(d_test) - len(d_ctrl), reg, cid, d_test, d_ctrl))
+        hits.sort(reverse=True)
+        if not hits:
+            print("  没有找到疾跑专有的组件差异（说明倍率可能在包/属性路径，不在组件里）")
+        for score, reg, cid, d_test, d_ctrl in hits[:12]:
+            listed = ", ".join(f"+0x{o:02X} {a:#04x}->{b:#04x}" for o, a, b in d_test[:8])
+            print(f"  {reg} {cid}  score={score}  {listed}")
+            if d_ctrl:
+                ctrl = ", ".join(f"+0x{o:02X} {a:#04x}->{b:#04x}" for o, a, b in d_ctrl[:6])
+                print(f"      控制组也有: {ctrl}")
+    aa = representative(samples, ref_ids, need_all=True)
+    ab = representative(samples, top_ids, need_all=True)
+    if aa and ab:
+        all_a = (aa.get("raw") or {}).get("all") or {}
+        all_b = (ab.get("raw") or {}).get("all") or {}
+        rows_all = []
+        for reg in ("client", "server"):
+            ma, mb = all_a.get(reg) or {}, all_b.get(reg) or {}
+            for cid in sorted(set(ma) & set(mb)):
+                d = diff_bytes(ma[cid], mb[cid])
+                if d:
+                    rows_all.append((len(d), reg, cid, d))
+        rows_all.sort(reverse=True)
+        print(f"\n全组件差分：{len(rows_all)} 个 storage 有变化（按变化字节数排序）")
+        for _, reg, cid, d in rows_all[:16]:
+            listed = ", ".join(f"+0x{o:02X} {a:#04x}->{b:#04x}" for o, a, b in d[:10])
+            more = "" if len(d) <= 10 else f" (+{len(d) - 10} more)"
+            print(f"  {reg} {cid}  {listed}{more}")
     if len(ref_ids) > 1:
         ref_vals = [speed[i] for i in ref_ids if speed[i] is not None]
         if ref_vals:

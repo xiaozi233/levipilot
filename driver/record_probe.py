@@ -32,6 +32,13 @@ def main() -> int:
     parser.add_argument("--out", default="out/probe.jsonl")
     parser.add_argument("--dump-cid", default=None, help="额外整块 dump 的组件 id（hex）")
     parser.add_argument("--dump-len", type=int, default=1024)
+    parser.add_argument(
+        "--dump-all-every",
+        type=int,
+        default=0,
+        help="每 N tick 枚举所有已知 storage 的 chunk（0=关；建议 5，配 analyze_probe 自动找变化组件）",
+    )
+    parser.add_argument("--dump-all-len", type=int, default=512)
     parser.add_argument("--no-rotation", action="store_true")
     parser.add_argument("--settle", type=int, default=60)
     args = parser.parse_args()
@@ -51,6 +58,9 @@ def main() -> int:
         agent.call("input_passthrough", True)
         if args.dump_cid:
             agent.call("set_dump_cid", int(str(args.dump_cid), 0), args.dump_len)
+        if args.dump_all_every > 0:
+            info = agent.call("set_dump_all", args.dump_all_every, args.dump_all_len)
+            print(f"dump all storages: {info}", flush=True)
 
         start = agent.call("start_recording", int(args.seconds * 40) + 200, True)
         start_tick = int(start.get("start_tick") or 0)

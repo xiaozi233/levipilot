@@ -224,10 +224,18 @@ agent 逐 tick 采样组件原始字节（`start_recording(..., include_raw=True
   （`+0x14` 附近 0→≈0.371、`+0x1C` 附近），**没有布尔状态位**。
   另外 `MoveInput+0x54` 在不同 run 里出现过 `0x69/0x6A/0x68/0x85`，**不是稳定的状态字**
   （之前把它当状态位来读是过度解读）。
-  结论：疾跑的 ×1.3 既不在 ADF、也不在这几个 MoveInput 位、也不在
-  `PlayerInputRequest` 的前 2 KB 里 → 更可能在客户端发给服务端的
-  `PlayerAuthInput`/`PlayerActionPacket`（由客户端自己的输入源构造，不是我们写的
-  ECS 字段），或移动速度属性。下一步要接的是那条包/属性路径。
+- **全组件枚举（决定性排查）**：直接遍历 registry 的 entt 哈希表（§2.1 的 bucket/pool 布局），
+  枚举到客户端 **508** 个、服务端 **507** 个组件 storage；把"玩家所在"的（客户端 122 /
+  服务端 128）每个 chunk 各 dump 512 B，每 5 tick 一次，配合"走前半 vs 走后半"的控制组
+  过滤掉位移噪声。结果：**唯一与疾跑专有的组件变化**是某个组件 `+0x00` 的 float
+  `0.1 → 0.13`（客户端 `0xa795a68c` / 服务端 `0x1268662e`）。直接写 0.13 进去：
+  客户端那份**下一 tick 就被重算回 0.1**，服务端那份写了速度仍 `0.2159`。
+  ⇒ 它是**派生值**，不是驱动。
+- 因此：疾跑的 ×1.3 **不在 ECS 组件里**（玩家所在的全部 storage 都已排除），
+  应去非 ECS 状态找：客户端构造的 `PlayerAuthInput`/`PlayerActionPacket` 包、
+  `ServerPlayer`/`Player` 的成员字段，或属性（attributes）容器。
+  可用工具：`driver/record_probe.py --dump-all-every 5` +
+  `driver/analyze_probe.py`（自动聚类分段 + 控制组过滤）。
 
 ## 5. 写路径与实测结论
 

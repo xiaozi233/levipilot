@@ -261,8 +261,10 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
   `+0x54` bit1、`+0x60` bit1）全部注入后仍是走路速度，多半走服务端 sprint 状态
   （`PlayerInputRequest`/`PlayerActionPacket`），所以 DSL 暂时拒绝 `mode: "sprint"`，
   避免产出假数据。标定工具：`driver/probe_sprint.py`，详见 `docs/offsets…` §4.1。
-  已排除的位置：ADF 各位、`MoveInput +0x00/+0x54/+0x60`、`PlayerInputRequest` 前 2 KB
-  （整块 storage dump 只有浮点累加字段在变，没有布尔位）。
+  已排除的位置：ADF 各位、`MoveInput +0x00/+0x54/+0x60`、`PlayerInputRequest` 前 2 KB、
+  以及**全部 ECS 组件**（枚举客户端 508 / 服务端 507 个 storage，控制组过滤后只剩一个
+  `0.1→0.13` 的派生 float，写入不改变速度）。下一步去非 ECS 路径找：`PlayerAuthInput`/
+  `PlayerActionPacket` 包或属性容器。
 - **命令派发 RPC**：进程内直接发 `CommandRequestPacket`，彻底不依赖窗口消息。
 - **GameTest**：`spawnSimulatedPlayer` 与真实输入的等价性实验。
 

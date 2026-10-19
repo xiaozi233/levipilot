@@ -523,3 +523,17 @@ pause_menu_on_focus_lost:0
 工具：`py -3.11 driver/ida_call.py <tool> --arg k=v`
 （例：`find_bytes --arg 'patterns=["73 65 74 62 6C 6F 63 6B 00"]'`、
 `xrefs_to --arg 'addrs=["0x14ec103c3"]'`、`decompile --arg 'addr=0x14b48ac80'`）。
+
+包/动作相关的补充地标：
+
+| 地标 | 地址 | 说明 |
+| --- | --- | --- |
+| `"CommandRequest"` | `0x14EB9CB7C` | 被 `sub_147C1BA50`（0x2DB24 B，巨型分派函数）引用；引用点在做 **FNV-1a 字符串哈希**（`0x811C9DC5` + `0x01000193`，与组件 id 同一套），说明包类型按名字哈希后分派 |
+| `"sprinting"` / `"StartSprinting"` | `0x14EC1B0F1` / `0x14EC1B0FB` | 相邻的 PlayerAction 名字；`StartSprinting` 被 `PlayerActionType_EnumTraits_Register`（`0x147C57D90`）引用——这就是 PlayerAction 枚举的注册点 |
+| `"key.sprint"` | `0x14EBA1E1F` | 被 `sub_141876D10`（按键映射表）引用两次，属**输入侧**，不是移动状态 |
+| 名字哈希 | — | `CommandRequest` → `0xF299795F`、`PlayerAction` → `0xC2E8E6BA`（FNV-1a-32，自行计算可复现） |
+
+结论：疾跑状态不在 ECS、也不在输入映射里；`StartSprinting` 的枚举注册点说明它走
+PlayerAction 包 → 服务端 handler。下一步要么 hook `PlayerActionType` 的处理分支
+（在巨型分派函数里按枚举值找 case），要么在服务端 `Player` 对象上找 `mIsSprinting`
+成员（需要先拿到 Actor*/Player* 指针，tag 组件给不了）。

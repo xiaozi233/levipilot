@@ -40,6 +40,7 @@ py -3.11 driver/run.py --scenario scenarios/setup-platform.json   # 铺 65x65 �
 py -3.11 driver/run.py --probe              # 传送 + 朝 +Z 走 20 tick，验证全链路
 py -3.11 driver/run.py --scenario scenarios/wall-stop.json        # 撞墙停住回归
 py -3.11 driver/run.py --scenario scenarios/walk-sneak.json       # 走 vs 潜行（0.2159 / 0.0648）
+py -3.11 driver/regress.py                                        # 全部场景回归门禁（约 45 s）
 py -3.11 driver/record_probe.py --seconds 45 --out out/probe.jsonl  # 被动录制（按键由官方 CUA 按）
 py -3.11 driver/analyze_probe.py out/probe.jsonl                  # 按速度自动分段 + 逐字节差分
 py -3.11 driver/probe_sprint.py                                   # 旧版标定（需要 helper 按键，已不推荐）

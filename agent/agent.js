@@ -100,6 +100,7 @@ const state = {
   inputPassthrough: false, // true = 不写输入，让真实按键透传（标定用）
   dumpCid: null, // 标定用：额外 dump 这个组件 id 的 storage chunk
   dumpLen: 2048,
+  adfAtTickStart: null, // 诊断：本 tick 开始时的 ADF word0（游戏留下的值）
   moveMode: null, // 'sprint' / 'sneak'（标定得到的语义状态，见 MOVE_FLAGS）
   moveFlagsApplied: 0, // 语义状态写入次数
   stateFlagsApplied: 0, // 状态位写入次数
@@ -664,7 +665,10 @@ function snapshotSample() {
     flags_hi: s.flags_hi,
     input: s.input,
   };
-  if (state.includeRaw) sample.raw = readRawComponents();
+  if (state.includeRaw) {
+    sample.raw = readRawComponents();
+    sample.adf_start = state.adfAtTickStart;
+  }
   return sample;
 }
 
@@ -843,6 +847,9 @@ function applyStateFlags() {
 //       在找到真正的驱动位之前，move_flags("sprint") 会明确报错，避免产出"看起来在跑、
 //       其实还是走"的假数据。
 const MOVE_FLAGS = {
+  // 疾跑：真实按键会置这些位，但实测注入后速度仍是走路——保留写入用于实验/诊断，
+  // 场景 DSL 不开放（见 driver/scenario.py 的 MOVE_MODES）。
+  sprint: { bits16: 0x02, rawFlags: 0x100, adf: [[0, 0x08]] },
   sneak: { bits16: 0x09, adf: [[0, 0x02], [1, 0x200]] },
 };
 const MOVE_FLAGS_KNOWN_UNSUPPORTED = {
@@ -976,6 +983,17 @@ function installHooks() {
             }
           }
           applyPendingTp();
+          // 诊断：本 tick 开始时游戏自己留下的 ADF word0。
+          // 如果开了 adf_override/move_flags 但这里每 tick 都读回旧值，说明我们的写入
+          // 被游戏在 tick 之间重算覆盖了（这决定了要换写入时机）。
+          if (state.recording.active) {
+            try {
+              const adf = state.playerAdf || component(CID.actorDataFlag, STRIDE.actorDataFlag);
+              state.adfAtTickStart = adf ? adf.readU64().toString() : null;
+            } catch (e) {
+              state.adfAtTickStart = null;
+            }
+          }
           if (state.jumpOnce) {
             state.jumpOnce = false;
             doJumpRequest();
@@ -1678,7 +1696,13 @@ rpc.exports = {
       };
     }
     state.moveMode = name;
-    return { ok: true, mode: name };
+    return {
+      ok: true,
+      mode: name,
+      ...(MOVE_FLAGS_KNOWN_UNSUPPORTED[name]
+        ? { warning: MOVE_FLAGS_KNOWN_UNSUPPORTED[name] }
+        : {}),
+    };
   },
 
   clearLook() {

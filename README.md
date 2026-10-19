@@ -33,6 +33,7 @@ Minecraft Bedrock **1.26.45.01** 的实验驱动 harness。
 
 ```bash
 py -3.11 driver/check_binary.py             # 不连游戏：校验 EXE 与 agent 指纹
+py -3.11 driver/bringup.py --launch --enter-world   # 重启后一键回到可实验状态（启动+进存档+等 agent）
 py -3.11 driver/run.py                      # 状态 / registry / 签名检查
 py -3.11 driver/run.py --diagnose           # 组件、双 registry 诊断
 py -3.11 driver/run.py --scenario scenarios/setup-platform.json   # 铺 65x65 测试平台
@@ -70,6 +71,14 @@ py -3.11 driver/native/crop_png.py out/a.png out/a_zoom.png 300 690 640 780 3   
 `point`/`click` 收的是**截图坐标**（自动换算屏幕物理像素，并回读 `cursorPoint` 打印
 `offset`），所以窗口挪位置、缩放变了都不用改数字。
 （`ELECTRON_RUN_AS_NODE=1` 必须是真正的环境变量前缀，放进字符串变量会 `command not found`。）
+
+**两条通道怎么选**：底层是同一个 helper（`ax_native.node`）。
+- **脚本里用 helper CLI**（`driver/native/cua.js`、`driver/native_cua.py`）：
+  它是普通子进程，Python 能直接调，`driver/bringup.py` 就是这么做的。
+- **我在会话里交互操作时用官方 `agent.computerUse`**（`mcp__node_repl__js` + bootstrap）：
+  它只存在于模型的 node-repl 沙箱里，Python 脚本无法调用；好处是不抢焦点、
+  自带无障碍信息和缩放后的光栅。
+两者对 Minecraft 的结论完全一致（点击被丢弃、悬停接管焦点、世界内鼠标被抢）。
 
 进存档的完整流程、像素参考表、坐标标定数据和排查顺序见 skill
 **`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。

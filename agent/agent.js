@@ -1882,6 +1882,41 @@ rpc.exports = {
     };
   },
 
+  // 读某个组件 storage 里玩家元素所在 chunk 的任意窗口字节（stride 未知时用）。
+  storageBytes(cid, offset, len) {
+    try {
+      const typeId = Number(cid) >>> 0;
+      const storage = storageFor(typeId);
+      if (!storage) return { ok: false, error: 'component storage not found' };
+      if (state.player === null) return { ok: false, error: 'player not resolved' };
+      const dense = denseIndexOf(storage, state.player);
+      if (dense < 0) return { ok: false, error: 'player not in component' };
+      const chunkTable = storage.add(SS.chunkTable).readPointer();
+      if (chunkTable.isNull()) return { ok: false, error: 'no chunk table' };
+      const chunk = chunkTable.add(8 * (dense >> 7)).readPointer();
+      if (chunk.isNull()) return { ok: false, error: 'no chunk' };
+      return {
+        ok: true,
+        cid: `0x${typeId.toString(16)}`,
+        dense,
+        hex: hexBytes(chunk.add(Number(offset) || 0), Math.max(1, Number(len) || 64)),
+      };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  // 直接读任意地址的字节（危险但有用：跟随指针看 Player 对象成员）。
+  readMemory(addrHex, len) {
+    try {
+      const p = ptr(String(addrHex));
+      if (p.isNull()) return { ok: false, error: 'null address' };
+      return { ok: true, addr: p.toString(), hex: hexBytes(p, Math.max(1, Number(len) || 64)) };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
   // 枚举到的组件里，读写玩家元素所在 chunk 的某个 float（stride 未知时的实验手段）。
   // 只在 dense 索引为 0 时位置才严格等于 chunk+offset；其它情况会返回 dense 供判断。
   storageFloat(cid, offset, value) {

@@ -236,6 +236,12 @@ agent 逐 tick 采样组件原始字节（`start_recording(..., include_raw=True
   `ServerPlayer`/`Player` 的成员字段，或属性（attributes）容器。
   可用工具：`driver/record_probe.py --dump-all-every 5` +
   `driver/analyze_probe.py`（自动聚类分段 + 控制组过滤）。
+- **放大输入幅度也模拟不了疾跑**：`forward=1.3` 实测仍是 **0.2159**（输入被归一化/clamp，
+  1.5 甚至略降到 0.2030），所以不能像潜行那样用 `×1.3` 的输入来冒充疾跑。
+  潜行能这么做是因为 0.3 落在 `[0,1]` 内、本来就是原版的做法。
+- `LocalPlayerComponent`（`0xacb47b38`）和 `PlayerComponent`（`0xf95d258f`）是 **tag 组件**，
+  没有载荷 chunk（读 chunk 指针得到 `-1`），拿不到 Player 对象指针；
+  想扫 `Player` 成员得换别的入口（如 `blockQuery`/`moveInput` 调用链上的 `this`）。
 
 ## 5. 写路径与实测结论
 

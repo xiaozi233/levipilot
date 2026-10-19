@@ -264,8 +264,9 @@ Python 侧用 `snake_case` 调用（frida-python 会自动转成 JS `camelCase`�
   避免产出假数据。标定工具：`driver/probe_sprint.py`，详见 `docs/offsets…` §4.1。
   已排除的位置：ADF 各位、`MoveInput +0x00/+0x54/+0x60`、`PlayerInputRequest` 前 2 KB、
   以及**全部 ECS 组件**（枚举客户端 508 / 服务端 507 个 storage，控制组过滤后只剩一个
-  `0.1→0.13` 的派生 float，写入不改变速度）。下一步去非 ECS 路径找：`PlayerAuthInput`/
-  `PlayerActionPacket` 包或属性容器。
+  `0.1→0.13` 的派生 float，写入不改变速度）。放大输入也不管用：`forward=1.3` 被 clamp，
+  仍是 0.2159（潜行能靠 0.3 倍输入，是因为它在 [0,1] 内）。下一步去非 ECS 路径找：
+  `PlayerAuthInput`/`PlayerActionPacket` 包或属性容器。
 - **命令派发 RPC**：进程内直接发 `CommandRequestPacket`，彻底不依赖窗口消息。
 - **GameTest**：`spawnSimulatedPlayer` 与真实输入的等价性实验。
 

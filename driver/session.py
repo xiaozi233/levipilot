@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import shutil
 import sys
 import tempfile
@@ -14,17 +15,62 @@ import frida
 ROOT = Path(__file__).resolve().parents[1]
 AGENT = ROOT / "agent" / "agent.js"
 
+# 本进程 attach 时新建的 frida 临时目录；进程退出时统一删除。
+# 不能每次 close() 就删：同一进程里的下一次 attach 会复用同一个目录，
+# 删掉后会出现 "unable to find DLL at ...frida-agent.dll"。
+_PROCESS_TEMPS: set[Path] = set()
+_ATEXIT_REGISTERED = False
+
 
 def _frida_temp_dirs() -> set[Path]:
     """frida 每加载一次 script 都会在 %TEMP% 建一个 frida-<hash> 目录（约 44 MB）。
 
-    detach 之后它不会自己消失，反复 attach 会把 C 盘吃满（实测 165 个目录 = 7 GB）。
+    进程退出后它不会自己消失，反复跑 driver 会把 C 盘吃满（实测 165 个 = 7 GB）。
     """
     tmp = Path(tempfile.gettempdir())
     try:
         return {p for p in tmp.glob("frida-*") if p.is_dir()}
     except OSError:
         return set()
+
+
+def _cleanup_paths(paths: set[Path]) -> None:
+    for path in paths:
+        # script 刚 unload 时 frida-agent 的 dll 可能还被短暂映射着，重试几次。
+        for _ in range(4):
+            shutil.rmtree(path, ignore_errors=True)
+            if not path.exists():
+                break
+            time.sleep(0.15)
+
+
+def _cleanup_process_temps() -> None:
+    _cleanup_paths(set(_PROCESS_TEMPS))
+    _PROCESS_TEMPS.clear()
+
+
+def _register_process_temps(paths: set[Path]) -> None:
+    global _ATEXIT_REGISTERED
+    if not paths:
+        return
+    _PROCESS_TEMPS.update(paths)
+    if not _ATEXIT_REGISTERED:
+        atexit.register(_cleanup_process_temps)
+        _ATEXIT_REGISTERED = True
+
+
+def _prune_stale_temps(max_age_seconds: float = 600.0) -> None:
+    """顺手清掉很久以前遗留的 frida 目录（不碰正在运行的会话）。"""
+    now = time.time()
+    stale = set()
+    for path in _frida_temp_dirs():
+        try:
+            if now - path.stat().st_mtime > max_age_seconds:
+                stale.add(path)
+        except OSError:
+            continue
+    if stale:
+        _cleanup_paths(stale)
 
 
 class HarnessError(RuntimeError):
@@ -45,6 +91,7 @@ class Session:
     # -- lifecycle ---------------------------------------------------------
     def open(self) -> "Session":
         # 只清理"本次 attach 新产生"的临时目录，绝不碰别的 frida 进程正在用的。
+        _prune_stale_temps()
         self._temps_before = _frida_temp_dirs()
         try:
             self._session = frida.attach(self.target)
@@ -61,6 +108,9 @@ class Session:
         self._script = self._session.create_script(source, name="mcbe-harness")
         self._script.on("message", self._on_message)
         self._script.load()
+        # 记下本次 attach 新建的 frida 临时目录，进程退出时删（不能在 close 时删，
+        # 同一进程的下一次 attach 会复用同一个目录）。
+        _register_process_temps(_frida_temp_dirs() - self._temps_before)
 
         init = self.call("init")
         if not init.get("ok"):
@@ -85,20 +135,8 @@ class Session:
             except Exception:
                 pass
             self._session = None
-        self._cleanup_temp()
-
-    def _cleanup_temp(self) -> None:
-        """删掉本次 attach 新建的 frida 临时目录（detach 后一般就能删）。"""
-        if self._temps_before is None:
-            return
-        for path in _frida_temp_dirs() - self._temps_before:
-            # script 刚 unload 时 frida-agent 的 dll 可能还被短暂映射着，
-            # 删不掉就等 200ms 再试；实在删不掉就留给系统清理。
-            for attempt in range(4):
-                shutil.rmtree(path, ignore_errors=True)
-                if not path.exists():
-                    break
-                time.sleep(0.2)
+        # 临时目录在进程退出时统一清（见 _register_process_temps）：
+        # 同一进程里可能还要再 attach，目录会被复用，提前删会导致 attach 失败。
         self._temps_before = None
 
     def __enter__(self) -> "Session":

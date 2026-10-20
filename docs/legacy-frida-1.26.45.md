@@ -1,8 +1,9 @@
 # 旧路线：frida RPC（Minecraft 1.26.45.01）
 
 > 历史资料。当前主路径是 LeviLamina 客户端 mod，见仓库根目录的 README。
-> 这份文档保留旧 frida agent / `driver/run.py` 的约束、运行时结论和标定结果，
-> 对理解游戏内部机制仍然有用。
+> 旧代码（`agent/`、`driver/run.py`、`driver/session.py`、`driver/postmsg.py` 等）
+> 已从 `main` 移除，完整保留在 **`legacy/frida`** 分支；主分支只保留本文档。
+> 这份文档记录旧路线的约束、运行时结论和标定结果，对理解游戏内部机制仍然有用。
 
 ## 约束
 
@@ -17,21 +18,22 @@
 - Python 3.11（`py -3.11`），frida 17.18.0；Python 3.14 默认解释器没有 frida。
 - 地址与组件布局见 [`offsets-1.26.45.01.md`](offsets-1.26.45.01.md)。
 - frida 每次加载 script 会在 `%TEMP%` 建一个 `frida-*` 目录（~44 MB），detach 后不自动消失。
-  `../driver/session.py` 会在 `close()` 时只删本次 attach 新建的那些。
+  旧分支的 `driver/session.py` 会在 `close()` 时只删本次 attach 新建的那些。
 
 ## 快速开始
 
 游戏需已启动并进入世界。先铺测试平台，之后所有场景都在平台中心 (0.5, -49, 0.5) 跑。
 
 ```bash
+git switch legacy/frida                      # 旧代码只在这个分支
 py -3.11 driver/check_binary.py             # 不连游戏：校验 EXE 与 agent 指纹
 py -3.11 driver/bringup.py --launch --enter-world   # 重启后一键回到可实验状态（离线兜底）
 py -3.11 driver/run.py                      # 状态 / registry / 签名检查
 py -3.11 driver/run.py --diagnose           # 组件、双 registry 诊断
-py -3.11 driver/run.py --scenario ../scenarios/setup-platform.json
+py -3.11 driver/run.py --scenario scenarios/setup-platform.json
 py -3.11 driver/run.py --probe              # 传送 + 朝 +Z 走 20 tick
-py -3.11 driver/run.py --scenario ../scenarios/wall-stop.json
-py -3.11 driver/run.py --scenario ../scenarios/walk-sneak.json
+py -3.11 driver/run.py --scenario scenarios/wall-stop.json
+py -3.11 driver/run.py --scenario scenarios/walk-sneak.json
 py -3.11 driver/regress.py                  # 全部场景回归门禁（约 45 s）
 py -3.11 driver/record_probe.py --seconds 45 --out out/probe.jsonl
 py -3.11 driver/analyze_probe.py out/probe.jsonl
@@ -39,7 +41,7 @@ py -3.11 driver/probe_sprint.py             # 旧版标定（需要 helper 按�
 py -3.11 driver/run.py --command "setblock 3 -49 3 stone"
 py -3.11 driver/run.py --block 0 -50 0
 py -3.11 driver/run.py --scan -4 4 -4 4
-py -3.11 driver/run.py --scenario ../scenarios/teardown-platform.json
+py -3.11 driver/run.py --scenario scenarios/teardown-platform.json
 py -3.11 driver/run.py 12345 --probe        # 按 PID
 ```
 

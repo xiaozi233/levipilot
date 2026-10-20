@@ -1,7 +1,7 @@
 # Scenario DSL
 
 `scenarios/*.json` 是逐 tick 实验的描述文件。当前入口是 **`driver/run_mod.py`**（LeviLamina
-mod 传输层）；旧的 `driver/run.py` 仍保留给 frida 路线，见
+mod 传输层）；旧的 `driver/run.py` 在 `legacy/frida` 分支，见
 [`legacy-frida-1.26.45.md`](legacy-frida-1.26.45.md)。
 
 ```bash

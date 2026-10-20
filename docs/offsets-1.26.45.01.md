@@ -1,5 +1,8 @@
 # Minecraft Bedrock 1.26.45.01 偏移与地址
 
+> 旧 frida 路线的参考数据。对应的代码（`agent/`、`driver/run.py`、
+> `driver/record_probe.py` 等）在 **`legacy/frida`** 分支，主分支只保留文档。
+
 所有 VA 以 image base `0x140000000` 为基准；agent 运行时按模块实际基址重定位。
 
 证据标签：

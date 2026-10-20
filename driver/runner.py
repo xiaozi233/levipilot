@@ -250,9 +250,10 @@ def run_scenario(
 ) -> RunResult:
     """Run all steps, recording every tick. Raises RunError on agent failure.
 
-    ``command_sender`` executes a server command through the game's chat box
-    (see ``driver.postmsg``). It is used for ``setup.commands`` and ``tp`` steps
-    because client-side position writes are corrected by the server.
+    ``command_sender`` executes a server command (the mod transport passes
+    ``ModAgent.command``; the legacy frida route used a chat-window sender).
+    It is used for ``setup.commands`` and ``tp`` steps because client-side
+    position writes are corrected by the server.
     ``block_reader`` verifies ``setup.verify`` entries through the block query.
     """
     emit = log or (lambda *_: None)

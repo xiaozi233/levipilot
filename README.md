@@ -60,7 +60,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
-- 旧 frida 路线（1.26.45.01，历史资料）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
+- 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
 - IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
 
 ## 状态与限制

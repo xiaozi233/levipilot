@@ -28,6 +28,16 @@ jobs:
         with:
           llvm-version: 22
 
+      - name: Export LLVM compiler paths
+        shell: pwsh
+        run: |
+          $clang = (Get-Command clang.exe).Source
+          $clangxx = (Get-Command clang++.exe).Source
+          "CC=$clang" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CXX=$clangxx" | Out-File -FilePath $env:GITHUB_ENV -Append
+          clang --version
+          clang-cl --version
+
       - name: Update xmake repositories
         run: xmake repo -u
 

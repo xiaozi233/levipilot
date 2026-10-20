@@ -385,3 +385,9 @@ ZCode 的 `ida-pro-mcp` 不是直连 IDA，而是启动一个**长驻的 stdio �
 - 这套 supervisor 要求每次工具调用带 `database=<session_id>`；
   ZCode 装的工具 schema 里没有这个参数，所以库相关工具走直连
   `mcp.py <tool> '{"database":"mcbr", ...}'` 更省事（ZCode 路径只有 `idb_list`/`idb_open` 能用）。
+
+---
+
+## License
+
+LGPL-3.0. See [LICENSE](LICENSE).

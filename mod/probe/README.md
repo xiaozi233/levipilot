@@ -26,4 +26,4 @@ PRs accepted.
 
 ## License
 
-CC0-1.0 © LeviMC(LiteLDev)
+LGPL-3.0. See [LICENSE](LICENSE).

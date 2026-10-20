@@ -25,6 +25,26 @@
 - **快捷栏**：在 tick 之后调用 `PlayerInventory::selectSlot(slot, ContainerID::Inventory)`；
   放在 tick 之前会被原 tick 覆盖。
 
+## 物品栏
+
+- 读：客户端 `LocalPlayer` 的 `Inventory`（slots）、`getArmor(ArmorSlot)`、`getOffhandSlot()`，
+  在 tick 之后采样。
+- 写：服务器线程拿到服务端 `Player`，用 `Inventory::setItem` / `Player::setArmor` /
+  `setOffhandSlot` 修改，再 `sendInventory(true)` 同步回客户端。
+- 物品解析：`Level::getItemRegistry().lookupByName(aux, name)` →
+  `ItemStack::reinit(item, count, aux)`；名字找不到返回 `unknown_item`。
+- `give` 用 `Inventory::add`；`clear_inventory` 逐个槽位写空 stack。
+
+## 实体
+
+- 按 `runtime_id` 在 `Level::getRuntimeActorList()` 里查找目标；查询/攻击/交互都在客户端 tick 中执行。
+- `attack_entity` → `GameMode::attack(actor, actor->getHeadPos())`
+- `interact_entity` → 转向实体 + 注入主手使用按钮（3 tick）。**不要**直接调用
+  `Player::interact` / `GameMode::interact`：空 item 上下文会触发 `[rsi+0x1D0]`（RSI=0）
+  崩溃。输入注入是 best effort，是否产生实际交互取决于手持物和瞄准。
+- `look_at_entity` 用玩家头部到实体头部的向量算 yaw/pitch：
+  `yaw = atan2(-dx, dz)`、`pitch = -atan2(dy, horizontal)`，再走 `_applyTurnDelta`。
+
 ## Macro
 
 - 文件格式与 dmf-mpk 一致：每 tick 9 或 11 个字符串

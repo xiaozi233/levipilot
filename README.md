@@ -5,11 +5,13 @@ Minecraft Bedrock **1.26.51.01** 的客户端实验 harness：一个 LeviLamina 
 
 ## 能做什么
 
-- **读**：玩家位置/速度/朝向/生命/饥饿/经验/手持物/输入状态、附近实体、任意方块
-- **控制**：移动、疾跑、潜行、跳跃、飞行、绝对/相对视角、左右键、快捷栏、服务端权威传送
+- **读**：玩家位置/速度/朝向/生命/饥饿/经验/手持物/输入状态、完整背包/盔甲/副手、附近实体、任意方块
+- **控制**：移动、疾跑、潜行、跳跃、飞行、绝对/相对视角、左右键、快捷栏、服务端权威传送；
+  按 `runtime_id` 查询/转向/攻击/交互实体
 - **执行**：任意服务端命令（`fill`/`tp`/`setblock`…），保留 `@s`/`~` 语义
 - **Macro**：dmf-mpk 兼容格式的加载、播放、录制，含真实鼠标左右键
-- **实验**：逐 tick 采样、场景 DSL（setup → steps → verify/teardown → JSONL + summary）
+- **实验**：逐 tick 采样、场景 DSL（setup → steps → verify/teardown → JSONL + summary）、
+  `driver/selftest.py` live 自检
 
 ## 快速开始
 
@@ -69,13 +71,15 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
   服务端传送、服务端命令、macro 播放/录制、真实鼠标按键、场景 DSL。
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）。
 - `command` 的方块类命令是 deferred，`success=false` 不代表失败，效果以 `blocks`/verify 为准。
+- `interact_entity` 是转向 + 注入使用按钮（best effort）；直接调用游戏的实体交互函数会崩溃。
 - `smoothMacro` / `frameBasedRotation` 未复刻，实现是逐 tick 的。
 - 只对应 **1.26.51.01**，游戏升级后需要重新构建。
 
 ## 测试
 
 ```bash
-py -3.11 -m unittest discover -s tests -v
+py -3.11 -m unittest discover -s tests -v   # 不需要游戏
+py -3.11 driver/selftest.py                 # 需要游戏已进入存档
 ```
 
 ## License

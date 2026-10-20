@@ -18,6 +18,7 @@
 #include "mc/deps/input/enums/ButtonState.h"
 #include "mc/deps/input/enums/FocusImpact.h"
 #include "mc/deps/core/utility/MCRESULT.h"
+#include "mc/deps/shared_types/legacy/actor/ArmorSlot.h"
 #include "mc/entity/components/MoveInputComponent.h"
 #include "mc/entity/components/PlayerActionComponent.h"
 #include "mc/server/ServerInstance.h"
@@ -30,7 +31,9 @@
 #include "mc/server/commands/ServerCommandOrigin.h"
 #include "mc/world/ContainerID.h"
 #include "mc/world/Minecraft.h"
+#include "mc/world/actor/player/Inventory.h"
 #include "mc/world/actor/player/PlayerInventory.h"
+#include "mc/world/item/registry/ItemRegistryRef.h"
 #include "mc/world/level/dimension/DimensionType.h"
 #include "mc/input/MoveInputState.h"
 #include "mc/platform/UUID.h"
@@ -67,6 +70,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 
@@ -159,6 +163,40 @@ std::string formatFloat(float value) {
     char buffer[32]{};
     std::snprintf(buffer, sizeof(buffer), "%.9g", static_cast<double>(value));
     return std::string{buffer};
+}
+
+nlohmann::json itemJson(ItemStack const& item) {
+    if (item.isNull()) {
+        return nullptr;
+    }
+    return {
+        {"type", item.getTypeName()},
+        {"name", item.getName()},
+        {"count", static_cast<int>(item.mCount)},
+        {"aux", static_cast<int>(item.mAuxValue)},
+    };
+}
+
+bool makeItemStack(
+    Level&             level,
+    std::string const& name,
+    int                count,
+    int                aux,
+    ItemStack&         out,
+    std::string&       error
+) {
+    if (count <= 0) {
+        out = ItemStack{};
+        return true;
+    }
+    int  itemAux = aux;
+    auto item    = level.getItemRegistry().lookupByName(itemAux, std::string_view{name});
+    if (!item) {
+        error = "unknown_item: " + name;
+        return false;
+    }
+    out.reinit(*item, count, itemAux);
+    return true;
 }
 
 std::string blockName(BlockSource const& source, int x, int y, int z) {
@@ -352,7 +390,7 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
         // server-side player so "fly off" actually sticks.
         if (auto server = ll::service::bedrock::getServerInstance()) {
             std::string name = player.getRealName();
-            server->queueForServerThread([this, name, enabled] {
+            server->queueForServerThread([name, enabled] {
                 auto  minecraft = ll::service::bedrock::getMinecraft();
                 Level* level    = minecraft ? minecraft->getLevel() : nullptr;
                 Player* serverPlayer = (level != nullptr && !name.empty()) ? level->getPlayer(name) : nullptr;
@@ -488,6 +526,19 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     }
     if (mButtonsRequested.exchange(false)) {
         captureButtons(*client);
+    }
+    if (mInventoryRequested.exchange(false)) {
+        captureInventory(player);
+    }
+    {
+        std::optional<EntityAction> action;
+        {
+            std::lock_guard lock(mEntityActionMutex);
+            action.swap(mEntityAction);
+        }
+        if (action) {
+            applyEntityAction(player, *action);
+        }
     }
 
     {
@@ -681,7 +732,10 @@ void ProbeMod::performClick(LocalPlayer& player, int button) {
         auto const& block = player.getDimensionBlockSourceConst().getBlock(hit.mBlock);
         gm.useItemOn(item, hit.mBlock, hit.mFacing, hit.mPos, HandSlot::Mainhand, &block, true);
     } else if (hit.mType == HitResultType::Entity && hit.getEntity()) {
-        gm.interact(*hit.getEntity(), hit.mPos, HandSlot::Mainhand);
+        // Empty-hand entity use dereferences a null item inside the game.
+        if (!player.getSelectedItem().isNull()) {
+            gm.interact(*hit.getEntity(), hit.mPos, HandSlot::Mainhand);
+        }
     } else {
         gm.useItem(item, HandSlot::Mainhand);
     }
@@ -927,6 +981,322 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
     }
 
     enqueue(j.dump());
+}
+
+void ProbeMod::captureInventory(LocalPlayer& player) {
+    nlohmann::json out;
+    out["event"]         = "inventory";
+    out["selected_slot"] = player.getSelectedItemSlot();
+
+    auto& inventory = player.getInventory();
+    int   size      = inventory.getContainerSize();
+    out["size"]     = size;
+    out["slots"]    = nlohmann::json::array();
+    for (int i = 0; i < size; ++i) {
+        out["slots"].push_back({
+            {"slot", i},
+            {"item", itemJson(inventory.getItem(i))},
+        });
+    }
+
+    out["armor"] = nlohmann::json::array();
+    for (int i = 0; i < static_cast<int>(SharedTypes::Legacy::ArmorSlot::HumanoidCount); ++i) {
+        out["armor"].push_back({
+            {"slot", i},
+            {"item", itemJson(player.getArmor(static_cast<SharedTypes::Legacy::ArmorSlot>(i)))},
+        });
+    }
+    out["offhand"] = itemJson(player.getOffhandSlot());
+
+    enqueue(out.dump());
+}
+
+void ProbeMod::applyEntityAction(LocalPlayer& player, EntityAction const& action) {
+    auto level = ll::service::bedrock::getLevel();
+    if (!level) {
+        enqueue(R"({"event":"error","reason":"level_unavailable"})");
+        return;
+    }
+
+    Actor* target = nullptr;
+    for (auto* actor : level->getRuntimeActorList()) {
+        if (actor != nullptr
+            && static_cast<std::uint64_t>(actor->getRuntimeID()) == action.runtimeId) {
+            target = actor;
+            break;
+        }
+    }
+    if (target == nullptr) {
+        enqueue(R"({"event":"error","reason":"entity_not_found"})");
+        return;
+    }
+
+    if (action.kind == EntityAction::Kind::Info) {
+        auto const& pos = target->getPosition();
+        auto        vel = target->getVelocity();
+        auto const  rot = target->getRotation();
+        auto const& origin = player.getPosition();
+        float       dx = static_cast<float>(pos.x - origin.x);
+        float       dy = static_cast<float>(pos.y - origin.y);
+        float       dz = static_cast<float>(pos.z - origin.z);
+
+        nlohmann::json out;
+        out["event"]       = "entity_info";
+        out["runtime_id"]  = action.runtimeId;
+        out["type"]        = target->getTypeName();
+        out["name"]        = target->getNameTag();
+        out["is_player"]   = target->isPlayer();
+        out["is_alive"]    = target->isAlive();
+        out["health"]      = target->getHealth();
+        out["x"]           = finiteOrZero(static_cast<float>(pos.x));
+        out["y"]           = finiteOrZero(static_cast<float>(pos.y));
+        out["z"]           = finiteOrZero(static_cast<float>(pos.z));
+        out["vx"]          = finiteOrZero(static_cast<float>(vel.x));
+        out["vy"]          = finiteOrZero(static_cast<float>(vel.y));
+        out["vz"]          = finiteOrZero(static_cast<float>(vel.z));
+        out["yaw"]         = finiteOrZero(rot.y);
+        out["pitch"]       = finiteOrZero(rot.x);
+        out["distance"]    = finiteOrZero(std::sqrt(dx * dx + dy * dy + dz * dz));
+        out["on_ground"]   = target->isOnGround();
+        enqueue(out.dump());
+        return;
+    }
+
+    if (!player.mGameMode) {
+        enqueue(R"({"event":"error","reason":"gamemode_unavailable"})");
+        return;
+    }
+
+    if (action.kind == EntityAction::Kind::Attack) {
+        std::string const type         = target->getTypeName();
+        float const       healthBefore = target->getHealth();
+        bool              ok           = player.mGameMode->attack(*target, target->getHeadPos());
+        enqueue(nlohmann::json{
+            {"event", "entity_attacked"},
+            {"runtime_id", action.runtimeId},
+            {"ok", ok},
+            {"type", type},
+            {"health_before", healthBefore},
+        }.dump());
+        return;
+    }
+
+    if (action.kind == EntityAction::Kind::Interact) {
+        // Calling Player::interact / GameMode::interact directly crashes this
+        // build with a null internal item context. Instead, aim at the entity
+        // and press the game's own use button for a few ticks.
+        Vec3 const eye = player.getHeadPos();
+        Vec3 const aim = target->getHeadPos();
+        double     dx  = aim.x - eye.x;
+        double     dy  = aim.y - eye.y;
+        double     dz  = aim.z - eye.z;
+        double     horiz = std::sqrt(dx * dx + dz * dz);
+        constexpr double RadToDeg = 57.29577951308232;
+        float yaw   = static_cast<float>(std::atan2(-dx, dz) * RadToDeg);
+        float pitch = static_cast<float>(-std::atan2(dy, horiz) * RadToDeg);
+
+        auto const rot    = player.getRotation();
+        float      dyaw   = wrapDegrees(yaw - rot.y);
+        float      dpitch = rot.x - pitch;
+        if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
+            player._applyTurnDelta(Vec2{dpitch, dyaw});
+        }
+        {
+            std::lock_guard lock(mInputMutex);
+            mDesired      = ControlState{};
+            mDesired.rmb  = true;
+            mDesired.active = true;
+            mDesiredTicks = 3;
+        }
+
+        enqueue(nlohmann::json{
+            {"event", "entity_interacted"},
+            {"runtime_id", action.runtimeId},
+            {"ok", true},
+            {"method", "input"},
+            {"type", target->getTypeName()},
+        }.dump());
+        return;
+    }
+
+    if (action.kind == EntityAction::Kind::LookAt) {
+        Vec3 const eye = player.getHeadPos();
+        Vec3 const aim = target->getHeadPos();
+        double     dx  = aim.x - eye.x;
+        double     dy  = aim.y - eye.y;
+        double     dz  = aim.z - eye.z;
+        double     horiz = std::sqrt(dx * dx + dz * dz);
+        constexpr double RadToDeg = 57.29577951308232;
+        float yaw   = static_cast<float>(std::atan2(-dx, dz) * RadToDeg);
+        float pitch = static_cast<float>(-std::atan2(dy, horiz) * RadToDeg);
+
+        auto const rot = player.getRotation();
+        float      dyaw   = wrapDegrees(yaw - rot.y);
+        float      dpitch = rot.x - pitch;
+        if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
+            player._applyTurnDelta(Vec2{dpitch, dyaw});
+        }
+
+        enqueue(nlohmann::json{
+            {"event", "look_at_done"},
+            {"runtime_id", action.runtimeId},
+            {"yaw", yaw},
+            {"pitch", pitch},
+        }.dump());
+    }
+}
+
+void ProbeMod::queueInventoryWrite(
+    std::string const& container,
+    int                slot,
+    std::string const& itemName,
+    int                count,
+    int                aux
+) {
+    auto server = ll::service::bedrock::getServerInstance();
+    if (!server) {
+        enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
+        return;
+    }
+    std::string name;
+    {
+        std::lock_guard lock(mPlayerNameMutex);
+        name = mLocalPlayerName;
+    }
+    if (name.empty()) {
+        enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
+        return;
+    }
+
+    server->queueForServerThread([this, name, container, slot, itemName, count, aux] {
+        auto   minecraft = ll::service::bedrock::getMinecraft();
+        Level* level     = minecraft ? minecraft->getLevel() : nullptr;
+        Player* player   = (level != nullptr) ? level->getPlayer(name) : nullptr;
+        if (player == nullptr) {
+            enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
+            return;
+        }
+
+        ItemStack   stack;
+        std::string error;
+        if (!makeItemStack(*level, itemName, count, aux, stack, error)) {
+            enqueue(nlohmann::json{{"event", "error"}, {"reason", error}}.dump());
+            return;
+        }
+
+        std::string applied = container;
+        if (container == "armor") {
+            if (slot < 0 || slot >= static_cast<int>(SharedTypes::Legacy::ArmorSlot::HumanoidCount)) {
+                enqueue(R"({"event":"error","reason":"armor_slot_out_of_range"})");
+                return;
+            }
+            player->setArmor(static_cast<SharedTypes::Legacy::ArmorSlot>(slot), stack);
+        } else if (container == "offhand") {
+            player->setOffhandSlot(stack);
+            applied = "offhand";
+        } else {
+            int size = player->getInventory().getContainerSize();
+            if (slot < 0 || slot >= size) {
+                enqueue(R"({"event":"error","reason":"inventory_slot_out_of_range"})");
+                return;
+            }
+            player->getInventory().setItem(slot, stack);
+            applied = "inventory";
+        }
+        player->sendInventory(true);
+
+        enqueue(nlohmann::json{
+            {"event", "inventory_set"},
+            {"container", applied},
+            {"slot", slot},
+            {"item", itemJson(stack)},
+        }.dump());
+    });
+}
+
+void ProbeMod::queueGive(std::string const& itemName, int count, int aux) {
+    auto server = ll::service::bedrock::getServerInstance();
+    if (!server) {
+        enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
+        return;
+    }
+    std::string name;
+    {
+        std::lock_guard lock(mPlayerNameMutex);
+        name = mLocalPlayerName;
+    }
+    if (name.empty()) {
+        enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
+        return;
+    }
+
+    server->queueForServerThread([this, name, itemName, count, aux] {
+        auto   minecraft = ll::service::bedrock::getMinecraft();
+        Level* level     = minecraft ? minecraft->getLevel() : nullptr;
+        Player* player   = (level != nullptr) ? level->getPlayer(name) : nullptr;
+        if (player == nullptr) {
+            enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
+            return;
+        }
+
+        ItemStack   stack;
+        std::string error;
+        if (!makeItemStack(*level, itemName, count, aux, stack, error)) {
+            enqueue(nlohmann::json{{"event", "error"}, {"reason", error}}.dump());
+            return;
+        }
+        bool ok = player->getInventory().add(stack);
+        player->sendInventory(true);
+
+        enqueue(nlohmann::json{
+            {"event", "inventory_given"},
+            {"ok", ok},
+            {"requested", count},
+            {"remaining", static_cast<int>(stack.mCount)},
+            {"item", itemJson(stack)},
+        }.dump());
+    });
+}
+
+void ProbeMod::queueClearInventory() {
+    auto server = ll::service::bedrock::getServerInstance();
+    if (!server) {
+        enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
+        return;
+    }
+    std::string name;
+    {
+        std::lock_guard lock(mPlayerNameMutex);
+        name = mLocalPlayerName;
+    }
+    if (name.empty()) {
+        enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
+        return;
+    }
+
+    server->queueForServerThread([this, name] {
+        auto   minecraft = ll::service::bedrock::getMinecraft();
+        Level* level     = minecraft ? minecraft->getLevel() : nullptr;
+        Player* player   = (level != nullptr) ? level->getPlayer(name) : nullptr;
+        if (player == nullptr) {
+            enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
+            return;
+        }
+
+        ItemStack empty;
+        auto&     inventory = player->getInventory();
+        int       size      = inventory.getContainerSize();
+        for (int i = 0; i < size; ++i) {
+            inventory.setItem(i, empty);
+        }
+        for (int i = 0; i < static_cast<int>(SharedTypes::Legacy::ArmorSlot::HumanoidCount); ++i) {
+            player->setArmor(static_cast<SharedTypes::Legacy::ArmorSlot>(i), empty);
+        }
+        player->setOffhandSlot(empty);
+        player->sendInventory(true);
+
+        enqueue(nlohmann::json{{"event", "inventory_cleared"}, {"size", size}}.dump());
+    });
 }
 
 void ProbeMod::captureEntities(LocalPlayer& player) {
@@ -1491,6 +1861,57 @@ void ProbeMod::handleLine(std::string const& line) {
     if (cmd == "select_slot") {
         mSlotRequest.store(std::clamp(j.value("slot", 0), 0, 8));
         enqueue(R"({"event":"select_slot_ok"})");
+        return;
+    }
+    if (cmd == "inventory") {
+        if (!mInWorld.load()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+        } else {
+            mInventoryRequested = true;
+        }
+        return;
+    }
+    if (cmd == "set_item" || cmd == "clear_item") {
+        auto const container = j.value("container", std::string{"inventory"});
+        if (container != "inventory" && container != "armor" && container != "offhand") {
+            enqueue(R"({"event":"error","reason":"bad_container"})");
+            return;
+        }
+        bool const clear = cmd == "clear_item";
+        queueInventoryWrite(
+            container,
+            j.value("slot", 0),
+            clear ? std::string{} : j.value("item", std::string{}),
+            clear ? 0 : j.value("count", 1),
+            clear ? 0 : j.value("aux", 0)
+        );
+        return;
+    }
+    if (cmd == "give") {
+        queueGive(j.value("item", std::string{}), j.value("count", 1), j.value("aux", 0));
+        return;
+    }
+    if (cmd == "clear_inventory") {
+        queueClearInventory();
+        return;
+    }
+    if (cmd == "entity" || cmd == "attack_entity" || cmd == "interact_entity"
+        || cmd == "look_at_entity") {
+        EntityAction action;
+        if (cmd == "entity") {
+            action.kind = EntityAction::Kind::Info;
+        } else if (cmd == "attack_entity") {
+            action.kind = EntityAction::Kind::Attack;
+        } else if (cmd == "interact_entity") {
+            action.kind = EntityAction::Kind::Interact;
+        } else {
+            action.kind = EntityAction::Kind::LookAt;
+        }
+        action.runtimeId = j.value("runtime_id", std::uint64_t{0});
+        {
+            std::lock_guard lock(mEntityActionMutex);
+            mEntityAction = action;
+        }
         return;
     }
     if (cmd == "click") {

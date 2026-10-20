@@ -70,6 +70,13 @@ struct TeleportRequest {
     float pitch       = 0.0f;
 };
 
+struct EntityAction {
+    enum class Kind { Info, Attack, Interact, LookAt };
+
+    Kind          kind      = Kind::Info;
+    std::uint64_t runtimeId = 0;
+};
+
 class ProbeMod {
 public:
     static ProbeMod& getInstance();
@@ -96,6 +103,17 @@ private:
     void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
     void applySlotRequest(LocalPlayer& player, int slot);
     void captureState(ClientInstance& client, LocalPlayer& player);
+    void captureInventory(LocalPlayer& player);
+    void applyEntityAction(LocalPlayer& player, EntityAction const& action);
+    void queueInventoryWrite(
+        std::string const& container,
+        int                slot,
+        std::string const& item,
+        int                count,
+        int                aux
+    );
+    void queueGive(std::string const& item, int count, int aux);
+    void queueClearInventory();
     void captureEntities(LocalPlayer& player);
     void captureBlocks(LocalPlayer& player);
     void captureButtons(ClientInstance& client);
@@ -162,6 +180,9 @@ private:
     float      mLookPitch    = 0.0f;
 
     std::atomic_bool mStateRequested{false};
+    std::atomic_bool mInventoryRequested{false};
+    std::mutex       mEntityActionMutex;
+    std::optional<EntityAction> mEntityAction;
     std::atomic<int> mInputSource{-1};
     std::atomic<int> mInputController{0};
     std::atomic<int> mInputFocus{0};

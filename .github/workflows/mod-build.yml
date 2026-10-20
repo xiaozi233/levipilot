@@ -1,0 +1,43 @@
+name: mod-build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mod/probe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: 3.1.2
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/.xmake
+          key: xmake-${{ hashFiles('mod/probe/xmake.lua', 'mod/probe/local-repo/**') }}
+          restore-keys: |
+            xmake-
+
+      - name: Setup LLVM 22
+        uses: ZhongRuoyu/setup-llvm@v0
+        with:
+          llvm-version: 22
+
+      - name: Update xmake repositories
+        run: xmake repo -u
+
+      - name: Configure (client)
+        run: xmake f -a x64 -m release -p windows --target_type=client -y
+
+      - name: Build
+        run: xmake -y
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-client-windows-x64
+          path: mod/probe/bin/probe/

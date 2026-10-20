@@ -191,6 +191,65 @@ class ModClient:
     def select_slot(self, slot: int) -> dict[str, Any]:
         return self.request({"cmd": "select_slot", "slot": int(slot)}, "select_slot_ok")
 
+    def inventory(self) -> dict[str, Any]:
+        """Full inventory snapshot: slots, armor, offhand, selected slot."""
+        return self.request({"cmd": "inventory"}, "inventory")
+
+    def set_item(
+        self,
+        slot: int,
+        item: str,
+        *,
+        count: int = 1,
+        aux: int = 0,
+        container: str = "inventory",
+    ) -> dict[str, Any]:
+        """Set one slot. ``count=0`` clears it. container: inventory/armor/offhand."""
+        return self.request(
+            {
+                "cmd": "set_item",
+                "slot": int(slot),
+                "item": item,
+                "count": int(count),
+                "aux": int(aux),
+                "container": container,
+            },
+            "inventory_set",
+        )
+
+    def give(self, item: str, *, count: int = 1, aux: int = 0) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "give", "item": item, "count": int(count), "aux": int(aux)},
+            "inventory_given",
+        )
+
+    def clear_item(self, slot: int, *, container: str = "inventory") -> dict[str, Any]:
+        return self.request(
+            {"cmd": "clear_item", "slot": int(slot), "container": container},
+            "inventory_set",
+        )
+
+    def clear_inventory(self) -> dict[str, Any]:
+        return self.request({"cmd": "clear_inventory"}, "inventory_cleared")
+
+    def entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.request({"cmd": "entity", "runtime_id": int(runtime_id)}, "entity_info")
+
+    def attack_entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "attack_entity", "runtime_id": int(runtime_id)}, "entity_attacked"
+        )
+
+    def interact_entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "interact_entity", "runtime_id": int(runtime_id)}, "entity_interacted"
+        )
+
+    def look_at_entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "look_at_entity", "runtime_id": int(runtime_id)}, "look_at_done"
+        )
+
     def click(self, button: str = "left", reach: float = 5.5) -> dict[str, Any]:
         return self.request(
             {"cmd": "click", "button": button, "reach": float(reach)}, "click_result"
@@ -317,6 +376,24 @@ class Harness:
     def entities(self, radius: float = 16.0, limit: int = 64) -> list[dict[str, Any]]:
         return list(self.client.entities(radius, limit).get("entities", []))
 
+    def inventory(self) -> dict[str, Any]:
+        return self.client.inventory()
+
+    def give(self, item: str, count: int = 1, aux: int = 0) -> dict[str, Any]:
+        return self.client.give(item, count=count, aux=aux)
+
+    def entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.client.entity(runtime_id)
+
+    def attack(self, runtime_id: int) -> dict[str, Any]:
+        return self.client.attack_entity(runtime_id)
+
+    def interact(self, runtime_id: int) -> dict[str, Any]:
+        return self.client.interact_entity(runtime_id)
+
+    def look_at_entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.client.look_at_entity(runtime_id)
+
     def command(self, command: str) -> dict[str, Any]:
         return self.client.command(command)
 
@@ -414,6 +491,38 @@ def main(argv: list[str] | None = None) -> int:
     slot = sub.add_parser("slot")
     slot.add_argument("slot", type=int)
 
+    sub.add_parser("inventory")
+
+    give = sub.add_parser("give")
+    give.add_argument("item")
+    give.add_argument("--count", type=int, default=1)
+    give.add_argument("--aux", type=int, default=0)
+
+    set_item = sub.add_parser("set-item")
+    set_item.add_argument("slot", type=int)
+    set_item.add_argument("item")
+    set_item.add_argument("--count", type=int, default=1)
+    set_item.add_argument("--aux", type=int, default=0)
+    set_item.add_argument("--container", default="inventory", choices=["inventory", "armor", "offhand"])
+
+    clear_item = sub.add_parser("clear-item")
+    clear_item.add_argument("slot", type=int)
+    clear_item.add_argument("--container", default="inventory", choices=["inventory", "armor", "offhand"])
+
+    sub.add_parser("clear-inventory")
+
+    entity = sub.add_parser("entity")
+    entity.add_argument("runtime_id", type=int)
+
+    attack = sub.add_parser("attack")
+    attack.add_argument("runtime_id", type=int)
+
+    interact = sub.add_parser("interact")
+    interact.add_argument("runtime_id", type=int)
+
+    look_entity = sub.add_parser("look-entity")
+    look_entity.add_argument("runtime_id", type=int)
+
     click = sub.add_parser("click")
     click.add_argument("button", choices=["left", "right"])
     click.add_argument("--reach", type=float, default=5.5)
@@ -483,6 +592,45 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.blocks(positions), ensure_ascii=False, indent=2))
             elif args.command == "slot":
                 print(json.dumps(client.select_slot(args.slot)))
+            elif args.command == "inventory":
+                print(json.dumps(client.inventory(), ensure_ascii=False, indent=2))
+            elif args.command == "give":
+                print(
+                    json.dumps(
+                        client.give(args.item, count=args.count, aux=args.aux),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "set-item":
+                print(
+                    json.dumps(
+                        client.set_item(
+                            args.slot,
+                            args.item,
+                            count=args.count,
+                            aux=args.aux,
+                            container=args.container,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "clear-item":
+                print(
+                    json.dumps(
+                        client.clear_item(args.slot, container=args.container),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "clear-inventory":
+                print(json.dumps(client.clear_inventory(), ensure_ascii=False))
+            elif args.command == "entity":
+                print(json.dumps(client.entity(args.runtime_id), ensure_ascii=False, indent=2))
+            elif args.command == "attack":
+                print(json.dumps(client.attack_entity(args.runtime_id), ensure_ascii=False))
+            elif args.command == "interact":
+                print(json.dumps(client.interact_entity(args.runtime_id), ensure_ascii=False))
+            elif args.command == "look-entity":
+                print(json.dumps(client.look_at_entity(args.runtime_id), ensure_ascii=False))
             elif args.command == "click":
                 print(json.dumps(client.click(args.button, args.reach)))
             elif args.command == "fly":

@@ -42,9 +42,18 @@ xmake -y
 | `set` | `forward,strafe,sprint,sneak,jump,ticks`；`ticks=-1` 持续 |
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
 | `entities` | `radius,limit`，附近 Actor |
+| `entity` | `runtime_id`；类型/名字/位置/速度/血量/距离 |
+| `attack_entity` | `runtime_id`；对指定实体执行 `GameMode::attack` |
+| `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
+| `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名 |
 | `click` | `button=left/right, reach`；左键破坏、右键放置 |
 | `select_slot` | `slot=0..8` |
+| `inventory` | 完整背包快照：`slots`、`armor`、`offhand`、`selected_slot` |
+| `set_item` | `slot,item,count,aux,container`；`count=0` 清空；`container=inventory/armor/offhand` |
+| `give` | `item,count,aux`；加到第一个空位 |
+| `clear_item` | `slot,container` |
+| `clear_inventory` | 清空背包、盔甲和副手 |
 | `fly` | `enabled`；客户端 + 服务端同时设置 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威 |
 | `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
@@ -75,6 +84,9 @@ xmake -y
 ## 限制
 
 - 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
+- `interact_entity` 只注入“使用”按钮（best effort）：直接调用 `Player::interact` /
+  `GameMode::interact` 会在空物品上下文里崩溃，因此改为转向 + 输入注入；是否产生实际交互
+  取决于手持物和瞄准。
 - `smoothMacro` / `frameBasedRotation` 未复刻，保持逐 tick。
 - 鼠标录制只认 raw input；后台合成点击只有移动事件。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。

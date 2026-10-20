@@ -7,6 +7,7 @@ Python 客户端是 [`../driver/transport_mod.py`](../driver/transport_mod.py)�
 
 需要 VS Build Tools 2022、Windows SDK、LLVM 22 和 xmake 3.1.2。本机完整路径和两个必须保留的
 工具链补丁见 [`../docs/mod-build-environment.md`](../docs/mod-build-environment.md)。
+GitHub Actions 只运行 Python 单元测试；mod 构建依赖本机 LLVM22/xmake 补丁，是本地步骤。
 
 ```bash
 cd mod/probe

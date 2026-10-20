@@ -82,6 +82,9 @@ py -3.11 -m unittest discover -s tests -v   # 不需要游戏
 py -3.11 driver/selftest.py                 # 需要游戏已进入存档
 ```
 
+GitHub Actions 运行 `tests.yml`（单元测试）。mod 构建依赖本机的 LLVM22/xmake 补丁，
+是本地步骤，见 [`docs/mod-build-environment.md`](docs/mod-build-environment.md)。
+
 ## License
 
 LGPL-3.0. See [LICENSE](LICENSE).

@@ -13,6 +13,17 @@ Minecraft Bedrock **1.26.51.01** 的客户端实验 harness：一个 LeviLamina 
 - **实验**：逐 tick 采样、场景 DSL（setup → steps → verify/teardown → JSONL + summary）、
   `driver/selftest.py` live 自检
 
+## 与 dmf-mpk 的分工
+
+dmf-mpk 是闭源 mod；逆向得到的是它的**行为、macro 格式和输入 ID**，代码本身不能照抄。
+两者定位不同，可以共存：
+
+- **dmf-mpk**：HUD、跑酷统计、practice、Input Checker、macro 编辑器/按键绑定等界面与玩法。
+- **LeviPilot**：给脚本/LLM 的 API——状态、背包、实体、方块、移动/视角/点击/传送、
+  服务端命令、macro 播放/录制、场景 DSL。
+
+HUD / 跑酷 / 练习 / Input Checker **不在本项目的复刻范围内**，直接用 dmf-mpk 即可。
+
 ## 快速开始
 
 前置：Windows、Minecraft Bedrock 1.26.51.01（LeviLauncher + LeviLamina）、Python 3.11。

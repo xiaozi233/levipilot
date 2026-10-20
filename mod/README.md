@@ -85,6 +85,8 @@ xmake -y
 ## 限制
 
 - 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
+- HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
+  本 mod 只提供脚本/LLM 使用的 API。
 - `interact_entity` 只注入“使用”按钮（best effort）：直接调用 `Player::interact` /
   `GameMode::interact` 会在空物品上下文里崩溃，因此改为转向 + 输入注入；是否产生实际交互
   取决于手持物和瞄准。

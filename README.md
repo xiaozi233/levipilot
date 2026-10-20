@@ -1,11 +1,47 @@
-# mcbe-harness
+# LeviPilot
 
-Minecraft Bedrock **1.26.45.01** 的实验驱动 harness。
+Minecraft Bedrock **1.26.51.01** 的客户端实验 harness（LeviLamina mod + 命名管道 API）。
 
-目标：**实验控制**不再依赖 Computer Use / 合成键鼠输入，通过 frida RPC 和游戏内 ECS 组件
-控制实验、逐 tick 采样，把“操作游戏”换成“调用游戏”。**游戏 UI**（启动、进存档、菜单、
-对话框）仍需要真正的桌面操作，那部分走电脑操作 helper 的键盘路径，见 skill
-`mcbe-desktop-control`。
+目标：把“操作游戏”换成“调用游戏”。LLM 或普通 Python 脚本可以通过
+`\\.\pipe\mcbe-harness` 读取玩家/实体/方块状态，控制移动、视角、跳跃、飞行、点击、
+快捷栏和传送，执行服务端命令，以及加载/播放/录制 dmf-mpk 兼容 macro；逐 tick 采样
+和场景 DSL 复用旧 frida 路线的 runner。**游戏 UI**（启动、进存档、菜单、对话框）仍需
+真正的桌面操作，见 skill `mcbe-desktop-control`。
+
+## 2026-10-20：LeviLamina 1.26.51.01 路线
+
+frida 路线保留为历史资料；当前实验入口是 **LeviLamina 客户端 mod**：
+
+- 构建与 API：[`mod/README.md`](mod/README.md)
+- dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
+- 游戏内 mod：`mod/probe`（`\.\pipe\mcbe-harness`）
+- Python 客户端：`driver/transport_mod.py`
+- dmf 兼容 macro 工具：`driver/macro.py`
+
+最短用法（游戏已进入存档）：
+
+```bash
+py -3.11 driver/transport_mod.py state
+py -3.11 driver/transport_mod.py set --forward 1 --sprint --ticks 40
+py -3.11 driver/transport_mod.py look --yaw 90 --pitch 0 --absolute
+py -3.11 driver/transport_mod.py entities --radius 16
+py -3.11 driver/transport_mod.py teleport 0.5 -49 0.5 --yaw 0 --pitch 0
+py -3.11 driver/transport_mod.py command "fill -4 -60 -4 4 -60 4 stone"
+py -3.11 driver/transport_mod.py slot 3
+py -3.11 driver/transport_mod.py macro load --name default
+py -3.11 driver/transport_mod.py macro run
+
+# 旧场景 DSL（setup.commands / verify / tp / 采样）走 mod：
+py -3.11 driver/run_mod.py --scenario scenarios/setup-platform.json
+py -3.11 driver/run_mod.py --scenario scenarios/example.json
+```
+
+当前已验证：服务端权威传送、快捷栏选择、通用服务端命令通道、真实鼠标按键录制
+（`MouseInputEvent` 的 `ActionLeft=1` / `ActionRight=2`）、场景 DSL 端到端。
+步行注入实测峰值 0.2159 格/tick（原版 4.317 m/s）；`fly` 现在同时写服务端，
+传送后不会再把飞行状态同步回来。细节和限制见 [`mod/README.md`](mod/README.md)。
+
+> 下面“frida / 1.26.45.01”的内容是旧路线，仍可参考 UI 操作和场景 DSL，但不再作为主路径。
 
 ## 约束
 
@@ -149,6 +185,7 @@ await app.getScreenshot();     // 官方截图会自己显示
 | `scenarios/` | 场景 DSL（JSON） |
 | `behavior_pack/` | GameTest / mcfunction 场景准备 |
 | `docs/` | 1.26.45.01 的地址、组件 id、字段偏移、运行时结论 |
+| `refs/levilamina-26.51.7/` | LeviLamina v26.51.7 的重建 MC 头文件 + LL 源码本地检索副本（已 gitignore，见其 README） |
 | `out/` | 运行产物，已 gitignore |
 | `tests/` | 不需要游戏的单元测试 |
 

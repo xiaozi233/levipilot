@@ -116,6 +116,12 @@ const state = {
   playerAdf: null,
   playerOnGround: null,
   tickCount: 0,
+  mainThreadId: null, // 主线程（tick hook 在它上面跑），Stalker 用
+  callSummary: null, // Stalker onCallSummary 累计结果
+  stalking: false,
+  probeLog: null, // 动态探针记录
+  probeMax: 40,
+  probeListener: null,
   getterCalls: 0,
   pipelineCalls: 0,
   resolverCalls: 0,
@@ -1059,6 +1065,13 @@ function installHooks() {
   installHook('localPlayerPostMoveTick', {
     onEnter() {
       state.tickCount++;
+      if (state.mainThreadId === null) {
+        try {
+          state.mainThreadId = Process.getCurrentThreadId();
+        } catch (e) {
+          state.mainThreadId = null;
+        }
+      }
       try {
         if (state.registry === null || state.player === null || state.tickCount % 100 === 0) {
           refreshPlayer(true);
@@ -1867,6 +1880,119 @@ rpc.exports = {
       client_storages: enumerateStorages(state.registry).length,
       server_storages: enumerateStorages(state.serverRegistry).length,
     };
+  },
+
+  // 动态定位用：对主线程做 Stalker 调用摘要（只统计目标函数，开销可控）。
+  stalkStart() {
+    if (state.stalking) return { ok: true, already: true, thread: state.mainThreadId };
+    if (state.mainThreadId === null) {
+      return { ok: false, error: 'main thread unknown (wait for a tick)' };
+    }
+    state.callSummary = {};
+    state.stalking = true;
+    const addCall = (target) => {
+      const key = typeof target === 'string' ? target : String(target);
+      state.callSummary[key] = (state.callSummary[key] || 0) + 1;
+    };
+    Stalker.follow(state.mainThreadId, {
+      events: { call: true },
+      onCallSummary(summary) {
+        for (const target in summary) {
+          state.callSummary[target] = (state.callSummary[target] || 0) + summary[target];
+        }
+      },
+      onReceive(events) {
+        try {
+          const parsed = Stalker.parse(events, { annotate: false, stringify: false });
+          for (const event of parsed) {
+            // 新版 frida: ['call', from, to, depth]
+            if (Array.isArray(event) && event[0] === 'call') addCall(event[2]);
+          }
+        } catch (e) {
+          state.lastError = String(e);
+        }
+      },
+    });
+    return { ok: true, thread: state.mainThreadId };
+  },
+
+  stalkStop() {
+    if (!state.stalking) {
+      return { ok: true, thread: state.mainThreadId, summary: state.callSummary || {} };
+    }
+    try {
+      Stalker.unfollow(state.mainThreadId);
+      Stalker.flush();
+    } catch (e) {
+      state.lastError = String(e);
+    }
+    state.stalking = false;
+    const summary = state.callSummary || {};
+    return {
+      ok: true,
+      thread: state.mainThreadId,
+      count: Object.keys(summary).length,
+      summary,
+    };
+  },
+
+  mainThread() {
+    return { ok: state.mainThreadId !== null, thread: state.mainThreadId };
+  },
+
+  // 动态探针：在指定 VA 上挂 Interceptor，记录返回地址和 rdx 处的字符串内容。
+  // 用于确认"某个只在命令时被调用的函数"是否拿到了命令文本，以及它的调用者是谁。
+  probeStart(vaHex, maxEntries) {
+    try {
+      const target = ptr(String(vaHex));
+      state.probeLog = [];
+      state.probeMax = Math.max(1, Math.min(200, Number(maxEntries) || 40));
+      const self = state;
+      const readString = (p) => {
+        try {
+          if (!p || p.isNull()) return null;
+          const len = p.add(0x30).readU64().toNumber();
+          if (len <= 0 || len > 4096) return null;
+          const capacity = p.add(0x38).readU64().toNumber();
+          const data = capacity >= 0x10 ? p.add(0x20).readPointer() : p.add(0x20);
+          return data.readUtf8String(Math.min(len, 300));
+        } catch (e) {
+          return null;
+        }
+      };
+      state.probeListener = Interceptor.attach(target, {
+        onEnter(args) {
+          if (self.probeLog.length >= self.probeMax) return;
+          let caller = null;
+          try {
+            caller = this.returnAddress ? this.returnAddress.toString() : null;
+          } catch (e) {}
+          self.probeLog.push({
+            target: target.toString(),
+            caller,
+            rdx: args[1] ? args[1].toString() : null,
+            str_rdx: readString(args[1]),
+            str_rcx: readString(args[0]),
+            tick: self.tickCount,
+          });
+        },
+      });
+      return { ok: true, target: target.toString() };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  },
+
+  probeLog() {
+    return { ok: true, entries: state.probeLog || [] };
+  },
+
+  probeStop() {
+    try {
+      if (state.probeListener) state.probeListener.detach();
+    } catch (e) {}
+    state.probeListener = null;
+    return { ok: true, count: (state.probeLog || []).length };
   },
 
   // 看看枚举到多少组件（确认 registry 哈希表遍历是否正常）。

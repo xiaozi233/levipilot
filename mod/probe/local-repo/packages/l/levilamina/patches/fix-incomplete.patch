@@ -1,0 +1,12 @@
+diff --git a/src/mc/server/commands/MinecraftCommands.h b/src/mc/server/commands/MinecraftCommands.h
+--- a/src/mc/server/commands/MinecraftCommands.h
++++ b/src/mc/server/commands/MinecraftCommands.h
+@@ -6,4 +6,8 @@
+ #include "mc/deps/core/string/HashedString.h"
+ #include "mc/server/commands/CommandOutputType.h"
+ #include "mc/server/commands/CommandPermissionLevel.h"
+ #include "mc/server/commands/CurrentCmdVersion.h"
++#include "mc/server/commands/Command.h"
++#include "mc/server/commands/CommandOutputSender.h"
++#include "mc/server/commands/CommandRegistry.h"
++#include "mc/server/commands/DeferredCommandBase.h"

@@ -19,3 +19,13 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.bak
+
+# 外部参考源码（本地副本，不提交）
+refs/
+
+# 逆向样本/数据库/生成物（保留本地，不提交）
+reverse/*.i64
+reverse/*.dll
+reverse/*.log
+reverse/dmf-mpk/
+reverse/ida_out/

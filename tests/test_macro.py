@@ -23,7 +23,9 @@ from driver.macro import (  # noqa: E402
 
 class MacroParseTest(unittest.TestCase):
     def test_nine_strings_defaults_angles(self) -> None:
-        ticks = parse_macro([["true", "false", "false", "false", "false", "false", "false", "false", "false"]])
+        ticks = parse_macro(
+            [["true", "false", "false", "false", "false", "false", "false", "false", "false"]]
+        )
         self.assertEqual(len(ticks), 1)
         self.assertTrue(ticks[0].w)
         self.assertEqual(ticks[0].yaw, 0.0)

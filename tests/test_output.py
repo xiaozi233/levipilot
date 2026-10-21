@@ -98,8 +98,14 @@ class SummaryTest(unittest.TestCase):
             else:
                 z += 0.2
             samples.append(
-                {"t": t, "ok": True, "pos": [0.0, 10.0, z], "vel": [0.0, 0.0, 0.1],
-                 "on_ground": True, "input": {"x": 0.0, "y": 1.0}}
+                {
+                    "t": t,
+                    "ok": True,
+                    "pos": [0.0, 10.0, z],
+                    "vel": [0.0, 0.0, 0.1],
+                    "on_ground": True,
+                    "input": {"x": 0.0, "y": 1.0},
+                }
             )
         result.recording["samples"] = samples
         result.marks = [Mark(0, "input", 0, 24, {"ok": True})]
@@ -116,8 +122,14 @@ class SummaryTest(unittest.TestCase):
             if t < 6:
                 z += 0.2
             samples.append(
-                {"t": t, "ok": True, "pos": [0.0, 10.0, z], "vel": [0.0, 0.0, 0.1],
-                 "on_ground": True, "input": {"x": 0.0, "y": 1.0}}
+                {
+                    "t": t,
+                    "ok": True,
+                    "pos": [0.0, 10.0, z],
+                    "vel": [0.0, 0.0, 0.1],
+                    "on_ground": True,
+                    "input": {"x": 0.0, "y": 1.0},
+                }
             )
         result.recording["samples"] = samples
         result.marks = [Mark(0, "input", 0, 24, {"ok": True})]
@@ -141,10 +153,7 @@ class WriteRunTest(unittest.TestCase):
             self.assertTrue(jsonl.exists())
             self.assertTrue(summary_path.exists())
 
-            lines = [
-                json.loads(line)
-                for line in jsonl.read_text(encoding="utf-8").splitlines()
-            ]
+            lines = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(lines[0]["type"], "meta")
             self.assertEqual(lines[1]["type"], "sample")
             self.assertEqual(lines[1]["step"], 0)

@@ -131,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
             result = run_scenario(
                 agent,
                 scen,
-                log=(lambda *_: None) if args.json else (lambda *a: print(" ".join(str(x) for x in a[1:]))),
+                log=(lambda *_: None)
+                if args.json
+                else (lambda *a: print(" ".join(str(x) for x in a[1:]))),
                 command_sender=agent.command,
                 block_reader=agent.block_at,
             )

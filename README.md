@@ -59,7 +59,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 | 路径 | 内容 |
 | --- | --- |
 | `mod/probe/` | LeviLamina 客户端 mod（C++），命名管道 `\\.\pipe\mcbe-harness` |
-| `driver/transport_mod.py` | Python 客户端与 CLI |
+| `driver/harness/` | Python 客户端包：`protocol` / `client` / `errors` / `cli` |
+| `driver/transport_mod.py` | 兼容入口（旧导入与 `python driver/transport_mod.py ...` 仍可用） |
 | `driver/mod_agent.py`, `driver/run_mod.py` | 场景 DSL 适配器与执行入口 |
 | `driver/macro.py` | dmf-mpk macro 文件工具 |
 | `scenarios/` | 场景 JSON |
@@ -70,6 +71,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 ## 文档
 
 - Mod 构建、API、协议、实测结果与限制：[`mod/README.md`](mod/README.md)
+- 架构与扩展指南：[`docs/architecture.md`](docs/architecture.md)
 - dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)

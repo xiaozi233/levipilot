@@ -80,9 +80,7 @@ class ModernShapeTest(unittest.TestCase):
     def test_sprint_mode_rejected_until_solved(self) -> None:
         # 疾跑 1.3 倍的来源还没定位，先不允许写进场景，免得产出"看起来在跑其实还是走"的数据。
         with self.assertRaises(ScenarioError):
-            normalize(
-                {"steps": [{"type": "input", "world": [0, 1], "mode": "sprint", "ticks": 5}]}
-            )
+            normalize({"steps": [{"type": "input", "world": [0, 1], "mode": "sprint", "ticks": 5}]})
 
     def test_bad_vec3_rejected(self) -> None:
         with self.assertRaises(ScenarioError):

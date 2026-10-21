@@ -117,10 +117,10 @@ struct PlaceTask {
     int         face     = -1; // required face, -1 = any visible face
     int         slot     = -1;
     std::string expected;
-    int         maxTicks = 30;
-    int         elapsed  = 0;
-    int         phase    = 0; // 0 = aim, 1 = click, 2 = verify
-    int         verifyAt = 0;
+    int         maxTicks    = 30;
+    int         elapsed     = 0;
+    int         phase       = 0; // 0 = aim, 1 = click, 2 = verify
+    int         verifyAt    = 0;
     bool        autoAgainst = true;
 };
 
@@ -171,7 +171,7 @@ private:
     void cancelTasks();
     void beginTask();
     nlohmann::json taskStatusJson();
-    void aimAt(LocalPlayer& player, Vec3 const& point);
+    void           aimAt(LocalPlayer& player, Vec3 const& point);
 
     void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
@@ -180,13 +180,7 @@ private:
     void captureState(ClientInstance& client, LocalPlayer& player);
     void captureInventory(LocalPlayer& player);
     void applyEntityAction(LocalPlayer& player, EntityAction const& action);
-    void queueInventoryWrite(
-        std::string const& container,
-        int                slot,
-        std::string const& item,
-        int                count,
-        int                aux
-    );
+    void queueInventoryWrite(std::string const& container, int slot, std::string const& item, int count, int aux);
     void queueGive(std::string const& item, int count, int aux);
     void queueClearInventory();
     void captureEntities(LocalPlayer& player);
@@ -199,7 +193,7 @@ private:
 
     std::filesystem::path macroDir() const;
     std::filesystem::path macroPath(std::string const& name) const;
-    bool loadMacroFrom(std::string const& path, std::string const& name, std::string& error);
+    bool                  loadMacroFrom(std::string const& path, std::string const& name, std::string& error);
 
     static bool parseMacroJson(nlohmann::json const& value, Macro& out, std::string& error);
     static bool macroToJson(Macro const& macro, nlohmann::json& out, std::string& error);
@@ -209,7 +203,7 @@ private:
     ll::mod::NativeMod& mSelf;
 
     ll::event::ListenerPtr mMouseListener;
-    std::thread mServerThread;
+    std::thread            mServerThread;
 
     std::atomic_bool           mRunning{false};
     std::atomic_bool           mInWorld{false};
@@ -219,31 +213,31 @@ private:
     std::atomic<std::uint64_t> mMaxTicks{0};
 
     // Continuous movement input. ticks < 0 means "until stopped".
-    std::mutex   mInputMutex;
-    ControlState mDesired;
-    int          mDesiredTicks  = 0;
-    bool         mJumpRequested = false;
-    bool         mPrevSprint    = false;
-    bool         mPrevSneak     = false;
-    bool         mInjected      = false;
-    bool         mInputActive   = false;
-    bool         mPrevJump      = false;
-    bool         mPrevMacroRmb  = false;
-    bool         mPrevMacroLmb  = false;
+    std::mutex       mInputMutex;
+    ControlState     mDesired;
+    int              mDesiredTicks  = 0;
+    bool             mJumpRequested = false;
+    bool             mPrevSprint    = false;
+    bool             mPrevSneak     = false;
+    bool             mInjected      = false;
+    bool             mInputActive   = false;
+    bool             mPrevJump      = false;
+    bool             mPrevMacroRmb  = false;
+    bool             mPrevMacroLmb  = false;
     std::atomic_bool mMouseLeft{false};
     std::atomic_bool mMouseRight{false};
     // Latched on the press edge so a click shorter than one tick is still recorded.
     std::atomic_bool mMouseLeftLatch{false};
     std::atomic_bool mMouseRightLatch{false};
     // Diagnostics: which MouseInputEvent ids actually reach the game.
-    std::atomic<std::uint64_t> mMouseEventCount{0};
-    std::atomic<int>           mMouseLastAction{-1};
-    std::atomic<int>           mMouseLastData{-1};
+    std::atomic<std::uint64_t>      mMouseEventCount{0};
+    std::atomic<int>                mMouseLastAction{-1};
+    std::atomic<int>                mMouseLastData{-1};
     std::array<std::atomic<int>, 8> mMouseActionCounts{};
     // Set while the mod itself calls GameMode, so playback is not re-recorded.
-    std::atomic_bool mInjectingClick{false};
-    bool             mPrevActionLmb = false;
-    bool             mPrevActionRmb = false;
+    std::atomic_bool    mInjectingClick{false};
+    bool                mPrevActionLmb = false;
+    bool                mPrevActionRmb = false;
     std::array<bool, 9> mButtonStates{};
     std::array<bool, 9> mHandlerStates{};
 
@@ -254,33 +248,33 @@ private:
     float      mLookYaw      = 0.0f;
     float      mLookPitch    = 0.0f;
 
-    std::atomic_bool mStateRequested{false};
-    std::atomic_bool mInventoryRequested{false};
-    std::mutex       mEntityActionMutex;
+    std::atomic_bool            mStateRequested{false};
+    std::atomic_bool            mInventoryRequested{false};
+    std::mutex                  mEntityActionMutex;
     std::optional<EntityAction> mEntityAction;
-    std::atomic<int> mInputSource{-1};
-    std::atomic<int> mInputController{0};
-    std::atomic<int> mInputFocus{0};
-    std::atomic<int> mFlyRequest{-1};
-    std::atomic<int> mClickRequest{-1};
-    std::atomic<float> mClickReach{5.5f};
-    std::atomic<int> mSlotRequest{-1};
+    std::atomic<int>            mInputSource{-1};
+    std::atomic<int>            mInputController{0};
+    std::atomic<int>            mInputFocus{0};
+    std::atomic<int>            mFlyRequest{-1};
+    std::atomic<int>            mClickRequest{-1};
+    std::atomic<float>          mClickReach{5.5f};
+    std::atomic<int>            mSlotRequest{-1};
     // bit 1 direct flags, bit 2 queue, bit 4 handler callbacks, bit 8 toggle fallback
     std::atomic<int> mButtonMode{1 | 2 | 4};
     std::atomic_bool mButtonsRequested{false};
 
-    std::mutex              mEntityMutex;
-    bool                    mEntitiesRequested = false;
-    float                   mEntityRadius      = 16.0f;
-    int                     mEntityLimit       = 64;
+    std::mutex mEntityMutex;
+    bool       mEntitiesRequested = false;
+    float      mEntityRadius      = 16.0f;
+    int        mEntityLimit       = 64;
 
     std::mutex              mBlockMutex;
     bool                    mBlocksRequested = false;
     std::vector<BlockQuery> mBlockQueries;
 
-    std::mutex              mTeleportMutex;
-    bool                    mTeleportRequested = false;
-    TeleportRequest         mTeleportRequest;
+    std::mutex      mTeleportMutex;
+    bool            mTeleportRequested = false;
+    TeleportRequest mTeleportRequest;
 
     // Only one closed-loop task may run at a time. The epoch guards against a
     // task that was cancelled from the pipe thread while the tick thread was
@@ -318,9 +312,9 @@ private:
     float                      mPrevYaw          = 0.0f;
     float                      mPrevPitch        = 0.0f;
 
-    std::mutex              mQueueMutex;
-    std::deque<std::string> mQueue;
-    std::string             mCommandBuffer;
+    std::mutex                 mQueueMutex;
+    std::deque<std::string>    mQueue;
+    std::string                mCommandBuffer;
     std::atomic<std::uint64_t> mQueueDropped{0};
     std::atomic<std::uint64_t> mLastInternalErrorMs{0};
 };

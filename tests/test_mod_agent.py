@@ -170,7 +170,7 @@ class ModAgentTest(unittest.TestCase):
         client.state_reply["yaw"] = 90.0
         agent.move_world(0.0, 1.0)  # +Z world, facing -X
         _name, args, _kwargs = client.calls[-1]
-        self.assertAlmostEqual(args[0], 0.0, places=6)   # forward
+        self.assertAlmostEqual(args[0], 0.0, places=6)  # forward
         self.assertAlmostEqual(args[1], -1.0, places=6)  # strafe
 
     def test_block_at_distinguishes_air(self) -> None:

@@ -7,16 +7,15 @@ underneath a script.
 
 from __future__ import annotations
 
-import queue
 import unittest
 
 from driver.transport_mod import (
     Harness,
+    LineDecoder,
     ModClient,
     ModDisconnected,
     ModProtocolError,
     ModTimeout,
-    _LineDecoder,
 )
 
 
@@ -31,19 +30,19 @@ class FakeClient(ModClient):
 
 class LineDecoderTests(unittest.TestCase):
     def test_splits_partial_lines(self) -> None:
-        decoder = _LineDecoder()
+        decoder = LineDecoder()
         self.assertEqual(decoder.feed(b'{"a":1}\n{"b"'), ['{"a":1}'])
-        self.assertEqual(decoder.feed(b':2}\r\n'), ['{"b":2}'])
+        self.assertEqual(decoder.feed(b":2}\r\n"), ['{"b":2}'])
         self.assertEqual(decoder.pending(), b"")
 
     def test_handles_utf8_split_across_reads(self) -> None:
-        payload = "中文".encode("utf-8") + b"\n"
-        decoder = _LineDecoder()
+        payload = "中文".encode() + b"\n"
+        decoder = LineDecoder()
         self.assertEqual(decoder.feed(payload[:2]), [])
         self.assertEqual(decoder.feed(payload[2:]), ["中文"])
 
     def test_ignores_blank_lines(self) -> None:
-        decoder = _LineDecoder()
+        decoder = LineDecoder()
         self.assertEqual(decoder.feed(b"\n\r\n"), [])
 
 

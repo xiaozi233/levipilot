@@ -104,9 +104,10 @@ def main(argv: list[str] | None = None) -> int:
         selected = int(state.get("selected_slot", 0))
 
         before = client.inventory()
-        checks.check("inventory", len(before.get("slots", [])) >= 9, f"slots={len(before.get('slots', []))}")
+        checks.check(
+            "inventory", len(before.get("slots", [])) >= 9, f"slots={len(before.get('slots', []))}"
+        )
         original_slot0 = slot_item(before, 0)
-        original_selected = slot_item(before, selected)
 
         # -- inventory write / read ----------------------------------------
         client.set_item(0, "minecraft:stone", count=7)
@@ -147,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         client.teleport(*feet)
         wait_ticks(client, 20)
         now = client.state()
-        gap = max(abs(now["feet_x"] - feet[0]), abs(now["feet_y"] - feet[1]), abs(now["feet_z"] - feet[2]))
+        gap = max(
+            abs(now["feet_x"] - feet[0]), abs(now["feet_y"] - feet[1]), abs(now["feet_z"] - feet[2])
+        )
         checks.check("teleport", gap < 0.2, f"gap={gap:.3f}")
 
         # -- entity --------------------------------------------------------
@@ -166,7 +169,9 @@ def main(argv: list[str] | None = None) -> int:
         if matches:
             runtime_id = int(matches[0]["runtime_id"])
             info = client.entity(runtime_id)
-            checks.check("entity_info", int(info.get("runtime_id", -1)) == runtime_id, str(info.get("type")))
+            checks.check(
+                "entity_info", int(info.get("runtime_id", -1)) == runtime_id, str(info.get("type"))
+            )
 
             look = client.look_at_entity(runtime_id)
             # the entity may have moved since the info snapshot
@@ -176,11 +181,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             current = client.state()
             yaw_gap = abs((float(current.get("yaw", 0.0)) - expected_yaw + 180.0) % 360.0 - 180.0)
-            checks.check("look_at_entity", look.get("event") == "look_at_done" and yaw_gap < 20.0,
-                         f"yaw={current.get('yaw'):.1f} expected={expected_yaw:.1f}")
+            checks.check(
+                "look_at_entity",
+                look.get("event") == "look_at_done" and yaw_gap < 20.0,
+                f"yaw={current.get('yaw'):.1f} expected={expected_yaw:.1f}",
+            )
 
             health_before = info.get("health")
-            attack = client.attack_entity(runtime_id)
+            client.attack_entity(runtime_id)
             wait_ticks(client, 15)
             try:
                 health_after = client.entity(runtime_id).get("health")
@@ -200,11 +208,17 @@ def main(argv: list[str] | None = None) -> int:
                 interact = client.interact_entity(runtime_id)
             except ModPipeError:
                 interact = {"event": "entity_interacted", "ok": False, "gone": True}
-            checks.check("interact_entity", interact.get("event") == "entity_interacted",
-                         f"ok={interact.get('ok')}")
+            checks.check(
+                "interact_entity",
+                interact.get("event") == "entity_interacted",
+                f"ok={interact.get('ok')}",
+            )
             wait_ticks(client, 20)
             after_interact = slot_item(client.inventory(), 0)
-            checks.note("interact_item", f"slot0={after_interact} (use is injected as an input, best effort)")
+            checks.note(
+                "interact_item",
+                f"slot0={after_interact} (use is injected as an input, best effort)",
+            )
 
             if original_slot0:
                 client.set_item(

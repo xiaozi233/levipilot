@@ -22,6 +22,7 @@ Example::
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 from typing import Any
@@ -100,7 +101,7 @@ class ModAgent:
     def close(self) -> None:
         self.harness.close()
 
-    def __enter__(self) -> "ModAgent":
+    def __enter__(self) -> ModAgent:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -133,9 +134,7 @@ class ModAgent:
             if current - start >= ticks:
                 return current - start
             if time.monotonic() > deadline:
-                raise AgentError(
-                    f"wait_ticks({ticks}) 超时：tick 只前进了 {current - start}"
-                )
+                raise AgentError(f"wait_ticks({ticks}) 超时：tick 只前进了 {current - start}")
             time.sleep(0.01)
 
     def start_recording(self, max_ticks: int = 0) -> dict[str, Any]:
@@ -150,10 +149,8 @@ class ModAgent:
 
     def stop_recording(self) -> dict[str, Any]:
         self._recording = False
-        try:
+        with contextlib.suppress(ModPipeError):
             self.client.request({"cmd": "stop"}, "stopped")
-        except ModPipeError:
-            pass
         samples = list(self._samples)
         self._samples.clear()
         return {

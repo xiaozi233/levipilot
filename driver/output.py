@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -37,15 +38,13 @@ def _tick_speeds(samples: list[dict[str, Any]], jump_steps: set[int] | None = No
     a friction-independent speed.
     """
     speeds: list[float] = []
-    for prev, cur in zip(samples, samples[1:]):
+    for prev, cur in pairwise(samples):
         if cur.get("t", 0) - prev.get("t", 0) != 1:
             continue
         # A teleport between steps is not motion: only measure inside one step.
         if prev.get("step") != cur.get("step"):
             continue
-        if jump_steps and (
-            prev.get("step") in jump_steps or cur.get("step") in jump_steps
-        ):
+        if jump_steps and (prev.get("step") in jump_steps or cur.get("step") in jump_steps):
             continue
         a, b = prev.get("pos"), cur.get("pos")
         if not (
@@ -122,9 +121,7 @@ def _step_windows(marks: list[Mark], samples: list[dict[str, Any]]) -> list[dict
                 "freeze_ticks": _longest_freeze(speeds) if mark.type == "input" else 0,
                 "stalled": bool(mark.type == "input" and _longest_freeze(speeds) >= 8),
                 "on_ground_ratio": (
-                    sum(1 for s in window if s.get("on_ground")) / len(window)
-                    if window
-                    else None
+                    sum(1 for s in window if s.get("on_ground")) / len(window) if window else None
                 ),
             }
         )
@@ -212,7 +209,5 @@ def write_run(
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         fh.write(json.dumps({"type": "summary", **summary}, ensure_ascii=False) + "\n")
 
-    summary_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return jsonl_path, summary_path

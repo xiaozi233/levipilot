@@ -1,0 +1,42 @@
+[project]
+name = "levipilot"
+version = "0.1.0"
+description = "Scriptable control and observation for Minecraft Bedrock via a LeviLamina client mod"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "LGPL-3.0-only" }
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["driver", "tests"]
+extend-exclude = [
+    "mod/probe/build",
+    "mod/probe/bin",
+    "mod/probe/local-repo",
+    "out",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+ignore = [
+    "E501",   # long JSON keys/strings are clearer unwrapped
+    "RUF001", # Chinese punctuation is intentionally full-width
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["driver"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+files = ["driver/harness", "driver/transport_mod.py"]

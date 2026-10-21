@@ -101,9 +101,7 @@ class RunnerTest(unittest.TestCase):
     def test_warnings_are_collected(self) -> None:
         agent = FakeAgent()
         agent.warnings = ["sneak is not injected"]
-        scen = normalize(
-            {"steps": [{"type": "input", "forward": 0, "sneak": True, "ticks": 1}]}
-        )
+        scen = normalize({"steps": [{"type": "input", "forward": 0, "sneak": True, "ticks": 1}]})
         result = run_scenario(agent, scen)
         self.assertEqual(result.warnings, ["step 0 (input): sneak is not injected"])
 
@@ -144,9 +142,7 @@ class RunnerTest(unittest.TestCase):
 
     def test_world_input_calls_move_world(self) -> None:
         agent = FakeAgent()
-        scen = normalize(
-            {"steps": [{"type": "input", "world": [0, 1], "ticks": 2}]}
-        )
+        scen = normalize({"steps": [{"type": "input", "world": [0, 1], "ticks": 2}]})
         run_scenario(agent, scen)
         names = [name for name, _ in agent.calls]
         self.assertIn("move_world", names)

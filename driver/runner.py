@@ -8,6 +8,7 @@ The agent is duck-typed so the runner can be unit-tested without the game:
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -198,7 +199,7 @@ def _verify_setup(
             try:
                 result = block_reader(x, y, z)
                 error = None
-            except Exception as exc:  # noqa: BLE001 - surfaced as a verification failure
+            except Exception as exc:
                 result, error = None, str(exc)
             if error is None and _block_matches(expected, result):
                 break
@@ -281,7 +282,6 @@ def run_scenario(
     if setup_commands and command_sender is not None:
         agent.wait_ticks(60)
 
-    start_tick = agent.call("get_tick_count")
     start_state = agent.call("get_state")
     _ok(start_state, "get_state(start)")
 
@@ -289,7 +289,7 @@ def run_scenario(
     # of typing, tp has to settle), so size the recording buffer generously instead
     # of letting the pre-steps eat the budget.
     budget = max(400, scenario.total_ticks * 4 + 60)
-    rec = _ok(agent.call("start_recording", budget), "start_recording")
+    _ok(agent.call("start_recording", budget), "start_recording")
     started_at = _now()
 
     marks: list[Mark] = []
@@ -324,10 +324,8 @@ def run_scenario(
     except BaseException as exc:  # remember it, teardown must still run
         failure = exc
     finally:
-        try:
+        with contextlib.suppress(Exception):
             agent.call("stop_input")
-        except Exception:
-            pass
 
     # Close the measured span *before* cleanup: teardown moves the player and
     # would otherwise show up as displacement/speed of the run.
@@ -340,7 +338,7 @@ def run_scenario(
         try:
             _run_commands(agent, teardown, command_sender, emit, "teardown")
             scenario.setup["teardown_done"] = True
-        except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+        except Exception as exc:
             warnings.append(f"teardown 未完成: {exc}")
     elif teardown:
         warnings.append("teardown 未执行：没有可用的命令通道")

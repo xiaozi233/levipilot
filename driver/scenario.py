@@ -105,17 +105,17 @@ def normalize_step(raw: Any, index: int) -> Step:
         params: dict[str, Any] = {"pos": _vec3(raw.get("pos"), f"{prefix}.pos")}
         mode = raw.get("mode", "server")
         if mode not in {"server", "request", "direct", "chat"}:
-            raise ScenarioError(
-                f"{prefix}.mode 必须是 server / request / direct / chat"
-            )
+            raise ScenarioError(f"{prefix}.mode 必须是 server / request / direct / chat")
         params["mode"] = mode
         if "settle_ticks" in raw:
             params["settle_ticks"] = int(raw["settle_ticks"])
         return Step(kind, params)
 
     if kind == "look":
-        params = {"yaw": _num(raw.get("yaw", 0), f"{prefix}.yaw"),
-                  "pitch": _num(raw.get("pitch", 0), f"{prefix}.pitch")}
+        params = {
+            "yaw": _num(raw.get("yaw", 0), f"{prefix}.yaw"),
+            "pitch": _num(raw.get("pitch", 0), f"{prefix}.pitch"),
+        }
         if "mode" in raw:
             mode = raw["mode"]
             if mode not in {"command", "memory"}:

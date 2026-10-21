@@ -15,9 +15,10 @@ offline, then loaded by the harness mod with ``macro_load``.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 BUTTON_NAMES = ("w", "a", "s", "d", "sprint", "sneak", "jump", "rmb", "lmb")
 

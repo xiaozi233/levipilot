@@ -173,6 +173,15 @@ private:
     nlohmann::json taskStatusJson();
     void           aimAt(LocalPlayer& player, Vec3 const& point);
 
+    // World flow: start/leave an existing world without going through the UI.
+    void enterWorld(std::string const& name, std::string const& id, int intent);
+    void leaveWorld();
+    void listWorlds();
+    void setOptions(std::string const& text);
+    void saveOptions();
+    void loadAutoConfig();
+    void autoEnterLoop();
+
     void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
     void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
@@ -203,7 +212,15 @@ private:
     ll::mod::NativeMod& mSelf;
 
     ll::event::ListenerPtr mMouseListener;
+    ll::event::ListenerPtr mStartJoinLevelListener;
+    ll::event::ListenerPtr mJoinLevelListener;
+    ll::event::ListenerPtr mExitLevelListener;
+    ll::event::ListenerPtr mCancelJoinLevelListener;
     std::thread            mServerThread;
+    std::thread            mAutoThread;
+    std::string            mAutoEnterWorld;
+    std::string            mAutoEnterOptions;
+    int                    mAutoEnterDelayMs = 2000;
 
     std::atomic_bool           mRunning{false};
     std::atomic_bool           mInWorld{false};

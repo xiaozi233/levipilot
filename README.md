@@ -26,20 +26,28 @@ HUD / 跑酷 / 练习 / Input Checker **不在本项目的复刻范围内**，�
 
 ## 快速开始
 
-前置：Windows、Minecraft Bedrock 1.26.51.01（LeviLauncher + LeviLamina）、Python 3.11。
+前置：Windows、Minecraft Bedrock 1.26.51.01（LeviLamina）、Python 3.11。
 构建 mod 还需要 xmake 与 LLVM 22，见 [`mod/README.md`](mod/README.md)。
 
-```bash
-# 1. 构建并把产物复制到实例的 mods/probe（构建不会自动写游戏目录）
-cd mod/probe
-xmake -y
-cp bin/probe/* "<实例>/mods/probe/"
+游戏可以直接运行实例目录下的 `Minecraft.Windows.exe`，不必经过 LeviLauncher 的 UI。
 
-# 2. 进入存档后确认管道
+```bash
+# 开发循环：编译、重启 exe、等主菜单、直接进世界，全程不用点 UI
+py -3.11 driver/dev.py run --world "超平坦测试" --build
+
+# 只重启并进世界（不编译）
+py -3.11 driver/dev.py run --world "超平坦测试"
+
+# 手动启动时也可以让 mod 自己进世界：写 mods/probe/harness.json
+py -3.11 driver/dev.py run --write-config --world "超平坦测试"
+
+# 常用操作
 py -3.11 driver/transport_mod.py ping
 py -3.11 driver/transport_mod.py state
-
-# 3. 常用操作
+py -3.11 driver/transport_mod.py worlds
+py -3.11 driver/transport_mod.py enter-world --name "超平坦测试" --wait
+py -3.11 driver/transport_mod.py leave-world
+py -3.11 driver/transport_mod.py options-set --set gfx_gamma=0.8
 py -3.11 driver/transport_mod.py set --forward 1 --ticks 40
 py -3.11 driver/transport_mod.py look --yaw 90 --pitch 0 --absolute
 py -3.11 driver/transport_mod.py teleport 0.5 -49 0.5 --yaw 0 --pitch 0
@@ -49,7 +57,7 @@ py -3.11 driver/transport_mod.py click left
 py -3.11 driver/transport_mod.py macro load --name default
 py -3.11 driver/transport_mod.py macro run
 
-# 4. 场景 DSL
+# 场景 DSL
 py -3.11 driver/run_mod.py --scenario scenarios/setup-platform.json
 py -3.11 driver/run_mod.py --scenario scenarios/example.json
 ```

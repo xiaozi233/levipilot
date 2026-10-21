@@ -487,6 +487,76 @@ class ModClient:
     def task_stop(self) -> dict[str, Any]:
         return self.request({"cmd": "task_stop"}, "task_stopped")
 
+    def worlds(self, timeout: float = 15.0) -> dict[str, Any]:
+        """List cached worlds (id, name, last_saved, game_type)."""
+        return self.request({"cmd": "worlds"}, "worlds", timeout=timeout)
+
+    def enter_world(
+        self,
+        name: str | None = None,
+        *,
+        world_id: str | None = None,
+        intent: int = 0,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """Start an existing world without going through the menu UI.
+
+        The mod replies ``enter_world_result`` immediately, then emits
+        ``world_joining`` / ``world_entered``; poll ``state().in_world`` or wait
+        for ``world_entered`` before sending gameplay commands.
+        """
+        if not name and not world_id:
+            raise ValueError("name or world_id is required")
+        message: dict[str, Any] = {"cmd": "enter_world", "intent": int(intent)}
+        if name:
+            message["name"] = name
+        if world_id:
+            message["id"] = world_id
+        return self.request(message, "enter_world_result", timeout=timeout)
+
+    def leave_world(self, timeout: float = 20.0) -> dict[str, Any]:
+        return self.request({"cmd": "leave_world"}, "leave_world_result", timeout=timeout)
+
+    def set_options(
+        self,
+        values: dict[str, Any] | None = None,
+        *,
+        text: str | None = None,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """Apply option save-tag values (``gfx_gamma``, ``gfx_viewdistance`` ...).
+
+        ``loadOptionsFromString`` uses the same ``key:value`` format as
+        ``options.txt``, so values passed here are applied through the game's
+        normal option pipeline and then persisted with ``saveIfNeeded``.
+        """
+        message: dict[str, Any] = {"cmd": "options_set"}
+        if values:
+            message["values"] = values
+        if text:
+            message["text"] = text
+        if "values" not in message and "text" not in message:
+            raise ValueError("values or text is required")
+        return self.request(message, "options_set", timeout=timeout)
+
+    def save_options(self, timeout: float = 20.0) -> dict[str, Any]:
+        return self.request({"cmd": "options_save"}, "options_saved", timeout=timeout)
+
+    def wait_in_world(
+        self, timeout: float = 90.0, poll: float = 0.5, settle: float = 1.5
+    ) -> dict[str, Any]:
+        """Wait until ``state.in_world`` is true, then let the join settle."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.state()
+            if state.get("in_world"):
+                if settle > 0:
+                    time.sleep(settle)
+                    return self.state()
+                return state
+            time.sleep(poll)
+        raise ModTimeout(f"等待进入世界超时（{timeout:.0f}s）")
+
     def fly(self, enabled: bool = True) -> dict[str, Any]:
         return self.request({"cmd": "fly", "enabled": bool(enabled)}, "fly_ok")
 
@@ -642,6 +712,24 @@ class Harness:
 
     def task_status(self) -> dict[str, Any]:
         return self.client.task_status()
+
+    def worlds(self) -> list[dict[str, Any]]:
+        return list(self.client.worlds().get("worlds", []))
+
+    def enter_world(self, name: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        return self.client.enter_world(name, **kwargs)
+
+    def leave_world(self) -> dict[str, Any]:
+        return self.client.leave_world()
+
+    def wait_in_world(self, timeout: float = 90.0) -> dict[str, Any]:
+        return self.client.wait_in_world(timeout)
+
+    def set_options(self, values: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+        return self.client.set_options(values, **kwargs)
+
+    def save_options(self) -> dict[str, Any]:
+        return self.client.save_options()
 
     def stop_task(self) -> dict[str, Any]:
         return self.client.task_stop()

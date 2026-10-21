@@ -324,6 +324,43 @@ void ProbeMod::dispatchLine(std::string const& line) {
         }
         return;
     }
+    if (cmd == "enter_world") {
+        std::string name = j.value("name", std::string{});
+        std::string id   = j.value("id", std::string{});
+        if (name.empty() && id.empty()) {
+            enqueue(R"({"event":"error","reason":"missing_world"})");
+            return;
+        }
+        enterWorld(name, id, std::clamp(j.value("intent", 0), 0, 16));
+        return;
+    }
+    if (cmd == "leave_world") {
+        leaveWorld();
+        return;
+    }
+    if (cmd == "worlds") {
+        listWorlds();
+        return;
+    }
+    if (cmd == "options_set") {
+        std::string text = j.value("text", std::string{});
+        if (text.empty() && j.contains("values") && j["values"].is_object()) {
+            for (auto it = j["values"].begin(); it != j["values"].end(); ++it) {
+                std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+                text              += it.key() + ":" + value + "\n";
+            }
+        }
+        if (text.empty()) {
+            enqueue(R"({"event":"error","reason":"empty_options"})");
+            return;
+        }
+        setOptions(text);
+        return;
+    }
+    if (cmd == "options_save") {
+        saveOptions();
+        return;
+    }
     if (cmd == "click") {
         if (!mInWorld.load()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");

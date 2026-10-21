@@ -140,6 +140,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("task-status")
     sub.add_parser("task-stop")
 
+    sub.add_parser("worlds")
+    enter_world = sub.add_parser("enter-world", help="start an existing world without the menu UI")
+    enter_world.add_argument("--name")
+    enter_world.add_argument("--id")
+    enter_world.add_argument("--intent", type=int, default=0)
+    enter_world.add_argument("--wait", action="store_true", help="wait until state.in_world")
+    sub.add_parser("leave-world")
+
+    options_set = sub.add_parser("options-set", help="apply option save-tag values")
+    options_set.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    options_set.add_argument("--text", help="raw options.txt-style key:value lines")
+    sub.add_parser("options-save")
+
     fly = sub.add_parser("fly")
     fly.add_argument("--off", action="store_true")
 
@@ -293,6 +306,30 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.task_status(), ensure_ascii=False, indent=2))
             elif args.command == "task-stop":
                 print(json.dumps(client.task_stop(), ensure_ascii=False))
+            elif args.command == "worlds":
+                print(json.dumps(client.worlds(), ensure_ascii=False, indent=2))
+            elif args.command == "enter-world":
+                result = client.enter_world(args.name, world_id=args.id, intent=args.intent)
+                if args.wait:
+                    result = client.wait_in_world()
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            elif args.command == "leave-world":
+                print(json.dumps(client.leave_world(), ensure_ascii=False))
+            elif args.command == "options-set":
+                values: dict[str, str] = {}
+                for item in args.set:
+                    key, sep, value = item.partition("=")
+                    if not sep:
+                        raise SystemExit(f"--set 需要 KEY=VALUE：{item!r}")
+                    values[key] = value
+                print(
+                    json.dumps(
+                        client.set_options(values or None, text=args.text),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "options-save":
+                print(json.dumps(client.save_options(), ensure_ascii=False))
             elif args.command == "fly":
                 print(json.dumps(client.fly(not args.off)))
             elif args.command == "teleport":

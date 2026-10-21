@@ -103,6 +103,23 @@
   完成后 `sendInventory(true)` 把服务端层数推回客户端。客户端直接调用只会产生预测，
   背包和效果真正落库的是服务端玩家。这条路径不做事前可用性判断。
 
+## 世界与设置
+
+- `worlds`：`IMinecraftGame::getLevelListCache().getLevelList(...)`，在管道线程直接调用即可。
+- `enter_world`：按名字或 id 取 `LevelSummary`，用它构造 `LevelSettings`，再调用
+  `IGameServerStartup::startLocalServerAsync(levelId, levelName, contentIdentity, settings, intent)`。
+  `startLocalServerAsyncFromSummary` 没有被 LeviLamina 导出，直接链接会报 LNK2019；纯虚重载
+  走 vtable。实测 `intent=0` 能从主菜单进"超平坦测试"。
+- `leave_world`：`IGameServerShutdown::requestLeaveGame(true, true)`。
+- 世界事件：`ClientStartJoinLevelEvent` → `world_joining`，`ClientJoinLevelEvent` →
+  `world_entered`，`ClientExitLevelEvent` → `world_left`，`ClientCancelJoinLevelEvent` →
+  `world_join_cancelled`。
+- `options_set`：`IOptionRegistry::loadOptionsFromString` 实时应用（gamma/FOV 立刻可见），
+  然后自行更新 `options.txt`。游戏自带的 `saveIfNeeded` 在当前版本不会立刻写盘，所以
+  mod 读改写同一个文件（保留 CRLF 和未修改的行），再 `MoveFileExW` 原子替换。
+- `harness.json`：`auto_enter` / `options` / `delay_ms`。自动线程先等客户端存在且世界列表
+  非空，再应用选项并进世界，避免在加载阶段调用。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

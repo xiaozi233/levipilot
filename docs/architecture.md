@@ -30,6 +30,8 @@ scenario DSL / LLM / shell
 | `Inventory.cpp` | 背包快照与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `Server.cpp` | 服务端权威传送 |
+| `World.cpp` | 世界列表、`enter_world` / `leave_world`、世界事件 |
+| `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `Commands.cpp` | 管道命令解析与分发 |
 | `Transport.cpp` | 命名管道服务端、写队列、`queueServerTask`、诊断日志 |
@@ -83,10 +85,36 @@ driver/harness/
   client.py     # ModClient（连接/超时/重连）+ Harness（便捷方法）
   cli.py        # argparse 入口
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
+driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 ```
 
 `ModClient` 用独立轮询线程读管道：Windows 同步句柄上挂起的 `ReadFile` 会阻塞同一个句柄的
 `WriteFile`，所以不能用一个阻塞读线程。请求带超时；超时会关闭连接，避免流错位。
+
+## 世界与设置
+
+- `worlds` 直接从 `IMinecraftGame::getLevelListCache()` 读缓存；实测在管道线程调用即可。
+- `enter_world` 用 `LevelSummary` 构造 `LevelSettings`，再调纯虚的
+  `IGameServerStartup::startLocalServerAsync`（vtable，不需要导入符号）。
+  `startLocalServerAsyncFromSummary` 没有导出，不能直接链接。
+- 世界事件 `ClientStartJoinLevelEvent` / `ClientJoinLevelEvent` / `ClientExitLevelEvent` /
+  `ClientCancelJoinLevelEvent` 转成 `world_joining` / `world_entered` / `world_left` /
+  `world_join_cancelled`。
+- `options_set` 用 `IOptionRegistry::loadOptionsFromString` 实时应用（FOV/gamma 等立即生效），
+  然后自己更新 `options.txt`（保留 CRLF 和未知行），因为游戏自身的
+  `saveIfNeeded` 在当前版本不会立即落盘。
+- `harness.json` 的 `auto_enter` 让直接启动 exe 后自动进世界；自动线程会等世界列表非空
+  再动手，避免在加载阶段调用。
+
+## 开发循环
+
+```bash
+py -3.11 driver/dev.py run --world "超平坦测试" --build
+```
+
+流程：`xmake -y` → 结束旧进程 → 复制 DLL → 直接 `Popen` exe → 等管道 → 等世界列表 →
+`enter_world` → `wait_in_world`。全程不需要 Computer Use；CUA 只在需要看真实画面时用。
+`--write-config` 会写 `harness.json`，之后直接启动 exe 也会自动进世界。
 
 ## 如何扩展
 

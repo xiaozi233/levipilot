@@ -53,6 +53,11 @@ xmake -y
 | `place` | `x,y,z,against?,face?,expected?,slot?,max_ticks`；瞄准、放置并回读验证 |
 | `use` | `ticks`；等待后在服务端玩家上走 `Item::use`（+ 食物的 `useTimeDepleted`），消耗、效果和背包同步都是权威的 |
 | `task_status` / `task_stop` | 查询或取消当前闭环任务 |
+| `worlds` | 列出缓存世界：`id` / `name` / `last_saved` / `game_type` |
+| `enter_world` | `name` 或 `id`，可选 `intent`；直接启动已有世界，不经过菜单 |
+| `leave_world` | 退出当前世界回到主菜单 |
+| `options_set` | `values` 对象或 `text`（`key:value` 行）；实时应用并写回 `options.txt` |
+| `options_save` | 请求游戏自身保存选项（`options_set` 已包含落盘） |
 | `click` | `button=left/right, reach`；左键破坏、右键放置 |
 | `select_slot` | `slot=0..8` |
 | `inventory` | 完整背包快照：`slots`、`armor`、`offhand`、`selected_slot` |
@@ -75,6 +80,21 @@ xmake -y
 调试命令（`diag` / `mouse` / `buttons` / `input_cfg`）和注入/传送/macro 的实现细节见
 [`../docs/mod-internals.md`](../docs/mod-internals.md)。
 
+### 自动进入世界
+
+mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合直接启动 exe 的开发循环）：
+
+```json
+{
+  "auto_enter": "超平坦测试",
+  "options": { "gfx_gamma": "0.5" },
+  "delay_ms": 2000
+}
+```
+
+`auto_enter` 是存档名（也接受 `id` 字段）；mod 会等世界列表准备好后再进入。`options`
+会先应用并写回 `options.txt`。不需要时删除该文件即可。
+
 ## 实测（1.26.51.01 创作存档）
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
@@ -90,6 +110,11 @@ xmake -y
 - `mine`：`setblock` 放石头后 1 tick 挖掉（创造模式），`blocks` 读回空气
 - `place`：放回同一格，3 tick 完成，回读为石头
 - `use`：末影珍珠服务端层数 2→1、客户端背包同步为 1，并触发约 10 格传送
+- `worlds` 返回存档列表；`enter_world` 从主菜单直接进"超平坦测试"（intent 0），
+  `leave_world` 回到主菜单
+- `harness.json` 的 `auto_enter` 在直接启动 exe 后自动进世界
+- `options_set` 修改 `gfx_gamma` 实时生效（画面亮度变化），并写回 `options.txt`
+- `driver/dev.py run --world ... --build` 一条命令完成编译、重启、进世界
 - `driver/selftest.py` 13/13 通过
 
 ## 限制

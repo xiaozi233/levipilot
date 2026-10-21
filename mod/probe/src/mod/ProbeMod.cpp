@@ -49,6 +49,37 @@ bool ProbeMod::enable() {
     std::error_code ec;
     std::filesystem::create_directories(macroDir(), ec);
 
+    loadAutoConfig();
+
+    // World flow events: the USB/UI-independent entry point reports through
+    // these, so scripts do not have to poll mInWorld.
+    auto& bus                = ll::event::EventBus::getInstance();
+    mStartJoinLevelListener  = bus.emplaceListener<ll::event::client::ClientStartJoinLevelEvent>([this](auto& event) {
+        enqueue(
+            nlohmann::json{
+                {"event", "world_joining"  },
+                {"world", event.worldName()}
+        }.dump()
+        );
+    });
+    mJoinLevelListener       = bus.emplaceListener<ll::event::client::ClientJoinLevelEvent>([this](auto& event) {
+        mInWorld = true;
+        enqueue(
+            nlohmann::json{
+                {"event",  "world_entered"             },
+                {"player", event.player().getRealName()},
+        }
+                .dump()
+        );
+    });
+    mExitLevelListener       = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
+        mInWorld = false;
+        enqueue(R"({"event":"world_left"})");
+    });
+    mCancelJoinLevelListener = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
+        enqueue(R"({"event":"world_join_cancelled"})");
+    });
+
     mServerThread = std::thread([this] { serverLoop(); });
     getSelf().getLogger().info("harness: enabled, pipe=\\\\.\\pipe\\mcbe-harness");
     bootLog("enable: done");
@@ -67,6 +98,26 @@ bool ProbeMod::disable() {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
         mMouseListener.reset();
     }
+    if (mStartJoinLevelListener) {
+        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientStartJoinLevelEvent>(
+            mStartJoinLevelListener
+        );
+        mStartJoinLevelListener.reset();
+    }
+    if (mJoinLevelListener) {
+        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientJoinLevelEvent>(mJoinLevelListener);
+        mJoinLevelListener.reset();
+    }
+    if (mExitLevelListener) {
+        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientExitLevelEvent>(mExitLevelListener);
+        mExitLevelListener.reset();
+    }
+    if (mCancelJoinLevelListener) {
+        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientCancelJoinLevelEvent>(
+            mCancelJoinLevelListener
+        );
+        mCancelJoinLevelListener.reset();
+    }
 
     // Wake a server thread blocked in ConnectNamedPipe, then let it exit.
     HANDLE wake = CreateFileW(PipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -75,6 +126,9 @@ bool ProbeMod::disable() {
     }
     if (mServerThread.joinable()) {
         mServerThread.join();
+    }
+    if (mAutoThread.joinable()) {
+        mAutoThread.join();
     }
 
     {
@@ -85,6 +139,68 @@ bool ProbeMod::disable() {
     mInWorld   = false;
     getSelf().getLogger().info("harness: disabled");
     return true;
+}
+
+void ProbeMod::loadAutoConfig() {
+    auto          path = getSelf().getModDir() / "harness.json";
+    std::ifstream in(path);
+    if (!in) {
+        return;
+    }
+    auto config = nlohmann::json::parse(in, nullptr, false);
+    if (config.is_discarded()) {
+        bootLog("config: invalid json");
+        return;
+    }
+    mAutoEnterWorld   = config.value("auto_enter", std::string{});
+    mAutoEnterDelayMs = std::clamp(config.value("delay_ms", 2000), 0, 60000);
+    if (config.contains("options") && config["options"].is_object()) {
+        for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
+            std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+            mAutoEnterOptions += it.key() + ":" + value + "\n";
+        }
+    }
+    if (mAutoEnterWorld.empty() && mAutoEnterOptions.empty()) {
+        return;
+    }
+    bootLog("config: auto_enter=" + mAutoEnterWorld + " delay=" + std::to_string(mAutoEnterDelayMs));
+    mAutoThread = std::thread([this] { autoEnterLoop(); });
+}
+
+void ProbeMod::autoEnterLoop() {
+    while (mRunning.load(std::memory_order_relaxed)) {
+        auto client = ll::service::getClientInstance();
+        if (!client) {
+            Sleep(200);
+            continue;
+        }
+        // The client exists during loading too; a populated level list means the
+        // main menu is ready and startLocalServerAsync has its context.
+        std::vector<LevelSummary> worlds;
+        client->getMinecraftGame().getLevelListCache().getLevelList(worlds, true, false, false, false);
+        if (worlds.empty()) {
+            Sleep(500);
+            continue;
+        }
+
+        int remaining = mAutoEnterDelayMs;
+        while (remaining > 0 && mRunning.load(std::memory_order_relaxed)) {
+            int const step = std::min(remaining, 100);
+            Sleep(static_cast<DWORD>(step));
+            remaining -= step;
+        }
+        if (!mRunning.load(std::memory_order_relaxed)) {
+            return;
+        }
+        if (!mAutoEnterOptions.empty()) {
+            setOptions(mAutoEnterOptions);
+        }
+        if (!mAutoEnterWorld.empty() && !mInWorld.load(std::memory_order_relaxed)) {
+            bootLog("auto: entering " + mAutoEnterWorld);
+            enterWorld(mAutoEnterWorld, "", 0);
+        }
+        return;
+    }
 }
 
 void ProbeMod::onPlayerTick(LocalPlayer& player) {

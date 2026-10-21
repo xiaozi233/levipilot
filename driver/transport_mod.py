@@ -8,6 +8,10 @@ Typical use::
     py -3.11 driver/transport_mod.py state
     py -3.11 driver/transport_mod.py set --forward 1 --ticks 40
     py -3.11 driver/transport_mod.py look --yaw 90 --pitch 0 --absolute
+    py -3.11 driver/transport_mod.py navigate 10 20
+    py -3.11 driver/transport_mod.py mine 3 -49 3
+    py -3.11 driver/transport_mod.py place 3 -49 3 --expected stone
+    py -3.11 driver/transport_mod.py use --ticks 32
     py -3.11 driver/transport_mod.py macro load --name default
     py -3.11 driver/transport_mod.py macro run
     py -3.11 driver/transport_mod.py macro rec-start
@@ -17,71 +21,276 @@ Typical use::
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import msvcrt
+import queue
 import sys
+import threading
 import time
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 PIPE_NAME = r"\\.\pipe\mcbe-harness"
 
+DEFAULT_TIMEOUT = 10.0
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.PeekNamedPipe.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+]
+_kernel32.PeekNamedPipe.restype = wintypes.BOOL
+
 
 class ModPipeError(RuntimeError):
-    pass
+    """Base class for transport and protocol errors."""
+
+
+class ModTimeout(ModPipeError):
+    """The mod did not answer within the requested time."""
+
+
+class ModDisconnected(ModPipeError):
+    """The pipe was closed, usually because the game exited."""
+
+
+class ModProtocolError(ModPipeError):
+    """The mod answered with an ``error`` event."""
+
+
+class _LineDecoder:
+    """Incrementally split a byte stream into newline-terminated lines.
+
+    A byte-mode pipe is allowed to deliver a JSON line in arbitrary chunks, so
+    the reader must not assume one ``read`` equals one message.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+
+    def feed(self, chunk: bytes) -> list[str]:
+        if not chunk:
+            return []
+        self._buffer.extend(chunk)
+        lines: list[str] = []
+        while True:
+            index = self._buffer.find(b"\n")
+            if index < 0:
+                break
+            raw = bytes(self._buffer[:index])
+            del self._buffer[: index + 1]
+            if raw.endswith(b"\r"):
+                raw = raw[:-1]
+            if raw:
+                lines.append(raw.decode("utf-8", errors="replace"))
+        return lines
+
+    def pending(self) -> bytes:
+        return bytes(self._buffer)
 
 
 class ModClient:
-    def __init__(self, pipe_name: str = PIPE_NAME, connect_timeout: float = 10.0) -> None:
+    """JSON-lines client.
+
+    Reads happen on a dedicated thread so every request can carry a timeout.
+    Without that, a crashed game leaves a script blocked in ``readline``
+    forever. ``connect`` also validates the handshake, and ``reconnect`` can be
+    used to survive a game restart.
+    """
+
+    def __init__(
+        self,
+        pipe_name: str = PIPE_NAME,
+        connect_timeout: float = 10.0,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
         self.pipe_name = pipe_name
         self.connect_timeout = connect_timeout
+        self.timeout = timeout
+        self.protocol = 0
         self._file = None
+        self._reader: threading.Thread | None = None
+        self._lines: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._closed = threading.Event()
 
     def connect(self) -> "ModClient":
+        self.close()
         deadline = time.monotonic() + self.connect_timeout
         last_error: OSError | None = None
         while time.monotonic() < deadline:
             try:
-                self._file = open(self.pipe_name, "r+b", buffering=0)
-                return self
+                handle = open(self.pipe_name, "r+b", buffering=0)
             except OSError as exc:
                 last_error = exc
                 time.sleep(0.2)
+                continue
+
+            self._file = handle
+            self._lines = queue.Queue()
+            self._closed.clear()
+            self._reader = threading.Thread(
+                target=self._read_loop,
+                args=(handle,),
+                name="mod-pipe-reader",
+                daemon=True,
+            )
+            self._reader.start()
+            try:
+                hello = self._next_line(self.connect_timeout)
+            except ModPipeError:
+                self.close()
+                raise
+            if hello.get("event") != "hello":
+                self.close()
+                raise ModPipeError(f"握手失败：{hello!r}")
+            self.protocol = int(hello.get("protocol", 0))
+            return self
         raise ModPipeError(f"无法连接 {self.pipe_name}: {last_error}")
 
+    def reconnect(self) -> "ModClient":
+        """Drop the current pipe and open a fresh one (game restart, mod reload)."""
+        return self.connect()
+
+    def ensure_connected(self) -> "ModClient":
+        if self._file is None:
+            return self.connect()
+        return self
+
+    def _read_loop(self, handle: Any) -> None:
+        """Poll for data instead of blocking in ``read``.
+
+        Windows serialises I/O on a synchronous pipe handle: a ``ReadFile``
+        that is waiting for data also blocks ``WriteFile`` on the same handle.
+        ``PeekNamedPipe`` lets the reader wait without a pending read, so a
+        request can always be written while the reader is idle.
+        """
+        decoder = _LineDecoder()
+        os_handle = msvcrt.get_osfhandle(handle.fileno())
+        try:
+            while not self._closed.is_set():
+                available = wintypes.DWORD(0)
+                ok = _kernel32.PeekNamedPipe(
+                    os_handle,
+                    None,
+                    0,
+                    None,
+                    ctypes.byref(available),
+                    None,
+                )
+                if not ok:
+                    break
+                if available.value == 0:
+                    time.sleep(0.005)
+                    continue
+                chunk = handle.read(available.value)
+                if not chunk:
+                    break
+                for raw in decoder.feed(chunk):
+                    try:
+                        message = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(message, dict):
+                        self._lines.put(message)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._lines.put({"event": "__closed__"})
+
+    def _next_line(self, timeout: float | None = None) -> dict[str, Any]:
+        wait = self.timeout if timeout is None else timeout
+        try:
+            message = self._lines.get(timeout=max(0.0, wait))
+        except queue.Empty as exc:
+            raise ModTimeout(f"等待 mod 响应超时（{wait:.1f}s）") from exc
+        if message.get("event") == "__closed__":
+            self._file = None
+            raise ModDisconnected("pipe 已关闭（游戏退出或 mod 被卸载）")
+        return message
+
     def close(self) -> None:
-        if self._file is not None:
+        self._closed.set()
+        handle = self._file
+        self._file = None
+        if handle is not None:
             try:
-                self._file.close()
-            finally:
-                self._file = None
+                handle.close()
+            except OSError:
+                pass
+        reader = self._reader
+        self._reader = None
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=1.0)
 
     def send(self, message: dict[str, Any]) -> None:
         if self._file is None:
-            raise ModPipeError("尚未连接")
+            raise ModDisconnected("尚未连接")
         raw = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
-        self._file.write(raw)
-        self._file.flush()
-
-    def readline(self) -> dict[str, Any]:
-        if self._file is None:
-            raise ModPipeError("尚未连接")
-        raw = self._file.readline()
-        if not raw:
-            raise ModPipeError("pipe 已关闭")
+        view = memoryview(raw)
         try:
-            return json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ModPipeError(f"非法 JSON: {raw!r}") from exc
+            while view:
+                written = self._file.write(view)
+                if not written:
+                    raise OSError("pipe write returned 0")
+                view = view[written:]
+            self._file.flush()
+        except (OSError, ValueError) as exc:
+            self.close()
+            raise ModDisconnected(f"pipe 写入失败：{exc}") from exc
 
-    def request(self, message: dict[str, Any], expect: str | None = None) -> dict[str, Any]:
+    def readline(self, timeout: float | None = None) -> dict[str, Any]:
+        return self._next_line(timeout)
+
+    def request(
+        self,
+        message: dict[str, Any],
+        expect: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        wait = self.timeout if timeout is None else timeout
         self.send(message)
+        deadline = time.monotonic() + wait
         while True:
-            reply = self.readline()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise ModTimeout(f"{message.get('cmd')} 等待 {expect or '响应'} 超时")
+            try:
+                reply = self._next_line(remaining)
+            except ModTimeout:
+                # A half-consumed stream is worse than no connection.
+                self.close()
+                raise
             event = reply.get("event")
             if event == "error" and expect != "error":
-                raise ModPipeError(str(reply.get("reason", reply)))
+                raise ModProtocolError(
+                    f"{message.get('cmd')}: {reply.get('reason', reply)}"
+                )
             if expect is None or event == expect:
                 return reply
+
+    def wait_ready(self, timeout: float = 60.0, require_world: bool = True) -> dict[str, Any]:
+        """Reconnect until the mod answers and (optionally) a world is loaded."""
+        deadline = time.monotonic() + timeout
+        last: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                self.ensure_connected()
+                self.ping()
+                state = self.state()
+                if state.get("in_world") or not require_world:
+                    return state
+            except ModPipeError as exc:
+                last = exc
+                self.close()
+            time.sleep(0.5)
+        raise ModTimeout(f"等待游戏就绪超时（{timeout:.0f}s）：{last}")
 
     def ping(self) -> dict[str, Any]:
         return self.request({"cmd": "ping"}, "pong")
@@ -175,18 +384,12 @@ class ModClient:
         )
 
     def entities(self, radius: float = 16.0, limit: int = 64) -> dict[str, Any]:
-        self.send({"cmd": "entities", "radius": float(radius), "limit": int(limit)})
-        while True:
-            reply = self.readline()
-            if reply.get("event") == "entities":
-                return reply
+        return self.request({"cmd": "entities", "radius": float(radius), "limit": int(limit)}, "entities")
 
     def blocks(self, positions: Iterable[Iterable[float]]) -> dict[str, Any]:
-        self.send({"cmd": "blocks", "positions": [list(p) for p in positions]})
-        while True:
-            reply = self.readline()
-            if reply.get("event") == "blocks":
-                return reply
+        return self.request(
+            {"cmd": "blocks", "positions": [list(p) for p in positions]}, "blocks"
+        )
 
     def select_slot(self, slot: int) -> dict[str, Any]:
         return self.request({"cmd": "select_slot", "slot": int(slot)}, "select_slot_ok")
@@ -254,6 +457,105 @@ class ModClient:
         return self.request(
             {"cmd": "click", "button": button, "reach": float(reach)}, "click_result"
         )
+
+    def navigate(
+        self,
+        x: float,
+        z: float,
+        *,
+        tolerance: float = 0.35,
+        sprint: bool = False,
+        max_ticks: int = 600,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Walk to ``(x, z)`` in a closed loop on the client tick.
+
+        The mod turns and re-aims every tick, jumps when it stops making
+        progress, and reports ``arrived`` / ``timeout`` once.
+        """
+        if timeout is None:
+            timeout = max_ticks / 20.0 + 15.0
+        return self.request(
+            {
+                "cmd": "navigate",
+                "x": float(x),
+                "z": float(z),
+                "tolerance": float(tolerance),
+                "sprint": bool(sprint),
+                "max_ticks": int(max_ticks),
+            },
+            "navigated",
+            timeout=timeout,
+        )
+
+    def mine_block(
+        self,
+        x: int,
+        y: int,
+        z: int,
+        *,
+        max_ticks: int = 400,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Break one block; the mod drives start/continueDestroyBlock per tick."""
+        if timeout is None:
+            timeout = max_ticks / 20.0 + 15.0
+        return self.request(
+            {"cmd": "mine", "x": int(x), "y": int(y), "z": int(z), "max_ticks": int(max_ticks)},
+            "block_mined",
+            timeout=timeout,
+        )
+
+    def place_block(
+        self,
+        x: int,
+        y: int,
+        z: int,
+        *,
+        against: tuple[int, int, int] | None = None,
+        face: int | None = None,
+        expected: str | None = None,
+        slot: int | None = None,
+        max_ticks: int = 30,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Place the held block into ``(x, y, z)`` and verify the result.
+
+        ``against`` is the block that gets clicked; when omitted the mod picks a
+        visible neighbour. ``expected`` checks the resulting block name.
+        """
+        if timeout is None:
+            timeout = max_ticks / 20.0 + 10.0
+        message: dict[str, Any] = {
+            "cmd": "place",
+            "x": int(x),
+            "y": int(y),
+            "z": int(z),
+            "max_ticks": int(max_ticks),
+        }
+        if against is not None:
+            message["against"] = [int(v) for v in against]
+        if face is not None:
+            message["face"] = int(face)
+        if expected is not None:
+            message["expected"] = expected
+        if slot is not None:
+            message["slot"] = int(slot)
+        return self.request(message, "block_placed", timeout=timeout)
+
+    def use_item(self, ticks: int = 32, *, timeout: float | None = None) -> dict[str, Any]:
+        """Hold the main-hand item for ``ticks`` and then release it (eat/bow)."""
+        if timeout is None:
+            timeout = ticks / 20.0 + 10.0
+        return self.request(
+            {"cmd": "use", "ticks": int(ticks)}, "item_used", timeout=timeout
+        )
+
+    def task_status(self) -> dict[str, Any]:
+        return self.request({"cmd": "task_status"}, "task_status")
+
+    def task_stop(self) -> dict[str, Any]:
+        return self.request({"cmd": "task_stop"}, "task_stopped")
 
     def fly(self, enabled: bool = True) -> dict[str, Any]:
         return self.request({"cmd": "fly", "enabled": bool(enabled)}, "fly_ok")
@@ -394,6 +696,31 @@ class Harness:
     def look_at_entity(self, runtime_id: int) -> dict[str, Any]:
         return self.client.look_at_entity(runtime_id)
 
+    def walk_to(self, x: float, z: float, **kwargs: Any) -> dict[str, Any]:
+        return self.client.navigate(x, z, **kwargs)
+
+    def mine(self, x: int, y: int, z: int, **kwargs: Any) -> dict[str, Any]:
+        return self.client.mine_block(x, y, z, **kwargs)
+
+    def place(self, x: int, y: int, z: int, **kwargs: Any) -> dict[str, Any]:
+        return self.client.place_block(x, y, z, **kwargs)
+
+    def use_item(self, ticks: int = 32) -> dict[str, Any]:
+        return self.client.use_item(ticks)
+
+    def task_status(self) -> dict[str, Any]:
+        return self.client.task_status()
+
+    def stop_task(self) -> dict[str, Any]:
+        return self.client.task_stop()
+
+    def reconnect(self) -> "Harness":
+        self.client.reconnect()
+        return self
+
+    def wait_ready(self, timeout: float = 60.0, require_world: bool = True) -> dict[str, Any]:
+        return self.client.wait_ready(timeout, require_world)
+
     def command(self, command: str) -> dict[str, Any]:
         return self.client.command(command)
 
@@ -527,6 +854,35 @@ def main(argv: list[str] | None = None) -> int:
     click.add_argument("button", choices=["left", "right"])
     click.add_argument("--reach", type=float, default=5.5)
 
+    navigate = sub.add_parser("navigate", help="closed-loop walk to x,z")
+    navigate.add_argument("x", type=float)
+    navigate.add_argument("z", type=float)
+    navigate.add_argument("--tolerance", type=float, default=0.35)
+    navigate.add_argument("--sprint", action="store_true")
+    navigate.add_argument("--max-ticks", type=int, default=600)
+
+    mine = sub.add_parser("mine", help="break one block")
+    mine.add_argument("x", type=int)
+    mine.add_argument("y", type=int)
+    mine.add_argument("z", type=int)
+    mine.add_argument("--max-ticks", type=int, default=400)
+
+    place = sub.add_parser("place", help="place the held block into x,y,z")
+    place.add_argument("x", type=int)
+    place.add_argument("y", type=int)
+    place.add_argument("z", type=int)
+    place.add_argument("--against", nargs=3, type=int, metavar=("AX", "AY", "AZ"))
+    place.add_argument("--face", type=int, choices=range(6))
+    place.add_argument("--expected")
+    place.add_argument("--slot", type=int)
+    place.add_argument("--max-ticks", type=int, default=30)
+
+    use = sub.add_parser("use", help="hold and release the held item")
+    use.add_argument("--ticks", type=int, default=32)
+
+    sub.add_parser("task-status")
+    sub.add_parser("task-stop")
+
     fly = sub.add_parser("fly")
     fly.add_argument("--off", action="store_true")
 
@@ -633,6 +989,49 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.look_at_entity(args.runtime_id), ensure_ascii=False))
             elif args.command == "click":
                 print(json.dumps(client.click(args.button, args.reach)))
+            elif args.command == "navigate":
+                print(
+                    json.dumps(
+                        client.navigate(
+                            args.x,
+                            args.z,
+                            tolerance=args.tolerance,
+                            sprint=args.sprint,
+                            max_ticks=args.max_ticks,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "mine":
+                print(
+                    json.dumps(
+                        client.mine_block(args.x, args.y, args.z, max_ticks=args.max_ticks),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "place":
+                against = tuple(args.against) if args.against is not None else None
+                print(
+                    json.dumps(
+                        client.place_block(
+                            args.x,
+                            args.y,
+                            args.z,
+                            against=against,
+                            face=args.face,
+                            expected=args.expected,
+                            slot=args.slot,
+                            max_ticks=args.max_ticks,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "use":
+                print(json.dumps(client.use_item(args.ticks), ensure_ascii=False))
+            elif args.command == "task-status":
+                print(json.dumps(client.task_status(), ensure_ascii=False, indent=2))
+            elif args.command == "task-stop":
+                print(json.dumps(client.task_stop(), ensure_ascii=False))
             elif args.command == "fly":
                 print(json.dumps(client.fly(not args.off)))
             elif args.command == "teleport":

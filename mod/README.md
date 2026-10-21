@@ -48,6 +48,11 @@ xmake -y
 | `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名 |
+| `navigate` | `x,z,tolerance,max_ticks,sprint`；mod 内逐 tick 闭环修正朝向并自动跳障 |
+| `mine` | `x,y,z,max_ticks`；`startDestroyBlock` + `continueDestroyBlock`，完成后回报方块 |
+| `place` | `x,y,z,against?,face?,expected?,slot?,max_ticks`；瞄准、放置并回读验证 |
+| `use` | `ticks`；等待后在服务端玩家上走 `Item::use`（+ 食物的 `useTimeDepleted`），消耗、效果和背包同步都是权威的 |
+| `task_status` / `task_stop` | 查询或取消当前闭环任务 |
 | `click` | `button=left/right, reach`；左键破坏、右键放置 |
 | `select_slot` | `slot=0..8` |
 | `inventory` | 完整背包快照：`slots`、`armor`、`offhand`、`selected_slot` |
@@ -81,12 +86,21 @@ xmake -y
 - `command` 的 `fill`/`setblock` 生效，`blocks` 能读回
 - macro 播放/录制；真实鼠标左右键录进 macro（左键 4 tick、右键 3 tick 为 true）
 - `driver/run_mod.py` 跑通 `setup-platform.json` 和 `example.json`
+- `navigate`：约 5.2 格直线，27 tick 到达，误差 0.26 格
+- `mine`：`setblock` 放石头后 1 tick 挖掉（创造模式），`blocks` 读回空气
+- `place`：放回同一格，3 tick 完成，回读为石头
+- `use`：末影珍珠服务端层数 2→1、客户端背包同步为 1，并触发约 10 格传送
+- `driver/selftest.py` 13/13 通过
 
 ## 限制
 
 - 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
 - HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
   本 mod 只提供脚本/LLM 使用的 API。
+- 同一时间只跑一个闭环任务；新任务会取消旧任务并停掉 macro。
+- `place` 默认自动挑选一个可见的支撑面；也可以显式给 `against`/`face`。放置结果以回读方块为准。
+- `use` 在服务端直接执行“使用完成”逻辑，不做事前可用性判断：满饥饿吃食物、没有箭拉弓也会消耗一次；
+  弓/弩按 `Shoot` 处理，不消耗武器本身。
 - `interact_entity` 只注入“使用”按钮（best effort）：直接调用 `Player::interact` /
   `GameMode::interact` 会在空物品上下文里崩溃，因此改为转向 + 输入注入；是否产生实际交互
   取决于手持物和瞄准。

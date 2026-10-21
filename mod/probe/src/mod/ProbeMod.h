@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -20,6 +21,7 @@
 class ClientInstance;
 class LocalPlayer;
 class Level;
+class Vec3;
 
 namespace probe {
 
@@ -77,6 +79,56 @@ struct EntityAction {
     std::uint64_t runtimeId = 0;
 };
 
+// Closed-loop tasks run inside the client tick. Keeping them in the mod (rather
+// than a Python loop issuing one command per tick) removes pipe latency from the
+// feedback path and makes the behaviour deterministic at 20 TPS.
+struct NavigateTask {
+    float x          = 0.0f;
+    float z          = 0.0f;
+    float tolerance  = 0.35f;
+    bool  sprint     = false;
+    int   maxTicks   = 600;
+    int   elapsed    = 0;
+    int   stuckTicks = 0;
+    float lastX      = 0.0f;
+    float lastZ      = 0.0f;
+    bool  haveLast   = false;
+};
+
+struct MineTask {
+    int          x        = 0;
+    int          y        = 0;
+    int          z        = 0;
+    int          maxTicks = 400;
+    int          elapsed  = 0;
+    int          misses   = 0;
+    bool         started  = false;
+    std::uint8_t face     = 0;
+    std::string  block;
+};
+
+struct PlaceTask {
+    int         x        = 0; // cell the block should end up in
+    int         y        = 0;
+    int         z        = 0;
+    int         againstX = 0; // block that is clicked
+    int         againstY = 0;
+    int         againstZ = 0;
+    int         face     = -1; // required face, -1 = any visible face
+    int         slot     = -1;
+    std::string expected;
+    int         maxTicks = 30;
+    int         elapsed  = 0;
+    int         phase    = 0; // 0 = aim, 1 = click, 2 = verify
+    int         verifyAt = 0;
+    bool        autoAgainst = true;
+};
+
+struct UseTask {
+    int ticks   = 1;
+    int elapsed = 0;
+};
+
 class ProbeMod {
 public:
     static ProbeMod& getInstance();
@@ -96,7 +148,30 @@ public:
 private:
     void serverLoop();
     void handleLine(std::string const& line);
+    void dispatchLine(std::string const& line);
     void enqueue(std::string line);
+    // Small append-only diagnostics file in the mod directory. LeviLamina's own
+    // log location depends on how the game was launched, so this is the one
+    // place a harness bug can always be inspected.
+    void bootLog(std::string const& text);
+    // Runs a callback on the integrated server thread with exception isolation.
+    void queueServerTask(std::function<void()> fn);
+
+    // Tick isolation: a bug in one of our hooks must not take the game down.
+    void safeTickPre(LocalPlayer& player);
+    void safeTickPost(LocalPlayer& player);
+    void reportInternalError(char const* phase, std::string const& message);
+
+    // Closed-loop tasks.
+    bool tickTask(ClientInstance& client, LocalPlayer& player);
+    bool tickNavigate(ClientInstance& client, LocalPlayer& player, NavigateTask& task, nlohmann::json& result);
+    bool tickMine(LocalPlayer& player, MineTask& task, nlohmann::json& result);
+    bool tickPlace(LocalPlayer& player, PlaceTask& task, nlohmann::json& result);
+    bool tickUse(LocalPlayer& player, UseTask& task, nlohmann::json& result);
+    void cancelTasks();
+    void beginTask();
+    nlohmann::json taskStatusJson();
+    void aimAt(LocalPlayer& player, Vec3 const& point);
 
     void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
@@ -203,9 +278,19 @@ private:
     bool                    mBlocksRequested = false;
     std::vector<BlockQuery> mBlockQueries;
 
-    std::mutex      mTeleportMutex;
-    bool            mTeleportRequested = false;
-    TeleportRequest mTeleportRequest;
+    std::mutex              mTeleportMutex;
+    bool                    mTeleportRequested = false;
+    TeleportRequest         mTeleportRequest;
+
+    // Only one closed-loop task may run at a time. The epoch guards against a
+    // task that was cancelled from the pipe thread while the tick thread was
+    // executing it.
+    std::mutex                  mTaskMutex;
+    std::optional<NavigateTask> mNavigateTask;
+    std::optional<MineTask>     mMineTask;
+    std::optional<PlaceTask>    mPlaceTask;
+    std::optional<UseTask>      mUseTask;
+    std::uint64_t               mTaskEpoch = 0;
 
     // Updated on the client tick; the pipe thread uses it to resolve the
     // matching server-side player for commands and teleports.
@@ -236,6 +321,8 @@ private:
     std::mutex              mQueueMutex;
     std::deque<std::string> mQueue;
     std::string             mCommandBuffer;
+    std::atomic<std::uint64_t> mQueueDropped{0};
+    std::atomic<std::uint64_t> mLastInternalErrorMs{0};
 };
 
 } // namespace probe

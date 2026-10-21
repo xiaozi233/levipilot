@@ -79,10 +79,14 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 ## 状态与限制
 
 - 已在 1.26.51.01 创作存档内实测：状态读取、移动/视角/跳跃/飞行、左右键、快捷栏、
-  服务端传送、服务端命令、macro 播放/录制、真实鼠标按键、场景 DSL。
+  服务端传送、服务端命令、macro 播放/录制、真实鼠标按键、场景 DSL，以及
+  `navigate` / `mine` / `place` / `use` 四个 mod 内闭环任务。
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）。
+- 闭环任务在客户端 tick 内推进，不依赖 Python 逐 tick 下发；同一时间只跑一个任务。
 - `command` 的方块类命令是 deferred，`success=false` 不代表失败，效果以 `blocks`/verify 为准。
 - `interact_entity` 是转向 + 注入使用按钮（best effort）；直接调用游戏的实体交互函数会崩溃。
+- Python 客户端每次请求都有超时，断线抛 `ModDisconnected`，可用 `reconnect()` /
+  `wait_ready()` 在游戏重启后恢复。
 - `smoothMacro` / `frameBasedRotation` 未复刻，实现是逐 tick 的。
 - 只对应 **1.26.51.01**，游戏升级后需要重新构建。
 

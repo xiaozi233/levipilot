@@ -84,7 +84,10 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
     bool const engaged  = state.active;
     bool const jumpNow  = engaged && state.jump;
     bool const jumpEdge = jumpNow && !mPrevJump;
-    int const  mode     = mButtonMode.load();
+    if (jumpEdge) {
+        mJumpEdgeThisTick = true;
+    }
+    int const mode = mButtonMode.load();
 
     if ((mode & 1) && (engaged || mInputActive)) {
         // Directly maintain the local MoveInputComponent flags. Only touch them
@@ -165,7 +168,7 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
     mPrevSneak  = state.sneak;
 
     if (state.yawDelta != 0.0f || state.pitchDelta != 0.0f) {
-        player._applyTurnDelta(Vec2{state.pitchDelta, state.yawDelta});
+        applyTurnDelta(player, Vec2{state.pitchDelta, state.yawDelta});
     }
 }
 

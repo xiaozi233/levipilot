@@ -163,6 +163,13 @@ def main(argv: list[str] | None = None) -> int:
     teleport.add_argument("--yaw", type=float)
     teleport.add_argument("--pitch", type=float)
 
+    reset = sub.add_parser("reset", help="clear tasks/input and teleport to a feet pose")
+    reset.add_argument("x", type=float)
+    reset.add_argument("y", type=float)
+    reset.add_argument("z", type=float)
+    reset.add_argument("--yaw", type=float)
+    reset.add_argument("--pitch", type=float)
+
     set_input = sub.add_parser("set")
     set_input.add_argument("--forward", type=float, default=0.0)
     set_input.add_argument("--strafe", type=float, default=0.0)
@@ -337,6 +344,10 @@ def main(argv: list[str] | None = None) -> int:
                     json.dumps(
                         client.teleport(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch)
                     )
+                )
+            elif args.command == "reset":
+                print(
+                    json.dumps(client.reset(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch))
                 )
             elif args.command == "set":
                 print(

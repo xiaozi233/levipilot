@@ -195,4 +195,14 @@ void invokeButtonHandlers(InputHandler& handler, bool down, std::uint32_t id, Cl
     }
 }
 
+bool isGameForeground() {
+    HWND const foreground = GetForegroundWindow();
+    if (foreground == nullptr) {
+        return false;
+    }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(foreground, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 } // namespace probe::detail

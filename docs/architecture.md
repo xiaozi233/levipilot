@@ -86,6 +86,7 @@ driver/harness/
   cli.py        # argparse 入口
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
+driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 ```
 
 `ModClient` 用独立轮询线程读管道：Windows 同步句柄上挂起的 `ReadFile` 会阻塞同一个句柄的
@@ -104,7 +105,28 @@ driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
   然后自己更新 `options.txt`（保留 CRLF 和未知行），因为游戏自身的
   `saveIfNeeded` 在当前版本不会立即落盘。
 - `harness.json` 的 `auto_enter` 让直接启动 exe 后自动进世界；自动线程会等世界列表非空
-  再动手，避免在加载阶段调用。
+  且游戏在前台再动手，避免在加载阶段或后台触发鼠标捕获。
+
+## 跑酷数据
+
+`start` 录制的 tick 事件包含 `jump_edge`、`in_air`、`block_below`、`block_feet`、
+`block_head`。`driver/parkour.py` 不依赖游戏，负责：
+
+- `segment_jumps`：用地面 true→false→true 切分，起跳前 4 tick 的 `jump_edge` 关联到该跳；
+- `summarize`：距离、滞空、顶点、起跳速度；
+- `splits`：按 checkpoint 找第一次进入半径的 tick；
+- `compare_runs`：逐跳对齐两次运行；
+- `record` / `run_attempts`：驱动 macro 回放、`reset`、录制和成功率统计。
+
+细节见 [`parkour.md`](parkour.md)。
+
+## 后台焦点守卫
+
+Bedrock 的 raw input 在窗口失焦后仍可能驱动视角。mod 默认 `background_guard=true`：
+
+- 失去前台时 `ClipCursor(nullptr)` 并平衡 `ShowCursor`，让光标可见；
+- hook `LocalPlayer::_applyTurnDelta`，非前台且不是 mod 自己注入的转向时直接丢弃；
+- mod 的 `look`/任务通过 `mInjectingLook` 放行；`auto_enter` 要求窗口在前台。
 
 ## 开发循环
 

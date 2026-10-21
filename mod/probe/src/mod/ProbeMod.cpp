@@ -154,6 +154,7 @@ void ProbeMod::loadAutoConfig() {
     }
     mAutoEnterWorld   = config.value("auto_enter", std::string{});
     mAutoEnterDelayMs = std::clamp(config.value("delay_ms", 2000), 0, 60000);
+    mBackgroundGuard  = config.value("background_guard", true);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
             std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
@@ -179,6 +180,13 @@ void ProbeMod::autoEnterLoop() {
         std::vector<LevelSummary> worlds;
         client->getMinecraftGame().getLevelListCache().getLevelList(worlds, true, false, false, false);
         if (worlds.empty()) {
+            Sleep(500);
+            continue;
+        }
+        // Do not enter a world while the game is in the background: in-world
+        // mouse capture without focus is the "cursor stuck / background look"
+        // failure mode. Wait until the player brings the window forward.
+        if (!detail::isGameForeground()) {
             Sleep(500);
             continue;
         }
@@ -218,7 +226,8 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     if (!mRunning.load(std::memory_order_relaxed)) {
         return;
     }
-    auto client = ll::service::getClientInstance();
+    mJumpEdgeThisTick = false;
+    auto client       = ll::service::getClientInstance();
     if (!client || client->getLocalPlayer() != &player) {
         mInWorld = false;
         return;
@@ -373,7 +382,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         float dy = lookRel ? lookYaw : wrapDegrees(lookYaw - rot.y);
         float dp = lookRel ? -lookPitch : (rot.x - lookPitch);
         if (std::fabs(dy) > 1.0e-5f || std::fabs(dp) > 1.0e-5f) {
-            player._applyTurnDelta(Vec2{dp, dy});
+            applyTurnDelta(player, Vec2{dp, dy});
         }
     }
 }
@@ -396,6 +405,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     if (!client || client->getLocalPlayer() != &player) {
         return;
     }
+    updateFocusState();
     auto tickIndex = mTick.fetch_add(1, std::memory_order_relaxed) + 1;
 
     latchActionClicks(player);
@@ -468,6 +478,14 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         actionSprint = action->mPlayerActions->test(PlayerActionStartSprinting);
     }
 
+    auto const  feet     = player.getFeetPos();
+    bool const  onGround = player.isOnGround();
+    int const   fx       = static_cast<int>(std::floor(feet.x));
+    int const   fy       = static_cast<int>(std::floor(feet.y));
+    int const   fz       = static_cast<int>(std::floor(feet.z));
+    int const   hy       = static_cast<int>(std::floor(feet.y + 1.8f));
+    auto const& source   = player.getDimensionBlockSourceConst();
+
     nlohmann::json j;
     j["event"]             = "tick";
     j["tick"]              = tickIndex;
@@ -479,7 +497,12 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     j["vz"]                = finiteOrZero(static_cast<float>(vel.z));
     j["yaw"]               = finiteOrZero(rot.y);
     j["pitch"]             = finiteOrZero(rot.x);
-    j["on_ground"]         = player.isOnGround();
+    j["on_ground"]         = onGround;
+    j["in_air"]            = !onGround;
+    j["jump_edge"]         = mJumpEdgeThisTick;
+    j["block_below"]       = blockName(source, fx, fy - 1, fz);
+    j["block_feet"]        = blockName(source, fx, fy, fz);
+    j["block_head"]        = blockName(source, fx, hy, fz);
     j["sprint"]            = player.isSprinting();
     j["sneak"]             = player.isSneaking();
     j["jump"]              = in.jump;
@@ -498,6 +521,60 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         mRecording = false;
         enqueue(R"({"event":"stopped","reason":"max_ticks"})");
     }
+}
+
+bool ProbeMod::allowTurnDelta() const {
+    if (!mRunning.load(std::memory_order_relaxed) || !mBackgroundGuard) {
+        return true;
+    }
+    if (mInjectingLook.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    return detail::isGameForeground();
+}
+
+void ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
+    struct Guard {
+        std::atomic_bool& flag;
+        explicit Guard(std::atomic_bool& value) : flag(value) { flag = true; }
+        ~Guard() { flag = false; }
+    } guard{mInjectingLook};
+    player._applyTurnDelta(delta);
+}
+
+void ProbeMod::updateFocusState() {
+    bool const foreground = detail::isGameForeground();
+    if (foreground == mForeground) {
+        if (!foreground) {
+            // The game keeps calling ClipCursor even in the background.
+            ClipCursor(nullptr);
+        }
+        return;
+    }
+
+    if (!foreground) {
+        ClipCursor(nullptr);
+        if (mBackgroundGuard) {
+            int calls = 0;
+            while (calls < 8) {
+                ++calls;
+                if (ShowCursor(TRUE) >= 0) {
+                    break;
+                }
+            }
+            mCursorShowCalls += calls;
+        }
+        bootLog("focus: lost");
+    } else {
+        if (mCursorShowCalls > 0) {
+            for (int i = 0; i < mCursorShowCalls; ++i) {
+                ShowCursor(FALSE);
+            }
+            mCursorShowCalls = 0;
+        }
+        bootLog("focus: gained");
+    }
+    mForeground = foreground;
 }
 
 
@@ -544,6 +621,26 @@ LL_TYPE_INSTANCE_HOOK(
 };
 
 static ll::memory::HookRegistrar<ProbeLocalPlayerTickHook> gPlayerTickHook;
+
+// Background raw mouse input still reaches the game; without this guard the
+// camera keeps turning while another window is focused. Our own look/task calls
+// set mInjectingLook and pass through.
+LL_TYPE_INSTANCE_HOOK(
+    ProbeTurnDeltaHook,
+    ll::memory::HookPriority::Normal,
+    LocalPlayer,
+    &LocalPlayer::_applyTurnDelta,
+    void,
+    Vec2 const& delta
+) {
+    auto& mod = ::probe::ProbeMod::getInstance();
+    if (!mod.allowTurnDelta()) {
+        return;
+    }
+    origin(delta);
+};
+
+static ll::memory::HookRegistrar<ProbeTurnDeltaHook> gTurnDeltaHook;
 
 
 LL_REGISTER_MOD(probe::ProbeMod, probe::ProbeMod::getInstance());

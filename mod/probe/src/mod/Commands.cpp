@@ -539,6 +539,18 @@ void ProbeMod::dispatchLine(std::string const& line) {
         // "teleported" is emitted from the server thread once the move is applied.
         return;
     }
+    if (cmd == "reset") {
+        resetPlayer(
+            j.value("x", 0.0f),
+            j.value("y", 0.0f),
+            j.value("z", 0.0f),
+            j.contains("yaw"),
+            j.value("yaw", 0.0f),
+            j.contains("pitch"),
+            j.value("pitch", 0.0f)
+        );
+        return;
+    }
     if (cmd == "macro_load") {
         std::string name = j.value("name", std::string{"default"});
         std::string path = j.value("path", std::string{});

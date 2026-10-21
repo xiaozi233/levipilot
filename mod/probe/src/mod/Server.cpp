@@ -50,4 +50,54 @@ void ProbeMod::requestServerTeleport(LocalPlayer& player, TeleportRequest const&
 }
 
 
+void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch) {
+    cancelTasks();
+    beginTask();
+    {
+        std::lock_guard lock(mLookMutex);
+        mLookTicks = 0;
+    }
+    mClickRequest.store(-1);
+    mSlotRequest.store(-1);
+
+    auto client = ll::service::getClientInstance();
+    if (!client) {
+        enqueue(R"({"event":"reset_done","ok":false,"reason":"no_client"})");
+        return;
+    }
+    auto* player = client->getLocalPlayer();
+    if (!player) {
+        enqueue(R"({"event":"reset_done","ok":false,"reason":"no_player"})");
+        return;
+    }
+
+    TeleportRequest request;
+    request.x           = x;
+    request.y           = y;
+    request.z           = z;
+    request.hasRotation = hasYaw || hasPitch;
+    auto const rotation = player->getRotation();
+    request.yaw         = hasYaw ? yaw : rotation.y;
+    request.pitch       = hasPitch ? pitch : rotation.x;
+    {
+        std::lock_guard lock(mTeleportMutex);
+        mTeleportRequest   = request;
+        mTeleportRequested = true;
+    }
+
+    enqueue(
+        nlohmann::json{
+            {"event", "reset_done" },
+            {"ok",    true         },
+            {"x",     x            },
+            {"y",     y            },
+            {"z",     z            },
+            {"yaw",   request.yaw  },
+            {"pitch", request.pitch},
+    }
+            .dump()
+    );
+}
+
+
 } // namespace probe

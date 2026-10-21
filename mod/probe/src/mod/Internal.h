@@ -165,4 +165,7 @@ InputHandler*    inputHandler(ClientInstance& client);
 InputEventQueue* inputQueue(ClientInstance& client);
 void             invokeButtonHandlers(InputHandler& handler, bool down, std::uint32_t id, ClientInstance& client);
 
+// True when the foreground window belongs to this process (the game).
+bool isGameForeground();
+
 } // namespace probe::detail

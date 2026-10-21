@@ -94,7 +94,7 @@ void ProbeMod::applyEntityAction(LocalPlayer& player, EntityAction const& action
         float      dyaw   = wrapDegrees(yaw - rot.y);
         float      dpitch = rot.x - pitch;
         if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
-            player._applyTurnDelta(Vec2{dpitch, dyaw});
+            applyTurnDelta(player, Vec2{dpitch, dyaw});
         }
         {
             std::lock_guard lock(mInputMutex);
@@ -132,7 +132,7 @@ void ProbeMod::applyEntityAction(LocalPlayer& player, EntityAction const& action
         float      dyaw   = wrapDegrees(yaw - rot.y);
         float      dpitch = rot.x - pitch;
         if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
-            player._applyTurnDelta(Vec2{dpitch, dyaw});
+            applyTurnDelta(player, Vec2{dpitch, dyaw});
         }
 
         enqueue(

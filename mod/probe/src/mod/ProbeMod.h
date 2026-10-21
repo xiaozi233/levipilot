@@ -21,6 +21,7 @@
 class ClientInstance;
 class LocalPlayer;
 class Level;
+class Vec2;
 class Vec3;
 
 namespace probe {
@@ -141,6 +142,10 @@ public:
     bool enable();
     bool disable();
 
+    // Called by the _applyTurnDelta hook: background mouse look must not move
+    // the camera, but our own look/task injections must still work.
+    [[nodiscard]] bool allowTurnDelta() const;
+
     // Called by the LocalPlayer::normalTick hook: before and after the original tick.
     void onPlayerTick(LocalPlayer& player);
     void afterPlayerTick(LocalPlayer& player);
@@ -179,8 +184,11 @@ private:
     void listWorlds();
     void setOptions(std::string const& text);
     void saveOptions();
+    void resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch);
     void loadAutoConfig();
     void autoEnterLoop();
+    void applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
+    void updateFocusState();
 
     void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
@@ -230,17 +238,20 @@ private:
     std::atomic<std::uint64_t> mMaxTicks{0};
 
     // Continuous movement input. ticks < 0 means "until stopped".
-    std::mutex       mInputMutex;
-    ControlState     mDesired;
-    int              mDesiredTicks  = 0;
-    bool             mJumpRequested = false;
-    bool             mPrevSprint    = false;
-    bool             mPrevSneak     = false;
-    bool             mInjected      = false;
-    bool             mInputActive   = false;
-    bool             mPrevJump      = false;
-    bool             mPrevMacroRmb  = false;
-    bool             mPrevMacroLmb  = false;
+    std::mutex   mInputMutex;
+    ControlState mDesired;
+    int          mDesiredTicks  = 0;
+    bool         mJumpRequested = false;
+    bool         mPrevSprint    = false;
+    bool         mPrevSneak     = false;
+    bool         mInjected      = false;
+    bool         mInputActive   = false;
+    bool         mPrevJump      = false;
+    // Set by applyControls when a jump press edge is injected; cleared at the
+    // start of each tick so the tick event can report it.
+    bool             mJumpEdgeThisTick = false;
+    bool             mPrevMacroRmb     = false;
+    bool             mPrevMacroLmb     = false;
     std::atomic_bool mMouseLeft{false};
     std::atomic_bool mMouseRight{false};
     // Latched on the press edge so a click shorter than one tick is still recorded.
@@ -252,9 +263,15 @@ private:
     std::atomic<int>                mMouseLastData{-1};
     std::array<std::atomic<int>, 8> mMouseActionCounts{};
     // Set while the mod itself calls GameMode, so playback is not re-recorded.
-    std::atomic_bool    mInjectingClick{false};
-    bool                mPrevActionLmb = false;
-    bool                mPrevActionRmb = false;
+    std::atomic_bool mInjectingClick{false};
+    // Set while the mod itself applies a turn (look/task), so the background
+    // input guard lets it through.
+    std::atomic_bool    mInjectingLook{false};
+    bool                mBackgroundGuard = true;
+    bool                mForeground      = true;
+    int                 mCursorShowCalls = 0;
+    bool                mPrevActionLmb   = false;
+    bool                mPrevActionRmb   = false;
     std::array<bool, 9> mButtonStates{};
     std::array<bool, 9> mHandlerStates{};
 

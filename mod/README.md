@@ -67,6 +67,7 @@ xmake -y
 | `clear_inventory` | 清空背包、盔甲和副手 |
 | `fly` | `enabled`；客户端 + 服务端同时设置 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威 |
+| `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro 后传送到脚部坐标，用于跑酷重试 |
 | `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
 | `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存 |
@@ -76,6 +77,9 @@ xmake -y
 `health/max_health`、`hunger/saturation/exhaustion`、`xp_level/xp_progress`、
 `gamemode/dimension/name/uuid/selected_slot/item`、
 `block_feet/block_below/block_head/block_above`，以及 `input` 子对象。
+
+`start` 录制的每个 `tick` 事件额外带跑酷字段：`in_air`、`jump_edge`（本 tick 是否有起跳
+按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
 
 调试命令（`diag` / `mouse` / `buttons` / `input_cfg`）和注入/传送/macro 的实现细节见
 [`../docs/mod-internals.md`](../docs/mod-internals.md)。
@@ -88,12 +92,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 {
   "auto_enter": "超平坦测试",
   "options": { "gfx_gamma": "0.5" },
-  "delay_ms": 2000
+  "delay_ms": 2000,
+  "background_guard": true
 }
 ```
 
-`auto_enter` 是存档名（也接受 `id` 字段）；mod 会等世界列表准备好后再进入。`options`
-会先应用并写回 `options.txt`。不需要时删除该文件即可。
+`auto_enter` 是存档名（也接受 `id` 字段）；mod 会等世界列表准备好、并且游戏在**前台**后
+再进入（后台进世界会触发鼠标捕获）。`options` 会先应用并写回 `options.txt`。
+`background_guard` 默认开启：游戏失去前台时释放光标裁剪，并忽略后台鼠标引起的视角旋转；
+它不会阻止 mod 自己的 `look`/任务。不需要时删除该文件即可。
 
 ## 实测（1.26.51.01 创作存档）
 
@@ -115,6 +122,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `harness.json` 的 `auto_enter` 在直接启动 exe 后自动进世界
 - `options_set` 修改 `gfx_gamma` 实时生效（画面亮度变化），并写回 `options.txt`
 - `driver/dev.py run --world ... --build` 一条命令完成编译、重启、进世界
+- tick 事件带 `jump_edge` / `in_air` / `block_below`；`reset` 清零速度并让两次重试落点
+  误差 < 1e-4 格
+- 后台鼠标守卫：游戏不在前台时 `yaw/pitch` 不被鼠标改变，光标保持可见；mod 自己的
+  `look` 仍生效
+- `driver/parkour.py`：跳跃分段、checkpoint、两次运行对比、`attempts` 2/2 成功
 - `driver/selftest.py` 13/13 通过
 
 ## 限制

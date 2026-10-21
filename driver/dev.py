@@ -12,12 +12,14 @@ until the player is actually in game. No window automation is involved.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 # ``python driver/dev.py`` puts driver/ on sys.path, which hides the package.
@@ -49,6 +51,40 @@ def kill_game() -> None:
         capture_output=True,
         check=False,
     )
+
+
+def focus_game(pid: int, timeout: float = 15.0) -> bool:
+    """Bring the game window to the foreground.
+
+    A background-launched Minecraft keeps raw mouse capture; entering a world
+    while it is unfocused is what makes the cursor feel stuck. Focusing the
+    window before entering avoids that state.
+    """
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    found: list[int] = []
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        process_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if process_id.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    callback_ref = enum_proc(callback)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found.clear()
+        user32.EnumWindows(callback_ref, 0)
+        if found:
+            hwnd = found[0]
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            return True
+        time.sleep(0.3)
+    return False
 
 
 def build_mod() -> None:
@@ -121,7 +157,12 @@ def run(args: argparse.Namespace) -> int:
     write_auto_config(version_dir / "mods" / "probe", None, {})
 
     log(f"starting {exe}")
-    subprocess.Popen([str(exe)], cwd=str(exe.parent))
+    process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
+    if not args.no_focus:
+        if focus_game(process.pid):
+            log("game focused")
+        else:
+            log("warning: could not focus the game window")
 
     client = ModClient(connect_timeout=90.0, timeout=20.0).connect()
     try:
@@ -140,6 +181,8 @@ def run(args: argparse.Namespace) -> int:
                 raise SystemExit(
                     f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}"
                 )
+            if not args.no_focus:
+                focus_game(process.pid, timeout=3.0)
             log(f"entering {args.world!r}")
             client.enter_world(args.world)
             state = client.wait_in_world(timeout=args.timeout)
@@ -164,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     run_parser.add_argument("--exe", help="override the game executable path")
     run_parser.add_argument("--timeout", type=float, default=90.0)
+    run_parser.add_argument(
+        "--no-focus",
+        action="store_true",
+        help="do not bring the game window to the foreground before entering",
+    )
     run_parser.add_argument(
         "--write-config",
         action="store_true",

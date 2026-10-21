@@ -517,6 +517,28 @@ class ModClient:
     def leave_world(self, timeout: float = 20.0) -> dict[str, Any]:
         return self.request({"cmd": "leave_world"}, "leave_world_result", timeout=timeout)
 
+    def reset(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        *,
+        yaw: float | None = None,
+        pitch: float | None = None,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """Clear input/tasks/macro, then teleport to a known feet pose.
+
+        The server teleport lands on the next tick; callers that need a settled
+        state should wait a few ticks before starting a run.
+        """
+        message: dict[str, Any] = {"cmd": "reset", "x": float(x), "y": float(y), "z": float(z)}
+        if yaw is not None:
+            message["yaw"] = float(yaw)
+        if pitch is not None:
+            message["pitch"] = float(pitch)
+        return self.request(message, "reset_done", timeout=timeout)
+
     def set_options(
         self,
         values: dict[str, Any] | None = None,
@@ -721,6 +743,9 @@ class Harness:
 
     def leave_world(self) -> dict[str, Any]:
         return self.client.leave_world()
+
+    def reset(self, x: float, y: float, z: float, **kwargs: Any) -> dict[str, Any]:
+        return self.client.reset(x, y, z, **kwargs)
 
     def wait_in_world(self, timeout: float = 90.0) -> dict[str, Any]:
         return self.client.wait_in_world(timeout)

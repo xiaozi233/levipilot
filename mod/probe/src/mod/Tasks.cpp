@@ -16,7 +16,7 @@ void ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
     float const yaw   = static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
     float const pitch = static_cast<float>(-std::atan2(dy, horiz) * 57.29577951308232);
     auto const& rot   = player.getRotation();
-    player._applyTurnDelta(Vec2{rot.x - pitch, wrapDegrees(yaw - rot.y)});
+    applyTurnDelta(player, Vec2{rot.x - pitch, wrapDegrees(yaw - rot.y)});
 }
 
 void ProbeMod::cancelTasks() {
@@ -181,7 +181,7 @@ bool ProbeMod::tickNavigate(ClientInstance& client, LocalPlayer& player, Navigat
     auto const& rot   = player.getRotation();
     float const delta = std::clamp(wrapDegrees(yaw - rot.y), -35.0f, 35.0f);
     if (std::fabs(delta) > 0.01f) {
-        player._applyTurnDelta(Vec2{0.0f, delta});
+        applyTurnDelta(player, Vec2{0.0f, delta});
     }
 
     if (task.haveLast) {

@@ -57,6 +57,13 @@ py -3.11 driver/transport_mod.py click left
 py -3.11 driver/transport_mod.py macro load --name default
 py -3.11 driver/transport_mod.py macro run
 
+# 跑酷：录制一次 macro 跑法 → 跳跃分析 → 对比 → 重复尝试
+py -3.11 driver/parkour.py record --macro p0_forward --max-ticks 80 --out out/run.jsonl
+py -3.11 driver/parkour.py analyze out/run.jsonl --checkpoint 0 -6
+py -3.11 driver/parkour.py compare out/run1.jsonl out/run2.jsonl
+py -3.11 driver/parkour.py attempts --macro p0_forward \
+    --start 0 -49 0 --target 0 4 --attempts 10
+
 # 场景 DSL
 py -3.11 driver/run_mod.py --scenario scenarios/setup-platform.json
 py -3.11 driver/run_mod.py --scenario scenarios/example.json
@@ -80,6 +87,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 
 - Mod 构建、API、协议、实测结果与限制：[`mod/README.md`](mod/README.md)
 - 架构与扩展指南：[`docs/architecture.md`](docs/architecture.md)
+- 跑酷记录、跳跃分析与重复尝试：[`docs/parkour.md`](docs/parkour.md)
 - dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)

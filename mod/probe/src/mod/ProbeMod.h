@@ -68,9 +68,10 @@ struct TeleportRequest {
     float x           = 0.0f;
     float y           = 0.0f;
     float z           = 0.0f;
-    bool  hasRotation = false;
-    float yaw         = 0.0f;
-    float pitch       = 0.0f;
+    bool  hasRotation  = false;
+    float yaw          = 0.0f;
+    float pitch        = 0.0f;
+    bool  clearEffects = false;
 };
 
 struct EntityAction {

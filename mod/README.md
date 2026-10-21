@@ -67,7 +67,7 @@ xmake -y
 | `clear_inventory` | 清空背包、盔甲和副手 |
 | `fly` | `enabled`；客户端 + 服务端同时设置 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威 |
-| `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro 后传送到脚部坐标，用于跑酷重试 |
+| `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试 |
 | `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
 | `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存 |

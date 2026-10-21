@@ -76,8 +76,8 @@ py -3.11 driver/parkour.py attempts --macro route1 \
 
 ## 设置与焦点
 
-- `reset` 会清空任务/输入/macro，然后走服务端传送；座标是**脚部**。传送在下一 tick 生效，
-  `attempts` 会等 4 tick 再开始。
+- `reset` 会清空任务/输入/macro/**药水效果**，然后走服务端传送；座标是**脚部**。传送在下一
+  tick 生效，`attempts` 会等 4 tick 再开始。实测 speed V 在 reset 后不再影响位移。
 - 游戏在后台时，mod 默认开启 `background_guard`：释放光标裁剪、显示光标，并忽略后台鼠标
   引起的 `_applyTurnDelta`；mod 自己的 `look`/任务不受影响。配置在
   `mods/probe/harness.json` 的 `background_guard`。

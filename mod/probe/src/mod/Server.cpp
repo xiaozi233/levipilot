@@ -36,6 +36,9 @@ void ProbeMod::requestServerTeleport(LocalPlayer& player, TeleportRequest const&
         }
 
         Vec2 const rotation = request.hasRotation ? Vec2{request.pitch, request.yaw} : serverPlayer->getRotation();
+        if (request.clearEffects) {
+            serverPlayer->removeAllEffects();
+        }
         serverPlayer->teleport(target, serverPlayer->getDimensionId(), rotation);
 
         nlohmann::json result;
@@ -76,6 +79,7 @@ void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bo
     request.y           = y;
     request.z           = z;
     request.hasRotation = hasYaw || hasPitch;
+    request.clearEffects = true;
     auto const rotation = player->getRotation();
     request.yaw         = hasYaw ? yaw : rotation.y;
     request.pitch       = hasPitch ? pitch : rotation.x;

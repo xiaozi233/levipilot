@@ -11,6 +11,7 @@ from .client import Harness, ModClient
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
 from .memory import fnv1_64, fnv1a_64, format_address, parse_hex_bytes, to_hex
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder
+from .record import RecordEntry, block_hash, decode_dump, decode_hex
 from .spool import SpoolReader, SpoolStats, read_spool
 from .watch import HitCursor, WatchHit, decode_hits
 
@@ -25,9 +26,13 @@ __all__ = [
     "ModPipeError",
     "ModProtocolError",
     "ModTimeout",
+    "RecordEntry",
     "SpoolReader",
     "SpoolStats",
     "WatchHit",
+    "block_hash",
+    "decode_dump",
+    "decode_hex",
     "decode_hits",
     "fnv1_64",
     "fnv1a_64",

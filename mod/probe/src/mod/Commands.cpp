@@ -75,7 +75,9 @@ void ProbeMod::dispatchLine(std::string const& line) {
 
     auto cmd = j.value("cmd", std::string{});
     if (cmd == "ping") {
-        enqueue(R"({"event":"pong","mod":"probe","protocol":3})");
+        enqueue(
+            R"({"event":"pong","mod":"probe","protocol":4,"capabilities":["tick_json","bin_record","mem","watch","signin"]})"
+        );
         return;
     }
     if (cmd == "diag") {
@@ -357,6 +359,52 @@ void ProbeMod::dispatchLine(std::string const& line) {
         mRecording = false;
         flushSpool(true);
         enqueue(R"({"event":"stopped","reason":"client"})");
+        return;
+    }
+    if (cmd == "record_start") {
+        std::uint32_t const period = std::clamp(j.value("period", 1), 1, 200);
+        std::string         error;
+        if (!recordStart(period, error)) {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"      },
+                    {"reason", error        },
+            }
+                    .dump()
+            );
+            return;
+        }
+        enqueue(
+            nlohmann::json{
+                {"event",     "record_started"  },
+                {"period",    period            },
+                {"capacity",  RecordCapacity    },
+                {"entry_size", RecordSize       },
+        }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "record_stop") {
+        recordStop();
+        enqueue(
+            nlohmann::json{
+                {"event",  "record_stopped"  },
+                {"rows",   recordRows()      },
+                {"head",   recordHead()      },
+                {"period", recordPeriod()    },
+        }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "record_dump") {
+        std::uint64_t const since =
+            j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
+        std::size_t const limit = std::clamp<std::size_t>(j.value("limit", 1024), 1, 8192);
+        std::string const format = j.value("format", std::string{"jsonl"});
+        bool const        binary = format == "bin" || format == "hex" || format == "binary";
+        enqueue(recordDumpJson(since, limit, binary).dump());
         return;
     }
     if (cmd == "move") {
@@ -1118,6 +1166,11 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["watch_count"]   = watchCount();
         out["watch_hits"]    = watchTotalHits();
         out["watch_dropped"] = watchDroppedHits();
+        out["record_active"]   = recordActive();
+        out["record_rows"]     = recordRows();
+        out["record_head"]     = recordHead();
+        out["record_period"]   = recordPeriod();
+        out["record_capacity"] = RecordCapacity;
         enqueue(out.dump());
         return;
     }

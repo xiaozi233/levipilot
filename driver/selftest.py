@@ -275,6 +275,34 @@ def main(argv: list[str] | None = None) -> int:
         client.reset(feet[0], feet[1], feet[2], yaw=0.0)
         wait_ticks(client, 10)
 
+        # -- T4: binary tick ring ------------------------------------------
+        started = client.record_bin_start(period=1)
+        checks.check(
+            "record_started",
+            started.get("event") == "record_started" and int(started.get("entry_size", 0)) == 64,
+            str(started),
+        )
+        wait_ticks(client, 20)
+        stopped = client.record_bin_stop()
+        recorded = int(stopped.get("rows", 0))
+        checks.check("record_rows", recorded >= 10, f"rows={recorded}")
+        checks.check("record_no_drop", int(client.status().get("queue_dropped", -1)) == 0)
+        jsonl_entries = client.record_dump_all(format="jsonl")
+        checks.check(
+            "record_jsonl_count",
+            len(jsonl_entries) == recorded,
+            f"{len(jsonl_entries)} vs {recorded}",
+        )
+        bin_entries = client.record_dump_all(format="hex")
+        checks.check(
+            "record_hex_count", len(bin_entries) == recorded, f"{len(bin_entries)} vs {recorded}"
+        )
+        checks.check(
+            "record_flags",
+            bool(jsonl_entries) and any(entry.on_ground for entry in jsonl_entries),
+            f"entries={len(jsonl_entries)}",
+        )
+
         before = client.inventory()
         checks.check(
             "inventory", len(before.get("slots", [])) >= 9, f"slots={len(before.get('slots', []))}"

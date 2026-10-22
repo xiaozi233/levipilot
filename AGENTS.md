@@ -35,7 +35,7 @@ py -3.11 driver/selftest.py
 
 | 路径 | 内容 |
 | --- | --- |
-| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`SignIn`（主菜单登录态）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
+| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`SignIn`（主菜单登录态）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
 | `driver/harness/` | Python 客户端：`protocol`/`client`/`errors`/`cli`，以及 `memory`/`spool`/`watch` 辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
@@ -56,8 +56,8 @@ py -3.11 driver/selftest.py
    `/EHsc` 下访问违例**不是**可捕获异常 —— 新写的 handler 用 `__try/__except` 包住。
 6. **版本**：只支持 1.26.51.01。禁止把 1.26.45.01 的硬编码 VA 写进 `.cpp`（注释里也不要当常量）；
    锚点走符号或签名解析（计划见 `docs/task-prompts.md` 的 T7）。
-7. **协议只做增量变更**：`{"event":"hello","protocol":3}` 是握手；升号时旧字段必须继续可用，
-   未知命令仍回 `error/unknown_cmd`。
+7. **协议只做增量变更**：`{"event":"hello","protocol":4,"capabilities":[...]}` 是握手；
+   升号时旧字段必须继续可用，未知命令仍回 `error/unknown_cmd`。
 8. **强能力默认关闭**：任意内存写、任意地址装钩这类能力必须显式开启并留审计日志。
 
 ## 加东西的标准步骤
@@ -99,7 +99,7 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 任务清单与可直接派活的提示词：[`docs/task-prompts.md`](docs/task-prompts.md)。
 
 - **P0（已完成，selftest 34/34）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（下一步）**：T4 二进制记录环 → T5 按 VA 装钩 → T6 ECS/registry 内省
+- **P1（进行中）**：T4 二进制记录环（已完成，selftest 含 5 项检查）→ T5 按 VA 装钩 → T6 ECS/registry 内省
 - **P2**：T7 版本指纹 + 签名/偏移解析 → T8 unhook/panic
 - **P3**：T9 tick 路径减锁 + 开销自测
 

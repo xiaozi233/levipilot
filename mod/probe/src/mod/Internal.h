@@ -245,4 +245,60 @@ std::size_t    watchCount();
 std::uint64_t  watchTotalHits();
 std::uint64_t  watchDroppedHits();
 
+// ---------------------------------------------------------------------------
+// T4: fixed-size binary tick ring.
+//
+// The writer runs on the game tick and only stores a 64-byte POD; it does no
+// formatting, allocation or locking. Dumping/decoding happens on the pipe
+// thread. JSON `start` recording remains available as the compatibility path.
+// ---------------------------------------------------------------------------
+constexpr std::size_t RecordCapacity = 1 << 19; // 32 MiB, ~7 hours at 20 TPS
+constexpr std::size_t RecordSize     = 64;
+
+struct RecordEntry {
+    std::uint64_t tick        = 0;
+    float         x           = 0.0f;
+    float         y           = 0.0f;
+    float         z           = 0.0f;
+    float         vx          = 0.0f;
+    float         vy          = 0.0f;
+    float         vz          = 0.0f;
+    float         yaw         = 0.0f;
+    float         pitch       = 0.0f;
+    float         feetY       = 0.0f;
+    std::uint32_t flags       = 0;
+    std::uint32_t blockBelow  = 0; // FNV-1a 32 of the type name
+    std::uint32_t blockFeet   = 0;
+    std::uint32_t blockHead   = 0;
+    std::uint32_t healthMilli = 0;
+};
+
+static_assert(sizeof(RecordEntry) == RecordSize, "record entry must stay 64 bytes");
+
+// Flag bits stored in RecordEntry::flags.
+constexpr std::uint32_t RecordFlagOnGround    = 1u << 0;
+constexpr std::uint32_t RecordFlagInAir       = 1u << 1;
+constexpr std::uint32_t RecordFlagJumpEdge    = 1u << 2;
+constexpr std::uint32_t RecordFlagSprint      = 1u << 3;
+constexpr std::uint32_t RecordFlagSneak       = 1u << 4;
+constexpr std::uint32_t RecordFlagActionSprint = 1u << 5;
+constexpr std::uint32_t RecordFlagInputW      = 1u << 6;
+constexpr std::uint32_t RecordFlagInputA      = 1u << 7;
+constexpr std::uint32_t RecordFlagInputS      = 1u << 8;
+constexpr std::uint32_t RecordFlagInputD      = 1u << 9;
+constexpr std::uint32_t RecordFlagInputJump   = 1u << 10;
+
+std::uint32_t blockNameHash(std::string const& name);
+
+bool           recordStart(std::uint32_t period, std::string& error);
+void           recordStop();
+bool           recordActive();
+std::uint64_t  recordHead();
+std::uint64_t  recordRows();
+std::uint32_t  recordPeriod();
+void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
+
+// format: "jsonl" (decoded rows) or "hex" ("bin" is accepted as an alias).
+nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary);
+
 } // namespace probe::detail

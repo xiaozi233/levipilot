@@ -162,11 +162,14 @@ void ProbeMod::serverLoop() {
                 flushSpool(true);
                 nlohmann::json helloJson{
                     {"event", "hello"                },
-                    {"protocol", 3                   },
+                    {"protocol", 4                   },
                     {"spool", mSpoolPath.string()    },
                     {"replay_rows", replay           },
                     {"queue_dropped", mQueueDropped.load()},
                 };
+                helloJson["capabilities"] = nlohmann::json::array(
+                    {"tick_json", "bin_record", "mem", "watch", "signin"}
+                );
                 auto const hello   = helloJson.dump() + "\n";
                 DWORD      written = 0;
                 BOOL const helloOk = WriteFile(pipe, hello.data(), static_cast<DWORD>(hello.size()), &written, nullptr);

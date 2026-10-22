@@ -12,6 +12,7 @@ from typing import Any
 from .client import ModClient
 from .errors import ModPipeError
 from .protocol import PIPE_NAME
+from .record import decode_dump
 from .spool import read_spool
 
 
@@ -258,6 +259,17 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--move-forward", type=float, default=0.0)
     record.add_argument("--move-strafe", type=float, default=0.0)
     record.add_argument("--move-ticks", type=int, default=0)
+
+    record_start = sub.add_parser("record-start", help="start the binary tick ring")
+    record_start.add_argument("--period", type=int, default=1)
+    sub.add_parser("record-stop", help="stop the binary tick ring")
+
+    record_dump = sub.add_parser("record-dump", help="dump the binary tick ring")
+    record_dump.add_argument("--since", type=int, default=0)
+    record_dump.add_argument("--limit", type=int, default=1024)
+    record_dump.add_argument("--format", default="jsonl", choices=["jsonl", "bin", "hex"])
+    record_dump.add_argument("--all", action="store_true", help="drain up to the head")
+    record_dump.add_argument("--out", type=Path)
 
     _add_macro_parser(sub)
 
@@ -563,6 +575,26 @@ def main(argv: list[str] | None = None) -> int:
                 if samples:
                     print(json.dumps(samples[0], ensure_ascii=False))
                     print(json.dumps(samples[-1], ensure_ascii=False))
+            elif args.command == "record-start":
+                print(json.dumps(client.record_bin_start(args.period), ensure_ascii=False))
+            elif args.command == "record-stop":
+                print(json.dumps(client.record_bin_stop(), ensure_ascii=False))
+            elif args.command == "record-dump":
+                if args.all:
+                    entries = client.record_dump_all(
+                        since=args.since, chunk=args.limit, format=args.format
+                    )
+                else:
+                    entries = decode_dump(
+                        client.record_dump(args.since, limit=args.limit, format=args.format)
+                    )
+                rows = [entry.to_dict() for entry in entries]
+                if args.out is not None:
+                    _write_jsonl(args.out, rows)
+                print(f"entries={len(rows)}")
+                if rows:
+                    print(json.dumps(rows[0], ensure_ascii=False))
+                    print(json.dumps(rows[-1], ensure_ascii=False))
             elif args.command == "macro":
                 if args.macro_command == "load":
                     print(json.dumps(client.macro_load(args.name, args.path), ensure_ascii=False))

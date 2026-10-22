@@ -462,6 +462,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     mTickProbe.fetch_add(1, std::memory_order_relaxed);
     auto tickIndex = mTick.fetch_add(1, std::memory_order_relaxed) + 1;
     gWatchTick.store(tickIndex, std::memory_order_relaxed);
+    recordTick(player, *client, tickIndex, mJumpEdgeThisTick);
     {
         auto const& pos    = player.getPosition();
         auto const  rot    = player.getRotation();

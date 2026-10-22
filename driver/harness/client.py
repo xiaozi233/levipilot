@@ -22,6 +22,7 @@ from typing import Any
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
 from .memory import parse_hex_bytes, to_hex
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder, kernel32
+from .record import RecordEntry, decode_dump
 
 
 class ModClient:
@@ -426,6 +427,58 @@ class ModClient:
             },
             "look_ok",
         )
+
+    def record_bin_start(self, period: int = 1, timeout: float | None = None) -> dict[str, Any]:
+        """Start the fixed-size binary tick ring (T4)."""
+        return self.request(
+            {"cmd": "record_start", "period": int(period)},
+            "record_started",
+            timeout=timeout,
+        )
+
+    def record_bin_stop(self, timeout: float | None = None) -> dict[str, Any]:
+        return self.request({"cmd": "record_stop"}, "record_stopped", timeout=timeout)
+
+    def record_dump(
+        self,
+        since: int = 0,
+        *,
+        limit: int = 1024,
+        format: str = "jsonl",  # mirrors the wire field name
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        return self.request(
+            {
+                "cmd": "record_dump",
+                "since": int(since),
+                "limit": int(limit),
+                "format": format,
+            },
+            "record_dump",
+            timeout=timeout,
+        )
+
+    def record_dump_all(
+        self,
+        *,
+        since: int = 0,
+        chunk: int = 1024,
+        format: str = "jsonl",
+        timeout: float | None = None,
+    ) -> list[RecordEntry]:
+        """Drain the ring up to the head observed on the first reply."""
+        entries: list[RecordEntry] = []
+        stop_at: int | None = None
+        cursor = since
+        while True:
+            message = self.record_dump(cursor, limit=chunk, format=format, timeout=timeout)
+            entries.extend(decode_dump(message))
+            cursor = int(message.get("next", cursor))
+            if stop_at is None:
+                stop_at = int(message.get("head", cursor))
+            if cursor >= stop_at or int(message.get("count", 0)) == 0:
+                break
+        return entries
 
     def entities(self, radius: float = 16.0, limit: int = 64) -> dict[str, Any]:
         return self.request(
@@ -1076,6 +1129,15 @@ class Harness:
 
     def stop_macro(self) -> dict[str, Any]:
         return self.client.macro_stop()
+
+    def record_bin_start(self, period: int = 1) -> dict[str, Any]:
+        return self.client.record_bin_start(period)
+
+    def record_bin_stop(self) -> dict[str, Any]:
+        return self.client.record_bin_stop()
+
+    def record_dump_all(self, **kwargs: Any) -> list[RecordEntry]:
+        return self.client.record_dump_all(**kwargs)
 
     def record_macro(self, name: str, *, max_ticks: int = 0) -> dict[str, Any]:
         self.client.macro_record_start(max_ticks)

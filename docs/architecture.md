@@ -38,6 +38,7 @@ scenario DSL / LLM / shell
 | `Transport.cpp` | 命名管道服务端、写队列、`queueServerTask`、spool、诊断日志 |
 | `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
 | `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
+| `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
 
 `Internal.h` 是唯一允许被所有 TU 引用的内部头；它集中引入 Bedrock 头文件，避免每个
 翻译单元各自维护一份包含列表。新增共享工具时放在 `probe::detail`。
@@ -76,8 +77,8 @@ scenario DSL / LLM / shell
 ## 管道协议
 
 - 命名管道 `\\.\pipe\mcbe-harness`，字节模式，UTF-8 JSON Lines。
-- 连接后 mod 先发 `{"event":"hello","protocol":3,"spool":...,"replay_rows":N,...}`；
-  客户端校验协议号。新增字段是增量的，旧客户端仍可用。
+- 连接后 mod 先发 `{"event":"hello","protocol":4,"capabilities":[...],"spool":...,
+  "replay_rows":N,...}`；客户端校验协议号。新增字段是增量的，旧客户端仍可用。
 - 请求是 `{"cmd": "...", ...}`；响应/事件用 `event` 区分。未知命令回
   `{"event":"error","reason":"unknown_cmd"}`。
 - 服务端写入按 `WriteFile` 的实际返回值循环，避免半行 JSON；队列上限 20000，溢出计数在
@@ -93,6 +94,7 @@ driver/harness/
   protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定
   client.py     # ModClient（连接/超时/重连）+ Harness（便捷方法）
   memory.py     # 地址/hex 解析、FNV 辅助
+  record.py     # 64 字节记录解码、flags、方块名哈希
   spool.py      # 增量、可容忍轮转/半行的 spool 读取器
   watch.py      # watch 命中解码与可续读游标
   cli.py        # argparse 入口

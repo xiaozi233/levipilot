@@ -42,6 +42,8 @@ xmake -y
 | `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
 | `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
 | `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程） |
+| `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
+| `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
@@ -89,10 +91,12 @@ xmake -y
 `start` 录制的每个 `tick` 事件额外带跑酷字段：`in_air`、`jump_edge`（本 tick 是否有起跳
 按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
 
-握手 `hello` 现在带 `spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时
-积压、本次连接会补发的行数）和 `queue_dropped`。`status` 额外带 `spool_rows`、
+握手 `hello` 现在带 `protocol:4`、`capabilities`（`tick_json`/`bin_record`/`mem`/`watch`/
+`signin`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
+本次连接会补发的行数）和 `queue_dropped`。`status` 额外带 `spool_rows`、
 `spool_flushes`、`allow_write`、`tick_thread_id`、`tick_probe_addr`、`watch_count`、
-`watch_hits`、`watch_dropped`。
+`watch_hits`、`watch_dropped`、`record_active`、`record_rows`、`record_head`、
+`record_period`、`record_capacity`。
 
 调试命令（`diag` / `mouse` / `buttons` / `input_cfg`）和注入/传送/macro 的实现细节见
 [`../docs/mod-internals.md`](../docs/mod-internals.md)。
@@ -152,6 +156,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 崩溃取证：`selftest_crash`（需 `allow_crash_test`）生成 `crash-<pid>-<tick>.dmp` 和
   `crash-<pid>.txt`，后者含异常码/地址/线程/最后命令/tick/位置/spool 路径
 - 请求隔离：`selftest_av` 回 `internal_error`，随后 tick 继续增长
+- 二进制记录环：连续 60 s 写入 1246 条，`record_dump` 的 JSONL 与 hex 解码数都等于
+  `head`（`lost=0`）；RSS 1774–1778 MB，环固定 32 MB 不增长
 - `probe kind=block/legacy` 对同一坐标返回的名字与 `blocks` 一致；`legacy.hash` 等于
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
@@ -183,6 +189,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - spool 每 100 ms 或 64 KB 刷一次，进程被强杀时最多丢最后约 100 ms 的记录；队列溢出
   会写一条 `queue_dropped` 标记进 spool。
 - `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。
+- 二进制环固定 **524288 条 × 64 B ≈ 32 MB**，单写者（tick 线程）；`record_dump` 默认
+  每次 1024 条，`since/next` 是绝对序号。因为传输是 JSONL，`bin`/`hex` 用 hex 分块而不是
+  裸字节帧，避免破坏行协议。
+- 记录里的 `block_below/feet/head` 是方块类型名的 FNV-1a 32 哈希；用
+  `driver.harness.record.block_hash(name)` 对照。
 
 ## License
 

@@ -174,6 +174,21 @@
   JSON，`since`/`next` 是绝对序号，`lost` 表示已被覆盖的条数。
 - 清除时对每个安装过的线程恢复 DR7 并清零 DRn。
 
+## 二进制 tick 环（T4）
+
+- 记录是 64 字节 POD：`tick u64`、`x/y/z`、`vx/vy/vz`、`yaw/pitch`、`feet_y`、
+  `flags u32`、三个方块名哈希、`health_milli`。`static_assert(sizeof == 64)`。
+- 写者在 `safeTickPost`：先检查 `gRecording`（关闭时每 tick 只有一次原子 load），
+  填完整个记录后 `gHead.store(index+1, release)`；单写者，没有锁、没有字符串/JSON/分配。
+  `period>1` 时按 tick 取模降采样。
+- 环固定 `1<<19` 条（32 MB），第一次 `record_start` 分配，`record_stop` 只停写不释放，
+  便于随后 dump。
+- `record_dump` 在管道线程解码：`jsonl` 直接给字段数组，`bin`/`hex` 给 64 字节记录的
+  hex 块（受 JSONL 传输限制，用分块 hex 而不是裸字节帧）。`since/next/head/lost` 都是
+  绝对序号；`lost` 表示已被环覆盖的条数。
+- dump 结果本身也走 `enqueue`，因此会自动进 T1 的 spool。
+- JSON `start` 的逐 tick 事件保留为兼容路径，两者可以同时开。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

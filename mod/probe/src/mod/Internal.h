@@ -339,4 +339,13 @@ void           overheadBusyTick();
 std::uint64_t  qpcNow();
 std::uint64_t  qpcElapsedUs(std::uint64_t start, std::uint64_t end);
 
+// ---------------------------------------------------------------------------
+// T7: executable version fingerprint and symbol-anchor signatures.
+// ---------------------------------------------------------------------------
+void           resolveInit(std::filesystem::path const& modDir);
+bool           versionOk();
+std::string    buildId();
+nlohmann::json diagnoseJson();
+nlohmann::json signatureCheck(std::string const& name, std::string const& expectedHex);
+
 } // namespace probe::detail

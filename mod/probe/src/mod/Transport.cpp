@@ -168,8 +168,10 @@ void ProbeMod::serverLoop() {
                     {"queue_dropped", mQueueDropped.load()},
                 };
                 helloJson["capabilities"] = nlohmann::json::array(
-                    {"tick_json", "bin_record", "mem", "watch", "signin", "hook"}
+                    {"tick_json", "bin_record", "mem", "watch", "signin", "hook", "ecs"}
                 );
+                helloJson["build_id"]   = buildId();
+                helloJson["version_ok"] = versionOk();
                 auto const hello   = helloJson.dump() + "\n";
                 DWORD      written = 0;
                 BOOL const helloOk = WriteFile(pipe, hello.data(), static_cast<DWORD>(hello.size()), &written, nullptr);

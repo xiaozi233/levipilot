@@ -250,6 +250,23 @@
 - 请求块仍是 mutex（`mInput/mLook/mTeleport/mTask`）；seqlock 合并没有做，20 TPS 下不是瓶颈。
   指标本身会显示是否需要。
 
+## 版本指纹与锚点（T7）
+
+- 启动时用 `GetFileVersionInfoW` 读主模块版本，前缀必须是 **1.26.51**；`build_id` 记录完整
+  文件版本（当前 `1.26.51.1`）。
+- 4 个锚点都走符号地址：`LocalPlayer::$normalTick`、`LocalPlayer::_applyTurnDelta`、
+  `Actor::getHealth`、`Actor::isOnGround`。LL 的导入符号可能是
+  `jmp qword ptr [rip+0]` thunk，先跟随它到真实函数（`Actor::getHealth` 还带
+  `add rcx,8` 的 this 调整，入口字节本身是稳定的），再读 **24 字节**比对。
+- 内置签名来自实机 1.26.51.01，写在 `Resolve.cpp`；`docs/offsets/1.26.51.01.json` 是同一份
+  数据，复制到 `<mods>/probe/offsets.json` 可覆盖 `expected_hex`，不改代码即可适配小版本。
+- 任一锚点不匹配或版本前缀不符：`version_ok=false`，`safeTickPre/Post` 立即返回，
+  `hook_install`/`watch_set`/`record_start` 回 `version_mismatch`；`allowTurnDelta` 放行，
+  保证玩家正常操作。管道、`status`、`diagnose`、`mem_read`/`probe` 仍可用，便于对比签名。
+- `diagnose` 输出每个锚点的地址、resolved 地址、配置状态、匹配结果和耗时；
+  `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
+- `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

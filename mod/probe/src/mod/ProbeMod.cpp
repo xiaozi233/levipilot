@@ -68,6 +68,7 @@ bool ProbeMod::enable() {
     mSpoolPath = modDirPath
                / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
     installCrashHandler();
+    resolveInit(getSelf().getModDir());
     watchInit();
     overheadInit();
 
@@ -276,7 +277,7 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
 }
 
 void ProbeMod::safeTickPre(LocalPlayer& player) {
-    if (!mRunning.load(std::memory_order_relaxed)) {
+    if (!mRunning.load(std::memory_order_relaxed) || !versionOk()) {
         return;
     }
     mJumpEdgeThisTick = false;
@@ -461,7 +462,7 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
 }
 
 void ProbeMod::safeTickPost(LocalPlayer& player) {
-    if (!mRunning.load(std::memory_order_relaxed)) {
+    if (!mRunning.load(std::memory_order_relaxed) || !versionOk()) {
         return;
     }
     auto client = ll::service::getClientInstance();
@@ -695,7 +696,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 }
 
 bool ProbeMod::allowTurnDelta() const {
-    if (!mRunning.load(std::memory_order_relaxed) || !mBackgroundGuard) {
+    if (!mRunning.load(std::memory_order_relaxed) || !mBackgroundGuard || !versionOk()) {
         return true;
     }
     if (mInjectingLook.load(std::memory_order_relaxed)) {

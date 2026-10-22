@@ -42,6 +42,7 @@ scenario DSL / LLM / shell
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
 | `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环 |
 | `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
+| `Resolve.cpp` | exe 版本指纹、符号锚点 + 24 字节签名、offsets.json 覆盖 |
 
 `Internal.h` 是唯一允许被所有 TU 引用的内部头；它集中引入 Bedrock 头文件，避免每个
 翻译单元各自维护一份包含列表。新增共享工具时放在 `probe::detail`。

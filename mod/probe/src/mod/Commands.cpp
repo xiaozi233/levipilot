@@ -94,6 +94,20 @@ void ProbeMod::dispatchLine(std::string const& line) {
         enqueue(out.dump());
         return;
     }
+    if (cmd == "diagnose") {
+        enqueue(diagnoseJson().dump());
+        return;
+    }
+    if (cmd == "signature_check") {
+        enqueue(
+            signatureCheck(
+                j.value("name", std::string{}),
+                j.value("expected_hex", std::string{})
+            )
+                .dump()
+        );
+        return;
+    }
     if (cmd == "mem_read") {
         nlohmann::json out;
         out["event"] = "mem_read";
@@ -177,6 +191,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "watch_set") {
+        if (!versionOk()) {
+            enqueue(R"({"event":"error","reason":"version_mismatch"})");
+            return;
+        }
         nlohmann::json out;
         out["event"] = "watch_set";
         std::uint64_t addr = 0;
@@ -236,6 +254,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "hook_install") {
+        if (!versionOk()) {
+            enqueue(R"({"event":"error","reason":"version_mismatch"})");
+            return;
+        }
         bool const  useVa  = j.contains("va") && !j["va"].is_null();
         std::string symbol = j.value("symbol", std::string{});
         std::uint64_t va   = 0;
@@ -456,6 +478,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "record_start") {
+        if (!versionOk()) {
+            enqueue(R"({"event":"error","reason":"version_mismatch"})");
+            return;
+        }
         std::uint32_t const period = std::clamp(j.value("period", 1), 1, 200);
         std::string         error;
         if (!recordStart(period, error)) {
@@ -1372,6 +1398,17 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["record_period"]   = recordPeriod();
         out["record_capacity"] = RecordCapacity;
         out["overhead"]        = overheadJson();
+        out["build_id"]        = buildId();
+        out["version_ok"]      = versionOk();
+        out["version_failures"] = nlohmann::json::array();
+        {
+            auto diagnostics = diagnoseJson();
+            for (auto const& anchor : diagnostics["anchors"]) {
+                if (!anchor.value("match", false)) {
+                    out["version_failures"].push_back(anchor.value("name", std::string{}));
+                }
+            }
+        }
         enqueue(out.dump());
         return;
     }

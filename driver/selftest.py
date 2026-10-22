@@ -99,6 +99,34 @@ def main(argv: list[str] | None = None) -> int:
 
         # -- T1: spool, crash isolation -------------------------------------
         checks.check("hello_spool", bool(client.hello.get("spool")), str(client.hello.get("spool")))
+
+        # -- T7: version fingerprint and anchor signatures -----------------
+        diagnostics = client.diagnose()
+        checks.check(
+            "version_ok",
+            diagnostics.get("version_ok") is True
+            and diagnostics.get("version", {}).get("prefix_ok") is True
+            and bool(diagnostics.get("version", {}).get("file")),
+            str(diagnostics.get("version")),
+        )
+        anchors = diagnostics.get("anchors", [])
+        checks.check(
+            "anchor_signatures",
+            len(anchors) >= 3
+            and all(
+                anchor.get("match") is True and int(anchor.get("signature_bytes", 0)) == 24
+                for anchor in anchors
+            ),
+            f"anchors={len(anchors)}",
+        )
+        if anchors:
+            wrong = client.signature_check(anchors[0]["name"], "00" * 24)
+            checks.check(
+                "signature_mismatch",
+                wrong.get("match") is False and wrong.get("readable") is True,
+                str(wrong),
+            )
+
         client.start(5)
         while True:
             event = client.readline(5.0).get("event")

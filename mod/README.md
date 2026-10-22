@@ -49,6 +49,8 @@ xmake -y
 | `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`） |
 | `hook_call` | 调用一个已导出符号做自检（当前支持 `MobJump::setJumpPendingScale`） |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、停任务并清输入，不杀进程 |
+| `diagnose` | 版本、4 个符号锚点的地址/24 字节签名匹配/耗时 |
+| `signature_check` | `name,expected_hex`；对任意期望签名做比对（负路径自检） |
 | `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec` |
 | `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），用于验证开销指标 |
 | `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
@@ -109,11 +111,11 @@ xmake -y
 按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
 
 握手 `hello` 现在带 `protocol:4`、`capabilities`（`tick_json`/`bin_record`/`mem`/`watch`/
-`signin`/`hook`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
+`signin`/`hook`/`ecs`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
 本次连接会补发的行数）和 `queue_dropped`。`status` 额外带 `spool_rows`、
 `spool_flushes`、`allow_write`、`tick_thread_id`、`tick_probe_addr`、`watch_count`、
 `watch_hits`、`watch_dropped`、`record_active`、`record_rows`、`record_head`、
-`record_period`、`record_capacity`。
+`record_period`、`record_capacity`、`build_id`、`version_ok`、`version_failures`。
 
 调试命令（`diag` / `mouse` / `buttons` / `input_cfg`）和注入/传送/macro 的实现细节见
 [`../docs/mod-internals.md`](../docs/mod-internals.md)。
@@ -182,6 +184,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   `hook_drain` 读到 `args[0]=EntityContext*`、`b_float=1.0`、返回地址和 4 帧栈；
   `hook_rm` 后 `hook_list` 为空。VA dry_run 对同一地址返回 `executable=true`，
   对 `0x10` 返回 `false`
+- `diagnose`：4 个锚点（normalTick/_applyTurnDelta/getHealth/isOnGround）24 字节全部匹配，
+  `build_id=1.26.51.1`、`version_ok=true`
+- 负路径：把其中一个内置签名字节改掉后重启 → `version_ok=false`，
+  `version_failures=["LocalPlayer::normalTick"]`，`hook_install`/`record_start`/`watch_set`
+  全部回 `version_mismatch`，游戏仍存活；改回后 4 个锚点恢复匹配
 - `overhead`（空闲）：`hook_p50=12 µs`、`hook_p99=30 µs`、`tick_p50=49.985 ms`、
   `tick_p99=54.596 ms`、20.0 Hz；注入 1 ms busy ×20 tick 后 `hook_p99=1017 µs`
 - `panic all`：先装 1 个 hook + 1 个 watch，`panic` 后两者列表都为空、任务空闲、
@@ -197,7 +204,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
   命中 tid 等于 tick 线程；`watch_clear` 后不再增加
-- `driver/selftest.py` 74/74 通过
+- `driver/selftest.py` 77/77 通过
 
 ## 限制
 
@@ -234,6 +241,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   符号钩只实现了 `MobJump::setJumpPendingScale`。
 - VA 只校验“已提交且可执行”的页，不校验指令边界；地址必须由 IDA 侧确认。
 - `allow_hook_va` 默认关闭；`hook_install` 的 `sample` 用于降采样，命中环固定 4096 条。
+- 版本校验比较 exe 文件版本前缀（1.26.51）和 4 个符号锚点的 24 字节入口签名；任一不符时
+  tick 注入/观察、装钩、观察点、二进制记录全部拒绝（回 `version_mismatch`）；管道、
+  `diagnose`、`mem_read`/`probe` 仍可用，方便排查。锚点先跟随 `jmp [rip+0]` 导入 thunk，再取真实函数。
+- 可把 `docs/offsets/1.26.51.01.json` 复制到 `mods/probe/offsets.json` 覆盖内置签名，无需重编译。
 - ECS 组件 id 是**运行时** EnTT id，跨进程/跨版本不稳定；`ecs_components` 只报 id、地址、
   stride、count，不给类型名。stride 由同一 storage 的两个元素地址差推断，只有一个元素时
   为 0（此时 `ecs_component` 默认读 64 字节）。目前只暴露客户端 registry。

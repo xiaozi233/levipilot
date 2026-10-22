@@ -233,6 +233,16 @@ class ModClient:
         """Tick/hook timing percentiles (T9)."""
         return self.request({"cmd": "overhead"}, "overhead")
 
+    def diagnose(self) -> dict[str, Any]:
+        """Executable version, anchor addresses and signature matches (T7)."""
+        return self.request({"cmd": "diagnose"}, "diagnose")
+
+    def signature_check(self, name: str, expected_hex: str) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "signature_check", "name": name, "expected_hex": expected_hex},
+            "signature_check",
+        )
+
     def selftest_busy(self, us: int = 1000, ticks: int = 20) -> dict[str, Any]:
         """Burn ``us`` microseconds in the tick for ``ticks`` ticks (metric proof)."""
         return self.request(
@@ -1153,6 +1163,12 @@ class Harness:
 
     def overhead(self) -> dict[str, Any]:
         return self.client.overhead()
+
+    def diagnose(self) -> dict[str, Any]:
+        return self.client.diagnose()
+
+    def signature_check(self, name: str, expected_hex: str) -> dict[str, Any]:
+        return self.client.signature_check(name, expected_hex)
 
     def selftest_busy(self, us: int = 1000, ticks: int = 20) -> dict[str, Any]:
         return self.client.selftest_busy(us, ticks)

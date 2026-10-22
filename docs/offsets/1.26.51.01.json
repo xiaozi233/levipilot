@@ -1,0 +1,36 @@
+{
+  "version": "1.26.51.01",
+  "build_id": "1.26.51.1",
+  "note": "Copy to <mods>/probe/offsets.json to override the built-in signatures without a rebuild. expected_hex is read at the resolved symbol anchor and compared byte-for-byte.",
+  "anchors": {
+    "LocalPlayer::normalTick": {
+      "kind": "symbol",
+      "expected_hex": "5541565657534881ecf0000000488dac24800000000f2975"
+    },
+    "LocalPlayer::_applyTurnDelta": {
+      "kind": "symbol",
+      "expected_hex": "5657534883ec504889ce8b0520720e0065488b0c25580000"
+    },
+    "Actor::getHealth": {
+      "kind": "symbol",
+      "expected_hex": "4883c10848ff2595432600cccccccccc4883c10848ff25e5"
+    },
+    "Actor::isOnGround": {
+      "kind": "symbol",
+      "expected_hex": "488b51108b4118488b4a484c8b42504929c849c1e80341ff"
+    }
+  },
+  "structs": {
+    "Block": {
+      "LegacyPointer": "0x68"
+    },
+    "BlockLegacy": {
+      "NameHash": "0xE0",
+      "Name": "0xE8",
+      "BlockId": "0x17E",
+      "FloatA": "0x15C",
+      "FloatB": "0x178"
+    }
+  },
+  "components": {}
+}

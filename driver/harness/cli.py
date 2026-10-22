@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ping")
     sub.add_parser("status")
     sub.add_parser("diag")
+    sub.add_parser("diagnose")
+    signature_check = sub.add_parser("signature-check")
+    signature_check.add_argument("--name", required=True)
+    signature_check.add_argument("--expected-hex", required=True)
     sub.add_parser("state")
 
     command = sub.add_parser("command", help="run a server command (fill/tp/...)")
@@ -354,6 +358,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.status(), ensure_ascii=False))
             elif args.command == "diag":
                 print(json.dumps(client.diag(), ensure_ascii=False))
+            elif args.command == "diagnose":
+                print(json.dumps(client.diagnose(), ensure_ascii=False, indent=2))
+            elif args.command == "signature-check":
+                print(
+                    json.dumps(
+                        client.signature_check(args.name, args.expected_hex),
+                        ensure_ascii=False,
+                    )
+                )
             elif args.command == "command":
                 print(json.dumps(client.command(args.text), ensure_ascii=False))
             elif args.command == "mouse":

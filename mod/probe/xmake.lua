@@ -38,7 +38,7 @@ target("probe")
             {tools = {"clang_cl"}}
         )
         set_toolchains("clang-cl")
-        add_syslinks("user32", "dbghelp")
+        add_syslinks("user32", "dbghelp", "version")
     end
     add_packages("levilamina", "nlohmann_json")
     set_kind("shared")

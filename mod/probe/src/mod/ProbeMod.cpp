@@ -49,6 +49,16 @@ bool ProbeMod::enable() {
             }
         });
 
+    mKeyListener =
+        ll::event::EventBus::getInstance().emplaceListener<ll::event::input::KeyInputEvent>([this](auto& event) {
+            mKeyEventCount.fetch_add(1, std::memory_order_relaxed);
+            mKeyLastCode.store(event.keyCode(), std::memory_order_relaxed);
+            mKeyLastAction.store(static_cast<std::int32_t>(event.action()), std::memory_order_relaxed);
+            if (mInjectingInput.load(std::memory_order_relaxed)) {
+                mKeyInjectedSeen.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+
     std::error_code ec;
     std::filesystem::create_directories(macroDir(), ec);
 
@@ -153,6 +163,10 @@ bool ProbeMod::disable() {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
         mMouseListener.reset();
     }
+    if (mKeyListener) {
+        ll::event::EventBus::getInstance().removeListener<ll::event::input::KeyInputEvent>(mKeyListener);
+        mKeyListener.reset();
+    }
     if (mStartJoinLevelListener) {
         ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientStartJoinLevelEvent>(
             mStartJoinLevelListener
@@ -234,6 +248,7 @@ void ProbeMod::loadAutoConfig() {
     mAllowHookVa      = config.value("allow_hook_va", false);
     mAllowSelftestStress = config.value("allow_selftest_stress", false);
     mAllowWatch      = config.value("allow_watch", true);
+    mAllowInputInject = config.value("allow_input_inject", false);
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
@@ -326,6 +341,9 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     }
 
     latchActionClicks(player);
+    // G1/G2: drain queued event-level input into the game's own queues before
+    // anything else in this tick touches movement.
+    tickInputInjection();
 
     // T9: one lock-free snapshot of movement/look/teleport requests per tick.
     RequestBlock const requests = readRequests();
@@ -731,6 +749,10 @@ bool ProbeMod::allowTurnDelta() const {
         return true;
     }
     if (mInjectingLook.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    std::uint64_t const until = mInjectTurnUntilTick.load(std::memory_order_relaxed);
+    if (until != 0 && mTick.load(std::memory_order_relaxed) <= until) {
         return true;
     }
     return detail::isGameForeground();

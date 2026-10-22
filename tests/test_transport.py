@@ -198,6 +198,64 @@ class HarnessForwardingTests(unittest.TestCase):
             ],
         )
 
+    def test_input_event_forwarding(self) -> None:
+        class Recorder:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def key_event(self, code, down=True, **kwargs):
+                self.calls.append(("key", code, down, kwargs))
+                return {"event": "key_event_queued"}
+
+            def key_state(self, code):
+                self.calls.append(("state", code))
+                return {"event": "key_state"}
+
+            def mouse_event(self, action, **kwargs):
+                self.calls.append(("mouse", action, kwargs))
+                return {"event": "mouse_event_queued"}
+
+            def screen(self):
+                self.calls.append(("screen",))
+                return {"event": "screen"}
+
+        harness = Harness.__new__(Harness)
+        harness.client = Recorder()  # type: ignore[assignment]
+        harness.key_event(69, False, via="hardware")
+        harness.key_state(69)
+        harness.mouse_event("left", down=True, dx=0, dy=0)
+        harness.screen()
+        self.assertEqual(
+            harness.client.calls,
+            [
+                ("key", 69, False, {"via": "hardware"}),
+                ("state", 69),
+                ("mouse", "left", {"down": True, "dx": 0, "dy": 0}),
+                ("screen",),
+            ],
+        )
+
+    def test_play_macro_forwards_event_level(self) -> None:
+        class Recorder:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def macro_load(self, name):
+                self.calls.append(("load", name))
+                return {"event": "macro_loaded"}
+
+            def macro_run(self, **kwargs):
+                self.calls.append(("run", kwargs))
+                return {"event": "macro_started"}
+
+        harness = Harness.__new__(Harness)
+        harness.client = Recorder()  # type: ignore[assignment]
+        harness.play_macro("demo", event_level=True)
+        self.assertEqual(
+            harness.client.calls,
+            [("load", "demo"), ("run", {"loop": False, "event_level": True})],
+        )
+
     def test_jump_when_distance_requires_target(self) -> None:
         with self.assertRaises(ValueError):
             ModClient(timeout=0.05).jump_when("distance")

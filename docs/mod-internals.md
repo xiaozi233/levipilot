@@ -334,6 +334,37 @@
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
 - `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
 
+## 输入事件层（G1–G6）
+
+- **键盘（G1）**：`HIDController::onKeyDown(code, InputOrigin::Virtual|Hardware)` 是游戏自己的
+  事件入口，会触发 LL `KeyInputEvent`、按键绑定和
+  `Keyboard::_states()`。实例路径：
+  `ll::service::getAppPlatform() → getPlatformShim() → Bedrock::Platform_GameCore::mHIDController`。
+  另有对照路径 `Keyboard::_inputs().push_back(KeyboardAction)`：能改槽位/开背包，
+  但**不会**发 LL 事件，所以事件计数必须以 HID 路径为准。
+- `key_event {code,down,repeat,repeat_ms,via}` 先进入 128 项的 SPSC 环（管道线程写、tick 线程读），
+  在 `safeTickPre` 的 `tickInputInjection()` 里 drain；`via=hid`（默认）/`hardware`/`queue`。
+  强能力由 `allow_input_inject` 门禁（默认 false），每次注入写 boot log。
+- **鼠标（G2）**：`MouseDevice::feed(action, data, x, y, dx, dy, force)` 是 `MouseInputEvent`
+  的发布入口；`mouse_event {action,...}` 同样在 tick 里 drain。
+  `action=move`(0) + dx 能转向；`left/right` 只更新 `MouseInputEvent` 计数，在 1.26.51.01 上
+  **不触发世界攻击**（攻击绑定不在这一层），攻击仍用 `click`/`attack_entity`。
+- 后台守卫：`allowTurnDelta()` 放行 `mInjectingLook` 和注入鼠标转向后的 2 tick
+  （`mInjectTurnUntilTick`）。注入标志只在调用期间短暂置位，避免整帧放行真实鼠标。
+- **sprint 对照（G3）**：`driver/sprint_compare.py` + `scenarios/sprint-compare.json`。
+  逐 tick 位移中位数：B（`set_input` 标志）0.2875、C（ctrl+W 事件）0.2806，基线 0.2805。
+  结论是事件层能复现疾跑，差异不在输入事件层；G5 的启动条件不成立，未实现 raw-input hook。
+- **macro（G4）**：`macro_run {event_level:true}` 按相邻 tick 的按钮边沿走 G1/G2 事件注入，
+  不再调 GameMode；旋转仍走 `_applyTurnDelta`。旧路径（默认 `event_level=false`）完全保留，
+  文件格式未改。结束/取消时 `releaseMacroInputs()` 释放仍按下的键和鼠标。
+  实测三次回放落点误差 0.0000（无真实鼠标干扰时）。
+- **世界内 UI（G6）**：`screen` 返回 `ClientInstance::getScreenName()`。实测
+  `hud_screen --E--> inventory_screen --Esc--> hud_screen`，`/` 打开 `chat_screen`；
+  暂停菜单不响应注入按键，退出暂停仍需桌面点击 Resume。
+- 门禁与回归：`allow_input_inject=false` 时 `key_event`/`mouse_event`/`key_state` 回
+  `input_inject_disabled`；selftest 覆盖槽位切换、100 次计数一致、鼠标计数/转向、
+  背包开关、事件级 macro 确定性与旧路径。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

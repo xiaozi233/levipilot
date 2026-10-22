@@ -16,7 +16,7 @@ Python 客户端（`driver/harness/`）。目标是让脚本/LLM 读状态、控
 
 ```bash
 # C++ mod（本机 xmake + LLVM22，见 docs/mod-build-environment.md）
-cd mod/probe && xmake -y
+cd mod/probe && xmake -j4 -y   # -j4 限制 CPU 占用
 
 # 开发循环：编译 → 重启 exe → 等主菜单 → 直接进世界（不用点 UI）
 py -3.11 driver/dev.py run --world "超平坦测试" --build
@@ -98,24 +98,41 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
   而是先刷 spool 再补发。崩溃取证走 VEH 写 `crash-<pid>-<tick>.dmp` + `crash-<pid>.txt`。
 - 请求级 AV 由 `dispatchWithSeh` 转成 `internal_error`；不要把会崩的代码放到 tick 线程，
   那里没有同样的保护。
+- 键位事件优先走 `HIDController::onKeyDown(code, InputOrigin::Virtual|Hardware)`（`ll::service::getAppPlatform()
+  → getPlatformShim() → Platform_GameCore::mHIDController`）；它才会触发 LL `KeyInputEvent` 和绑定。
+  `Keyboard::_inputs().push_back(KeyboardAction)` 也能改槽位/开背包，但不发 LL 事件，只作对照路径。
+- 暂停菜单不响应注入的按键（Esc/Enter 都无效），退出暂停仍需桌面点击 Resume；
+  背包/聊天（`/`）可以开，背包用 Esc 回到 hud。
+- `mouse_event action=move dx=...` 能转向；左/右键只到 `MouseInputEvent` 层并增加计数，
+  在 1.26.51.01 上没有触发世界攻击（攻击绑定不在这一层），不要用它代替 `click`。
+- 真实鼠标会转动相机并让宏回放落点漂移；`background_guard` 只拦后台转向，selftest 的宏
+  确定性检查在检测到相机被外部移动时会标记 skipped。
+- `xmake` 默认吃满所有核心，构建用 `xmake -j4`；只改 `.cpp` 是增量，改 `Internal.h`/`ProbeMod.h`
+  会全量重编（约 2–3 分钟）。
 
 ## 当前优先级
 
 任务清单与可直接派活的提示词：[`docs/task-prompts.md`](docs/task-prompts.md)。
 
 - **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 83/83
-- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 83/83
+- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 92/92
+- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 92/92
 - **P2（已完成）**：T7 版本指纹 + 签名/偏移解析；T8 unhook/panic
 - **P3（已完成）**：T9 tick 开销自测 + 请求块 seqlock（input/look/teleport 合成一块，tick 读路径无锁）
 - **修复轮 P1（已完成）**：F1 命令缓冲上界 + 超长行重同步 / F2 hook_va 安装窗口与挂起死锁 /
-  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 83/83
+  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 92/92
 - **修复轮 P2（已完成）**：F5 offsets 表接线（structs/components、null 删除、no_offset）/
   F6 spool 顺序与轮转 / F7 watch 细节（目标槽 foreign、`code_hex`、`allow_watch`）/
   F8 记录环零分配方块采样 + 高度越界 / F9 开销语义（`tick_interval_*`、epoch 守卫）/
-  F10 防御小项；selftest 83/83
+  F10 防御小项；selftest 92/92
+- **输入事件层（已完成）**：G1 `key_event` / G2 `mouse_event` / G3 sprint 三组对照 /
+  G4 macro 事件级回放 / G6 世界内 UI；G5 未做（G3 结论：C≈B≈0.2805 格/tick，
+  差异不在输入事件层，不需要 raw-input hook）
 
-> 两轮的明细都在 `docs/task-prompts.md`（第一轮 T1–T9、第二轮 F1–F10），每条自带验收标准。
+- **输入层 G（待做）**：G1 key_event / G2 mouse_event / G3 sprint 三组对照 / G4 macro 事件级 / G5 raw-input 兜底（条件项）/ G6 世界内 UI
+
+> 提示词按轮分文件：`docs/task-prompts.md`（T1–T9）、`docs/task-prompts-fixes.md`（F1–F10）、`docs/task-prompts-input.md`（G1–G6）。
+> 每条自带验收标准；公共前置（仓库约定 / 架构硬约束 / 脚本纪律）在第一个文件的 §2。
 
 改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查，并在 `mod/README.md` 的
 「实测 / 限制」里补一行 —— 这个仓库的文档是活的，别让它和代码脱节。

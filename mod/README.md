@@ -60,6 +60,10 @@ xmake -y
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
+| `key_event` | `code,down,repeat,repeat_ms,via=hid/queue/hardware`；走 HID `onKeyDown`（默认）或 `Keyboard::_inputs()`；需 `allow_input_inject=true` |
+| `key_state` | `code`；游戏侧 `Keyboard::_states`、LL KeyInputEvent 计数、注入计数 |
+| `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
+| `screen` | 当前界面名（`hud_screen` / `inventory_screen` / `chat_screen` / `pause_screen`） |
 | `set` | `forward,strafe,sprint,sneak,jump,ticks`；`ticks=-1` 持续 |
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
 | `entities` | `radius,limit`，附近 Actor |
@@ -135,6 +139,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "allow_hook_va": false,
   "allow_selftest_stress": false,
   "allow_watch": true,
+  "allow_input_inject": false,
   "signin_wait_ms": 15000
 }
 ```
@@ -146,6 +151,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 才能用会主动结束进程的 `selftest_crash`；`allow_hook_va` 才能按任意 VA 装钩（符号钩不需要）；
 `allow_selftest_stress` 才允许 `selftest_busy` 在 tick 里忙等（默认关闭，避免误让 tick 卡近 1 秒）；
 `allow_watch`（默认 true）关闭后 `watch_set` 回 `watch_disabled`；
+`allow_input_inject` 才能用 `key_event`/`mouse_event`（默认关闭，命令会写 boot log）；
 `signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
 不需要时删除该文件即可。
 
@@ -222,7 +228,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   y 超出 [-64,319] 时不读方块、三个 block 字段为 0 并置 `flags & 0x800`
 - `overhead`（F9）：新增 `tick_interval_p50/p99/max_us`（与旧 `tick_*` 同值）、
   `window_samples=1024`、`qpc_resolution_ns=100`、`consistent=true`
-- `driver/selftest.py` 83/83 通过
+- G1：`key_event(2)` 走 HID `onKeyDown(Virtual)` → `selected_slot` 1→2，LL `KeyInputEvent` +1；
+  100 次注入事件计数恰好 +100、按下状态可读回；E → `inventory_screen`，Esc → `hud_screen`
+- G2：左键 down+up → `mouse.counts[1]` +2、`last_action=1`；`move dx=200` → yaw +25.99°；
+  左键没有触发世界攻击（攻击绑定不在此层）
+- G3：`driver/sprint_compare.py` 三组对照 B=0.2875、C=0.2806 格/tick（基线 0.2805），
+  结论：事件层注入能复现疾跑，1.3x 差异不在输入事件层，G5 不启动
+- G4：`macro_run event_level=true` 三次回放落点误差 **0.0000**；左右键事件各 +2；
+  旧路径（`event_level=false`）仍走 GameMode，MouseInputEvent 计数为 0
+- `driver/selftest.py` 92/92 通过
 
 ## 限制
 
@@ -237,7 +251,12 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   `GameMode::interact` 会在空物品上下文里崩溃，因此改为转向 + 输入注入；是否产生实际交互
   取决于手持物和瞄准。
 - `smoothMacro` / `frameBasedRotation` 未复刻，保持逐 tick。
-- 鼠标录制只认 raw input；后台合成点击只有移动事件。
+- 鼠标录制只认 raw input；后台合成点击只有移动事件。事件级回放（`macro_run event_level=true`）
+  用 G1/G2 注入，已经覆盖按键/鼠标边沿；录制端仍然依赖真实 raw input。
+- `mouse_event` 的按键只到 `MouseInputEvent` 层：计数会涨，但在 1.26.51.01 上不会触发世界攻击；
+  攻击仍用 `click`/`attack_entity`。`action=move` 的 dx 能转向。
+- 暂停菜单不响应注入按键（Esc/Enter 都无效）；退出暂停仍需桌面点击 Resume。背包（E）
+  和聊天（`/`）可以开，背包用 Esc 能回到 hud。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。
 - 跳跃必须走本地 `jumpFromGround`；只靠输入标志/队列/handler 在 1.26.51.01 上会有
   3 tick 延迟并一次性补位移。`jump_impulse` 只用于对照实验，正常不要改。

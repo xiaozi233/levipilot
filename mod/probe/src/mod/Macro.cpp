@@ -56,6 +56,9 @@ void ProbeMod::finishMacro(std::string reason) {
     if (!mMacroPlaying.exchange(false)) {
         return;
     }
+    if (mMacroEventLevel) {
+        releaseMacroInputs();
+    }
     std::string name;
     {
         std::lock_guard lock(mMacroMutex);

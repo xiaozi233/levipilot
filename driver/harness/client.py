@@ -284,6 +284,56 @@ class ModClient:
     def mouse_clear(self) -> dict[str, Any]:
         return self.request({"cmd": "mouse_clear"}, "mouse_cleared")
 
+    # -- G1/G2: event-level input injection ----------------------------------
+    def key_event(
+        self,
+        code: int,
+        down: bool = True,
+        *,
+        repeat: bool = False,
+        repeat_ms: int = 0,
+        via: str = "hid",
+    ) -> dict[str, Any]:
+        return self.request(
+            {
+                "cmd": "key_event",
+                "code": int(code),
+                "down": bool(down),
+                "repeat": bool(repeat),
+                "repeat_ms": int(repeat_ms),
+                "via": via,
+            },
+            "key_event_queued",
+        )
+
+    def key_state(self, code: int) -> dict[str, Any]:
+        return self.request({"cmd": "key_state", "code": int(code)}, "key_state")
+
+    def screen(self) -> dict[str, Any]:
+        return self.request({"cmd": "screen"}, "screen")
+
+    def mouse_event(
+        self,
+        action: int | str,
+        *,
+        data: int | str | None = None,
+        down: bool | None = None,
+        dx: int = 0,
+        dy: int = 0,
+        x: int | None = None,
+        y: int | None = None,
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {"cmd": "mouse_event", "action": action, "dx": int(dx), "dy": int(dy)}
+        if x is not None:
+            message["x"] = int(x)
+        if y is not None:
+            message["y"] = int(y)
+        if data is not None:
+            message["data"] = data
+        if down is not None:
+            message["down"] = bool(down)
+        return self.request(message, "mouse_event_queued")
+
     # -- T2: memory primitives ------------------------------------------------
     def mem_read(
         self, addr: int | str, length: int = 16, *, timeout: float | None = None
@@ -1083,9 +1133,19 @@ class ModClient:
         return self.request(message, "macro_loaded")
 
     def macro_run(
-        self, *, start: int = 0, end: int | None = None, loop: bool = False
+        self,
+        *,
+        start: int = 0,
+        end: int | None = None,
+        loop: bool = False,
+        event_level: bool = False,
     ) -> dict[str, Any]:
-        message: dict[str, Any] = {"cmd": "macro_run", "start": int(start), "loop": bool(loop)}
+        message: dict[str, Any] = {
+            "cmd": "macro_run",
+            "start": int(start),
+            "loop": bool(loop),
+            "event_level": bool(event_level),
+        }
         if end is not None:
             message["end"] = int(end)
         return self.request(message, "macro_started")
@@ -1258,6 +1318,18 @@ class Harness:
     def attack(self, runtime_id: int) -> dict[str, Any]:
         return self.client.attack_entity(runtime_id)
 
+    def key_event(self, code: int, down: bool = True, **kwargs: Any) -> dict[str, Any]:
+        return self.client.key_event(code, down, **kwargs)
+
+    def key_state(self, code: int) -> dict[str, Any]:
+        return self.client.key_state(code)
+
+    def screen(self) -> dict[str, Any]:
+        return self.client.screen()
+
+    def mouse_event(self, action: int | str, **kwargs: Any) -> dict[str, Any]:
+        return self.client.mouse_event(action, **kwargs)
+
     def interact(self, runtime_id: int) -> dict[str, Any]:
         return self.client.interact_entity(runtime_id)
 
@@ -1351,10 +1423,12 @@ class Harness:
     def turn(self, yaw_delta: float, pitch_delta: float = 0.0, *, ticks: int = 1) -> dict[str, Any]:
         return self.client.look(yaw_delta, pitch_delta, relative=True, ticks=ticks)
 
-    def play_macro(self, name: str | None = None, *, loop: bool = False) -> dict[str, Any]:
+    def play_macro(
+        self, name: str | None = None, *, loop: bool = False, event_level: bool = False
+    ) -> dict[str, Any]:
         if name is not None:
             self.client.macro_load(name)
-        return self.client.macro_run(loop=loop)
+        return self.client.macro_run(loop=loop, event_level=event_level)
 
     def stop_macro(self) -> dict[str, Any]:
         return self.client.macro_stop()

@@ -239,6 +239,39 @@ public:
     // place a harness bug can always be inspected.
     void bootLog(std::string const& text);
 
+    // G1/G2: event-level input injection. The pipe thread queues; the client
+    // tick drains into the game's own Keyboard/MouseDevice queues.
+    struct InputInjection {
+        std::uint8_t  kind   = 0; // 0=key queue, 1=mouse, 2=HID virtual, 3=HID hardware
+        std::uint8_t  code   = 0; // key code / MouseAction
+        std::int8_t   data   = 0; // key down or MouseAction data
+        std::int16_t  dx     = 0;
+        std::int16_t  dy     = 0;
+        std::int16_t  x      = 0;
+        std::int16_t  y      = 0;
+        bool          hasPos = false;
+        bool          repeat = false;
+    };
+    static constexpr std::size_t   kInputInjectRing = 128;
+    std::array<InputInjection, kInputInjectRing> mInjectRing{};
+    std::atomic<std::uint32_t> mInjectHead{0};
+    std::atomic<std::uint32_t> mInjectTail{0};
+    bool                       queueInputInjection(InputInjection const& item);
+    void                       tickInputInjection();
+    bool                       hidKeyEvent(int code, bool down, bool hardware, std::string& error);
+
+    std::atomic_bool           mAllowInputInject{false};
+    std::atomic_bool           mInjectingInput{false};
+    // Tick until which a game-side turn is allowed because we injected a mouse
+    // move (the game applies it later in the frame, outside our call).
+    std::atomic<std::uint64_t> mInjectTurnUntilTick{0};
+    std::atomic<std::uint64_t> mKeyEventCount{0};
+    std::atomic<std::uint64_t> mKeyInjectedSeen{0};
+    std::atomic<std::int32_t>  mKeyLastCode{-1};
+    std::atomic<std::int32_t>  mKeyLastAction{-1};
+    std::atomic<std::uint64_t> mMouseInjected{0};
+    ll::event::ListenerPtr     mKeyListener;
+
     // Called by the _applyTurnDelta hook: background mouse look must not move
     // the camera, but our own look/task injections must still work.
     [[nodiscard]] bool allowTurnDelta() const;
@@ -543,6 +576,12 @@ private:
     std::atomic_bool       mMacroPlaying{false};
     std::atomic_bool       mMacroStartRequested{false};
     std::atomic_bool       mMacroLoop{false};
+    // G4: replay through the event layer; off keeps the legacy GameMode path.
+    bool                   mMacroEventLevel = false;
+    MacroTick              mPrevMacroTick{};
+    bool                   mHavePrevMacroTick = false;
+    void                   applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
+    void                   releaseMacroInputs();
     std::atomic<int>       mMacroIndex{0};
     std::atomic<int>       mMacroStart{0};
     std::atomic<int>       mMacroEnd{0};

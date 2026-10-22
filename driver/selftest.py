@@ -15,6 +15,7 @@ is on Peaceful difficulty.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -50,6 +51,31 @@ class Checks:
         for name, _ok, detail in failed:
             print(f"  failed: {name} {detail}", file=sys.stderr)
         return 1 if failed else 0
+
+
+def wait_still(client: ModClient, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = client.state()
+        if (
+            state.get("on_ground")
+            and abs(float(state.get("vx", 0.0))) < 0.01
+            and abs(float(state.get("vz", 0.0))) < 0.01
+        ):
+            time.sleep(0.3)
+            return
+        time.sleep(0.05)
+
+
+def wait_screen(client: ModClient, expected: str, timeout: float = 2.0) -> str:
+    deadline = time.monotonic() + timeout
+    name = ""
+    while time.monotonic() < deadline:
+        name = str(client.screen().get("name", ""))
+        if name == expected:
+            return name
+        time.sleep(0.05)
+    return name
 
 
 def wait_ticks(client: ModClient, ticks: int, timeout: float = 6.0) -> int:
@@ -110,6 +136,63 @@ def main(argv: list[str] | None = None) -> int:
                 too_long += 1
         checks.check("line_too_long", too_long >= 1, f"events={too_long}")
         checks.check("line_too_long_alive", client.ping().get("event") == "pong")
+
+        # -- G1/G2: event-level input injection -----------------------------
+        inject_enabled = True
+        try:
+            client.key_state(49)
+            checks.check("input_inject_gate", True, "enabled")
+        except ModProtocolError as exc:
+            inject_enabled = False
+            checks.check("input_inject_gate", "input_inject_disabled" in str(exc), str(exc))
+        if inject_enabled:
+            client.key_event(49, True, via="hid")
+            client.key_event(49, False, via="hid")
+            wait_ticks(client, 4)
+            checks.check(
+                "key_event_slot",
+                int(client.state().get("selected_slot", -1)) == 0,
+                str(client.state().get("selected_slot")),
+            )
+            before = client.key_state(72)["events"]
+            for _ in range(50):
+                client.key_event(72, True, via="hid")
+                client.key_event(72, False, via="hid")
+            wait_ticks(client, 4)
+            after = client.key_state(72)
+            checks.check(
+                "key_event_count",
+                int(after["events"]) - int(before) == 100 and after["down"] is False,
+                f"delta={int(after['events']) - int(before)} down={after['down']}",
+            )
+            client.mouse_clear()
+            client.mouse_event("left", down=True)
+            client.mouse_event("left", down=False)
+            wait_ticks(client, 4)
+            mouse = client.mouse()
+            checks.check(
+                "mouse_event_count",
+                int(mouse["counts"][1]) == 2,
+                str({"left": mouse["counts"][1], "last": mouse["last_action"]}),
+            )
+            yaw0 = float(client.state()["yaw"])
+            client.mouse_event("move", dx=200, dy=0)
+            wait_ticks(client, 4)
+            yaw1 = float(client.state()["yaw"])
+            checks.check("mouse_event_turn", abs(yaw1 - yaw0) > 1.0, f"{yaw0:.2f}->{yaw1:.2f}")
+
+            screen0 = str(client.screen().get("name"))
+            client.key_event(69)
+            client.key_event(69, False)
+            opened = wait_screen(client, "inventory_screen")
+            client.key_event(27)
+            client.key_event(27, False)
+            closed = wait_screen(client, screen0)
+            checks.check(
+                "screen_inventory",
+                screen0 == "hud_screen" and opened == "inventory_screen" and closed == screen0,
+                f"{screen0}->{opened}->{closed}",
+            )
 
         # -- T1: spool, crash isolation -------------------------------------
         checks.check("hello_spool", bool(client.hello.get("spool")), str(client.hello.get("spool")))
@@ -697,6 +780,60 @@ def main(argv: list[str] | None = None) -> int:
             if not args.keep:
                 client.command(f"kill @e[type={short},c=1]")
                 wait_ticks(client, 5)
+
+        # -- G4: event-level macro replay ----------------------------------
+        if inject_enabled:
+            mod_dir = Path(str(client.hello.get("spool", ""))).parent
+            rows = []
+            for index in range(20):
+                b = lambda value: "true" if value else "false"  # noqa: E731
+                rows.append(
+                    [
+                        b(3 <= index <= 15),
+                        "false",
+                        "false",
+                        "false",
+                        "false",
+                        "false",
+                        "false",
+                        "false",
+                        b(5 <= index <= 7),
+                        "0",
+                        "0",
+                    ]
+                )
+            macro_path = mod_dir / "macros" / "selftest_g4.json"
+            macro_path.parent.mkdir(parents=True, exist_ok=True)
+            macro_path.write_text(json.dumps(rows), encoding="utf-8")
+            client.macro_load("selftest_g4")
+
+            def run_macro(event_level: bool) -> tuple[tuple[float, float], int, float]:
+                client.reset(0.5, -49.0, 0.5, yaw=0.0, pitch=0.0)
+                wait_still(client)
+                client.mouse_clear()
+                yaw0 = float(client.state()["yaw"])
+                client.macro_run(event_level=event_level)
+                while True:
+                    event = client.readline(5.0)
+                    if event.get("event") == "macro_done":
+                        break
+                wait_ticks(client, 3)
+                state = client.state()
+                drift = abs(float(state["yaw"]) - yaw0)
+                return (float(state["feet_x"]), float(state["feet_z"])), int(client.mouse()["counts"][1]), drift
+
+            first, left_events, drift_a = run_macro(True)
+            second, _, drift_b = run_macro(True)
+            gap = math.hypot(first[0] - second[0], first[1] - second[1])
+            external = drift_a > 0.1 or drift_b > 0.1
+            checks.check(
+                "macro_event_deterministic",
+                gap < 1e-4 or external,
+                f"gap={gap:.6f}" + (" (skipped: real mouse moved the camera)" if external else ""),
+            )
+            checks.check("macro_event_clicks", left_events == 2, f"left={left_events}")
+            _, legacy_left, _ = run_macro(False)
+            checks.check("macro_legacy_path", legacy_left == 0, f"left={legacy_left}")
 
         checks.check("macro_status", client.macro_status().get("event") == "macro_status")
         return checks.finish()

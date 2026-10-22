@@ -397,6 +397,162 @@ void ProbeMod::dispatchLine(std::string const& line) {
         RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
         return;
     }
+    if (cmd == "key_event" || cmd == "key_state" || cmd == "mouse_event") {
+        if (!versionOk()) {
+            enqueue(R"({"event":"error","reason":"version_mismatch"})");
+            return;
+        }
+        if (!mAllowInputInject.load(std::memory_order_relaxed)) {
+            enqueue(
+                R"({"event":"error","reason":"input_inject_disabled","hint":"set allow_input_inject=true"})"
+            );
+            return;
+        }
+        if (!mInWorld.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+    }
+    if (cmd == "screen") {
+        auto              client = ll::service::getClientInstance();
+        std::string const name   = client ? client->getScreenName() : std::string{};
+        enqueue(
+            nlohmann::json{
+                {"event",    "screen"      },
+                {"name",     name          },
+                {"in_world", mInWorld.load()},
+            }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "key_event") {
+        int const code = j.value("code", -1);
+        if (code < 0 || code >= Keyboard::Count) {
+            enqueue(R"({"event":"error","reason":"bad_key"})");
+            return;
+        }
+        bool const down   = j.value("down", true);
+        bool const repeat = j.value("repeat", false) || j.value("repeat_ms", 0) > 0;
+        std::string const via = j.value("via", std::string{"hid"});
+        InputInjection item{};
+        item.kind   = via == "queue" ? 0 : (via == "hardware" ? 3 : 2);
+        item.code   = static_cast<std::uint8_t>(code);
+        item.data   = down ? 1 : 0;
+        item.repeat = repeat;
+        if (!queueInputInjection(item)) {
+            enqueue(R"({"event":"error","reason":"inject_queue_full"})");
+            return;
+        }
+        bootLog(
+            "input: key_event code=" + std::to_string(code) + " down=" + (down ? "1" : "0") + " via=" + via
+        );
+        enqueue(
+            nlohmann::json{
+                {"event",  "key_event_queued"},
+                {"code",   code             },
+                {"down",   down             },
+                {"repeat", repeat           },
+                {"via",    via              },
+                {"events", mKeyEventCount.load()},
+            }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "key_state") {
+        int const code = j.value("code", -1);
+        if (code < 0 || code >= Keyboard::Count) {
+            enqueue(R"({"event":"error","reason":"bad_key"})");
+            return;
+        }
+        auto& states = Keyboard::_states();
+        enqueue(
+            nlohmann::json{
+                {"event",         "key_state"              },
+                {"code",          code                     },
+                {"down",          states[code] != 0        },
+                {"events",        mKeyEventCount.load()    },
+                {"injected_seen", mKeyInjectedSeen.load()  },
+                {"last_code",     mKeyLastCode.load()      },
+                {"last_action",   mKeyLastAction.load()    },
+                {"pending",       mInjectHead.load() - mInjectTail.load()},
+            }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "mouse_event") {
+        int action = -1;
+        if (j.contains("action") && j["action"].is_number_integer()) {
+            action = j["action"].get<int>();
+        } else if (j.contains("action") && j["action"].is_string()) {
+            auto const name = j["action"].get<std::string>();
+            if (name == "move") {
+                action = 0;
+            } else if (name == "left") {
+                action = 1;
+            } else if (name == "right") {
+                action = 2;
+            } else if (name == "middle") {
+                action = 3;
+            } else if (name == "wheel") {
+                action = 4;
+            } else if (name == "x1") {
+                action = 5;
+            } else if (name == "x2") {
+                action = 6;
+            } else if (name == "move_relative") {
+                action = 7;
+            }
+        }
+        if (action < 0 || action > 7) {
+            enqueue(R"({"event":"error","reason":"bad_action"})");
+            return;
+        }
+        int data = j.value("data", 1);
+        if (j.contains("data") && j["data"].is_string()) {
+            data = j["data"].get<std::string>() == "up" ? 0 : 1;
+        } else if (j.contains("down")) {
+            data = j.value("down", true) ? 1 : 0;
+        }
+        auto const clampShort = [](int value) {
+            return static_cast<std::int16_t>(std::clamp(value, -32768, 32767));
+        };
+        std::int16_t const dx = clampShort(j.value("dx", 0));
+        std::int16_t const dy = clampShort(j.value("dy", 0));
+        InputInjection item{};
+        item.kind = 1;
+        item.code = static_cast<std::uint8_t>(action);
+        item.data = static_cast<std::int8_t>(std::clamp(data, -128, 127));
+        item.dx   = dx;
+        item.dy   = dy;
+        item.hasPos = j.contains("x") || j.contains("y");
+        item.x      = clampShort(j.value("x", 0));
+        item.y      = clampShort(j.value("y", 0));
+        std::uint64_t const before = mMouseEventCount.load(std::memory_order_relaxed);
+        if (!queueInputInjection(item)) {
+            enqueue(R"({"event":"error","reason":"inject_queue_full"})");
+            return;
+        }
+        bootLog(
+            "input: mouse_event action=" + std::to_string(action) + " data=" + std::to_string(data)
+            + " dx=" + std::to_string(dx) + " dy=" + std::to_string(dy)
+        );
+        enqueue(
+            nlohmann::json{
+                {"event",         "mouse_event_queued"},
+                {"action",        action               },
+                {"data",          data                 },
+                {"dx",            dx                   },
+                {"dy",            dy                   },
+                {"count_before",  before               },
+                {"injected_total", mMouseInjected.load()},
+            }
+                .dump()
+        );
+        return;
+    }
     if (cmd == "mouse") {
         nlohmann::json out;
         out["event"]       = "mouse";
@@ -1231,14 +1387,17 @@ void ProbeMod::dispatchLine(std::string const& line) {
         mMacroEnd.store(end);
         mMacroIndex.store(start);
         mMacroLoop.store(j.value("loop", false));
+        mMacroEventLevel     = j.value("event_level", false);
+        mHavePrevMacroTick   = false;
         mMacroStartRequested = true;
         enqueue(
             nlohmann::json{
-                {"event", "macro_started"  },
-                {"start", start            },
-                {"end",   end              },
-                {"ticks", end - start      },
-                {"loop",  mMacroLoop.load()},
+                {"event",       "macro_started"},
+                {"start",       start          },
+                {"end",         end            },
+                {"ticks",       end - start    },
+                {"loop",        mMacroLoop.load()},
+                {"event_level", mMacroEventLevel},
         }
                 .dump()
         );

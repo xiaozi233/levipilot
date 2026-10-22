@@ -67,6 +67,27 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mouse")
     sub.add_parser("mouse-clear")
 
+    key_event = sub.add_parser("key-event", help="inject a keyboard event (allow_input_inject)")
+    key_event.add_argument("code", type=int)
+    key_event.add_argument("--up", action="store_true", help="send key up instead of down")
+    key_event.add_argument("--repeat", action="store_true")
+    key_event.add_argument("--repeat-ms", type=int, default=0)
+
+    key_state = sub.add_parser("key-state", help="read the game-side key state")
+    key_state.add_argument("code", type=int)
+
+    sub.add_parser("screen", help="current game screen name")
+
+    mouse_event = sub.add_parser("mouse-event", help="inject a mouse event (allow_input_inject)")
+    mouse_event.add_argument("action")
+    mouse_event.add_argument("--data", default=None)
+    mouse_event.add_argument("--up", action="store_true")
+    mouse_event.add_argument("--down", action="store_true")
+    mouse_event.add_argument("--dx", type=int, default=0)
+    mouse_event.add_argument("--dy", type=int, default=0)
+    mouse_event.add_argument("--x", type=int, default=None)
+    mouse_event.add_argument("--y", type=int, default=None)
+
     mem_read = sub.add_parser("mem-read", help="read process memory (hex output)")
     mem_read.add_argument("addr")
     mem_read.add_argument("--len", type=int, default=16)
@@ -373,6 +394,42 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.mouse(), ensure_ascii=False))
             elif args.command == "mouse-clear":
                 print(json.dumps(client.mouse_clear(), ensure_ascii=False))
+            elif args.command == "key-event":
+                print(
+                    json.dumps(
+                        client.key_event(
+                            args.code,
+                            not args.up,
+                            repeat=args.repeat,
+                            repeat_ms=args.repeat_ms,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "key-state":
+                print(json.dumps(client.key_state(args.code), ensure_ascii=False))
+            elif args.command == "screen":
+                print(json.dumps(client.screen(), ensure_ascii=False))
+            elif args.command == "mouse-event":
+                down: bool | None = None
+                if args.up:
+                    down = False
+                elif args.down:
+                    down = True
+                print(
+                    json.dumps(
+                        client.mouse_event(
+                            args.action,
+                            data=args.data,
+                            down=down,
+                            dx=args.dx,
+                            dy=args.dy,
+                            x=args.x,
+                            y=args.y,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
             elif args.command == "mem-read":
                 print(
                     json.dumps(client.mem_read(args.addr, args.len), ensure_ascii=False, indent=2)

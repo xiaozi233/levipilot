@@ -1,0 +1,19 @@
+{
+  "name": "sprint-compare",
+  "description": "Three-way sprint comparison. B uses set_input(sprint), C injects ctrl+W through the HID/key event layer. A is a one-off human run (ctrl+w) whose steady speed can be passed with --a-speed.",
+  "start": [0.5, -49.0, 0.5],
+  "yaw": 0.0,
+  "pitch": 0.0,
+  "ticks": 60,
+  "repeats": 3,
+  "groups": {
+    "A": "human ctrl+w (manual, optional via --a-speed)",
+    "B": "set_input(forward=1, sprint=true)",
+    "C": "key_event(Control down) + key_event(W down) via HID"
+  },
+  "expect": {
+    "walk_per_tick": 0.2158,
+    "sprint_per_tick": 0.2805
+  },
+  "note": "Speed is always derived from adjacent tick positions; StateVector.vel is pre-friction (~0.546x) and must not be used."
+}

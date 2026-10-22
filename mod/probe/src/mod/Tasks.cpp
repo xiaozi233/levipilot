@@ -81,6 +81,10 @@ void ProbeMod::cancelTasks() {
 }
 
 void ProbeMod::beginTask() {
+    // A task takes over movement; release any event-level keys the macro left down.
+    if (mHavePrevMacroTick) {
+        releaseMacroInputs();
+    }
     updateRequests([](RequestBlock& request) {
         request.input      = ControlState{};
         request.inputTicks = 0;

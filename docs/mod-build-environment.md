@@ -24,7 +24,7 @@ export XMAKE_GLOBALDIR='D:\Tools\xmake-home'
 export XMAKE_PKG_INSTALLDIR='D:\Tools\xmake-packages'
 
 xmake f -c -y -p windows -a x64 -m release --target_type=client
-xmake -y
+xmake -j4 -y   # 限制并行编译，避免吃满所有核心
 ```
 
 产物在 `bin/probe/`：`probe.dll`、`probe.pdb`、`manifest.json`

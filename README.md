@@ -93,6 +93,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
 - 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
 - IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
+- Agent 常驻约定（硬约束 / 已知坑 / 当前优先级）：[`AGENTS.md`](AGENTS.md)
+- 开发任务提示词（mod 优先，P0→P3，可直接派活）：[`docs/task-prompts.md`](docs/task-prompts.md)
 
 ## 状态与限制
 

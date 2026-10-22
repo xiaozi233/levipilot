@@ -12,6 +12,7 @@ from typing import Any
 from .client import ModClient
 from .errors import ModPipeError
 from .protocol import PIPE_NAME
+from .spool import read_spool
 
 
 def _write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
@@ -60,6 +61,44 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("mouse")
     sub.add_parser("mouse-clear")
+
+    mem_read = sub.add_parser("mem-read", help="read process memory (hex output)")
+    mem_read.add_argument("addr")
+    mem_read.add_argument("--len", type=int, default=16)
+
+    mem_write = sub.add_parser("mem-write", help="write process memory (allow_write)")
+    mem_write.add_argument("addr")
+    mem_write.add_argument("hex")
+
+    probe = sub.add_parser("probe", help="structured memory probe (raw/block/legacy)")
+    probe.add_argument("addr")
+    probe.add_argument("--kind", default="raw", choices=["raw", "block", "legacy"])
+    probe.add_argument("--len", type=int, default=16)
+
+    watch_set = sub.add_parser("watch-set", help="install a hardware watchpoint")
+    watch_set.add_argument("addr")
+    watch_set.add_argument("--size", type=int, default=4, choices=[1, 2, 4, 8])
+    watch_set.add_argument("--mode", default="w", choices=["w", "rw"])
+    watch_set.add_argument("--thread", default="tick")
+    watch_set.add_argument("--tag", default="")
+
+    watch_clear = sub.add_parser("watch-clear")
+    watch_clear.add_argument("--id", type=int)
+    watch_clear.add_argument("--all", action="store_true")
+
+    sub.add_parser("watch-list")
+
+    watch_drain = sub.add_parser("watch-drain")
+    watch_drain.add_argument("--since", type=int, default=0)
+    watch_drain.add_argument("--limit", type=int, default=4096)
+
+    sub.add_parser("spool-flush")
+    sub.add_parser("selftest-av")
+
+    spool = sub.add_parser("spool", help="summarize a spool jsonl file (works after a crash)")
+    spool.add_argument("path", type=Path)
+    spool.add_argument("--tail", type=int, default=10)
+    spool.add_argument("--all", action="store_true", help="print every row")
 
     entities = sub.add_parser("entities")
     entities.add_argument("--radius", type=float, default=16.0)
@@ -200,6 +239,25 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.command == "spool":
+        rows, stats = read_spool(args.path)
+        print(
+            json.dumps(
+                {
+                    "path": str(args.path),
+                    "rows": stats.rows,
+                    "dropped": stats.dropped,
+                    "bad_lines": stats.bad_lines,
+                    "rotations": stats.rotations,
+                },
+                ensure_ascii=False,
+            )
+        )
+        selected = rows if args.all else rows[-args.tail :] if args.tail > 0 else []
+        for row in selected:
+            print(json.dumps(row, ensure_ascii=False))
+        return 0
+
     try:
         with ModClient(args.pipe) as client:
             if args.command == "ping":
@@ -214,6 +272,49 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.mouse(), ensure_ascii=False))
             elif args.command == "mouse-clear":
                 print(json.dumps(client.mouse_clear(), ensure_ascii=False))
+            elif args.command == "mem-read":
+                print(
+                    json.dumps(client.mem_read(args.addr, args.len), ensure_ascii=False, indent=2)
+                )
+            elif args.command == "mem-write":
+                print(json.dumps(client.mem_write(args.addr, args.hex), ensure_ascii=False))
+            elif args.command == "probe":
+                print(
+                    json.dumps(
+                        client.probe(args.addr, args.kind, length=args.len),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            elif args.command == "watch-set":
+                print(
+                    json.dumps(
+                        client.watch_set(
+                            args.addr,
+                            size=args.size,
+                            mode=args.mode,
+                            thread=args.thread,
+                            tag=args.tag,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "watch-clear":
+                print(json.dumps(client.watch_clear(args.id, all=args.all), ensure_ascii=False))
+            elif args.command == "watch-list":
+                print(json.dumps(client.watch_list(), ensure_ascii=False, indent=2))
+            elif args.command == "watch-drain":
+                print(
+                    json.dumps(
+                        client.watch_drain(args.since, limit=args.limit),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            elif args.command == "spool-flush":
+                print(json.dumps(client.spool_flush(), ensure_ascii=False))
+            elif args.command == "selftest-av":
+                print(json.dumps(client.selftest_av(), ensure_ascii=False))
             elif args.command == "state":
                 print(json.dumps(client.state(), ensure_ascii=False, indent=2))
             elif args.command == "entities":

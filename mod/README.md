@@ -39,6 +39,11 @@ xmake -y
 | 命令 | 说明 |
 |---|---|
 | `ping` / `status` / `state` | 心跳、状态、玩家快照 |
+| `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
+| `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
+| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程） |
+| `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
+| `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
 | `set` | `forward,strafe,sprint,sneak,jump,ticks`；`ticks=-1` 持续 |
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
@@ -47,7 +52,7 @@ xmake -y
 | `attack_entity` | `runtime_id`；对指定实体执行 `GameMode::attack` |
 | `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
-| `blocks` | `positions:[[x,y,z],...]`，方块名 |
+| `blocks` | `positions:[[x,y,z],...]`，方块名和 `addr`（`Block*`，供 `probe` 使用） |
 | `navigate` | `x,z,tolerance,max_ticks,sprint`；mod 内逐 tick 闭环修正朝向并自动跳障 |
 | `mine` | `x,y,z,max_ticks`；`startDestroyBlock` + `continueDestroyBlock`，完成后回报方块 |
 | `place` | `x,y,z,against?,face?,expected?,slot?,max_ticks`；瞄准、放置并回读验证 |
@@ -81,6 +86,11 @@ xmake -y
 `start` 录制的每个 `tick` 事件额外带跑酷字段：`in_air`、`jump_edge`（本 tick 是否有起跳
 按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
 
+握手 `hello` 现在带 `spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时
+积压、本次连接会补发的行数）和 `queue_dropped`。`status` 额外带 `spool_rows`、
+`spool_flushes`、`allow_write`、`tick_thread_id`、`tick_probe_addr`、`watch_count`、
+`watch_hits`、`watch_dropped`。
+
 调试命令（`diag` / `mouse` / `buttons` / `input_cfg`）和注入/传送/macro 的实现细节见
 [`../docs/mod-internals.md`](../docs/mod-internals.md)。
 
@@ -93,14 +103,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "auto_enter": "超平坦测试",
   "options": { "gfx_gamma": "0.5" },
   "delay_ms": 2000,
-  "background_guard": true
+  "background_guard": true,
+  "allow_write": false,
+  "allow_crash_test": false
 }
 ```
 
 `auto_enter` 是存档名（也接受 `id` 字段）；mod 会等世界列表准备好、并且游戏在**前台**后
 再进入（后台进世界会触发鼠标捕获）。`options` 会先应用并写回 `options.txt`。
 `background_guard` 默认开启：游戏失去前台时释放光标裁剪，并忽略后台鼠标引起的视角旋转；
-它不会阻止 mod 自己的 `look`/任务。不需要时删除该文件即可。
+它不会阻止 mod 自己的 `look`/任务。`allow_write` 才能用 `mem_write`；`allow_crash_test`
+才能用会主动结束进程的 `selftest_crash`。不需要时删除该文件即可。
 
 ## 实测（1.26.51.01 创作存档）
 
@@ -127,7 +140,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 后台鼠标守卫：游戏不在前台时 `yaw/pitch` 不被鼠标改变，光标保持可见；mod 自己的
   `look` 仍生效
 - `driver/parkour.py`：跳跃分段、checkpoint、两次运行对比、`attempts` 2/2 成功
-- `driver/selftest.py` 13/13 通过
+- spool：录制中 `taskkill /F` 掉游戏，spool 里仍有崩溃前最后一条 tick 记录（读取端
+  最后收到 57 tick，spool 写到 62，未丢 tick）
+- 崩溃取证：`selftest_crash`（需 `allow_crash_test`）生成 `crash-<pid>-<tick>.dmp` 和
+  `crash-<pid>.txt`，后者含异常码/地址/线程/最后命令/tick/位置/spool 路径
+- 请求隔离：`selftest_av` 回 `internal_error`，随后 tick 继续增长
+- `probe kind=block/legacy` 对同一坐标返回的名字与 `blocks` 一致；`legacy.hash` 等于
+  名字的 FNV-1-64
+- `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
+  命中 tid 等于 tick 线程；`watch_clear` 后不再增加
+- `driver/selftest.py` 34/34 通过
 
 ## 限制
 
@@ -145,6 +167,13 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 鼠标录制只认 raw input；后台合成点击只有移动事件。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。
 - 只对应 **1.26.51.01**，不能直接套 1.26.45 的偏移。
+- `probe` 的 Block/Legacy 字段偏移集中在 `Memory.cpp` 的布局常量里，仍是版本相关；
+  签名解析是 T7 的工作。
+- 硬件观察点全局共 4 个 DR 槽；线程已被调试器（或其他工具）占用时回 `dr_busy`，
+  不会强抢。x86 的 `rw` 实际是“读写/IO”语义，没有纯读观察点。
+- spool 每 100 ms 或 64 KB 刷一次，进程被强杀时最多丢最后约 100 ms 的记录；队列溢出
+  会写一条 `queue_dropped` 标记进 spool。
+- `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。
 
 ## License
 

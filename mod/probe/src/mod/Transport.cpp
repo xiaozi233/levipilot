@@ -10,7 +10,69 @@ void ProbeMod::enqueue(std::string line) {
         mQueue.pop_front();
         mQueueDropped.fetch_add(1, std::memory_order_relaxed);
     }
+    // Spool before the move below. The spool thread is the only reader, and it
+    // swaps the buffer under the same mutex, so the tick path stays allocation-
+    // free apart from the string append it already did for the queue.
+    mSpoolBuffer.append(line);
+    mSpoolBuffer.push_back('\n');
     mQueue.push_back(std::move(line));
+}
+
+void ProbeMod::spoolThreadLoop() {
+    while (mRunning.load(std::memory_order_relaxed)) {
+        Sleep(25);
+        flushSpool(false);
+    }
+    flushSpool(true);
+}
+
+void ProbeMod::flushSpool(bool force) {
+    std::string data;
+    {
+        std::lock_guard lock(mQueueMutex);
+        std::uint64_t const now = GetTickCount64();
+        bool const due = force || mSpoolBuffer.size() >= (64u << 10) || now - mLastFlushMs >= 100;
+        if (!due) {
+            return;
+        }
+        mLastFlushMs = now;
+        data.swap(mSpoolBuffer);
+
+        // Queue overflow itself is an event worth keeping next to the data.
+        std::uint64_t const dropped = mQueueDropped.load(std::memory_order_relaxed);
+        if (dropped != mSpoolDroppedMarked) {
+            mSpoolDroppedMarked = dropped;
+            data += nlohmann::json{
+                {"event", "queue_dropped"       },
+                {"count", dropped               },
+            }
+                        .dump();
+            data += '\n';
+        }
+        if (data.empty()) {
+            return;
+        }
+    }
+
+    std::lock_guard lock(mSpoolFileMutex);
+    if (!mSpoolFile.is_open()) {
+        std::error_code ec;
+        std::filesystem::create_directories(mSpoolPath.parent_path(), ec);
+        mSpoolFile.open(mSpoolPath, std::ios::app | std::ios::binary);
+        if (!mSpoolFile) {
+            return;
+        }
+    }
+    mSpoolFile.write(data.data(), static_cast<std::streamsize>(data.size()));
+    mSpoolFile.flush();
+    std::uint64_t rows = 0;
+    for (char ch : data) {
+        if (ch == '\n') {
+            ++rows;
+        }
+    }
+    mSpoolRows.fetch_add(rows, std::memory_order_relaxed);
+    mSpoolFlushes.fetch_add(1, std::memory_order_relaxed);
 }
 
 void ProbeMod::bootLog(std::string const& text) {
@@ -89,11 +151,23 @@ void ProbeMod::serverLoop() {
                 }
                 connected = true;
                 bootLog("pipe: client connected");
+                // Do not drop rows accumulated while no client was attached:
+                // rotate them to the spool first, then deliver them on this
+                // connection. The client sees how many rows to expect.
+                std::size_t replay = 0;
                 {
                     std::lock_guard lock(mQueueMutex);
-                    mQueue.clear();
+                    replay = mQueue.size();
                 }
-                auto const hello   = std::string(R"({"event":"hello","protocol":3})") + "\n";
+                flushSpool(true);
+                nlohmann::json helloJson{
+                    {"event", "hello"                },
+                    {"protocol", 3                   },
+                    {"spool", mSpoolPath.string()    },
+                    {"replay_rows", replay           },
+                    {"queue_dropped", mQueueDropped.load()},
+                };
+                auto const hello   = helloJson.dump() + "\n";
                 DWORD      written = 0;
                 BOOL const helloOk = WriteFile(pipe, hello.data(), static_cast<DWORD>(hello.size()), &written, nullptr);
                 bootLog(

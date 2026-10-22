@@ -120,15 +120,59 @@
 - `harness.json`：`auto_enter` / `options` / `delay_ms`。自动线程先等客户端存在且世界列表
   非空，再应用选项并进世界，避免在加载阶段调用。
 
+## 记录落盘与崩溃取证
+
+- `enqueue()` 同时把同一行追加到内存缓冲；独立的 spool 线程每 25 ms 检查，按
+  “距上次 ≥100 ms 或 ≥64 KB”把缓冲 swap 出来写进 `spool-<pid>.jsonl`。写文件时用
+  `ofstream::flush()`，进程被 `taskkill /F` 杀死时 OS 缓冲仍然落盘。
+- 连接建立时不再清空 `mQueue`：先强制刷 spool，再把积压行补发给新客户端；
+  `hello.replay_rows` 告诉客户端有多少行。队列溢出仍丢最旧，但会往 spool 追加一条
+  `{"event":"queue_dropped","count":N}` 标记。
+- 崩溃取证走 VEH（`AddVectoredExceptionHandler`），因为 LeviLamina/游戏可能在 mod 加载后
+  覆盖 `SetUnhandledExceptionFilter`。致命结构化异常（AV、非法指令、栈溢出等）且不属于
+  `dispatchWithSeh` 时，写：
+  - `crash-<pid>-<tick>.dmp`：`MiniDumpNormal | MiniDumpWithThreadInfo`；
+  - `crash-<pid>.txt`：异常码/地址/线程/tick/最后命令/最后位置/`queue_dropped`/spool 路径。
+  写 dump 用 `mCrashDumpInProgress` 防重入，全程只用固定缓冲和 Win32 调用。
+- `selftest_crash` 用于验证这条路径，必须显式打开 `allow_crash_test`，因为它会结束进程。
+
+## 内存原语（T2）
+
+- 读写都走 `ReadProcessMemory` / `WriteProcessMemory`（当前进程）：非法地址返回失败而不是
+  触发 AV，所以脚本传错地址不会带走游戏。外层还有 `VirtualQuery` 检查
+  `MEM_COMMIT`、可读/可写和保护位（含 `PAGE_GUARD`）。
+- `probe kind=block`：读 `Block+0x68` 得到 `BlockLegacy*`；`kind=legacy` 读
+  `+0xE0`（哈希）、`+0xE8`（MSVC `std::string`）、`+0x17E`（u16 block id）、
+  `+0x15C`/`+0x178`（float）。偏移集中在 `Memory.cpp` 的 `BlockLayout` /
+  `BlockLegacyLayout`，命令处理里不出现裸数字。
+- `blocks` 每个结果附带 `addr`（`Block*`），这样 `probe` 可以直接对活对象回读，
+  名字与 `blocks` 交叉校验。
+- `mem_write` 默认关闭；开启后每次写 1 KB 以内的十六进制摘要写进 `harness-boot.log`。
+
+## 硬件观察点（T3）
+
+- 每个线程 4 个 DR 槽；`watch_set` 全局分配槽位（所有线程共用同一个 slot 编号，
+  DR6 的位号才能唯一映射回 watch）。安装前 `SuspendThread` + `GetThreadContext`，
+  如果 DR7 的低 8 位里有不属于我们的 enable 位，回 `dr_busy`，不抢调试器。
+- `watch_set` 默认 `thread="tick"`（`safeTickPost` 记录 `mTickThreadId`）；也接受具体
+  tid 或 `"all"`（`CreateToolhelp32Snapshot` 枚举本进程线程）。
+- 命中由 VEH 处理：清 DR6 对应位，把 `{watchId, tid, tick, rip, 8 帧栈}` 写进预分配的
+  65536 条定长环；命中路径不做 JSON/字符串/加锁。`watch_drain` 在管道线程把环序列化成
+  JSON，`since`/`next` 是绝对序号，`lost` 表示已被覆盖的条数。
+- 清除时对每个安装过的线程恢复 DR7 并清零 DRn。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次
   `internal_error`，不会把异常抛回游戏主循环。
-- `handleLine` 外面有 `try/catch`，坏 JSON/类型错误只回 `bad_command`，管道线程继续工作。
+- `handleLine` 外面有 `try/catch`，并且 `dispatchLine` 包在 `__try/__except` 里：
+  坏 JSON/类型错误回 `bad_command`，请求级的 AV 回 `internal_error`，管道线程和 tick 都继续。
+  C++ 异常通过 `__except` 过滤器放行到外层 `catch`，不会被误当成崩溃。
 - 所有 `queueForServerThread` 回调统一走 `queueServerTask`，在服务端线程里捕获异常，
   避免异常穿过游戏的服务端 tick。
 - 管道写入按 `WriteFile` 的实际返回值循环，防止字节模式下的半行写入破坏 JSON Lines；
-  队列超过 20000 条时丢弃最旧的并计数（`status.queue_dropped`）。
+  队列超过 20000 条时丢弃最旧的并计数（`status.queue_dropped`），同时往 spool 写一条
+  `queue_dropped` 标记。
 - 管道用 `PIPE_REJECT_REMOTE_CLIENTS`，只接受本机客户端。
 - 启动/管道状态写到 mod 目录下的 `harness-boot.log`（`load`、`enable`、`pipe: ...`），
   因为 LeviLauncher 的日志位置随启动方式变化。

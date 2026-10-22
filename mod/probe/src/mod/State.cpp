@@ -157,11 +157,17 @@ void ProbeMod::captureBlocks(LocalPlayer& player) {
     out["event"]  = "blocks";
     out["blocks"] = nlohmann::json::array();
     for (auto const& query : queries) {
+        BlockPos const pos{query.x, query.y, query.z};
+        auto const&    block = source.getBlock(pos);
         out["blocks"].push_back({
             {"x", query.x},
             {"y", query.y},
             {"z", query.z},
-            {"name", blockName(source, query.x, query.y, query.z)},
+            {"name", block.getTypeName()},
+            // T2 anchor: lets probe(kind=block/legacy) work on a live object
+            // without a separate "address of" command.
+            {"addr",
+             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&block))},
         });
     }
     enqueue(out.dump());

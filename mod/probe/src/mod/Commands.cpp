@@ -4,11 +4,54 @@ using namespace probe::detail;
 
 namespace probe {
 
+// True while dispatchWithSeh owns the current exception. The crash VEH checks
+// this so a deliberately faulting request is handled as an internal_error
+// instead of producing a minidump.
+thread_local bool gDispatchSehActive = false;
+
+void ProbeMod::recordCommand(std::string const& line) {
+    std::size_t const length = line.size() < sizeof(mLastCommand) - 1 ? line.size() : sizeof(mLastCommand) - 1;
+    std::memcpy(mLastCommand, line.data(), length);
+    mLastCommand[length] = '\0';
+}
+
+bool ProbeMod::dispatchWithSeh(std::string const& line) {
+#if defined(_MSC_VER)
+    // A bad memory access from one handler must only fail that request. The
+    // filter lets C++ exceptions through to the caller's try/catch.
+    __try {
+        dispatchLine(line);
+        return true;
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+#else
+    try {
+        dispatchLine(line);
+        return true;
+    } catch (...) {
+        return false;
+    }
+#endif
+}
+
 void ProbeMod::handleLine(std::string const& line) {
+    recordCommand(line);
+    // Any structured exception raised while handling this command belongs to
+    // the request, not to the process. The flag must be visible to the crash
+    // VEH, which runs before the __except filter below.
+    struct DispatchFlag {
+        DispatchFlag() { gDispatchSehActive = true; }
+        ~DispatchFlag() { gDispatchSehActive = false; }
+    } dispatchFlag;
     // nlohmann throws on type mismatches, and a bad line from a script must not
     // kill the pipe thread (which would make the whole harness unreachable).
     try {
-        dispatchLine(line);
+        if (!dispatchWithSeh(line)) {
+            enqueue(
+                R"({"event":"error","reason":"internal_error","phase":"dispatch","message":"structured exception"})"
+            );
+        }
     } catch (std::exception const& e) {
         enqueue(
             nlohmann::json{
@@ -47,6 +90,170 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["server_level"]    = mc.has_value() && mc->getLevel() != nullptr;
         out["commands"]        = mc.has_value() && static_cast<bool>(mc->mCommands);
         enqueue(out.dump());
+        return;
+    }
+    if (cmd == "mem_read") {
+        nlohmann::json out;
+        out["event"] = "mem_read";
+        std::uint64_t addr = 0;
+        if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
+            out["ok"]     = false;
+            out["reason"] = "bad_addr";
+            enqueue(out.dump());
+            return;
+        }
+        std::size_t len = std::clamp<std::size_t>(j.value("len", 16), 1, 4096);
+        std::vector<std::uint8_t> bytes(len);
+        out["addr"] = addr;
+        out["len"]  = len;
+        if (!readMemory(addr, bytes.data(), bytes.size())) {
+            out["ok"]     = false;
+            out["reason"] = "bad_addr";
+        } else {
+            out["ok"]  = true;
+            out["hex"] = hexEncode(bytes.data(), bytes.size());
+        }
+        enqueue(out.dump());
+        return;
+    }
+    if (cmd == "mem_write") {
+        if (!mAllowMemoryWrite.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"write_disabled","hint":"set allow_write=true in harness.json"})");
+            return;
+        }
+        nlohmann::json out;
+        out["event"] = "mem_write";
+        std::uint64_t addr = 0;
+        if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
+            out["ok"]     = false;
+            out["reason"] = "bad_addr";
+            enqueue(out.dump());
+            return;
+        }
+        std::vector<std::uint8_t> bytes;
+        if (!j.contains("hex") || !parseHexBytes(j.value("hex", std::string{}), bytes) || bytes.empty()) {
+            out["ok"]     = false;
+            out["reason"] = "bad_hex";
+            enqueue(out.dump());
+            return;
+        }
+        if (bytes.size() > 4096) {
+            out["ok"]     = false;
+            out["reason"] = "too_long";
+            enqueue(out.dump());
+            return;
+        }
+        if (!writeMemory(addr, bytes.data(), bytes.size())) {
+            out["ok"]     = false;
+            out["reason"] = "bad_addr";
+        } else {
+            out["ok"]      = true;
+            out["addr"]    = addr;
+            out["written"] = bytes.size();
+            // Single-line audit trail: strong capabilities must leave a trace.
+            bootLog(
+                "mem_write addr=" + std::to_string(addr) + " len=" + std::to_string(bytes.size())
+                + " hex=" + hexEncode(bytes.data(), bytes.size() > 64 ? 64 : bytes.size())
+            );
+        }
+        enqueue(out.dump());
+        return;
+    }
+    if (cmd == "probe") {
+        nlohmann::json out;
+        out["event"] = "probe";
+        std::uint64_t addr = 0;
+        if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
+            out["ok"]     = false;
+            out["reason"] = "bad_addr";
+            enqueue(out.dump());
+            return;
+        }
+        std::string const kind = j.value("kind", std::string{"raw"});
+        std::size_t const len  = std::clamp<std::size_t>(j.value("len", 16), 1, 64);
+        enqueue(probeMemory(addr, kind, len).dump());
+        return;
+    }
+    if (cmd == "watch_set") {
+        nlohmann::json out;
+        out["event"] = "watch_set";
+        std::uint64_t addr = 0;
+        if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
+            out["ok"]     = false;
+            out["reason"] = "bad_addr";
+            enqueue(out.dump());
+            return;
+        }
+        std::uint32_t size = 1;
+        if (j.contains("size") && !parseSize(j["size"], size)) {
+            out["ok"]     = false;
+            out["reason"] = "bad_size";
+            enqueue(out.dump());
+            return;
+        }
+        std::string const mode = j.value("mode", std::string{"w"});
+        std::string       thread = "tick";
+        if (j.contains("thread")) {
+            if (j["thread"].is_string()) {
+                thread = j["thread"].get<std::string>();
+            } else if (j["thread"].is_number_integer()) {
+                thread = std::to_string(j["thread"].get<long long>());
+            }
+        }
+        std::string const tag = j.value("tag", std::string{});
+        enqueue(watchInstall(addr, size, mode == "rw", thread, tag).dump());
+        return;
+    }
+    if (cmd == "watch_clear") {
+        if (j.value("all", false)) {
+            watchRemoveAll();
+            enqueue(R"({"event":"watch_cleared","all":true})");
+            return;
+        }
+        int const id = j.value("id", -1);
+        enqueue(watchRemove(id).dump());
+        return;
+    }
+    if (cmd == "watch_list") {
+        enqueue(watchListJson().dump());
+        return;
+    }
+    if (cmd == "watch_drain") {
+        std::uint64_t const since =
+            j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
+        std::size_t const limit =
+            std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
+        enqueue(watchDrainJson(since, limit).dump());
+        return;
+    }
+    if (cmd == "spool_flush") {
+        flushSpool(true);
+        enqueue(
+            nlohmann::json{
+                {"event", "spool_flushed"      },
+                {"path",  mSpoolPath.string()  },
+                {"rows",  mSpoolRows.load()    },
+        }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "selftest_crash") {
+        // Verifies the unhandled-exception filter and minidump writer. This
+        // deliberately terminates the game; it is gated behind a config flag.
+        if (!mAllowCrashTest.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"crash_test_disabled","hint":"set allow_crash_test=true"})");
+            return;
+        }
+        enqueue(R"({"event":"selftest_crash_started"})");
+        std::thread([] { RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr); }).detach();
+        return;
+    }
+    if (cmd == "selftest_av") {
+        // Isolation check: this is caught by dispatchWithSeh and must only fail
+        // this request. RaiseException is deterministic (the optimizer cannot
+        // delete it like a null dereference).
+        RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
         return;
     }
     if (cmd == "mouse") {
@@ -141,6 +348,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
     }
     if (cmd == "stop") {
         mRecording = false;
+        flushSpool(true);
         enqueue(R"({"event":"stopped","reason":"client"})");
         return;
     }
@@ -753,6 +961,16 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["macro_index"]     = mMacroIndex.load();
         out["macro_recording"] = mMacroRecording.load();
         out["queue_dropped"]   = mQueueDropped.load();
+        out["spool"]           = mSpoolPath.string();
+        out["spool_rows"]      = mSpoolRows.load();
+        out["spool_flushes"]   = mSpoolFlushes.load();
+        out["allow_write"]     = mAllowMemoryWrite.load();
+        out["tick_thread_id"]  = mTickThreadId.load();
+        out["tick_probe_addr"] =
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
+        out["watch_count"]   = watchCount();
+        out["watch_hits"]    = watchTotalHits();
+        out["watch_dropped"] = watchDroppedHits();
         enqueue(out.dump());
         return;
     }

@@ -20,6 +20,7 @@ from ctypes import wintypes
 from typing import Any
 
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
+from .memory import parse_hex_bytes, to_hex
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder, kernel32
 
 
@@ -42,6 +43,7 @@ class ModClient:
         self.connect_timeout = connect_timeout
         self.timeout = timeout
         self.protocol = 0
+        self.hello: dict[str, Any] = {}
         self._file: Any = None
         self._reader: threading.Thread | None = None
         self._lines: queue.Queue[dict[str, Any]] = queue.Queue()
@@ -81,6 +83,7 @@ class ModClient:
                 self.close()
                 raise ModPipeError(f"握手失败：{hello!r}")
             self.protocol = int(hello.get("protocol", 0))
+            self.hello = hello
             return self
         raise ModPipeError(f"无法连接 {self.pipe_name}: {last_error}")
 
@@ -242,6 +245,115 @@ class ModClient:
 
     def mouse_clear(self) -> dict[str, Any]:
         return self.request({"cmd": "mouse_clear"}, "mouse_cleared")
+
+    # -- T2: memory primitives ------------------------------------------------
+    def mem_read(
+        self, addr: int | str, length: int = 16, *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """Read up to 4096 bytes; a bad address returns ``ok=false/bad_addr``."""
+        return self.request(
+            {"cmd": "mem_read", "addr": addr, "len": int(length)},
+            "mem_read",
+            timeout=timeout,
+        )
+
+    def mem_write(
+        self,
+        addr: int | str,
+        data: bytes | bytearray | str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Write bytes (requires ``allow_write=true`` in harness.json).
+
+        ``data`` may be raw bytes or a hex string. The mod rejects the request
+        with ``write_disabled`` when writes are not enabled.
+        """
+        hex_text = data if isinstance(data, str) else to_hex(data)
+        normalized = parse_hex_bytes(hex_text).hex()
+        return self.request(
+            {"cmd": "mem_write", "addr": addr, "hex": normalized},
+            "mem_write",
+            timeout=timeout,
+        )
+
+    def probe(
+        self,
+        addr: int | str,
+        kind: str = "raw",
+        *,
+        length: int = 16,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Structured read: ``raw`` | ``block`` | ``legacy``."""
+        return self.request(
+            {"cmd": "probe", "addr": addr, "kind": kind, "len": int(length)},
+            "probe",
+            timeout=timeout,
+        )
+
+    def spool_flush(self, timeout: float = 10.0) -> dict[str, Any]:
+        return self.request({"cmd": "spool_flush"}, "spool_flushed", timeout=timeout)
+
+    def selftest_av(self, timeout: float = 5.0) -> dict[str, Any]:
+        """Raise an access violation inside the mod; expects an ``internal_error``.
+
+        This is the isolation check from T1: the game must keep ticking.
+        """
+        self.send({"cmd": "selftest_av"})
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ModTimeout("selftest_av 等待错误回复超时")
+            message = self._next_line(remaining)
+            if message.get("event") in {"error", "selftest_fault_done"}:
+                return message
+
+    # -- T3: hardware watchpoints ---------------------------------------------
+    def watch_set(
+        self,
+        addr: int | str,
+        *,
+        size: int = 4,
+        mode: str = "w",
+        thread: str | int = "tick",
+        tag: str = "",
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Install a debug-register watchpoint (``size`` 1/2/4/8, mode w|rw)."""
+        return self.request(
+            {
+                "cmd": "watch_set",
+                "addr": addr,
+                "size": int(size),
+                "mode": mode,
+                "thread": thread,
+                "tag": tag,
+            },
+            "watch_installed",
+            timeout=timeout,
+        )
+
+    def watch_clear(
+        self, watch_id: int | None = None, *, all: bool = False, timeout: float | None = None
+    ) -> dict[str, Any]:
+        if not all and watch_id is None:
+            raise ValueError("watch_id or all=True is required")
+        message: dict[str, Any] = {"cmd": "watch_clear"}
+        if all:
+            message["all"] = True
+        else:
+            message["id"] = int(watch_id)  # type: ignore[arg-type]
+        return self.request(message, "watch_cleared", timeout=timeout)
+
+    def watch_list(self) -> dict[str, Any]:
+        return self.request({"cmd": "watch_list"}, "watch_list")
+
+    def watch_drain(self, since: int = 0, *, limit: int = 4096) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "watch_drain", "since": int(since), "limit": int(limit)}, "watch_hits"
+        )
 
     def state(self) -> dict[str, Any]:
         return self.request({"cmd": "state"}, "state")
@@ -698,6 +810,21 @@ class Harness:
 
     def state(self) -> dict[str, Any]:
         return self.client.state()
+
+    def mem_read(self, addr: int | str, length: int = 16) -> dict[str, Any]:
+        return self.client.mem_read(addr, length)
+
+    def probe(self, addr: int | str, kind: str = "raw", **kwargs: Any) -> dict[str, Any]:
+        return self.client.probe(addr, kind, **kwargs)
+
+    def watch_set(self, addr: int | str, **kwargs: Any) -> dict[str, Any]:
+        return self.client.watch_set(addr, **kwargs)
+
+    def watch_clear(self, watch_id: int | None = None, **kwargs: Any) -> dict[str, Any]:
+        return self.client.watch_clear(watch_id, **kwargs)
+
+    def watch_drain(self, since: int = 0, **kwargs: Any) -> dict[str, Any]:
+        return self.client.watch_drain(since, **kwargs)
 
     def entities(self, radius: float = 16.0, limit: int = 64) -> list[dict[str, Any]]:
         return list(self.client.entities(radius, limit).get("entities", []))

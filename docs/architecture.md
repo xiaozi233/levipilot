@@ -33,8 +33,10 @@ scenario DSL / LLM / shell
 | `World.cpp` | 世界列表、`enter_world` / `leave_world`、世界事件 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
-| `Commands.cpp` | 管道命令解析与分发 |
-| `Transport.cpp` | 命名管道服务端、写队列、`queueServerTask`、诊断日志 |
+| `Commands.cpp` | 管道命令解析与分发、请求级 SEH/异常隔离 |
+| `Transport.cpp` | 命名管道服务端、写队列、`queueServerTask`、spool、诊断日志 |
+| `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
+| `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
 
 `Internal.h` 是唯一允许被所有 TU 引用的内部头；它集中引入 Bedrock 头文件，避免每个
 翻译单元各自维护一份包含列表。新增共享工具时放在 `probe::detail`。
@@ -47,6 +49,11 @@ scenario DSL / LLM / shell
   分发命令。它不直接调用游戏对象，只设置请求标志或调用 `queueServerTask`。
 - **服务端线程**：通过 `ServerInstance::queueForServerThread` 执行传送、命令、背包写入和使用物品。
   所有回调由 `queueServerTask` 包装，异常不会穿过游戏服务端 tick。
+- **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
+  `spool-<pid>.jsonl`；`world_left` / `stop` / `disable` 会强制刷盘。它只碰文件和缓冲区，
+  不碰任何游戏对象。
+- **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
+  结构化异常由 `dispatchWithSeh` 转成 `internal_error`，不会写 minidump。
 
 跨线程状态用互斥量（输入、任务、传送、背包请求）或原子量（各种 `*Requested`、`mRunning`）。
 任务还有一个 `mTaskEpoch`：管道线程取消/替换任务时递增，tick 线程只在 epoch 未变时写回，
@@ -68,7 +75,8 @@ scenario DSL / LLM / shell
 ## 管道协议
 
 - 命名管道 `\\.\pipe\mcbe-harness`，字节模式，UTF-8 JSON Lines。
-- 连接后 mod 先发 `{"event":"hello","protocol":3}`；客户端校验协议号。
+- 连接后 mod 先发 `{"event":"hello","protocol":3,"spool":...,"replay_rows":N,...}`；
+  客户端校验协议号。新增字段是增量的，旧客户端仍可用。
 - 请求是 `{"cmd": "...", ...}`；响应/事件用 `event` 区分。未知命令回
   `{"event":"error","reason":"unknown_cmd"}`。
 - 服务端写入按 `WriteFile` 的实际返回值循环，避免半行 JSON；队列上限 20000，溢出计数在
@@ -83,6 +91,9 @@ driver/harness/
   errors.py     # ModPipeError / ModTimeout / ModDisconnected / ModProtocolError
   protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定
   client.py     # ModClient（连接/超时/重连）+ Harness（便捷方法）
+  memory.py     # 地址/hex 解析、FNV 辅助
+  spool.py      # 增量、可容忍轮转/半行的 spool 读取器
+  watch.py      # watch 命中解码与可续读游标
   cli.py        # argparse 入口
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环

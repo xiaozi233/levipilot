@@ -9,16 +9,30 @@ from __future__ import annotations
 
 from .client import Harness, ModClient
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
+from .memory import fnv1_64, fnv1a_64, format_address, parse_hex_bytes, to_hex
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder
+from .spool import SpoolReader, SpoolStats, read_spool
+from .watch import HitCursor, WatchHit, decode_hits
 
 __all__ = [
     "DEFAULT_TIMEOUT",
     "PIPE_NAME",
     "Harness",
+    "HitCursor",
     "LineDecoder",
     "ModClient",
     "ModDisconnected",
     "ModPipeError",
     "ModProtocolError",
     "ModTimeout",
+    "SpoolReader",
+    "SpoolStats",
+    "WatchHit",
+    "decode_hits",
+    "fnv1_64",
+    "fnv1a_64",
+    "format_address",
+    "parse_hex_bytes",
+    "read_spool",
+    "to_hex",
 ]

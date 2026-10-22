@@ -1,8 +1,11 @@
 #include "mod/Internal.h"
 
+#include <dbghelp.h>
+
 using namespace probe::detail;
 
 namespace probe {
+
 
 ProbeMod& ProbeMod::getInstance() {
     static ProbeMod instance;
@@ -49,7 +52,27 @@ bool ProbeMod::enable() {
     std::error_code ec;
     std::filesystem::create_directories(macroDir(), ec);
 
+    // T1: everything printed to the pipe is also spooled to the mod directory.
+    // Resolve an absolute path once so the crash handler works regardless of
+    // the process CWD and never allocates.
+    std::error_code absoluteEc;
+    auto            modDirPath = std::filesystem::absolute(getSelf().getModDir(), absoluteEc);
+    if (absoluteEc) {
+        modDirPath = getSelf().getModDir();
+    }
+    auto const modDir = modDirPath.wstring();
+    if (!modDir.empty() && modDir.size() < std::size(mModDirW)) {
+        std::copy(modDir.begin(), modDir.end(), mModDirW);
+        mModDirW[modDir.size()] = L'\0';
+    }
+    mSpoolPath = modDirPath
+               / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
+    installCrashHandler();
+    watchInit();
+
     loadAutoConfig();
+
+    mSpoolThread = std::thread([this] { spoolThreadLoop(); });
 
     // World flow events: the USB/UI-independent entry point reports through
     // these, so scripts do not have to poll mInWorld.
@@ -130,6 +153,17 @@ bool ProbeMod::disable() {
     if (mAutoThread.joinable()) {
         mAutoThread.join();
     }
+    if (mSpoolThread.joinable()) {
+        mSpoolThread.join();
+    }
+    flushSpool(true);
+    {
+        std::lock_guard lock(mSpoolFileMutex);
+        if (mSpoolFile.is_open()) {
+            mSpoolFile.close();
+        }
+    }
+    watchShutdown();
 
     {
         std::lock_guard lock(mQueueMutex);
@@ -155,6 +189,8 @@ void ProbeMod::loadAutoConfig() {
     mAutoEnterWorld   = config.value("auto_enter", std::string{});
     mAutoEnterDelayMs = std::clamp(config.value("delay_ms", 2000), 0, 60000);
     mBackgroundGuard  = config.value("background_guard", true);
+    mAllowMemoryWrite = config.value("allow_write", false);
+    mAllowCrashTest   = config.value("allow_crash_test", false);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
             std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
@@ -406,7 +442,22 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         return;
     }
     updateFocusState();
+
+    // T1/T3: the tick thread is the default target for hardware watchpoints,
+    // and the pose below is what the crash report captures.
+    mTickThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    gTickThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    mTickProbe.fetch_add(1, std::memory_order_relaxed);
     auto tickIndex = mTick.fetch_add(1, std::memory_order_relaxed) + 1;
+    gWatchTick.store(tickIndex, std::memory_order_relaxed);
+    {
+        auto const& pos    = player.getPosition();
+        auto const  rot    = player.getRotation();
+        mLastX.store(finiteOrZero(static_cast<float>(pos.x)), std::memory_order_relaxed);
+        mLastY.store(finiteOrZero(static_cast<float>(pos.y)), std::memory_order_relaxed);
+        mLastZ.store(finiteOrZero(static_cast<float>(pos.z)), std::memory_order_relaxed);
+        mLastYaw.store(finiteOrZero(rot.y), std::memory_order_relaxed);
+    }
 
     latchActionClicks(player);
 
@@ -577,6 +628,112 @@ void ProbeMod::updateFocusState() {
     mForeground = foreground;
 }
 
+
+void ProbeMod::installCrashHandler() {
+    // LeviLamina or the game may replace the top-level filter after mod load,
+    // so the authoritative hook is the vectored handler registered by
+    // watchInit(). This filter stays as a second chance.
+    SetUnhandledExceptionFilter(&ProbeMod::crashFilter);
+}
+
+void ProbeMod::handleFatalException(EXCEPTION_POINTERS* info) {
+    if (mCrashDumpInProgress.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    writeCrashArtifacts(info);
+}
+
+LONG WINAPI ProbeMod::crashFilter(EXCEPTION_POINTERS* info) {
+    getInstance().writeCrashArtifacts(info);
+    // Let Windows Error Reporting / the previous filter continue as usual.
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
+    // Crash context: no allocation, no mutex, no C++ streams. Values are copied
+    // from atomics and the fixed last-command buffer.
+    DWORD const       pid  = GetCurrentProcessId();
+    DWORD const       tid  = GetCurrentThreadId();
+    std::uint64_t     tick = mTick.load(std::memory_order_relaxed);
+
+    wchar_t dumpPath[1200]{};
+    std::swprintf(
+        dumpPath,
+        sizeof(dumpPath) / sizeof(dumpPath[0]),
+        L"%s\\crash-%lu-%llu.dmp",
+        mModDirW,
+        static_cast<unsigned long>(pid),
+        static_cast<unsigned long long>(tick)
+    );
+    HANDLE file = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION mei{};
+        mei.ThreadId          = tid;
+        mei.ExceptionPointers = info;
+        mei.ClientPointers    = FALSE;
+        MiniDumpWriteDump(
+            GetCurrentProcess(),
+            pid,
+            file,
+            static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithThreadInfo),
+            info != nullptr ? &mei : nullptr,
+            nullptr,
+            nullptr
+        );
+        CloseHandle(file);
+    }
+
+    char command[512]{};
+    for (std::size_t i = 0; i < sizeof(command) - 1 && mLastCommand[i] != '\0'; ++i) {
+        command[i] = mLastCommand[i];
+    }
+
+    wchar_t textPath[1200]{};
+    std::swprintf(
+        textPath,
+        sizeof(textPath) / sizeof(textPath[0]),
+        L"%s\\crash-%lu.txt",
+        mModDirW,
+        static_cast<unsigned long>(pid)
+    );
+    char text[2048]{};
+    std::snprintf(
+        text,
+        sizeof(text),
+        "pid=%lu\n"
+        "tick=%llu\n"
+        "exception=0x%08lX\n"
+        "address=%p\n"
+        "thread=%lu\n"
+        "last_command=%s\n"
+        "state=(%.3f, %.3f, %.3f) yaw=%.2f\n"
+        "queue_dropped=%llu\n"
+        "spool=%ls\n"
+        "dump=%ls\n",
+        static_cast<unsigned long>(pid),
+        static_cast<unsigned long long>(tick),
+        info != nullptr && info->ExceptionRecord != nullptr ? info->ExceptionRecord->ExceptionCode : 0UL,
+        info != nullptr && info->ExceptionRecord != nullptr
+            ? info->ExceptionRecord->ExceptionAddress
+            : nullptr,
+        static_cast<unsigned long>(tid),
+        command,
+        static_cast<double>(mLastX.load(std::memory_order_relaxed)),
+        static_cast<double>(mLastY.load(std::memory_order_relaxed)),
+        static_cast<double>(mLastZ.load(std::memory_order_relaxed)),
+        static_cast<double>(mLastYaw.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(mQueueDropped.load(std::memory_order_relaxed)),
+        mSpoolPath.c_str(),
+        dumpPath
+    );
+
+    HANDLE report = CreateFileW(textPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (report != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(report, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
+        CloseHandle(report);
+    }
+}
 
 void ProbeMod::reportInternalError(char const* phase, std::string const& message) {
     {

@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from driver.transport_mod import ModClient, ModPipeError  # noqa: E402
+from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
+from driver.harness.spool import read_spool  # noqa: E402
+from driver.transport_mod import ModClient, ModPipeError, ModProtocolError  # noqa: E402
 
 
 class Checks:
@@ -94,6 +96,40 @@ def main(argv: list[str] | None = None) -> int:
     try:
         checks.check("ping", client.ping().get("event") == "pong")
 
+        # -- T1: spool, crash isolation -------------------------------------
+        checks.check("hello_spool", bool(client.hello.get("spool")), str(client.hello.get("spool")))
+        client.start(5)
+        while True:
+            event = client.readline(5.0).get("event")
+            if event == "stopped":
+                break
+        flushed = client.spool_flush()
+        spool_path = Path(str(flushed.get("path", "")))
+        rows: list[dict[str, Any]] = []
+        stats = None
+        if spool_path.name:
+            rows, stats = read_spool(spool_path)
+        checks.check("spool_exists", spool_path.is_file(), str(spool_path))
+        checks.check(
+            "spool_rows",
+            stats is not None and stats.rows > 0,
+            f"rows={0 if stats is None else stats.rows}",
+        )
+        checks.check(
+            "spool_tick_rows",
+            any(row.get("event") == "tick" for row in rows[-64:]),
+            f"tail={len(rows[-64:])}",
+        )
+
+        isolated = client.selftest_av()
+        checks.check(
+            "dispatch_isolation",
+            isolated.get("event") == "error" and isolated.get("reason") == "internal_error",
+            str(isolated),
+        )
+        ticks_after_fault = wait_ticks(client, 3)
+        checks.check("survives_fault", ticks_after_fault >= 3, f"ticks={ticks_after_fault}")
+
         state = client.state()
         if not state.get("in_world"):
             checks.check("in_world", False, "玩家不在世界中")
@@ -102,6 +138,89 @@ def main(argv: list[str] | None = None) -> int:
 
         feet = (state["feet_x"], state["feet_y"], state["feet_z"])
         selected = int(state.get("selected_slot", 0))
+
+        # -- T2: memory primitives -----------------------------------------
+        block_row = client.blocks([(feet[0], feet[1] - 1, feet[2])])["blocks"][0]
+        block_addr = int(block_row.get("addr", 0))
+        checks.check("blocks_addr", block_addr != 0, hex(block_addr))
+
+        block_probe = client.probe(block_addr, "block")
+        checks.check(
+            "probe_block",
+            bool(block_probe.get("ok")) and bool(block_probe.get("legacy")),
+            str(block_probe.get("legacy")),
+        )
+        checks.check(
+            "probe_block_name",
+            block_probe.get("name") == block_row["name"],
+            f"{block_probe.get('name')} vs {block_row['name']}",
+        )
+
+        name = str(block_probe.get("name", ""))
+        legacy = client.probe(str(block_probe.get("legacy", 0)), "legacy")
+        checks.check(
+            "probe_legacy",
+            bool(legacy.get("ok")) and legacy.get("name") == name,
+            str(legacy.get("name")),
+        )
+        checks.check(
+            "legacy_hash",
+            legacy.get("hash") in {fnv1_64(name), fnv1a_64(name)},
+            f"hash={legacy.get('hash')}",
+        )
+
+        raw = client.probe(block_addr, "raw", length=16)
+        checks.check("probe_raw", bool(raw.get("ok")) and len(str(raw.get("hex", ""))) == 32)
+        memory = client.mem_read(block_addr, 16)
+        checks.check(
+            "mem_read",
+            bool(memory.get("ok")) and len(str(memory.get("hex", ""))) == 32,
+        )
+        bad_read = client.mem_read(0x10, 16)
+        checks.check(
+            "mem_read_bad_addr",
+            bad_read.get("ok") is False and bad_read.get("reason") == "bad_addr",
+            str(bad_read),
+        )
+        if not client.status().get("allow_write"):
+            try:
+                client.mem_write(0x10, b"\x00")
+                denied = False
+            except ModProtocolError as exc:
+                denied = "write_disabled" in str(exc)
+            checks.check("mem_write_disabled", denied, "")
+
+        # -- T3: hardware watchpoints --------------------------------------
+        status = client.status()
+        probe_addr = int(status.get("tick_probe_addr", 0))
+        tick_tid = int(status.get("tick_thread_id", 0))
+        baseline = int(client.watch_list().get("head", 0))
+        installed = client.watch_set(probe_addr, size=8, mode="w", tag="tick_probe")
+        checks.check("watch_install", installed.get("event") == "watch_installed", str(installed))
+        wait_ticks(client, 20)
+        drained = client.watch_drain(baseline)
+        hits = drained.get("hits", [])
+        checks.check("watch_hits", len(hits) >= 1, f"hits={len(hits)}")
+        checks.check(
+            "watch_tid",
+            bool(hits) and all(int(hit["tid"]) == tick_tid for hit in hits),
+            f"tick_tid={tick_tid}",
+        )
+        checks.check("watch_rip", bool(hits) and all(int(hit["rip"]) != 0 for hit in hits))
+        checks.check(
+            "watch_list",
+            len(client.watch_list().get("watches", [])) == 1,
+            str(client.watch_list().get("watches")),
+        )
+        client.watch_clear(all=True)
+        next_seq = int(drained.get("next", baseline))
+        wait_ticks(client, 5)
+        after = client.watch_drain(next_seq)
+        checks.check(
+            "watch_cleared",
+            len(after.get("hits", [])) == 0,
+            f"hits={len(after.get('hits', []))}",
+        )
 
         before = client.inventory()
         checks.check(

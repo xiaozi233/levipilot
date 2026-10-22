@@ -106,7 +106,31 @@ class ItemStack;
 class Level;
 class Vec3;
 
+namespace probe {
+
+// Set while a pipe command is being dispatched; the crash VEH uses it to tell
+// a per-request fault from a genuine process crash.
+extern thread_local bool gDispatchSehActive;
+
+} // namespace probe
+
 namespace probe::detail {
+
+// SEH codes that mean "this request touched something invalid". C++ exceptions
+// are deliberately excluded.
+inline bool isFatalSehCode(DWORD code) {
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_PRIV_INSTRUCTION:
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_DATATYPE_MISALIGNMENT:
+    case EXCEPTION_STACK_OVERFLOW:
+        return true;
+    default:
+        return false;
+    }
+}
 
 inline constexpr wchar_t PipeName[] = L"\\\\.\\pipe\\mcbe-harness";
 inline constexpr DWORD   PipeBuffer = 1 << 16;
@@ -167,5 +191,54 @@ void             invokeButtonHandlers(InputHandler& handler, bool down, std::uin
 
 // True when the foreground window belongs to this process (the game).
 bool isGameForeground();
+
+// ---------------------------------------------------------------------------
+// T2: generic memory primitives.
+//
+// All reads/writes go through ReadProcessMemory/WriteProcessMemory on the
+// current process. Unlike a raw dereference this reports failure for an
+// unmapped address instead of raising an access violation, so a bad address
+// from a script can never take the game down. Field offsets live in
+// Memory.cpp, not in the command handlers.
+// ---------------------------------------------------------------------------
+bool readableRange(std::uint64_t addr, std::size_t len);
+bool writableRange(std::uint64_t addr, std::size_t len);
+bool readMemory(std::uint64_t addr, void* dst, std::size_t len);
+bool writeMemory(std::uint64_t addr, void const* src, std::size_t len);
+
+std::string hexEncode(void const* data, std::size_t len);
+bool        parseHexBytes(std::string const& text, std::vector<std::uint8_t>& out);
+bool        parseAddress(nlohmann::json const& value, std::uint64_t& out);
+bool        parseSize(nlohmann::json const& value, std::uint32_t& out);
+
+// kind: "raw" | "block" | "legacy".
+nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::size_t len);
+
+// ---------------------------------------------------------------------------
+// T3: hardware write watchpoints (debug registers DR0-DR3).
+//
+// The hit path runs in a vectored exception handler and only writes a fixed
+// record into a preallocated ring; JSON/formatting happens later on the pipe
+// thread in watchDrainJson.
+// ---------------------------------------------------------------------------
+extern std::atomic<std::uint64_t> gWatchTick;
+extern std::atomic<std::uint32_t> gTickThreadId;
+
+void watchInit();
+void watchShutdown();
+nlohmann::json watchInstall(
+    std::uint64_t      addr,
+    std::uint32_t      size,
+    bool               readWrite,
+    std::string const& thread,
+    std::string const& tag
+);
+nlohmann::json watchRemove(int id);
+bool           watchRemoveAll();
+nlohmann::json watchListJson();
+nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit);
+std::size_t    watchCount();
+std::uint64_t  watchTotalHits();
+std::uint64_t  watchDroppedHits();
 
 } // namespace probe::detail

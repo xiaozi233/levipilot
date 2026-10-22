@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -17,6 +18,8 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include <windows.h>
 
 class ClientInstance;
 class LocalPlayer;
@@ -147,6 +150,10 @@ public:
     // the camera, but our own look/task injections must still work.
     [[nodiscard]] bool allowTurnDelta() const;
 
+    // Called from the vectored exception handler for genuinely fatal faults
+    // (an access violation that is not part of a dispatched request).
+    void handleFatalException(EXCEPTION_POINTERS* info);
+
     // Called by the LocalPlayer::normalTick hook: before and after the original tick.
     void onPlayerTick(LocalPlayer& player);
     void afterPlayerTick(LocalPlayer& player);
@@ -154,8 +161,18 @@ public:
 private:
     void serverLoop();
     void handleLine(std::string const& line);
+    bool dispatchWithSeh(std::string const& line);
     void dispatchLine(std::string const& line);
     void enqueue(std::string line);
+
+    // T1: durable record spool and crash forensics. Records are appended to
+    // <modDir>/spool-<pid>.jsonl so a killed/crashed game still leaves data.
+    void spoolThreadLoop();
+    void flushSpool(bool force);
+    void installCrashHandler();
+    static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info);
+    void writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
+    void recordCommand(std::string const& line);
     // Small append-only diagnostics file in the mod directory. LeviLamina's own
     // log location depends on how the game was launched, so this is the one
     // place a harness bug can always be inspected.
@@ -352,6 +369,35 @@ private:
     std::string                mCommandBuffer;
     std::atomic<std::uint64_t> mQueueDropped{0};
     std::atomic<std::uint64_t> mLastInternalErrorMs{0};
+
+    // T1 spool. mSpoolBuffer/mSpoolDroppedMarked/mLastFlushMs are protected by
+    // mQueueMutex (the tick path already takes it in enqueue); the file stream is
+    // only touched by the spool thread or an explicit flush.
+    std::thread                mSpoolThread;
+    std::string                mSpoolBuffer;
+    std::uint64_t              mSpoolDroppedMarked = 0;
+    std::uint64_t              mLastFlushMs        = 0;
+    std::mutex                 mSpoolFileMutex;
+    std::ofstream              mSpoolFile;
+    std::filesystem::path      mSpoolPath;
+    wchar_t                    mModDirW[1024]{};
+    std::atomic<std::uint64_t> mSpoolRows{0};
+    std::atomic<std::uint64_t> mSpoolFlushes{0};
+
+    // Crash report context. The pipe thread is the only writer of
+    // mLastCommand; the tick thread is the only writer of the pose fields.
+    char                       mLastCommand[512]{};
+    std::atomic<float>         mLastX{0.0f};
+    std::atomic<float>         mLastY{0.0f};
+    std::atomic<float>         mLastZ{0.0f};
+    std::atomic<float>         mLastYaw{0.0f};
+    std::atomic<std::uint32_t> mTickThreadId{0};
+
+    // T2/T3 configuration and diagnostics.
+    std::atomic_bool           mAllowMemoryWrite{false};
+    std::atomic_bool           mAllowCrashTest{false};
+    std::atomic_bool           mCrashDumpInProgress{false};
+    std::atomic<std::uint64_t> mTickProbe{0};
 };
 
 } // namespace probe

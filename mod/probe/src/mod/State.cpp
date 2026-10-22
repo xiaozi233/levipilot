@@ -100,6 +100,17 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
     // Non-zero while food/bow use is in progress; useful for verifying `use`.
     j["item_use_ticks"] = player.getItemUseDuration();
 
+    // Active effects matter for parkour verification (speed/jump boost).
+    j["effects"] = nlohmann::json::array();
+    for (auto const& effect : player.getAllEffects()) {
+        j["effects"].push_back({
+            {"id",        static_cast<int>(effect.mId)          },
+            {"duration",  static_cast<int>(effect.mDuration->mValue)},
+            {"amplifier", static_cast<int>(effect.mAmplifier)   },
+            {"ambient",   static_cast<bool>(effect.mAmbient)    },
+        });
+    }
+
     try {
         auto const& source = player.getDimensionBlockSourceConst();
         int const   bx     = static_cast<int>(std::floor(feet.x));
@@ -119,6 +130,54 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
     enqueue(j.dump());
 }
 
+
+void ProbeMod::captureScan(LocalPlayer& player, ScanRequest const& request) {
+    int const x1 = std::min(request.x1, request.x2);
+    int const x2 = std::max(request.x1, request.x2);
+    int const y1 = std::min(request.y1, request.y2);
+    int const y2 = std::max(request.y1, request.y2);
+    int const z1 = std::min(request.z1, request.z2);
+    int const z2 = std::max(request.z1, request.z2);
+    int const dx = x2 - x1 + 1;
+    int const dy = y2 - y1 + 1;
+    int const dz = z2 - z1 + 1;
+
+    auto const& source = player.getDimensionBlockSourceConst();
+    auto        isAir  = [](std::string const& name) {
+        return name == "minecraft:air" || name == "minecraft:cave_air"
+            || name == "minecraft:void_air";
+    };
+
+    nlohmann::json out;
+    out["event"]     = "scan";
+    out["from"]      = {x1, y1, z1};
+    out["to"]        = {x2, y2, z2};
+    out["blocks"]    = nlohmann::json::array();
+    out["truncated"] = false;
+
+    std::int64_t const total = static_cast<std::int64_t>(dx) * dy * dz;
+    for (std::int64_t index = 0; index < total; ++index) {
+        int const x = x1 + static_cast<int>(index % dx);
+        int const y = y1 + static_cast<int>((index / dx) % dy);
+        int const z = z1 + static_cast<int>(index / (static_cast<std::int64_t>(dx) * dy));
+        std::string const& name = source.getBlock(BlockPos{x, y, z}).getTypeName();
+        if (!request.includeAir && isAir(name)) {
+            continue;
+        }
+        if (static_cast<int>(out["blocks"].size()) >= request.limit) {
+            out["truncated"] = true;
+            break;
+        }
+        out["blocks"].push_back({
+            {"x", x},
+            {"y", y},
+            {"z", z},
+            {"name", name},
+        });
+    }
+    out["count"] = out["blocks"].size();
+    enqueue(out.dump());
+}
 
 void ProbeMod::captureButtons(ClientInstance& client) {
     nlohmann::json out;

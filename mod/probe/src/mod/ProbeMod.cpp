@@ -71,6 +71,7 @@ bool ProbeMod::enable() {
     watchInit();
 
     loadAutoConfig();
+    loadCheckpoints();
 
     mSpoolThread = std::thread([this] { spoolThreadLoop(); });
 
@@ -464,12 +465,18 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     gWatchTick.store(tickIndex, std::memory_order_relaxed);
     recordTick(player, *client, tickIndex, mJumpEdgeThisTick);
     {
-        auto const& pos    = player.getPosition();
-        auto const  rot    = player.getRotation();
+        auto const& pos  = player.getPosition();
+        auto const  feet = player.getFeetPos();
+        auto const  rot  = player.getRotation();
         mLastX.store(finiteOrZero(static_cast<float>(pos.x)), std::memory_order_relaxed);
         mLastY.store(finiteOrZero(static_cast<float>(pos.y)), std::memory_order_relaxed);
         mLastZ.store(finiteOrZero(static_cast<float>(pos.z)), std::memory_order_relaxed);
         mLastYaw.store(finiteOrZero(rot.y), std::memory_order_relaxed);
+        mLastPitch.store(finiteOrZero(rot.x), std::memory_order_relaxed);
+        mLastFeetX.store(finiteOrZero(static_cast<float>(feet.x)), std::memory_order_relaxed);
+        mLastFeetY.store(finiteOrZero(static_cast<float>(feet.y)), std::memory_order_relaxed);
+        mLastFeetZ.store(finiteOrZero(static_cast<float>(feet.z)), std::memory_order_relaxed);
+        mPoseValid.store(true, std::memory_order_relaxed);
     }
 
     latchActionClicks(player);
@@ -524,8 +531,76 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         }
     }
 
+    {
+        bool        requested = false;
+        ScanRequest request;
+        {
+            std::lock_guard lock(mScanMutex);
+            requested      = mScanRequested;
+            mScanRequested = false;
+            if (requested) {
+                request = mScanRequest;
+            }
+        }
+        if (requested) {
+            captureScan(player, request);
+        }
+    }
+
     if (mMacroRecording.load(std::memory_order_relaxed)) {
         recordMacroTick(*client, player);
+    }
+
+    // Parkour events: landing (with fall distance), damage and death. These
+    // run on every tick, independent of JSON/binary recording.
+    {
+        float const health   = player.getHealth();
+        auto const  pose     = player.getFeetPos();
+        bool const  onGround = player.isOnGround();
+        if (!onGround) {
+            if (!mWasAirborne) {
+                mWasAirborne = true;
+                mAirStartY   = static_cast<float>(pose.y);
+            }
+        } else if (mWasAirborne) {
+            mWasAirborne = false;
+            float const fall = mAirStartY - static_cast<float>(pose.y);
+            if (fall >= 0.75f) {
+                enqueue(
+                    nlohmann::json{
+                        {"event",         "player_landed"                       },
+                        {"fall_distance", finiteOrZero(fall)                    },
+                        {"x",             finiteOrZero(static_cast<float>(pose.x))},
+                        {"y",             finiteOrZero(static_cast<float>(pose.y))},
+                        {"z",             finiteOrZero(static_cast<float>(pose.z))},
+                        {"health",        finiteOrZero(health)                  },
+                }
+                        .dump()
+                );
+            }
+        }
+        if (health < mLastHealth - 0.01f) {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "player_hurt"                       },
+                    {"health", finiteOrZero(health)                },
+                    {"damage", finiteOrZero(mLastHealth - health)  },
+            }
+                    .dump()
+            );
+        }
+        if (health <= 0.0f && mLastHealth > 0.0f) {
+            enqueue(
+                nlohmann::json{
+                    {"event", "player_died"                                  },
+                    {"x",     finiteOrZero(static_cast<float>(pose.x))       },
+                    {"y",     finiteOrZero(static_cast<float>(pose.y))       },
+                    {"z",     finiteOrZero(static_cast<float>(pose.z))       },
+            }
+                    .dump()
+            );
+        }
+        mLastHealth = health;
     }
 
     if (!mRecording.load(std::memory_order_relaxed)) {

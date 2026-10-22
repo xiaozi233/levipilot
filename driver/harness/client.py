@@ -488,6 +488,44 @@ class ModClient:
     def blocks(self, positions: Iterable[Iterable[float]]) -> dict[str, Any]:
         return self.request({"cmd": "blocks", "positions": [list(p) for p in positions]}, "blocks")
 
+    def scan(
+        self,
+        start: Iterable[float],
+        end: Iterable[float],
+        *,
+        include_air: bool = False,
+        limit: int = 4096,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Scan an inclusive block region on the next tick (max 32768 cells)."""
+        return self.request(
+            {
+                "cmd": "scan",
+                "from": [int(v) for v in start],
+                "to": [int(v) for v in end],
+                "include_air": bool(include_air),
+                "limit": int(limit),
+            },
+            "scan",
+            timeout=timeout,
+        )
+
+    def checkpoint_save(self, name: str) -> dict[str, Any]:
+        return self.request({"cmd": "checkpoint_save", "name": name}, "checkpoint_saved")
+
+    def checkpoint_load(self, name: str, timeout: float = 20.0) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "checkpoint_load", "name": name},
+            "checkpoint_loaded",
+            timeout=timeout,
+        )
+
+    def checkpoint_list(self) -> dict[str, Any]:
+        return self.request({"cmd": "checkpoint_list"}, "checkpoint_list")
+
+    def checkpoint_delete(self, name: str) -> dict[str, Any]:
+        return self.request({"cmd": "checkpoint_delete", "name": name}, "checkpoint_deleted")
+
     def select_slot(self, slot: int) -> dict[str, Any]:
         return self.request({"cmd": "select_slot", "slot": int(slot)}, "select_slot_ok")
 
@@ -1022,6 +1060,18 @@ class Harness:
 
     def inventory(self) -> dict[str, Any]:
         return self.client.inventory()
+
+    def scan(self, start: Iterable[float], end: Iterable[float], **kwargs: Any) -> dict[str, Any]:
+        return self.client.scan(start, end, **kwargs)
+
+    def checkpoint_save(self, name: str) -> dict[str, Any]:
+        return self.client.checkpoint_save(name)
+
+    def checkpoint_load(self, name: str) -> dict[str, Any]:
+        return self.client.checkpoint_load(name)
+
+    def checkpoint_list(self) -> list[dict[str, Any]]:
+        return list(self.client.checkpoint_list().get("checkpoints", []))
 
     def give(self, item: str, count: int = 1, aux: int = 0) -> dict[str, Any]:
         return self.client.give(item, count=count, aux=aux)

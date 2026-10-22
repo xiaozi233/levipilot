@@ -119,6 +119,31 @@ py -3.11 driver/transport_mod.py navigate 8.5 0.5 --jump distance --jump-distanc
 与基岩版公式 `V1=0.42`、`Vt=(Vt-1-0.08)*0.98` 一致。此前只注入输入标志时，前 3 tick
 位置不动、第 4 tick 一次性补 +0.99 格，视觉上就是“卡回弹”。
 
+## 区域扫描、存档点与事件
+
+```bash
+# 扫一个区域（包含边界，最多 32768 格；默认跳过空气）
+py -3.11 driver/transport_mod.py scan 0 -50 0 16 -40 16 --limit 4096
+
+# 存/读脚部坐标 + 朝向（存一次即可，之后反复重试）
+py -3.11 driver/transport_mod.py checkpoint save cp1
+py -3.11 driver/transport_mod.py checkpoint load cp1
+py -3.11 driver/transport_mod.py checkpoint list
+```
+
+- `scan` 在 tick 线程执行，返回 `{x,y,z,name}`；区域过大会回 `region_too_large`。
+  结果超过 `limit` 时 `truncated=true`。
+- 存档点写在 `mods/probe/checkpoints.json`（临时文件 + 原子替换），`checkpoint_load` 走
+  `reset` 同一条清理路径：清任务/输入/macro/药水效果，然后服务端传送。返回 `checkpoint_loaded`。
+- `state.effects` 给出当前药水效果（`id`、`duration`、`amplifier`、`ambient`），用于确认
+  speed/jump boost 是否还在。
+- 事件流里新增 `player_landed`（`fall_distance`、`health`）、`player_hurt`
+  （`health`、`damage`）、`player_died`。落地事件只在落差 ≥0.75 格时发，避免每次小跳刷屏。
+
+实测：`checkpoint load` 落点误差 0.000 格；3×3×4 区域 `scan` 返回 6 个非空气方块；
+抬升 5 格落地得到 `fall_distance=4.92`、血量 20→18；`speed 10 2` 在 `state.effects`
+里读回 `id=1, amplifier=2`。
+
 ## 设置与焦点
 
 - `reset` 会清空任务/输入/macro/**药水效果**，然后走服务端传送；座标是**脚部**。传送在下一

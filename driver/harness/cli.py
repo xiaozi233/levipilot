@@ -108,6 +108,21 @@ def main(argv: list[str] | None = None) -> int:
     blocks = sub.add_parser("blocks")
     blocks.add_argument("positions", nargs="+", type=float, help="x y z [x y z ...]")
 
+    scan = sub.add_parser("scan", help="scan an inclusive block region")
+    scan.add_argument("coords", nargs=6, type=float, metavar=("X1", "Y1", "Z1", "X2", "Y2", "Z2"))
+    scan.add_argument("--include-air", action="store_true")
+    scan.add_argument("--limit", type=int, default=4096)
+
+    checkpoint = sub.add_parser("checkpoint", help="named feet poses persisted in the mod dir")
+    checkpoint_sub = checkpoint.add_subparsers(dest="checkpoint_command", required=True)
+    checkpoint_save = checkpoint_sub.add_parser("save")
+    checkpoint_save.add_argument("name")
+    checkpoint_load = checkpoint_sub.add_parser("load")
+    checkpoint_load.add_argument("name")
+    checkpoint_sub.add_parser("list")
+    checkpoint_delete = checkpoint_sub.add_parser("delete")
+    checkpoint_delete.add_argument("name")
+
     slot = sub.add_parser("slot")
     slot.add_argument("slot", type=int)
 
@@ -364,6 +379,28 @@ def main(argv: list[str] | None = None) -> int:
                     parser.error("blocks 需要 3 的倍数个坐标")
                 positions = [args.positions[i : i + 3] for i in range(0, len(args.positions), 3)]
                 print(json.dumps(client.blocks(positions), ensure_ascii=False, indent=2))
+            elif args.command == "scan":
+                print(
+                    json.dumps(
+                        client.scan(
+                            args.coords[:3],
+                            args.coords[3:],
+                            include_air=args.include_air,
+                            limit=args.limit,
+                        ),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            elif args.command == "checkpoint":
+                if args.checkpoint_command == "save":
+                    print(json.dumps(client.checkpoint_save(args.name), ensure_ascii=False))
+                elif args.checkpoint_command == "load":
+                    print(json.dumps(client.checkpoint_load(args.name), ensure_ascii=False))
+                elif args.checkpoint_command == "list":
+                    print(json.dumps(client.checkpoint_list(), ensure_ascii=False, indent=2))
+                else:
+                    print(json.dumps(client.checkpoint_delete(args.name), ensure_ascii=False))
             elif args.command == "slot":
                 print(json.dumps(client.select_slot(args.slot)))
             elif args.command == "inventory":

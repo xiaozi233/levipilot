@@ -66,6 +66,7 @@
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/LevelSettings.h"
+#include "mc/world/effect/MobEffectInstance.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/dimension/DimensionType.h"
 #include "mc/world/level/storage/ILevelListCache.h"

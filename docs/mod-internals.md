@@ -189,6 +189,16 @@
 - dump 结果本身也走 `enqueue`，因此会自动进 T1 的 spool。
 - JSON `start` 的逐 tick 事件保留为兼容路径，两者可以同时开。
 
+## 跑酷辅助（P2）
+
+- `scan`：管道线程只存 `ScanRequest`，tick 线程在 `safeTickPost` 遍历区域并回 `scan`。
+  体积上限 32768 格、结果上限 16384，避免拖慢 tick；默认跳过空气。
+- 存档点：tick 线程每 tick 把脚部坐标/朝向写进原子量；`checkpoint_save` 在管道线程读这些
+  原子量并写 `checkpoints.json`（`.tmp` + `MoveFileExW` 原子替换），所以文件 I/O 不进 tick。
+  `checkpoint_load` 复用 `resetPlayer`，和 `reset` 一样清任务/输入/药水效果。
+- `state.effects` 直接读 `Actor::getAllEffects()`；`player_landed` 用起跳/落地的脚部高度差
+  计算落差，`player_hurt`/`player_died` 由每 tick 的血量变化触发。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

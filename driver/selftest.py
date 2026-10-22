@@ -303,6 +303,74 @@ def main(argv: list[str] | None = None) -> int:
             f"entries={len(jsonl_entries)}",
         )
 
+        # -- P2: effects, checkpoints, region scan, landing event ----------
+        checks.check("effects_field", isinstance(client.state().get("effects"), list))
+        client.command("effect @s speed 10 2")
+        wait_ticks(client, 3)
+        effects = client.state().get("effects", [])
+        checks.check(
+            "effects_speed",
+            any(int(e.get("id", -1)) == 1 and int(e.get("amplifier", -1)) == 2 for e in effects),
+            str(effects),
+        )
+        client.command("effect @s clear")
+        wait_ticks(client, 3)
+        client.reset(feet[0], feet[1], feet[2], yaw=0.0, pitch=0.0)
+        wait_ticks(client, 12)
+        saved = client.checkpoint_save("selftest_cp")
+        checks.check("checkpoint_save", saved.get("event") == "checkpoint_saved", str(saved))
+        listed = client.checkpoint_list().get("checkpoints", [])
+        checks.check(
+            "checkpoint_list",
+            any(row.get("name") == "selftest_cp" for row in listed),
+            f"count={len(listed)}",
+        )
+        client.teleport(feet[0] + 2.0, feet[1], feet[2])
+        wait_ticks(client, 12)
+        loaded_cp = client.checkpoint_load("selftest_cp")
+        wait_ticks(client, 12)
+        now_cp = client.state()
+        cp_gap = max(
+            abs(now_cp["feet_x"] - feet[0]),
+            abs(now_cp["feet_y"] - feet[1]),
+            abs(now_cp["feet_z"] - feet[2]),
+        )
+        checks.check(
+            "checkpoint_load",
+            loaded_cp.get("event") == "checkpoint_loaded" and cp_gap < 0.3,
+            f"gap={cp_gap:.3f}",
+        )
+        client.checkpoint_delete("selftest_cp")
+
+        scanned = client.scan(
+            (feet[0] - 1, feet[1] - 2, feet[2] - 1),
+            (feet[0] + 1, feet[1] + 1, feet[2] + 1),
+        )
+        checks.check(
+            "scan",
+            int(scanned.get("count", 0)) > 0 and scanned.get("truncated") is False,
+            f"count={scanned.get('count')}",
+        )
+
+        client.teleport(feet[0], feet[1] + 5.0, feet[2])
+        landed = None
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline:
+            try:
+                message = client.readline(1.0)
+            except ModPipeError:
+                break
+            if message.get("event") == "player_landed":
+                landed = message
+                break
+        checks.check(
+            "player_landed",
+            landed is not None and float(landed.get("fall_distance", 0.0)) >= 3.0,
+            str(landed),
+        )
+        client.command("effect @s instant_health 1 10")
+        wait_ticks(client, 10)
+
         before = client.inventory()
         checks.check(
             "inventory", len(before.get("slots", [])) >= 9, f"slots={len(before.get('slots', []))}"

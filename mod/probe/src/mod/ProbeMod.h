@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -65,6 +66,25 @@ struct BlockQuery {
     int x = 0;
     int y = 0;
     int z = 0;
+};
+
+struct ScanRequest {
+    int  x1          = 0;
+    int  y1          = 0;
+    int  z1          = 0;
+    int  x2          = 0;
+    int  y2          = 0;
+    int  z2          = 0;
+    bool includeAir  = false;
+    int  limit       = 4096;
+};
+
+struct Checkpoint {
+    float x     = 0.0f;
+    float y     = 0.0f;
+    float z     = 0.0f;
+    float yaw   = 0.0f;
+    float pitch = 0.0f;
 };
 
 struct TeleportRequest {
@@ -284,6 +304,16 @@ private:
     void queueClearInventory();
     void captureEntities(LocalPlayer& player);
     void captureBlocks(LocalPlayer& player);
+    void captureScan(LocalPlayer& player, ScanRequest const& request);
+
+    // Named checkpoints persisted in <modDir>/checkpoints.json.
+    std::filesystem::path checkpointsPath() const;
+    void                  loadCheckpoints();
+    bool                  saveCheckpoints(std::string& error);
+    void                  checkpointSave(std::string const& name);
+    void                  checkpointLoad(std::string const& name);
+    void                  checkpointList();
+    void                  checkpointDelete(std::string const& name);
     void captureButtons(ClientInstance& client);
     void performClick(LocalPlayer& player, int button);
     void recordMacroTick(ClientInstance& client, LocalPlayer& player);
@@ -354,6 +384,10 @@ private:
     std::atomic_bool    mInjectingLook{false};
     bool                mBackgroundGuard = true;
     bool                mForeground      = true;
+    // Parkour event tracking (tick thread only).
+    float               mLastHealth      = 20.0f;
+    bool                mWasAirborne     = false;
+    float               mAirStartY       = 0.0f;
     int                 mCursorShowCalls = 0;
     bool                mPrevActionLmb   = false;
     bool                mPrevActionRmb   = false;
@@ -395,6 +429,19 @@ private:
     std::mutex              mBlockMutex;
     bool                    mBlocksRequested = false;
     std::vector<BlockQuery> mBlockQueries;
+
+    std::mutex  mScanMutex;
+    bool        mScanRequested = false;
+    ScanRequest mScanRequest;
+
+    std::mutex                        mCheckpointMutex;
+    std::map<std::string, Checkpoint> mCheckpoints;
+    // Last known feet pose, updated by the tick thread for checkpoint_save.
+    std::atomic<float>  mLastFeetX{0.0f};
+    std::atomic<float>  mLastFeetY{0.0f};
+    std::atomic<float>  mLastFeetZ{0.0f};
+    std::atomic<float>  mLastPitch{0.0f};
+    std::atomic_bool    mPoseValid{false};
 
     std::mutex      mTeleportMutex;
     bool            mTeleportRequested = false;

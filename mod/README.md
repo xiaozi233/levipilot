@@ -55,6 +55,8 @@ xmake -y
 | `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名和 `addr`（`Block*`，供 `probe` 使用） |
+| `scan` | `from:[x,y,z],to:[x,y,z],include_air?,limit?`；区域方块扫描（最多 32768 格） |
+| `checkpoint_save` / `checkpoint_load` / `checkpoint_list` / `checkpoint_delete` | 命名脚部坐标存档，持久化到 `mods/probe/checkpoints.json` |
 | `navigate` | `x,z,tolerance,max_ticks,sprint`；`jump=auto/distance/edge/never` + `jump_distance`，mod 内逐 tick 闭环修正朝向 |
 | `jump_when` | `mode=now/tick/distance/edge`；`distance,forward,sprint,yaw,after_ticks,max_ticks`；在 tick 内精确起跳 |
 | `route` | `waypoints:[{x,z,tolerance,max_ticks,jump,jump_distance}]`；逐段跑点，`route_waypoint` / `route_done` / `route_failed` |
@@ -86,7 +88,11 @@ xmake -y
 `yaw/pitch`、`on_ground`、`sprinting/sneaking/swimming/flying/in_water/alive`、
 `health/max_health`、`hunger/saturation/exhaustion`、`xp_level/xp_progress`、
 `gamemode/dimension/name/uuid/selected_slot/item`、
-`block_feet/block_below/block_head/block_above`，以及 `input` 子对象。
+`block_feet/block_below/block_head/block_above`、`effects`（`id/duration/amplifier/ambient`），
+以及 `input` 子对象。
+
+每个 tick 还会在事件流里发跑酷相关事件（不需要 `start`）：`player_landed`
+（`fall_distance/health`）、`player_hurt`（`health/damage`）、`player_died`。
 
 `start` 录制的每个 `tick` 事件额外带跑酷字段：`in_air`、`jump_edge`（本 tick 是否有起跳
 按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
@@ -156,13 +162,18 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 崩溃取证：`selftest_crash`（需 `allow_crash_test`）生成 `crash-<pid>-<tick>.dmp` 和
   `crash-<pid>.txt`，后者含异常码/地址/线程/最后命令/tick/位置/spool 路径
 - 请求隔离：`selftest_av` 回 `internal_error`，随后 tick 继续增长
-- 二进制记录环：连续 60 s 写入 1246 条，`record_dump` 的 JSONL 与 hex 解码数都等于
-  `head`（`lost=0`）；RSS 1774–1778 MB，环固定 32 MB 不增长
+- 二进制记录环：连续 **10 分钟**写入 **12,082** 条，`record_dump` 的 JSONL 与 hex 解码数
+  都等于 `head`（`lost=0`），`queue_dropped=0`；环固定 32 MB，RSS 在系统 trim 后由
+  316 MB 回填到 369 MB（游戏自身内存，环不增长）
+- `state.effects`：`/effect @s speed 10 2` 后读到 `id=1, amplifier=2`
+- 存档点：`checkpoint_save` → 传送走 → `checkpoint_load` 落点误差 **0.000** 格
+- `scan` 3×3×4 区域返回 6 个非空气方块
+- `player_landed`：抬升 5 格后落地，`fall_distance=4.92`，血量 20→18（摔落伤害）
 - `probe kind=block/legacy` 对同一坐标返回的名字与 `blocks` 一致；`legacy.hash` 等于
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
   命中 tid 等于 tick 线程；`watch_clear` 后不再增加
-- `driver/selftest.py` 34/34 通过
+- `driver/selftest.py` 53/53 通过
 
 ## 限制
 

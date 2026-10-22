@@ -535,6 +535,63 @@ void ProbeMod::dispatchLine(std::string const& line) {
         }
         return;
     }
+    if (cmd == "scan") {
+        if (!mInWorld.load()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        auto readCorner = [&](char const* key, int& x, int& y, int& z) -> bool {
+            if (!j.contains(key) || !j[key].is_array() || j[key].size() != 3) {
+                return false;
+            }
+            for (auto const& value : j[key]) {
+                if (!value.is_number()) {
+                    return false;
+                }
+            }
+            x = static_cast<int>(std::floor(j[key][0].get<double>()));
+            y = static_cast<int>(std::floor(j[key][1].get<double>()));
+            z = static_cast<int>(std::floor(j[key][2].get<double>()));
+            return true;
+        };
+        ScanRequest request;
+        if (!readCorner("from", request.x1, request.y1, request.z1)
+            || !readCorner("to", request.x2, request.y2, request.z2)) {
+            enqueue(R"({"event":"error","reason":"bad_region"})");
+            return;
+        }
+        std::int64_t const dx = std::llabs(static_cast<std::int64_t>(request.x2) - request.x1) + 1;
+        std::int64_t const dy = std::llabs(static_cast<std::int64_t>(request.y2) - request.y1) + 1;
+        std::int64_t const dz = std::llabs(static_cast<std::int64_t>(request.z2) - request.z1) + 1;
+        if (dx * dy * dz > 32768) {
+            enqueue(R"({"event":"error","reason":"region_too_large","limit":32768})");
+            return;
+        }
+        request.includeAir = j.value("include_air", false);
+        request.limit      = std::clamp(j.value("limit", 4096), 1, 16384);
+        {
+            std::lock_guard lock(mScanMutex);
+            mScanRequest   = request;
+            mScanRequested = true;
+        }
+        return;
+    }
+    if (cmd == "checkpoint_save") {
+        checkpointSave(j.value("name", std::string{}));
+        return;
+    }
+    if (cmd == "checkpoint_load") {
+        checkpointLoad(j.value("name", std::string{}));
+        return;
+    }
+    if (cmd == "checkpoint_list") {
+        checkpointList();
+        return;
+    }
+    if (cmd == "checkpoint_delete") {
+        checkpointDelete(j.value("name", std::string{}));
+        return;
+    }
     if (cmd == "select_slot") {
         mSlotRequest.store(std::clamp(j.value("slot", 0), 0, 8));
         enqueue(R"({"event":"select_slot_ok"})");

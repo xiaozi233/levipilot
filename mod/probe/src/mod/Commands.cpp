@@ -196,6 +196,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
+        if (!mAllowWatch.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"watch_disabled","hint":"set allow_watch=true"})");
+            return;
+        }
         nlohmann::json out;
         out["event"] = "watch_set";
         std::uint64_t addr = 0;

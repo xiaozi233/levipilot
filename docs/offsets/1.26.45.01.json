@@ -43,10 +43,21 @@
       "MaxEntityId": "0x48",
       "PayloadBegin": "0x50",
       "PayloadEnd": "0x58"
+    },
+    "Block": {
+      "mLegacyBlock": "0x68"
+    },
+    "BlockLegacy": {
+      "mName": "0xE0",
+      "mNameText": "0xE8",
+      "mBlockId": "0x17E",
+      "mFriction": "0x15C",
+      "mFrictionGeneric": "0x178"
     }
   },
   "components": {
     "LocalPlayerComponent": "0xACB47B38",
-    "PlayerComponent": "0xF95D258F"
+    "PlayerComponent": "0xF95D258F",
+    "StateVector": { "id": 459100728, "size": 36 }
   }
 }

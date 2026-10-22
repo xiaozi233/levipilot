@@ -288,6 +288,9 @@ constexpr std::uint32_t RecordFlagInputA      = 1u << 7;
 constexpr std::uint32_t RecordFlagInputS      = 1u << 8;
 constexpr std::uint32_t RecordFlagInputD      = 1u << 9;
 constexpr std::uint32_t RecordFlagInputJump   = 1u << 10;
+// Sample position was outside the recorded world height, so no block read was
+// attempted (the three block fields are 0 for that sample).
+constexpr std::uint32_t RecordFlagBlockOob    = 1u << 11;
 
 std::uint32_t blockNameHash(std::string const& name);
 
@@ -355,5 +358,11 @@ bool           versionOk();
 std::string    buildId();
 nlohmann::json diagnoseJson();
 nlohmann::json signatureCheck(std::string const& name, std::string const& expectedHex);
+
+// F5: offsets are data, not code constants.
+bool           structOffset(char const* type, char const* field, std::uint64_t& out);
+bool           componentSize(std::uint32_t id, std::uint32_t& size);
+std::string    componentName(std::uint32_t id);
+nlohmann::json structTableJson();
 
 } // namespace probe::detail

@@ -573,7 +573,11 @@ private:
     std::uint64_t              mSpoolDroppedMarked = 0;
     std::uint64_t              mLastFlushMs        = 0;
     std::mutex                 mSpoolFileMutex;
+    // F6: serializes swap+write so two flush callers cannot interleave rows.
+    std::mutex                 mSpoolWriteMutex;
     std::ofstream              mSpoolFile;
+    std::uint64_t              mSpoolFileBytes = 0;
+    int                        mSpoolRotation  = 0;
     std::filesystem::path      mSpoolPath;
     wchar_t                    mModDirW[1024]{};
     std::atomic<std::uint64_t> mSpoolRows{0};
@@ -597,6 +601,7 @@ private:
     std::atomic_bool           mAllowCrashTest{false};
     std::atomic_bool           mAllowHookVa{false};
     std::atomic_bool           mAllowSelftestStress{false};
+    std::atomic_bool           mAllowWatch{true};
     std::atomic<int>           mSignInWaitMs{15000};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};

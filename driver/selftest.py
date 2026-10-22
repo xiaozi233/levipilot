@@ -251,6 +251,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         checks.check("watch_rip", bool(hits) and all(int(hit["rip"]) != 0 for hit in hits))
         checks.check(
+            "watch_code_hex",
+            bool(hits) and all(len(hit.get("code_hex", "")) == 32 for hit in hits),
+            f"hits={len(hits)}",
+        )
+        checks.check(
+            "watch_rip_semantics",
+            drained.get("rip_semantics") == "next_instruction",
+            str(drained.get("rip_semantics")),
+        )
+        checks.check(
             "watch_list",
             len(client.watch_list().get("watches", [])) == 1,
             str(client.watch_list().get("watches")),
@@ -352,6 +362,14 @@ def main(argv: list[str] | None = None) -> int:
             "overhead_paths",
             all(isinstance(paths.get(name), dict) for name in ("record", "watch", "hook")),
             str(paths),
+        )
+        checks.check(
+            "overhead_semantics",
+            overhead_before.get("consistent") is True
+            and "tick_interval_p99_us" in overhead_before
+            and int(overhead_before.get("window_samples", 0)) == 1024
+            and float(overhead_before.get("qpc_resolution_ns", 0)) > 0,
+            str({k: overhead_before.get(k) for k in ("consistent", "window_samples", "qpc_resolution_ns")}),
         )
         busy = client.request({"cmd": "selftest_busy", "us": 1000, "ticks": 20})
         if busy.get("reason") == "stress_disabled":

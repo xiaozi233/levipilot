@@ -41,7 +41,7 @@ xmake -y
 | `ping` / `status` / `state` | 心跳、状态、玩家快照 |
 | `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
 | `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
-| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程） |
+| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程）；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
 | `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
 | `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
 | `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va` |
@@ -134,6 +134,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "allow_crash_test": false,
   "allow_hook_va": false,
   "allow_selftest_stress": false,
+  "allow_watch": true,
   "signin_wait_ms": 15000
 }
 ```
@@ -144,6 +145,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 它不会阻止 mod 自己的 `look`/任务。`allow_write` 才能用 `mem_write`；`allow_crash_test`
 才能用会主动结束进程的 `selftest_crash`；`allow_hook_va` 才能按任意 VA 装钩（符号钩不需要）；
 `allow_selftest_stress` 才允许 `selftest_busy` 在 tick 里忙等（默认关闭，避免误让 tick 卡近 1 秒）；
+`allow_watch`（默认 true）关闭后 `watch_set` 回 `watch_disabled`；
 `signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
 不需要时删除该文件即可。
 
@@ -210,8 +212,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `probe kind=block/legacy` 对同一坐标返回的名字与 `blocks` 一致；`legacy.hash` 等于
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
-  命中 tid 等于 tick 线程；`watch_clear` 后不再增加
-- `driver/selftest.py` 80/80 通过
+  命中 tid 等于 tick 线程；`watch_drain` 每行带 `code_hex`（32 位 hex），`rip` 是下一条指令
+- offsets 表（F5）：`diagnose.structs` 列出 6 个字段/1 个组件；把 `offsets.json` 里
+  `BlockLegacy.BlockId` 改成 `0x17C` 后 `probe legacy.block_id` 从 1 变成 0，改回即恢复；
+  设成 `null` 后 `probe legacy` 回 `error/no_offset`，`probe block` 不受影响
+- spool（F6）：每次启动使用 `spool-<pid>.jsonl`；若同 PID 的旧文件非空则改名为
+  `spool-<pid>-<n>.jsonl`，单文件超过 64 MiB 也会轮转；swap+write 由同一把锁串行化
+- 记录环（F8）：方块采样走数字 id + 256 项哈希缓存，稳态零 `std::string` 分配；
+  y 超出 [-64,319] 时不读方块、三个 block 字段为 0 并置 `flags & 0x800`
+- `overhead`（F9）：新增 `tick_interval_p50/p99/max_us`（与旧 `tick_*` 同值）、
+  `window_samples=1024`、`qpc_resolution_ns=100`、`consistent=true`
+- `driver/selftest.py` 83/83 通过
 
 ## 限制
 

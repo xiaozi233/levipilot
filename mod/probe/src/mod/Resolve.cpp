@@ -38,6 +38,150 @@ VersionInfo    gVersion;
 std::atomic_bool gVersionOk{true};
 std::string    gSource = "builtin";
 
+// ---------------------------------------------------------------------------
+// F5: struct/component offset table. Built-ins mirror docs/offsets/<ver>.json;
+// an offsets.json in the mod directory may override individual fields.
+// ---------------------------------------------------------------------------
+struct StructField {
+    char const*   type;
+    char const*   field;
+    std::uint64_t offset      = 0;
+    bool          overridden  = false;
+    bool          present     = true;
+};
+
+StructField kStructFields[] = {
+    {"Block",       "LegacyPointer", 0x68,  false},
+    {"BlockLegacy", "NameHash",      0xE0,  false},
+    {"BlockLegacy", "Name",          0xE8,  false},
+    {"BlockLegacy", "BlockId",       0x17E, false},
+    {"BlockLegacy", "FloatA",        0x15C, false},
+    {"BlockLegacy", "FloatB",        0x178, false},
+};
+
+struct ComponentEntry {
+    std::uint32_t id         = 0;
+    std::uint32_t size       = 0;
+    std::string   name;
+    bool          overridden = false;
+};
+
+constexpr std::size_t kMaxComponents = 64;
+// 459100728 was read live from a 1.26.51.01 pig entity (stride 36).
+ComponentEntry        kComponents[kMaxComponents] = {
+    {459100728, 36, "StateVector", false},
+};
+std::size_t kComponentCount = 1;
+std::atomic<std::uint32_t> gMissingFields{0};
+std::mutex                 gMissingMutex;
+char                       gLastMissing[160]{};
+
+void noteMissing(char const* type, char const* field) {
+    gMissingFields.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lock(gMissingMutex);
+    std::snprintf(gLastMissing, sizeof(gLastMissing), "%s.%s", type, field);
+}
+
+bool parseOffsetValue(nlohmann::json const& value, std::uint64_t& out) {
+    if (value.is_number_unsigned()) {
+        out = value.get<std::uint64_t>();
+        return true;
+    }
+    if (value.is_number_integer()) {
+        long long const signedValue = value.get<long long>();
+        if (signedValue < 0) {
+            return false;
+        }
+        out = static_cast<std::uint64_t>(signedValue);
+        return true;
+    }
+    if (value.is_string()) {
+        auto const& text = value.get_ref<std::string const&>();
+        if (text.empty() || text.front() == '-') {
+            return false;
+        }
+        char*                   end    = nullptr;
+        errno                          = 0;
+        unsigned long long const parsed = std::strtoull(text.c_str(), &end, 0);
+        if (end == text.c_str() || end == nullptr || *end != '\0' || errno == ERANGE) {
+            return false;
+        }
+        out = static_cast<std::uint64_t>(parsed);
+        return true;
+    }
+    return false;
+}
+
+void loadStructOverrides(nlohmann::json const& root) {
+    auto structs = root.find("structs");
+    if (structs == root.end() || !structs->is_object()) {
+        return;
+    }
+    for (auto typeIt = structs->begin(); typeIt != structs->end(); ++typeIt) {
+        if (!typeIt.value().is_object()) {
+            continue;
+        }
+        for (auto fieldIt = typeIt.value().begin(); fieldIt != typeIt.value().end(); ++fieldIt) {
+            // "field": null removes a built-in entry, which makes probe report
+            // no_offset instead of silently reading the wrong field.
+            bool const remove = fieldIt.value().is_null();
+            std::uint64_t offset = 0;
+            if (!remove && !parseOffsetValue(fieldIt.value(), offset)) {
+                ProbeMod::getInstance().bootLog(
+                    "resolve: bad offset " + typeIt.key() + "." + fieldIt.key()
+                );
+                continue;
+            }
+            bool matched = false;
+            for (auto& field : kStructFields) {
+                if (typeIt.key() == field.type && fieldIt.key() == field.field) {
+                    if (remove) {
+                        field.present = false;
+                    } else {
+                        field.offset    = offset;
+                        field.present   = true;
+                    }
+                    field.overridden = true;
+                    matched          = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                ProbeMod::getInstance().bootLog(
+                    "resolve: unknown struct field " + typeIt.key() + "." + fieldIt.key()
+                );
+            }
+        }
+    }
+}
+
+void loadComponentOverrides(nlohmann::json const& root) {
+    auto components = root.find("components");
+    if (components == root.end() || !components->is_object()) {
+        return;
+    }
+    for (auto it = components->begin(); it != components->end(); ++it) {
+        if (!it.value().is_object() || !it.value().contains("id") || !it.value().contains("size")) {
+            continue;
+        }
+        std::uint64_t id   = 0;
+        std::uint64_t size = 0;
+        if (!parseOffsetValue(it.value()["id"], id) || !parseOffsetValue(it.value()["size"], size)) {
+            continue;
+        }
+        if (size == 0 || size > 4096 || kComponentCount >= kMaxComponents) {
+            continue;
+        }
+        kComponents[kComponentCount++] = ComponentEntry{
+            static_cast<std::uint32_t>(id),
+            static_cast<std::uint32_t>(size),
+            it.key(),
+            true,
+        };
+    }
+}
+
+
 std::uint64_t anchorAddress(std::size_t index) {
     switch (index) {
     case 0:
@@ -130,22 +274,23 @@ void loadOverrides(std::filesystem::path const& path) {
     }
     gSource = path.filename().string();
     auto anchors = parsed.find("anchors");
-    if (anchors == parsed.end() || !anchors->is_object()) {
-        return;
-    }
-    for (auto it = anchors->begin(); it != anchors->end(); ++it) {
-        if (!it.value().is_object() || !it.value().contains("expected_hex")) {
-            continue;
-        }
-        for (auto& anchor : gAnchors) {
-            if (it.key() == anchor.name) {
-                std::size_t length = 0;
-                if (parseHexInto(it.value().value("expected_hex", std::string{}), anchor.expected, length)) {
-                    anchor.expectedLength = length;
+    if (anchors != parsed.end() && anchors->is_object()) {
+        for (auto it = anchors->begin(); it != anchors->end(); ++it) {
+            if (!it.value().is_object() || !it.value().contains("expected_hex")) {
+                continue;
+            }
+            for (auto& anchor : gAnchors) {
+                if (it.key() == anchor.name) {
+                    std::size_t length = 0;
+                    if (parseHexInto(it.value().value("expected_hex", std::string{}), anchor.expected, length)) {
+                        anchor.expectedLength = length;
+                    }
                 }
             }
         }
     }
+    loadStructOverrides(parsed);
+    loadComponentOverrides(parsed);
 }
 
 } // namespace
@@ -209,6 +354,76 @@ bool versionOk() { return gVersionOk.load(std::memory_order_acquire); }
 
 std::string buildId() { return gVersion.buildId; }
 
+bool structOffset(char const* type, char const* field, std::uint64_t& out) {
+    for (auto const& entry : kStructFields) {
+        if (std::strcmp(type, entry.type) == 0 && std::strcmp(field, entry.field) == 0) {
+            if (!entry.present) {
+                noteMissing(type, field);
+                return false;
+            }
+            out = entry.offset;
+            return true;
+        }
+    }
+    noteMissing(type, field);
+    return false;
+}
+
+bool componentSize(std::uint32_t id, std::uint32_t& size) {
+    for (std::size_t index = 0; index < kComponentCount; ++index) {
+        if (kComponents[index].id == id) {
+            size = kComponents[index].size;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string componentName(std::uint32_t id) {
+    for (std::size_t index = 0; index < kComponentCount; ++index) {
+        if (kComponents[index].id == id) {
+            return kComponents[index].name;
+        }
+    }
+    return {};
+}
+
+nlohmann::json structTableJson() {
+    nlohmann::json fields = nlohmann::json::array();
+    for (auto const& entry : kStructFields) {
+        fields.push_back({
+            {"struct",     entry.type      },
+            {"field",      entry.field     },
+            {"offset",     entry.offset    },
+            {"overridden", entry.overridden},
+            {"present",    entry.present   },
+        });
+    }
+    nlohmann::json components = nlohmann::json::array();
+    for (std::size_t index = 0; index < kComponentCount; ++index) {
+        components.push_back({
+            {"id",         kComponents[index].id         },
+            {"name",       kComponents[index].name       },
+            {"size",       kComponents[index].size       },
+            {"overridden", kComponents[index].overridden },
+        });
+    }
+    std::string lastMissing;
+    {
+        std::lock_guard lock(gMissingMutex);
+        lastMissing = gLastMissing;
+    }
+    return nlohmann::json{
+        {"source",             gSource                                  },
+        {"struct_fields",      std::move(fields)                        },
+        {"struct_field_count", std::size(kStructFields)                 },
+        {"components",         std::move(components)                    },
+        {"component_count",    kComponentCount                          },
+        {"missing_lookups",    gMissingFields.load(std::memory_order_relaxed)},
+        {"last_missing",       lastMissing                              },
+    };
+}
+
 nlohmann::json diagnoseJson() {
     nlohmann::json out;
     out["event"] = "diagnose";
@@ -219,6 +434,7 @@ nlohmann::json diagnoseJson() {
     };
     out["version_ok"] = versionOk();
     out["source"]     = gSource;
+    out["structs"]    = structTableJson();
     out["anchors"]    = nlohmann::json::array();
     for (auto const& anchor : gAnchors) {
         out["anchors"].push_back({

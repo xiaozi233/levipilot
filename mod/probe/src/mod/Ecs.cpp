@@ -101,13 +101,23 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
                 continue;
             }
             void const* value = storage.value(context.mEntity);
-            components.push_back({
+            std::uint32_t tableSize = 0;
+            bool const    sized     = componentSize(static_cast<std::uint32_t>(id), tableSize);
+            nlohmann::json row{
                 {"id",      static_cast<std::uint32_t>(id)                   },
                 {"index",   static_cast<std::uint64_t>(storage.index(context.mEntity))},
                 {"address", reinterpret_cast<std::uint64_t>(value)           },
                 {"stride",  storageStride(&storage)                          },
                 {"count",   static_cast<std::uint64_t>(storage.size())       },
-            });
+            };
+            if (sized) {
+                row["size"] = tableSize;
+            }
+            auto name = componentName(static_cast<std::uint32_t>(id));
+            if (!name.empty()) {
+                row["name"] = std::move(name);
+            }
+            components.push_back(std::move(row));
         }
         enqueue(
             nlohmann::json{
@@ -142,9 +152,12 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
     }
     std::uint32_t length = request.length;
     if (length == 0) {
-        length = storageStride(storage);
-        if (length == 0) {
-            length = 64;
+        // Prefer the offset table (F5); fall back to inferred stride.
+        if (!componentSize(request.componentId, length)) {
+            length = storageStride(storage);
+            if (length == 0) {
+                length = 64;
+            }
         }
     }
     length = std::clamp<std::uint32_t>(length, 1, 512);
@@ -157,6 +170,10 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
         {"stride",       storageStride(storage)                            },
         {"len",          length                                            },
     };
+    auto name = componentName(request.componentId);
+    if (!name.empty()) {
+        out["name"] = std::move(name);
+    }
     if (!readMemory(reinterpret_cast<std::uint64_t>(value), bytes.data(), bytes.size())) {
         out["ok"]     = false;
         out["reason"] = "bad_addr";

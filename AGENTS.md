@@ -104,13 +104,16 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 任务清单与可直接派活的提示词：[`docs/task-prompts.md`](docs/task-prompts.md)。
 
 - **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 80/80
-- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 80/80
+- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 83/83
+- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 83/83
 - **P2（已完成）**：T7 版本指纹 + 签名/偏移解析；T8 unhook/panic
 - **P3（已完成）**：T9 tick 开销自测 + 请求块 seqlock（input/look/teleport 合成一块，tick 读路径无锁）
 - **修复轮 P1（已完成）**：F1 命令缓冲上界 + 超长行重同步 / F2 hook_va 安装窗口与挂起死锁 /
-  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 80/80
-- **修复轮 P2（待做）**：F5 offsets 表接线 / F6 spool 顺序与轮转 / F7 watch 细节 / F8 记录环去字符串 / F9 开销语义 / F10 防御小项（本轮已顺手完成 F10.1 地址校验、F10.2 卸载取消 IO、F10.3 压测门禁、F10.4 SEH 标志恢复）
+  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 83/83
+- **修复轮 P2（已完成）**：F5 offsets 表接线（structs/components、null 删除、no_offset）/
+  F6 spool 顺序与轮转 / F7 watch 细节（目标槽 foreign、`code_hex`、`allow_watch`）/
+  F8 记录环零分配方块采样 + 高度越界 / F9 开销语义（`tick_interval_*`、epoch 守卫）/
+  F10 防御小项；selftest 83/83
 
 > 两轮的明细都在 `docs/task-prompts.md`（第一轮 T1–T9、第二轮 F1–F10），每条自带验收标准。
 

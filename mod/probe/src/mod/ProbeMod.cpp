@@ -67,6 +67,21 @@ bool ProbeMod::enable() {
     }
     mSpoolPath = modDirPath
                / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
+    // F6: a reused PID must not append this session to an old spool file.
+    {
+        std::error_code ec;
+        if (std::filesystem::exists(mSpoolPath, ec)
+            && std::filesystem::file_size(mSpoolPath, ec) > 0) {
+            auto const pid = std::to_string(GetCurrentProcessId());
+            for (int n = 1; n < 1000; ++n) {
+                auto candidate = modDirPath / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
+                if (!std::filesystem::exists(candidate, ec)) {
+                    std::filesystem::rename(mSpoolPath, candidate, ec);
+                    break;
+                }
+            }
+        }
+    }
     installCrashHandler();
     resolveInit(getSelf().getModDir());
     watchInit();
@@ -218,6 +233,7 @@ void ProbeMod::loadAutoConfig() {
     mAllowCrashTest   = config.value("allow_crash_test", false);
     mAllowHookVa      = config.value("allow_hook_va", false);
     mAllowSelftestStress = config.value("allow_selftest_stress", false);
+    mAllowWatch      = config.value("allow_watch", true);
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {

@@ -88,16 +88,6 @@ void applySlot(CONTEXT& context, int slot, std::uint64_t addr, std::uint32_t siz
     }
 }
 
-std::uint64_t ownedSlotMask() {
-    std::uint64_t mask = 0;
-    for (std::size_t slot = 0; slot < kSlotCount; ++slot) {
-        if (gWatches[slot] && gWatches[slot]->used.load(std::memory_order_acquire)) {
-            mask |= 0x3ull << (slot * 2);
-        }
-    }
-    return mask;
-}
-
 std::vector<DWORD> processThreads() {
     std::vector<DWORD> threads;
     HANDLE const       snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -149,10 +139,11 @@ bool installOnThread(
     context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_CONTROL;
     bool ok              = GetThreadContext(thread, &context) != FALSE;
     if (ok) {
-        // Do not steal registers from a debugger (or from another watch that
-        // happens to use the same slot on this thread).
-        std::uint64_t const foreign = context.Dr7 & 0xFF & ~ownedSlotMask();
-        if (foreign != 0) {
+        // F7: only this slot matters. A debugger occupying another DR slot
+        // must not block every watch install.
+        std::uint64_t const slotBits =
+            (context.Dr7 >> (static_cast<std::uint64_t>(slot) * 2)) & 0x3ull;
+        if (slotBits != 0) {
             error = "dr_busy";
             ok    = false;
         }
@@ -373,9 +364,8 @@ nlohmann::json watchInstall(
     watch.hits.store(0, std::memory_order_relaxed);
     watch.id.store(gNextId.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
     watch.threads.clear();
-    // Keep `used` false until installation succeeds: ownedSlotMask() must not
-    // treat a pre-existing bit on this slot as ours (that would hide a debugger
-    // occupying the register).
+    // Keep `used` false until installation succeeds: a pre-existing enable bit
+    // on this slot must be reported as dr_busy, not treated as ours.
     watch.used.store(false, std::memory_order_release);
 
     std::string error;
@@ -412,6 +402,7 @@ nlohmann::json watchInstall(
     for (DWORD tid : watch.threads) {
         out["threads"].push_back(tid);
     }
+    out["suspends_tick_thread"] = true;
     return out;
 }
 
@@ -536,6 +527,14 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
             {"rip",   record.rip                       },
             {"stack", nlohmann::json::array()          },
         };
+        // F7: data breakpoints trap after the store. Give the caller the bytes
+        // right before rip so the writing instruction can be decoded offline.
+        if (record.rip >= 16) {
+            std::array<std::uint8_t, 16> code{};
+            if (readMemory(record.rip - 16, code.data(), code.size())) {
+                row["code_hex"] = hexEncode(code.data(), code.size());
+            }
+        }
         for (std::uint32_t frame = 0; frame < record.frameCount && frame < kMaxFrames; ++frame) {
             row["stack"].push_back(record.frames[frame]);
         }
@@ -549,6 +548,7 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
     out["next"]  = start + count;
     out["head"]  = head;
     out["lost"]  = lost;
+    out["rip_semantics"] = "next_instruction";
     out["hits"]  = std::move(hits);
     return out;
 }

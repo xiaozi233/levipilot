@@ -27,6 +27,10 @@ void ProbeMod::spoolThreadLoop() {
 }
 
 std::uint64_t ProbeMod::flushSpool(bool force) {
+    // F6: one lock covers "swap the buffer" and "write it", so concurrent
+    // flushes cannot reorder rows. enqueue() only takes mQueueMutex and is
+    // never blocked by file IO.
+    std::lock_guard serial(mSpoolWriteMutex);
     std::string data;
     {
         std::lock_guard lock(mQueueMutex);
@@ -66,6 +70,7 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
     }
     mSpoolFile.write(data.data(), static_cast<std::streamsize>(data.size()));
     mSpoolFile.flush();
+    mSpoolFileBytes += data.size();
     std::uint64_t rows = 0;
     for (char ch : data) {
         if (ch == '\n') {
@@ -74,6 +79,29 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
     }
     mSpoolRows.fetch_add(rows, std::memory_order_relaxed);
     mSpoolFlushes.fetch_add(1, std::memory_order_relaxed);
+
+    // F6: keep a single run from growing one file forever.
+    constexpr std::uint64_t kSpoolRotateBytes = 64ull << 20;
+    if (mSpoolFileBytes >= kSpoolRotateBytes) {
+        mSpoolFile.close();
+        std::error_code ec;
+        auto const      pid = std::to_string(GetCurrentProcessId());
+        bool            rotated = false;
+        for (int n = ++mSpoolRotation; n < mSpoolRotation + 1000 && !rotated; ++n) {
+            auto candidate = mSpoolPath.parent_path()
+                           / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
+            if (!std::filesystem::exists(candidate, ec)) {
+                std::filesystem::rename(mSpoolPath, candidate, ec);
+                rotated = !ec;
+            }
+        }
+        mSpoolFileBytes = 0;
+        mSpoolFile.open(mSpoolPath, std::ios::app | std::ios::binary);
+        if (!mSpoolFile) {
+            mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+            return rows;
+        }
+    }
     return rows;
 }
 

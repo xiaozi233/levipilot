@@ -46,6 +46,50 @@ std::uint32_t blockNameHash(std::string const& name) {
     return hash;
 }
 
+namespace {
+
+// F8: per-tick sampling must not allocate. Resolve the block's numeric id via
+// the F5 offset table and cache its name hash so getTypeName() runs once per
+// block type instead of three times per tick.
+struct BlockHashEntry {
+    std::uint32_t id   = 0xFFFFFFFFu;
+    std::uint32_t hash = 0;
+};
+constexpr std::size_t kBlockHashCache = 256;
+BlockHashEntry        gBlockHashCache[kBlockHashCache]; // single writer (tick)
+
+// Union of the vanilla overworld/nether/end build ranges. Sampling outside it
+// would ask BlockSource for a chunk section that does not exist.
+constexpr int kMinSampleY = -64;
+constexpr int kMaxSampleY = 319;
+
+std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
+    Block const& block = source.getBlock(BlockPos{x, y, z});
+    std::uint64_t legacyOffset = 0;
+    std::uint64_t idOffset     = 0;
+    if (structOffset("Block", "LegacyPointer", legacyOffset)
+        && structOffset("BlockLegacy", "BlockId", idOffset)) {
+        std::uint64_t legacy = 0;
+        std::uint16_t id     = 0;
+        auto const    base   = reinterpret_cast<std::uint64_t>(&block);
+        if (readMemory(base + legacyOffset, &legacy, sizeof(legacy)) && legacy != 0
+            && readMemory(legacy + idOffset, &id, sizeof(id))) {
+            BlockHashEntry& entry = gBlockHashCache[id % kBlockHashCache];
+            if (entry.id == id) {
+                return entry.hash;
+            }
+            std::uint32_t const hash = blockNameHash(block.getTypeName());
+            entry.hash               = hash;
+            entry.id                 = id;
+            return hash;
+        }
+    }
+    // Table unavailable: keep the old semantics, at the cost of an allocation.
+    return blockNameHash(block.getTypeName());
+}
+
+} // namespace
+
 bool recordStart(std::uint32_t period, std::string& error) {
     std::lock_guard lock(gRingMutex);
     if (!gRing) {
@@ -147,9 +191,17 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
     int const   fy     = static_cast<int>(std::floor(feet.y));
     int const   fz     = static_cast<int>(std::floor(feet.z));
     int const   hy     = static_cast<int>(std::floor(feet.y + 1.8f));
-    entry.blockBelow = blockNameHash(source.getBlock(BlockPos{fx, fy - 1, fz}).getTypeName());
-    entry.blockFeet  = blockNameHash(source.getBlock(BlockPos{fx, fy, fz}).getTypeName());
-    entry.blockHead  = blockNameHash(source.getBlock(BlockPos{fx, hy, fz}).getTypeName());
+    if (fy - 1 < kMinSampleY || fy < kMinSampleY || hy < kMinSampleY
+        || fy - 1 > kMaxSampleY || fy > kMaxSampleY || hy > kMaxSampleY) {
+        entry.blockBelow = 0;
+        entry.blockFeet  = 0;
+        entry.blockHead  = 0;
+        entry.flags |= RecordFlagBlockOob;
+    } else {
+        entry.blockBelow = blockHashAt(source, fx, fy - 1, fz);
+        entry.blockFeet  = blockHashAt(source, fx, fy, fz);
+        entry.blockHead  = blockHashAt(source, fx, hy, fz);
+    }
 
     float const health = player.getHealth();
     entry.healthMilli  = health > 0.0f ? static_cast<std::uint32_t>(health * 1000.0f) : 0u;

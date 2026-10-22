@@ -273,6 +273,50 @@
 - 主菜单（不在世界）安装回 `not_in_world`：LL 在该状态不挂起线程，直接改代码不安全。
 - `hook_install` 的 `inject_fail`（仅 `allow_hook_va=true` 时生效）用于自检 F3 失败路径。
 
+## offsets 表（F5）
+
+- `Resolve.cpp` 内置一张 `struct -> field -> offset` 表（Block/BlockLegacy 共 6 项）和一个
+  `components` 表（`id -> {name,size}`；StateVector 的 459100728/36 来自实机）。
+  `<mods>/probe/offsets.json` 的 `structs`/`components` 会覆盖内置值。
+- `structOffset("Block","LegacyPointer",...)` 是唯一查询入口；`Memory.cpp` 的
+  `probe block/legacy` 与 `RecordRing.cpp` 的方块采样都走它，不再有魔法数字。
+- JSON 里把某个字段设成 `null` 会移除该表项，`probe` 回 `{"event":"error","reason":"no_offset"}`，
+  不会拿默认 0 去猜。未知字段只写 boot log，不生效。
+- `diagnose.structs` 输出 `source/struct_fields/component_count/missing_lookups/last_missing`。
+- 实测：把 `BlockLegacy.BlockId` 改成 `0x17C` 后 `probe legacy.block_id` 从 1 变 0；
+  设 null 后 `probe legacy` 回 `no_offset`，`probe block` 仍正常。
+
+## spool 顺序与轮转（F6）
+
+- `flushSpool` 用 `mSpoolWriteMutex` 包住“swap 队列缓冲 + 写文件”，两个并发 flush 无法交错；
+  `enqueue` 只取 `mQueueMutex`，tick 线程不会被文件 IO 阻塞。
+- 启动时若 `spool-<pid>.jsonl` 已存在且非空，改名为 `spool-<pid>-<n>.jsonl`（PID 复用时
+  不会把新会话追加到旧文件）；单文件写到 64 MiB 也会轮转。
+- `spool_flush` 返回 `path`（当前文件名）。
+
+## watch 细节（F7）
+
+- foreign 检查只看目标槽的两个 DR7 位：`(Dr7 >> (2*slot)) & 3`；调试器占着别的槽不再
+  阻断安装。
+- 数据断点是执行后触发，`watch_drain` 的 `rip` 是**下一条**指令；每行附
+  `code_hex = rip-16..rip`（32 位 hex），顶层 `rip_semantics="next_instruction"`。
+- `allow_watch`（harness.json，默认 true）：关闭时 `watch_set` 回 `watch_disabled`；
+  `watch_installed` 带 `suspends_tick_thread=true`。
+
+## 记录环采样（F8）
+
+- 每 tick 的三次方块采样不再调用 `getTypeName()`：先经 F5 表读 `BlockLegacy::BlockId`，
+  再用 256 项 `id -> FNV-1a-32` 缓存，稳态零字符串分配（每 tick 每个方块类型只在首次出现时分配一次）。
+- y 超出 [-64, 319]（三种原版维度高度的并集）时不调用 `getBlock`，三个 block 字段写 0，
+  并置 `RecordFlagBlockOob = 1<<11`。
+
+## 开销语义（F9）
+
+- `tick_p50/p99/max_us` 保留旧名，语义是**相邻 tick 开始的间隔**；新增同值的
+  `tick_interval_*_us` 以免误读。`hook_*_us` 才是钩子体（pre+post）的耗时。
+- `window_samples=1024`、`qpc_resolution_ns` 随响应返回；样本环读写用 `gEpoch` 奇偶守卫，
+  `consistent=false` 表示读侧重试 64 次仍未拿到完整窗口。
+
 ## 版本指纹与锚点（T7）
 
 - 启动时用 `GetFileVersionInfoW` 读主模块版本，前缀必须是 **1.26.51**；`build_id` 记录完整

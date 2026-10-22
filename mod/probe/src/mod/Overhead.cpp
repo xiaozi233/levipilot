@@ -17,6 +17,8 @@ struct Sample {
 
 std::unique_ptr<Sample[]>  gSamples;
 std::atomic<std::uint64_t> gHead{0};
+// F9: seqlock around the ring so readers never mix pre/post-wrap samples.
+std::atomic<std::uint64_t> gEpoch{0};
 std::atomic<std::uint32_t> gBusyUs{0};
 std::atomic<std::uint32_t> gBusyTicks{0};
 std::uint64_t              gFrequency = 0;
@@ -124,35 +126,59 @@ void overheadRecord(std::uint32_t tickUs, std::uint32_t hookUs) {
     if (!gSamples) {
         return;
     }
-    // Single writer: the client tick thread.
+    // Single writer: the client tick thread. The epoch lets readers detect a
+    // half-written window across the ring wrap.
+    std::uint64_t const epoch  = gEpoch.load(std::memory_order_relaxed);
+    gEpoch.store(epoch + 1, std::memory_order_relaxed); // odd: writing
+    std::atomic_thread_fence(std::memory_order_release);
     std::uint64_t const index  = gHead.load(std::memory_order_relaxed);
     Sample&             sample = gSamples[index % kOverheadCapacity];
     sample.tickUs              = tickUs;
     sample.hookUs              = hookUs;
     gHead.store(index + 1, std::memory_order_release);
+    gEpoch.store(epoch + 2, std::memory_order_release);
 }
 
 nlohmann::json overheadJson() {
-    std::uint64_t const head  = gHead.load(std::memory_order_acquire);
-    std::size_t const   count = static_cast<std::size_t>(
-        std::min<std::uint64_t>(head, kOverheadCapacity)
-    );
     nlohmann::json out;
-    out["event"] = "overhead";
-    out["paths"] = pathRatesJson();
+    out["event"]              = "overhead";
+    out["paths"]              = pathRatesJson();
+    out["window_samples"]     = kOverheadCapacity;
+    out["qpc_resolution_ns"]  =
+        gFrequency > 0 ? 1'000'000'000.0 / static_cast<double>(gFrequency) : 0.0;
+
+    std::uint64_t head  = 0;
+    std::size_t   count = 0;
+    std::vector<std::uint32_t> tick;
+    std::vector<std::uint32_t> hook;
+    bool consistent = false;
+    for (int attempt = 0; attempt < 64 && !consistent; ++attempt) {
+        std::uint64_t const before = gEpoch.load(std::memory_order_acquire);
+        if ((before & 1u) != 0) {
+            continue; // writer is mid-sample
+        }
+        head  = gHead.load(std::memory_order_acquire);
+        count = static_cast<std::size_t>(
+            std::min<std::uint64_t>(head, kOverheadCapacity)
+        );
+        tick.clear();
+        hook.clear();
+        if (gSamples && count > 0) {
+            std::uint64_t const first = head - count;
+            tick.reserve(count);
+            hook.reserve(count);
+            for (std::size_t offset = 0; offset < count; ++offset) {
+                Sample const& sample = gSamples[(first + offset) % kOverheadCapacity];
+                tick.push_back(sample.tickUs);
+                hook.push_back(sample.hookUs);
+            }
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        consistent = gEpoch.load(std::memory_order_relaxed) == before;
+    }
     if (!gSamples || count == 0) {
         out["samples"] = 0;
         return out;
-    }
-    std::uint64_t const first = head - count;
-    std::vector<std::uint32_t> tick;
-    std::vector<std::uint32_t> hook;
-    tick.reserve(count);
-    hook.reserve(count);
-    for (std::size_t offset = 0; offset < count; ++offset) {
-        Sample const& sample = gSamples[(first + offset) % kOverheadCapacity];
-        tick.push_back(sample.tickUs);
-        hook.push_back(sample.hookUs);
     }
     std::sort(tick.begin(), tick.end());
     std::sort(hook.begin(), hook.end());
@@ -164,9 +190,15 @@ nlohmann::json overheadJson() {
     double const average = count > 0 ? static_cast<double>(sum) / static_cast<double>(count) : 0.0;
 
     out["samples"]       = count;
+    out["consistent"]    = consistent;
+    // tick_p50/p99 keep their old names for callers; they measure the interval
+    // between tick starts, not the hook's own cost.
     out["tick_p50_us"]   = percentile(tick, 0.50);
     out["tick_p99_us"]   = percentile(tick, 0.99);
     out["tick_max_us"]   = tick.back();
+    out["tick_interval_p50_us"] = out["tick_p50_us"];
+    out["tick_interval_p99_us"] = out["tick_p99_us"];
+    out["tick_interval_max_us"] = out["tick_max_us"];
     out["hook_p50_us"]   = percentile(hook, 0.50);
     out["hook_p99_us"]   = percentile(hook, 0.99);
     out["hook_max_us"]   = hook.back();

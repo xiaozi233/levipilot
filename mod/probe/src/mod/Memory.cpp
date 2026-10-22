@@ -8,23 +8,8 @@ namespace probe::detail {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Offset table for 1.26.51.01. Keep every numeric field offset here; command
-// handlers must not grow their own magic numbers. T7 will move this table into
-// docs/offsets/<version>.json once signature anchoring exists.
-// ---------------------------------------------------------------------------
-struct BlockLayout {
-    static constexpr std::uint64_t LegacyPointer = 0x68;
-};
-
-struct BlockLegacyLayout {
-    static constexpr std::uint64_t NameHash = 0xE0;
-    static constexpr std::uint64_t Name     = 0xE8; // std::string
-    static constexpr std::uint64_t BlockId  = 0x17E;
-    static constexpr std::uint64_t FloatA   = 0x15C;
-    static constexpr std::uint64_t FloatB   = 0x178;
-};
-
+// Offsets come from the F5 table (built-ins overridable via offsets.json);
+// command handlers must not grow their own magic numbers.
 // MSVC std::string layout (C++20):
 //   union buffer [0x00, 0x10)  small string inline / heap pointer
 //   size_t size   [0x10, 0x18)
@@ -306,11 +291,20 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
     }
 
     if (kind == "block") {
-        std::uint64_t legacy     = 0;
-        std::uint64_t legacyPtr  = 0;
-        std::uint64_t nameAddr   = 0;
-        if (!addOffset(addr, BlockLayout::LegacyPointer, legacyPtr)
-            || !readValue(legacyPtr, legacy)) {
+        std::uint64_t legacyOffset = 0;
+        std::uint64_t nameOffset   = 0;
+        if (!structOffset("Block", "LegacyPointer", legacyOffset)
+            || !structOffset("BlockLegacy", "Name", nameOffset)) {
+            return nlohmann::json{
+                {"event",  "error"            },
+                {"reason", "no_offset"        },
+                {"struct", "Block/BlockLegacy"},
+            };
+        }
+        std::uint64_t legacy    = 0;
+        std::uint64_t legacyPtr = 0;
+        std::uint64_t nameAddr  = 0;
+        if (!addOffset(addr, legacyOffset, legacyPtr) || !readValue(legacyPtr, legacy)) {
             out["ok"]     = false;
             out["reason"] = "bad_addr";
             return out;
@@ -321,7 +315,7 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
         // Read the name through the legacy pointer so callers can cross-check
         // against the existing `blocks` command without a second round trip.
         std::string name;
-        if (addOffset(legacy, BlockLegacyLayout::Name, nameAddr)) {
+        if (addOffset(legacy, nameOffset, nameAddr)) {
             name = readStdString(nameAddr);
         }
         if (!name.empty()) {
@@ -331,6 +325,22 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
     }
 
     if (kind == "legacy") {
+        std::uint64_t hashOff = 0;
+        std::uint64_t idOff   = 0;
+        std::uint64_t aOff    = 0;
+        std::uint64_t bOff    = 0;
+        std::uint64_t nameOff = 0;
+        if (!structOffset("BlockLegacy", "NameHash", hashOff)
+            || !structOffset("BlockLegacy", "BlockId", idOff)
+            || !structOffset("BlockLegacy", "FloatA", aOff)
+            || !structOffset("BlockLegacy", "FloatB", bOff)
+            || !structOffset("BlockLegacy", "Name", nameOff)) {
+            return nlohmann::json{
+                {"event",  "error"     },
+                {"reason", "no_offset" },
+                {"struct", "BlockLegacy"},
+            };
+        }
         std::uint64_t hash      = 0;
         std::uint16_t blockId   = 0;
         float         valueA    = 0.0f;
@@ -340,11 +350,11 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
         std::uint64_t floatAAdr = 0;
         std::uint64_t floatBAdr = 0;
         std::uint64_t nameAddr  = 0;
-        if (!addOffset(addr, BlockLegacyLayout::NameHash, hashAddr)
-            || !addOffset(addr, BlockLegacyLayout::BlockId, idAddr)
-            || !addOffset(addr, BlockLegacyLayout::FloatA, floatAAdr)
-            || !addOffset(addr, BlockLegacyLayout::FloatB, floatBAdr)
-            || !addOffset(addr, BlockLegacyLayout::Name, nameAddr)
+        if (!addOffset(addr, hashOff, hashAddr)
+            || !addOffset(addr, idOff, idAddr)
+            || !addOffset(addr, aOff, floatAAdr)
+            || !addOffset(addr, bOff, floatBAdr)
+            || !addOffset(addr, nameOff, nameAddr)
             || !readValue(hashAddr, hash)
             || !readValue(idAddr, blockId)
             || !readValue(floatAAdr, valueA)

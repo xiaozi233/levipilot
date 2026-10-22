@@ -56,8 +56,9 @@ scenario DSL / LLM / shell
 - **服务端线程**：通过 `ServerInstance::queueForServerThread` 执行传送、命令、背包写入和使用物品。
   所有回调由 `queueServerTask` 包装，异常不会穿过游戏服务端 tick。
 - **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
-  `spool-<pid>.jsonl`；`world_left` / `stop` / `disable` 会强制刷盘。它只碰文件和缓冲区，
-  不碰任何游戏对象。
+  `spool-<pid>.jsonl`；`world_left` / `panic` / `stop` / `disable` 会强制刷盘。
+  启动时同 PID 的旧文件会改名为 `spool-<pid>-<n>.jsonl`，单文件超过 64 MiB 也会轮转；
+  swap 与写文件由 `mSpoolWriteMutex` 串行化。它只碰文件和缓冲区，不碰任何游戏对象。
 - **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
   结构化异常由 `dispatchWithSeh` 转成 `internal_error`，不会写 minidump。
 

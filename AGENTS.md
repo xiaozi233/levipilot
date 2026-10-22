@@ -55,7 +55,7 @@ py -3.11 driver/selftest.py
 5. **错误不穿透游戏 tick**：一切异常变成事件（`internal_error` 等）。注意 MSVC 默认
    `/EHsc` 下访问违例**不是**可捕获异常 —— 新写的 handler 用 `__try/__except` 包住。
 6. **版本**：只支持 1.26.51.01。禁止把 1.26.45.01 的硬编码 VA 写进 `.cpp`（注释里也不要当常量）；
-   锚点走符号或签名解析（计划见 `docs/task-prompts.md` 的 T7）。
+   锚点走符号或签名解析（见 `docs/mod-internals.md` 的版本指纹一节）。
 7. **协议只做增量变更**：`{"event":"hello","protocol":4,"capabilities":[...]}` 是握手；
    升号时旧字段必须继续可用，未知命令仍回 `error/unknown_cmd`。
 8. **强能力默认关闭**：任意内存写、任意地址装钩这类能力必须显式开启并留审计日志。
@@ -112,7 +112,7 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 
 ## 当前优先级
 
-任务清单与可直接派活的提示词：[`docs/task-prompts.md`](docs/task-prompts.md)。
+当前完成度见下面的清单；任务提示词不在仓库内（本地维护）。
 
 - **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
 - **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 92/92
@@ -129,10 +129,9 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
   G4 macro 事件级回放 / G6 世界内 UI；G5 未做（G3 结论：C≈B≈0.2805 格/tick，
   差异不在输入事件层，不需要 raw-input hook）
 
-- **输入层 G（待做）**：G1 key_event / G2 mouse_event / G3 sprint 三组对照 / G4 macro 事件级 / G5 raw-input 兜底（条件项）/ G6 世界内 UI
 
-> 提示词按轮分文件：`docs/task-prompts.md`（T1–T9）、`docs/task-prompts-fixes.md`（F1–F10）、`docs/task-prompts-input.md`（G1–G6）。
-> 每条自带验收标准；公共前置（仓库约定 / 架构硬约束 / 脚本纪律）在第一个文件的 §2。
+> 任务提示词不随仓库分发；本轮验收标准与结论已经写进 `mod/README.md` 的「实测 / 限制」
+> 和 `docs/mod-internals.md`，以后看这两处即可。
 
 改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查，并在 `mod/README.md` 的
 「实测 / 限制」里补一行 —— 这个仓库的文档是活的，别让它和代码脱节。

@@ -127,12 +127,11 @@ def main(argv: list[str] | None = None) -> int:
             "1.3x 差异不在输入事件层，不需要做 packet tap。"
         )
     elif same:
-        print(f"\n结论：C ≈ B，但都偏离疾跑基线 {expected:.4f}；下一步检查移动输入解析或服务端请求。")
-    else:
         print(
-            f"\n结论：C 与 B 不一致（{c:.4f} vs {b:.4f}）——差异仍在输入层，"
-            "先修 G1/G2 注入路径。"
+            f"\n结论：C ≈ B，但都偏离疾跑基线 {expected:.4f}；下一步检查移动输入解析或服务端请求。"
         )
+    else:
+        print(f"\n结论：C 与 B 不一致（{c:.4f} vs {b:.4f}）——差异仍在输入层，先修 G1/G2 注入路径。")
     return 0
 
 

@@ -452,7 +452,12 @@ def main(argv: list[str] | None = None) -> int:
             and "tick_interval_p99_us" in overhead_before
             and int(overhead_before.get("window_samples", 0)) == 1024
             and float(overhead_before.get("qpc_resolution_ns", 0)) > 0,
-            str({k: overhead_before.get(k) for k in ("consistent", "window_samples", "qpc_resolution_ns")}),
+            str(
+                {
+                    k: overhead_before.get(k)
+                    for k in ("consistent", "window_samples", "qpc_resolution_ns")
+                }
+            ),
         )
         busy = client.request({"cmd": "selftest_busy", "us": 1000, "ticks": 20})
         if busy.get("reason") == "stress_disabled":
@@ -470,7 +475,12 @@ def main(argv: list[str] | None = None) -> int:
                 "overhead_busy",
                 float(overhead_after.get("hook_p99_us", 0)) >= 900
                 and float(overhead_after.get("hook_max_us", 0)) >= 900,
-                str({k: overhead_after.get(k) for k in ("hook_p50_us", "hook_p99_us", "hook_max_us")}),
+                str(
+                    {
+                        k: overhead_after.get(k)
+                        for k in ("hook_p50_us", "hook_p99_us", "hook_max_us")
+                    }
+                ),
             )
         checks.check("overhead_alive", wait_ticks(client, 3) >= 3)
 
@@ -820,7 +830,11 @@ def main(argv: list[str] | None = None) -> int:
                 wait_ticks(client, 3)
                 state = client.state()
                 drift = abs(float(state["yaw"]) - yaw0)
-                return (float(state["feet_x"]), float(state["feet_z"])), int(client.mouse()["counts"][1]), drift
+                return (
+                    (float(state["feet_x"]), float(state["feet_z"])),
+                    int(client.mouse()["counts"][1]),
+                    drift,
+                )
 
             first, left_events, drift_a = run_macro(True)
             second, _, drift_b = run_macro(True)

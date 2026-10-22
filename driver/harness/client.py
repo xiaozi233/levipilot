@@ -323,7 +323,12 @@ class ModClient:
         x: int | None = None,
         y: int | None = None,
     ) -> dict[str, Any]:
-        message: dict[str, Any] = {"cmd": "mouse_event", "action": action, "dx": int(dx), "dy": int(dy)}
+        message: dict[str, Any] = {
+            "cmd": "mouse_event",
+            "action": action,
+            "dx": int(dx),
+            "dy": int(dy),
+        }
         if x is not None:
             message["x"] = int(x)
         if y is not None:

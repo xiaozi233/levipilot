@@ -53,13 +53,16 @@ xmake -y
 | `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名和 `addr`（`Block*`，供 `probe` 使用） |
-| `navigate` | `x,z,tolerance,max_ticks,sprint`；mod 内逐 tick 闭环修正朝向并自动跳障 |
+| `navigate` | `x,z,tolerance,max_ticks,sprint`；`jump=auto/distance/edge/never` + `jump_distance`，mod 内逐 tick 闭环修正朝向 |
+| `jump_when` | `mode=now/tick/distance/edge`；`distance,forward,sprint,yaw,after_ticks,max_ticks`；在 tick 内精确起跳 |
+| `route` | `waypoints:[{x,z,tolerance,max_ticks,jump,jump_distance}]`；逐段跑点，`route_waypoint` / `route_done` / `route_failed` |
 | `mine` | `x,y,z,max_ticks`；`startDestroyBlock` + `continueDestroyBlock`，完成后回报方块 |
 | `place` | `x,y,z,against?,face?,expected?,slot?,max_ticks`；瞄准、放置并回读验证 |
 | `use` | `ticks`；等待后在服务端玩家上走 `Item::use`（+ 食物的 `useTimeDepleted`），消耗、效果和背包同步都是权威的 |
 | `task_status` / `task_stop` | 查询或取消当前闭环任务 |
 | `worlds` | 列出缓存世界：`id` / `name` / `last_saved` / `game_type` |
-| `enter_world` | `name` 或 `id`，可选 `intent`；直接启动已有世界，不经过菜单 |
+| `enter_world` | `name`/`id`，可选 `intent`/`force`；先等 Xbox Live 登录，成功后发 `enter_world_settled` |
+| `signin` | 主菜单的 Xbox Live 登录态：`known`、`signed_in` |
 | `leave_world` | 退出当前世界回到主菜单 |
 | `options_set` | `values` 对象或 `text`（`key:value` 行）；实时应用并写回 `options.txt` |
 | `options_save` | 请求游戏自身保存选项（`options_set` 已包含落盘） |
@@ -105,7 +108,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "delay_ms": 2000,
   "background_guard": true,
   "allow_write": false,
-  "allow_crash_test": false
+  "allow_crash_test": false,
+  "signin_wait_ms": 15000
 }
 ```
 
@@ -113,13 +117,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 再进入（后台进世界会触发鼠标捕获）。`options` 会先应用并写回 `options.txt`。
 `background_guard` 默认开启：游戏失去前台时释放光标裁剪，并忽略后台鼠标引起的视角旋转；
 它不会阻止 mod 自己的 `look`/任务。`allow_write` 才能用 `mem_write`；`allow_crash_test`
-才能用会主动结束进程的 `selftest_crash`。不需要时删除该文件即可。
+才能用会主动结束进程的 `selftest_crash`；`signin_wait_ms` 是进世界前等 Xbox Live 登录的
+上限（默认 15000，设 0 表示查一次就走）。不需要时删除该文件即可。
 
 ## 实测（1.26.51.01 创作存档）
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
   12.04 格、接地 100%
-- 跳跃起跳约 1.23 格；树叶/天花板下会被挡
+- 跳跃：起跳沿同时调用 `jumpFromGround`，逐 tick 位移为 0.4200、0.3332、0.2481、0.1648…，
+  顶点 1.252 格、滞空 11 tick；修复了此前前 3 tick 不动、第 4 tick 一次性 +0.99 的“卡回弹”
+- 潜行：20 tick 前进 4.316 格，潜行时 1.295 格（约 0.30x）
 - `fly` 同时写服务端，传送后不会自己恢复飞行
 - `click left` 破坏、`click right` 放置；`select_slot` 3→空手、0→草方块
 - 服务端传送 2 秒后位置仍是目标值，`yaw/pitch` 生效
@@ -166,6 +173,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `smoothMacro` / `frameBasedRotation` 未复刻，保持逐 tick。
 - 鼠标录制只认 raw input；后台合成点击只有移动事件。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。
+- 跳跃必须走本地 `jumpFromGround`；只靠输入标志/队列/handler 在 1.26.51.01 上会有
+  3 tick 延迟并一次性补位移。`jump_impulse` 只用于对照实验，正常不要改。
 - 只对应 **1.26.51.01**，不能直接套 1.26.45 的偏移。
 - `probe` 的 Block/Legacy 字段偏移集中在 `Memory.cpp` 的布局常量里，仍是版本相关；
   签名解析是 T7 的工作。

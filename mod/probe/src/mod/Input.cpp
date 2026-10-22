@@ -149,6 +149,23 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
         }
     }
 
+    // Apply the local jump impulse on the edge. Relying only on the input
+    // pipeline (flags/queue/handlers) makes the client wait for the server: the
+    // first three ticks stay on the ground and then the position snaps up by
+    // V1+V2+V3, which looks like a rubber-band. dmf-mpk documents
+    // MobJump::setJumpPendingScale as an auxiliary, but measured on this build
+    // it only scales an already-triggered jump; jumpFromGround is what produces
+    // the exact 0.42 / 0.3332 / 0.2481 ... arc from the first physics step.
+    if (jumpEdge && player.isOnGround()) {
+        int const impulse = mJumpImpulseMode.load(std::memory_order_relaxed);
+        if (impulse & 1) {
+            player.jumpFromGround();
+        }
+        if (impulse & 2) {
+            MobJump::setJumpPendingScale(player.getEntityContext(), 1.0f);
+        }
+    }
+
     if (mode & 8) {
         if (state.sprint != mPrevSprint) {
             if (player.isSprinting() != state.sprint) {
@@ -157,9 +174,6 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
         }
         if (state.sneak != mPrevSneak) {
             player.setSneaking(state.sneak);
-        }
-        if (jumpEdge && player.isOnGround()) {
-            player.jumpFromGround();
         }
     }
 

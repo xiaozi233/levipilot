@@ -4,7 +4,30 @@ using namespace probe::detail;
 
 namespace probe {
 
-void ProbeMod::enterWorld(std::string const& name, std::string const& id, int intent) {
+bool ProbeMod::waitForSignIn(int timeoutMs) {
+    bool signedIn = false;
+    if (!detail::queryXblSignedIn(signedIn)) {
+        return false;
+    }
+    if (signedIn) {
+        return true;
+    }
+    int waited = 0;
+    while (waited < timeoutMs && mRunning.load(std::memory_order_relaxed)) {
+        Sleep(250);
+        waited += 250;
+        if (!detail::queryXblSignedIn(signedIn)) {
+            return false;
+        }
+        if (signedIn) {
+            bootLog("signin: completed after " + std::to_string(waited) + "ms");
+            return true;
+        }
+    }
+    return false;
+}
+
+void ProbeMod::enterWorld(std::string const& name, std::string const& id, int intent, bool force) {
     if (mInWorld.load(std::memory_order_relaxed)) {
         enqueue(R"({"event":"error","reason":"already_in_world"})");
         return;
@@ -14,6 +37,17 @@ void ProbeMod::enterWorld(std::string const& name, std::string const& id, int in
     if (!client) {
         enqueue(R"({"event":"enter_world_result","ok":false,"reason":"no_client"})");
         return;
+    }
+
+    // The level list is read from local storage and can be ready before the
+    // asynchronous Xbox Live sign-in. Starting a local server in that window
+    // produces the "you must authenticate to Microsoft services" screen, so
+    // wait for the main-menu model to report a signed-in state first.
+    bool signedIn = false;
+    bool signInKnown = detail::queryXblSignedIn(signedIn);
+    if (signInKnown && !signedIn) {
+        waitForSignIn(mSignInWaitMs.load(std::memory_order_relaxed));
+        signInKnown = detail::queryXblSignedIn(signedIn);
     }
 
     try {
@@ -45,17 +79,25 @@ void ProbeMod::enterWorld(std::string const& name, std::string const& id, int in
         // so hand it a copy.
         LevelSummary  copy = *summary;
         LevelSettings settings{copy};
-        enqueue(
-            nlohmann::json{
-                {"event",  "enter_world_result"   },
-                {"ok",     true                   },
-                {"name",   std::string{copy.mName}},
-                {"id",     std::string{copy.mId}  },
-                {"intent", intent                 },
-        }
-                .dump()
-        );
+        nlohmann::json result{
+            {"event",  "enter_world_result"    },
+            {"ok",     true                    },
+            {"name",   std::string{copy.mName} },
+            {"id",     std::string{copy.mId}   },
+            {"intent", intent                  },
+        };
+        result["signed_in"] = signInKnown ? nlohmann::json(signedIn) : nlohmann::json(nullptr);
 
+        if (!force && signInKnown && !signedIn) {
+            result["ok"]     = false;
+            result["reason"] = "signin_required";
+            enqueue(result.dump());
+            return;
+        }
+        enqueue(result.dump());
+        bootLog("enter_world: starting " + std::string{copy.mName} + " signed_in=" + (signInKnown ? (signedIn ? "1" : "0") : "?"));
+
+        mJoinPending = true;
         // startLocalServerAsyncFromSummary is not exported by LeviLamina's
         // import library; the pure-virtual overload is reachable through the
         // vtable and takes the same data explicitly.

@@ -4,6 +4,56 @@ using namespace probe::detail;
 
 namespace probe {
 
+namespace {
+
+bool isAirName(std::string const& name) {
+    return name == "minecraft:air" || name == "minecraft:cave_air" || name == "minecraft:void_air";
+}
+
+// True when the block ahead at foot level is open and the block below that
+// position is missing. This is the "about to run off a ledge" condition.
+bool atEdge(LocalPlayer& player, float lookAhead) {
+    auto const  feet = player.getFeetPos();
+    auto const  rot  = player.getRotation();
+    float const rad  = rot.y * 0.01745329252f;
+    float const fx   = -std::sin(rad);
+    float const fz   = std::cos(rad);
+    int const   x    = static_cast<int>(std::floor(feet.x + fx * lookAhead));
+    int const   z    = static_cast<int>(std::floor(feet.z + fz * lookAhead));
+    int const   y    = static_cast<int>(std::floor(feet.y));
+    auto const& source = player.getDimensionBlockSourceConst();
+    bool const  support = !isAirName(blockName(source, x, y - 1, z));
+    bool const  passable =
+        isAirName(blockName(source, x, y, z)) && isAirName(blockName(source, x, y + 1, z));
+    return !support && passable;
+}
+
+float horizontalDistance(Vec3 const& pos, float x, float z) {
+    float const dx = x - static_cast<float>(pos.x);
+    float const dz = z - static_cast<float>(pos.z);
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+char const* jumpModeName(JumpMode mode) {
+    switch (mode) {
+    case JumpMode::Distance:
+        return "distance";
+    case JumpMode::Edge:
+        return "edge";
+    case JumpMode::Never:
+        return "never";
+    case JumpMode::Now:
+        return "now";
+    case JumpMode::Tick:
+        return "tick";
+    case JumpMode::Auto:
+    default:
+        return "auto";
+    }
+}
+
+} // namespace
+
 void ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
     Vec3 const   eye   = player.getHeadPos();
     double const dx    = point.x - eye.x;
@@ -23,6 +73,8 @@ void ProbeMod::cancelTasks() {
     std::lock_guard lock(mTaskMutex);
     ++mTaskEpoch;
     mNavigateTask.reset();
+    mJumpTask.reset();
+    mRouteTask.reset();
     mMineTask.reset();
     mPlaceTask.reset();
     mUseTask.reset();
@@ -53,6 +105,22 @@ nlohmann::json ProbeMod::taskStatusJson() {
         out["elapsed"]   = mNavigateTask->elapsed;
         out["max_ticks"] = mNavigateTask->maxTicks;
         out["target"]    = {mNavigateTask->x, mNavigateTask->z};
+        out["jump_mode"] = static_cast<int>(mNavigateTask->jumpMode);
+    } else if (mJumpTask) {
+        out["active"]     = "jump_when";
+        out["elapsed"]    = mJumpTask->elapsed;
+        out["max_ticks"]  = mJumpTask->maxTicks;
+        out["target"]     = {mJumpTask->x, mJumpTask->z};
+        out["jump_mode"]  = static_cast<int>(mJumpTask->mode);
+    } else if (mRouteTask) {
+        out["active"]    = "route";
+        out["elapsed"]   = mRouteTask->elapsed;
+        out["waypoint"]  = mRouteTask->index;
+        out["waypoints"] = mRouteTask->count;
+        if (mRouteTask->index < static_cast<int>(mRouteTask->count)) {
+            auto const& point = mRouteTask->points[static_cast<std::size_t>(mRouteTask->index)];
+            out["target"]     = {point.x, point.z};
+        }
     } else if (mMineTask) {
         out["active"]    = "mine";
         out["elapsed"]   = mMineTask->elapsed;
@@ -77,6 +145,8 @@ nlohmann::json ProbeMod::taskStatusJson() {
 
 bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
     std::optional<NavigateTask> navigate;
+    std::optional<JumpTask>     jump;
+    std::optional<RouteTask>    route;
     std::optional<MineTask>     mine;
     std::optional<PlaceTask>    place;
     std::optional<UseTask>      use;
@@ -85,11 +155,13 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
         std::lock_guard lock(mTaskMutex);
         epoch    = mTaskEpoch;
         navigate = mNavigateTask;
+        jump     = mJumpTask;
+        route    = mRouteTask;
         mine     = mMineTask;
         place    = mPlaceTask;
         use      = mUseTask;
     }
-    if (!navigate && !mine && !place && !use) {
+    if (!navigate && !jump && !route && !mine && !place && !use) {
         return false;
     }
 
@@ -97,6 +169,10 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
     bool           finished = false;
     if (navigate) {
         finished = tickNavigate(client, player, *navigate, result);
+    } else if (jump) {
+        finished = tickJump(client, player, *jump, result);
+    } else if (route) {
+        finished = tickRoute(client, player, *route, result);
     } else if (mine) {
         finished = tickMine(player, *mine, result);
     } else if (place) {
@@ -114,6 +190,20 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
                     mNavigateTask.reset();
                 } else {
                     mNavigateTask = navigate;
+                }
+            }
+            if (jump) {
+                if (finished) {
+                    mJumpTask.reset();
+                } else {
+                    mJumpTask = jump;
+                }
+            }
+            if (route) {
+                if (finished) {
+                    mRouteTask.reset();
+                } else {
+                    mRouteTask = route;
                 }
             }
             if (mine) {
@@ -141,7 +231,15 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
     }
 
     if (finished) {
-        applyControls(client, player, ControlState{});
+        // A one-shot jump must keep its injected press for the rest of this
+        // tick; clearing it here cancels the jump before origin() reads it.
+        // The idle applyControls on the next tick releases it.
+        bool const keepJumpPress =
+            !result.is_null() && result.value("event", std::string{}) == "jumped"
+            && result.value("ok", false);
+        if (!keepJumpPress) {
+            applyControls(client, player, ControlState{});
+        }
         if (!result.is_null() && !result.empty()) {
             enqueue(result.dump());
         }
@@ -166,6 +264,8 @@ bool ProbeMod::tickNavigate(ClientInstance& client, LocalPlayer& player, Navigat
             {"z",        finiteOrZero(static_cast<float>(pos.z))},
             {"distance", finiteOrZero(distance)                 },
             {"ticks",    task.elapsed                           },
+            {"jumps",    task.jumps                             },
+            {"jump_mode", jumpModeName(task.jumpMode)           },
         };
         return true;
     };
@@ -198,14 +298,226 @@ bool ProbeMod::tickNavigate(ClientInstance& client, LocalPlayer& player, Navigat
     task.lastZ    = static_cast<float>(pos.z);
     task.haveLast = true;
 
+    bool wantJump = false;
+    if (task.jumpCooldown > 0) {
+        --task.jumpCooldown;
+    }
+    if (player.isOnGround() && task.jumpCooldown == 0) {
+        if (task.jumpMode == JumpMode::Distance) {
+            // The target is on the far side of the gap: take off just before
+            // the edge instead of when the gap is already underfoot.
+            wantJump = distance <= task.jumpDistance;
+        } else if (task.jumpMode == JumpMode::Edge) {
+            wantJump = atEdge(player, task.edgeLookahead);
+        } else if (task.jumpMode == JumpMode::Auto && task.stuckTicks >= 5) {
+            wantJump      = true;
+            task.stuckTicks = 0;
+        }
+    }
+    if (wantJump) {
+        task.jumpCooldown = 5;
+        ++task.jumps;
+    }
+
     ControlState state;
     state.forward = 1.0f;
     state.sprint  = task.sprint;
     state.active  = true;
-    if (task.stuckTicks >= 5) {
-        state.jump      = true;
-        task.stuckTicks = 0;
+    state.jump    = wantJump;
+    applyControls(client, player, state);
+    return false;
+}
+
+bool ProbeMod::tickJump(
+    ClientInstance& client,
+    LocalPlayer&    player,
+    JumpTask&       task,
+    nlohmann::json& result
+) {
+    Vec3 const  pos      = player.getFeetPos();
+    auto const  rot      = player.getRotation();
+    float const distance = horizontalDistance(pos, task.x, task.z);
+    ++task.elapsed;
+
+    auto finish = [&](bool ok, char const* reason) {
+        result = {
+            {"event",     "jumped"                              },
+            {"ok",        ok                                    },
+            {"reason",    reason                                },
+            {"mode",      jumpModeName(task.mode)               },
+            {"x",         finiteOrZero(static_cast<float>(pos.x))},
+            {"z",         finiteOrZero(static_cast<float>(pos.z))},
+            {"distance",  finiteOrZero(distance)                },
+            {"ticks",     task.elapsed                          },
+            {"on_ground", player.isOnGround()                   },
+        };
+        return true;
+    };
+
+    bool trigger = false;
+    switch (task.mode) {
+    case JumpMode::Now:
+        trigger = true;
+        break;
+    case JumpMode::Tick:
+        trigger = task.elapsed >= task.afterTicks;
+        break;
+    case JumpMode::Distance:
+        trigger = player.isOnGround() && distance <= task.distance;
+        break;
+    case JumpMode::Edge:
+        trigger = player.isOnGround() && atEdge(player, task.edgeLookahead);
+        break;
+    default:
+        break;
     }
+
+    if (!trigger && task.elapsed >= task.maxTicks) {
+        return finish(false, "timeout");
+    }
+
+    // Keep facing the target while waiting so the jump goes where the caller
+    // expects; an explicit yaw wins over distance-derived aiming.
+    if (task.hasYaw) {
+        float const delta = std::clamp(wrapDegrees(task.yaw - rot.y), -35.0f, 35.0f);
+        if (std::fabs(delta) > 0.01f) {
+            applyTurnDelta(player, Vec2{0.0f, delta});
+        }
+    } else if (task.mode == JumpMode::Distance && (task.forward != 0.0f || task.x != 0.0f || task.z != 0.0f)) {
+        float const dx = task.x - static_cast<float>(pos.x);
+        float const dz = task.z - static_cast<float>(pos.z);
+        if (std::fabs(dx) + std::fabs(dz) > 1.0e-4f) {
+            float const yaw   = static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
+            float const delta = std::clamp(wrapDegrees(yaw - rot.y), -35.0f, 35.0f);
+            if (std::fabs(delta) > 0.01f) {
+                applyTurnDelta(player, Vec2{0.0f, delta});
+            }
+        }
+    }
+
+    ControlState state;
+    state.forward = task.forward;
+    state.sprint  = task.sprint;
+    state.active  = task.forward != 0.0f || task.sprint || trigger;
+    state.jump    = trigger;
+    applyControls(client, player, state);
+    if (trigger) {
+        return finish(true, "triggered");
+    }
+    return false;
+}
+
+bool ProbeMod::tickRoute(
+    ClientInstance& client,
+    LocalPlayer&    player,
+    RouteTask&      task,
+    nlohmann::json& result
+) {
+    ++task.elapsed;
+    if (task.index >= static_cast<int>(task.count)) {
+        result = {
+            {"event",     "route_done"           },
+            {"ok",        true                   },
+            {"waypoints", task.count     },
+            {"ticks",     task.elapsed           },
+        };
+        return true;
+    }
+
+    RouteWaypoint& point = task.points[static_cast<std::size_t>(task.index)];
+    ++task.segmentElapsed;
+    Vec3 const  pos      = player.getFeetPos();
+    auto const  rot      = player.getRotation();
+    float const distance = horizontalDistance(pos, point.x, point.z);
+
+    if (distance <= point.tolerance) {
+        enqueue(
+            nlohmann::json{
+                {"event",    "route_waypoint"                           },
+                {"index",    task.index                                 },
+                {"x",        finiteOrZero(static_cast<float>(pos.x))     },
+                {"z",        finiteOrZero(static_cast<float>(pos.z))     },
+                {"ticks",    task.segmentElapsed                        },
+                {"waypoints", task.count                        },
+        }
+                .dump()
+        );
+        ++task.index;
+        task.segmentElapsed = 0;
+        task.stuckTicks     = 0;
+        task.haveLast       = false;
+        if (task.index >= static_cast<int>(task.count)) {
+            result = {
+                {"event",     "route_done"       },
+                {"ok",        true               },
+                {"waypoints", task.count },
+                {"ticks",     task.elapsed       },
+            };
+            return true;
+        }
+        return false;
+    }
+
+    if (task.segmentElapsed >= point.maxTicks) {
+        result = {
+            {"event",    "route_failed"                             },
+            {"ok",       false                                      },
+            {"reason",   "timeout"                                  },
+            {"index",    task.index                                 },
+            {"target",   {point.x, point.z}                         },
+            {"x",        finiteOrZero(static_cast<float>(pos.x))     },
+            {"z",        finiteOrZero(static_cast<float>(pos.z))     },
+            {"distance", finiteOrZero(distance)                     },
+            {"ticks",    task.elapsed                               },
+        };
+        return true;
+    }
+
+    float const dx    = point.x - static_cast<float>(pos.x);
+    float const dz    = point.z - static_cast<float>(pos.z);
+    float const yaw   = static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
+    float const delta = std::clamp(wrapDegrees(yaw - rot.y), -35.0f, 35.0f);
+    if (std::fabs(delta) > 0.01f) {
+        applyTurnDelta(player, Vec2{0.0f, delta});
+    }
+
+    if (task.haveLast) {
+        float const mx    = static_cast<float>(pos.x) - task.lastX;
+        float const mz    = static_cast<float>(pos.z) - task.lastZ;
+        bool const  moved = std::sqrt(mx * mx + mz * mz) >= 0.02f;
+        if (!moved && player.isOnGround()) {
+            ++task.stuckTicks;
+        } else {
+            task.stuckTicks = 0;
+        }
+    }
+    task.lastX    = static_cast<float>(pos.x);
+    task.lastZ    = static_cast<float>(pos.z);
+    task.haveLast = true;
+
+    bool wantJump = false;
+    if (task.jumpCooldown > 0) {
+        --task.jumpCooldown;
+    }
+    if (player.isOnGround() && task.jumpCooldown == 0) {
+        if (point.jumpMode == JumpMode::Distance) {
+            wantJump = distance <= point.jumpDistance;
+        } else if (point.jumpMode == JumpMode::Edge) {
+            wantJump = atEdge(player, 0.55f);
+        } else if (point.jumpMode == JumpMode::Auto && task.stuckTicks >= 5) {
+            wantJump        = true;
+            task.stuckTicks = 0;
+        }
+    }
+    if (wantJump) {
+        task.jumpCooldown = 5;
+    }
+
+    ControlState state;
+    state.forward = 1.0f;
+    state.sprint  = task.sprint;
+    state.active  = true;
+    state.jump    = wantJump;
     applyControls(client, player, state);
     return false;
 }

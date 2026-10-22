@@ -212,15 +212,68 @@ def main(argv: list[str] | None = None) -> int:
             len(client.watch_list().get("watches", [])) == 1,
             str(client.watch_list().get("watches")),
         )
-        client.watch_clear(all=True)
-        next_seq = int(drained.get("next", baseline))
+        cleared_cmd = client.watch_clear(all=True)
+        checks.check("watch_clear_ok", cleared_cmd.get("ok") is True, str(cleared_cmd))
+        cleared = client.watch_list()
+        checks.check("watch_list_empty", cleared.get("watches") == [], str(cleared.get("watches")))
+        # Ignore anything that was recorded between the last drain and the
+        # clear itself; only hits after the clear count.
+        head_after_clear = int(cleared.get("head", 0))
         wait_ticks(client, 5)
-        after = client.watch_drain(next_seq)
+        after = client.watch_drain(head_after_clear)
         checks.check(
             "watch_cleared",
             len(after.get("hits", [])) == 0,
             f"hits={len(after.get('hits', []))}",
         )
+
+        # -- parkour jump/route primitives ---------------------------------
+        jump_now = client.jump_when("now")
+        checks.check(
+            "jump_now",
+            bool(jump_now.get("ok")) and jump_now.get("mode") == "now",
+            str(jump_now),
+        )
+        wait_ticks(client, 15)
+
+        jump_tick = client.jump_when("tick", after_ticks=5)
+        checks.check(
+            "jump_tick",
+            bool(jump_tick.get("ok")) and int(jump_tick.get("ticks", 0)) >= 5,
+            str(jump_tick.get("ticks")),
+        )
+        wait_ticks(client, 15)
+
+        client.reset(feet[0], feet[1], feet[2], yaw=0.0, pitch=0.0)
+        wait_ticks(client, 15)
+        jump_distance = client.jump_when(
+            "distance",
+            x=feet[0] + 4.0,
+            z=feet[2],
+            distance=1.0,
+            forward=1.0,
+            max_ticks=100,
+        )
+        checks.check(
+            "jump_distance",
+            bool(jump_distance.get("ok")) and float(jump_distance.get("distance", 99.0)) <= 1.1,
+            f"distance={jump_distance.get('distance')}",
+        )
+        wait_ticks(client, 20)
+
+        route_result = client.route(
+            [
+                {"x": feet[0] + 2.0, "z": feet[2], "tolerance": 0.4},
+                {"x": feet[0] + 2.0, "z": feet[2] + 2.0, "tolerance": 0.4},
+            ]
+        )
+        checks.check(
+            "route",
+            bool(route_result.get("ok")) and int(route_result.get("waypoints", 0)) == 2,
+            str(route_result),
+        )
+        client.reset(feet[0], feet[1], feet[2], yaw=0.0)
+        wait_ticks(client, 10)
 
         before = client.inventory()
         checks.check(

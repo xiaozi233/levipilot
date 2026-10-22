@@ -78,6 +78,7 @@ bool ProbeMod::enable() {
     // these, so scripts do not have to poll mInWorld.
     auto& bus                = ll::event::EventBus::getInstance();
     mStartJoinLevelListener  = bus.emplaceListener<ll::event::client::ClientStartJoinLevelEvent>([this](auto& event) {
+        mJoinPending = true;
         enqueue(
             nlohmann::json{
                 {"event", "world_joining"  },
@@ -86,7 +87,8 @@ bool ProbeMod::enable() {
         );
     });
     mJoinLevelListener       = bus.emplaceListener<ll::event::client::ClientJoinLevelEvent>([this](auto& event) {
-        mInWorld = true;
+        mInWorld    = true;
+        mJoinPending = false;
         enqueue(
             nlohmann::json{
                 {"event",  "world_entered"             },
@@ -94,13 +96,22 @@ bool ProbeMod::enable() {
         }
                 .dump()
         );
+        enqueue(R"({"event":"enter_world_settled","ok":true,"reason":"joined"})");
     });
     mExitLevelListener       = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
         mInWorld = false;
+        bool const wasJoining = mJoinPending.exchange(false);
         enqueue(R"({"event":"world_left"})");
+        if (wasJoining) {
+            enqueue(
+                R"({"event":"enter_world_settled","ok":false,"reason":"left_while_joining"})"
+            );
+        }
     });
     mCancelJoinLevelListener = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
+        mJoinPending = false;
         enqueue(R"({"event":"world_join_cancelled"})");
+        enqueue(R"({"event":"enter_world_settled","ok":false,"reason":"cancelled"})");
     });
 
     mServerThread = std::thread([this] { serverLoop(); });
@@ -191,6 +202,7 @@ void ProbeMod::loadAutoConfig() {
     mBackgroundGuard  = config.value("background_guard", true);
     mAllowMemoryWrite = config.value("allow_write", false);
     mAllowCrashTest   = config.value("allow_crash_test", false);
+    mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
             std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
@@ -241,7 +253,7 @@ void ProbeMod::autoEnterLoop() {
         }
         if (!mAutoEnterWorld.empty() && !mInWorld.load(std::memory_order_relaxed)) {
             bootLog("auto: entering " + mAutoEnterWorld);
-            enterWorld(mAutoEnterWorld, "", 0);
+            enterWorld(mAutoEnterWorld, "", 0, false);
         }
         return;
     }

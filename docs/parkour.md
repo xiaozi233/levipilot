@@ -52,7 +52,8 @@ py -3.11 driver/parkour.py attempts --macro route1 \
 - `apex`：空中最高点相对起跳点的高度。
 - `takeoff_speed` / `landing_speed`：水平速度。
 - `takeoff_block` / `landing_block`：起跳/落点脚下方块。
-- `jumped`：起跳前 4 tick 内是否出现 `jump_edge`（按键沿通常早于物理离地 1–3 tick）。
+- `jumped`：起跳前 4 tick 内是否出现 `jump_edge`。现在 `jumpFromGround` 让按键沿和第一
+  物理步对齐（边缘 tick 的下一 tick 开始上升），4 tick 窗口仍兼容旧录制。
 
 开头就在空中或结尾还在空中的片段：开头忽略，结尾记为 `landed=false`。
 
@@ -73,6 +74,50 @@ py -3.11 driver/parkour.py attempts --macro route1 \
 
 `compare_runs(a, b)` 按跳跃序号对齐，输出每跳的 `delta_distance`、`delta_air_ticks`、
 落点方块，以及总 tick 差。它不依赖画面，适合找出“哪一跳短了”或“哪一段多花了 tick”。
+
+## 精确起跳与路点（P1）
+
+真实跑酷不能靠 Python 每 tick 发命令（管道延迟会错过起跳窗口）。这三个原语都在 mod 的
+tick 内判断，Python 只发一次命令：
+
+```bash
+# 立即跳 / 5 tick 后跳
+py -3.11 driver/transport_mod.py jump-when --mode now
+py -3.11 driver/transport_mod.py jump-when --mode tick --after-ticks 5
+
+# 朝 (4.5, 0.5) 跑，水平距离 <= 1.0 时起跳
+py -3.11 driver/transport_mod.py jump-when --mode distance --x 4.5 --z 0.5 \
+    --distance 1.0 --forward 1 --sprint --max-ticks 100
+
+# 前方脚下没有支撑时起跳（站到方块边缘即可）
+py -3.11 driver/transport_mod.py jump-when --mode edge
+
+# 两段路点，每段都能设自己的起跳策略
+py -3.11 driver/transport_mod.py route '[
+  {"x": 3.5, "z": 0.5, "tolerance": 0.4},
+  {"x": 3.5, "z": 3.5, "tolerance": 0.4, "jump": "edge"}
+]'
+
+# 走过去，在离目标 1.0 格时起跳过缺口
+py -3.11 driver/transport_mod.py navigate 8.5 0.5 --jump distance --jump-distance 1.0
+```
+
+- `jump_when` 的 `mode=distance` 会同时把视角转向目标；`mode=edge` 保留当前朝向，可以用
+  `--yaw` 固定。
+- `navigate` / `route` 的 `jump` 取值：`auto`（默认，卡住才跳）、`distance`、`edge`、`never`。
+  `edge_lookahead` 默认 0.55 格，决定提前多久看到缺口。
+- `route` 每到一个路点发 `route_waypoint`（index/ticks），结束发 `route_done`；某段超时发
+  `route_failed`（带 index/target/distance）。最多 64 个路点，超过请拆成多条命令。
+- `jump_when` 返回 `jumped`：`ok`、`mode`、触发时的 `distance`、`ticks`、`on_ground`；
+  超时回 `ok=false, reason=timeout`。
+
+实测（超平坦）：`mode=now` 1 tick、`mode=tick after_ticks=5` 5 tick；距离模式在 0.88 格
+起跳；edge 模式站在 1×1 石柱上第 1 tick 触发，滞空 11 tick、顶点 1.252 格；两路点
+`route` 33 tick 完成；`navigate` 距离模式 33 tick 到达且 `jumps=1`。
+
+起跳的逐 tick 位移现在是 0.4200、0.3332、0.2481、0.1648、0.0831、0.0030、-0.0754…，
+与基岩版公式 `V1=0.42`、`Vt=(Vt-1-0.08)*0.98` 一致。此前只注入输入标志时，前 3 tick
+位置不动、第 4 tick 一次性补 +0.99 格，视觉上就是“卡回弹”。
 
 ## 设置与焦点
 

@@ -214,6 +214,10 @@ bool        parseSize(nlohmann::json const& value, std::uint32_t& out);
 // kind: "raw" | "block" | "legacy".
 nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::size_t len);
 
+// Reads the main-menu Xbox Live sign-in state through OreUI. Returns false when
+// the state is unavailable (no client / model not created), never throws.
+bool queryXblSignedIn(bool& signedIn);
+
 // ---------------------------------------------------------------------------
 // T3: hardware write watchpoints (debug registers DR0-DR3).
 //

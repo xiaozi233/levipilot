@@ -30,7 +30,8 @@ scenario DSL / LLM / shell
 | `Inventory.cpp` | 背包快照与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `Server.cpp` | 服务端权威传送 |
-| `World.cpp` | 世界列表、`enter_world` / `leave_world`、世界事件 |
+| `World.cpp` | 世界列表、`enter_world` / `leave_world`、登录门、世界事件 |
+| `SignIn.cpp` | 主菜单 Xbox Live 登录态查询（OreUI → MainMenuScreenModel） |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `Commands.cpp` | 管道命令解析与分发、请求级 SEH/异常隔离 |

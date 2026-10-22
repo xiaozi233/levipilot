@@ -11,6 +11,14 @@
   （pitch 符号与 `ActorRotation.x` 相反）
 - 按钮：`MoveInputComponent` 标志 + `InputEventQueue::enqueueButton` + 输入 handler 回调；
   `input_cfg` 的 `mode` 位掩码：1=直接标志，2=队列，4=handler，8=toggle fallback。
+- 跳跃：只靠上面的输入管道会等服务器确认——实测前 3 tick 位置不动，第 4 tick 一次性补
+  `V1+V2+V3 ≈ 0.99` 格，看起来像卡回弹。起跳沿必须额外调用
+  `LocalPlayer::jumpFromGround()`，之后逐 tick 的位移是 0.4200、0.3332、0.2481、0.1648…
+  （顶点 1.252 格，滞空 11 tick）。`MobJump::setJumpPendingScale` 单独用仍是延迟的
+  （dmf-mpk 报告里它只是辅助）。`input_cfg jump_impulse`：1=仅 jumpFromGround（默认），
+  2=setJumpPendingScale，3=两者，0=都不做（对比用）。
+- 潜行：`LocalPlayer::setSneaking(true)` + `MoveInputComponent` 标志；实测 20 tick 前进
+  4.316 格，潜行 1.295 格（约 0.30x 速度）。
 - 状态：`LocalPlayer` + `MoveInputComponent` + `PlayerActionComponent` + 属性 +
   `BlockSource` + `Level`。
 
@@ -110,6 +118,11 @@
   `IGameServerStartup::startLocalServerAsync(levelId, levelName, contentIdentity, settings, intent)`。
   `startLocalServerAsyncFromSummary` 没有被 LeviLamina 导出，直接链接会报 LNK2019；纯虚重载
   走 vtable。实测 `intent=0` 能从主菜单进"超平坦测试"。
+- **登录门**：世界列表来自本地缓存，可能早于异步 Xbox Live 登录；这时启动本地服务器会弹出
+  "你必须通过 Microsoft 服务身份验证"。进入前通过 `SceneProvider → FacetRegistryFactory →
+  ScreenModelProvider::getMainMenuScreenModel() → isSignedInToXBL()` 查询，未登录则轮询等待
+  `signin_wait_ms`（默认 15 s），仍未登录回 `signin_required`（`force=true` 可跳过）。
+  join 结果用 `enter_world_settled` 通知，超时/取消回 `ok=false` 和原因。
 - `leave_world`：`IGameServerShutdown::requestLeaveGame(true, true)`。
 - 世界事件：`ClientStartJoinLevelEvent` → `world_joining`，`ClientJoinLevelEvent` →
   `world_entered`，`ClientExitLevelEvent` → `world_left`，`ClientCancelJoinLevelEvent` →

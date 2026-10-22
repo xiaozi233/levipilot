@@ -183,8 +183,14 @@ def run(args: argparse.Namespace) -> int:
                 )
             if not args.no_focus:
                 focus_game(process.pid, timeout=3.0)
+            try:
+                log(f"signin: {client.signin()}")
+            except (ModPipeError, ModTimeout) as exc:
+                log(f"signin query unavailable: {exc}")
             log(f"entering {args.world!r}")
-            client.enter_world(args.world)
+            settled = client.enter_world_ready(args.world, attempts=args.attempts)
+            if not settled.get("ok"):
+                raise SystemExit(f"进入世界失败（可能在等 Microsoft 登录）：{settled}")
             state = client.wait_in_world(timeout=args.timeout)
             log(
                 "in world: feet=({feet_x:.2f}, {feet_y:.2f}, {feet_z:.2f}) health={health}".format(
@@ -207,6 +213,12 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     run_parser.add_argument("--exe", help="override the game executable path")
     run_parser.add_argument("--timeout", type=float, default=90.0)
+    run_parser.add_argument(
+        "--attempts",
+        type=int,
+        default=3,
+        help="enter_world retries while Microsoft sign-in settles",
+    )
     run_parser.add_argument(
         "--no-focus",
         action="store_true",

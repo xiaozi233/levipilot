@@ -104,6 +104,60 @@ class WaitReadyTests(unittest.TestCase):
         self.assertEqual(client.states, 2)
 
 
+class EnterWorldRetryTests(unittest.TestCase):
+    def test_waits_for_settled_and_retries_cancelled_join(self) -> None:
+        class FlakyClient(ModClient):
+            def __init__(self) -> None:
+                super().__init__(timeout=0.05)
+                self.calls = 0
+
+            def enter_world(self, name=None, **kwargs):  # type: ignore[override]
+                self.calls += 1
+                return {"event": "enter_world_result", "ok": True}
+
+            def wait_enter_settled(self, timeout=45.0):  # type: ignore[override]
+                if self.calls == 1:
+                    return {
+                        "event": "enter_world_settled",
+                        "ok": False,
+                        "reason": "left_while_joining",
+                    }
+                return {"event": "enter_world_settled", "ok": True}
+
+        client = FlakyClient()
+        result = client.enter_world_ready("world", retry_delay=0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(client.calls, 2)
+
+    def test_signin_required_is_returned_without_waiting(self) -> None:
+        class RefusingClient(ModClient):
+            def __init__(self) -> None:
+                super().__init__(timeout=0.05)
+                self.calls = 0
+
+            def enter_world(self, name=None, **kwargs):  # type: ignore[override]
+                self.calls += 1
+                return {
+                    "event": "enter_world_result",
+                    "ok": False,
+                    "reason": "signin_required",
+                }
+
+            def wait_enter_settled(self, timeout=45.0):  # type: ignore[override]
+                raise AssertionError("must not wait when enter_world already failed")
+
+        client = RefusingClient()
+        result = client.enter_world_ready("world", attempts=2, retry_delay=0)
+        self.assertEqual(result["reason"], "signin_required")
+        self.assertEqual(client.calls, 2)
+
+    def test_wait_enter_settled_skips_ticks(self) -> None:
+        client = FakeClient()
+        client._lines.put({"event": "tick", "tick": 1})
+        client._lines.put({"event": "enter_world_settled", "ok": True})
+        self.assertTrue(client.wait_enter_settled(0.5)["ok"])
+
+
 class HarnessForwardingTests(unittest.TestCase):
     def test_walk_to_forwards_keyword_arguments(self) -> None:
         class Recorder:
@@ -118,6 +172,35 @@ class HarnessForwardingTests(unittest.TestCase):
         harness.client = Recorder()  # type: ignore[assignment]
         harness.walk_to(1.5, -2.5, sprint=True, tolerance=0.2)
         self.assertEqual(harness.client.call, (1.5, -2.5, {"sprint": True, "tolerance": 0.2}))
+
+    def test_jump_and_route_forward_arguments(self) -> None:
+        class Recorder:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def jump_when(self, mode, **kwargs):
+                self.calls.append(("jump", mode, kwargs))
+                return {"event": "jumped"}
+
+            def route(self, waypoints, **kwargs):
+                self.calls.append(("route", list(waypoints), kwargs))
+                return {"event": "route_done"}
+
+        harness = Harness.__new__(Harness)
+        harness.client = Recorder()  # type: ignore[assignment]
+        harness.jump_when("distance", x=1.0, z=2.0, distance=0.5, forward=1.0)
+        harness.route([{"x": 1, "z": 2, "jump": "edge"}], sprint=True)
+        self.assertEqual(
+            harness.client.calls,
+            [
+                ("jump", "distance", {"x": 1.0, "z": 2.0, "distance": 0.5, "forward": 1.0}),
+                ("route", [{"x": 1, "z": 2, "jump": "edge"}], {"sprint": True}),
+            ],
+        )
+
+    def test_jump_when_distance_requires_target(self) -> None:
+        with self.assertRaises(ValueError):
+            ModClient(timeout=0.05).jump_when("distance")
 
     def test_mine_and_place_forward_task_arguments(self) -> None:
         class Recorder:

@@ -87,17 +87,76 @@ struct EntityAction {
 // Closed-loop tasks run inside the client tick. Keeping them in the mod (rather
 // than a Python loop issuing one command per tick) removes pipe latency from the
 // feedback path and makes the behaviour deterministic at 20 TPS.
+enum class JumpMode : int {
+    Auto     = 0, // jump when stuck (navigate default)
+    Distance = 1, // jump when within jumpDistance of the target
+    Edge     = 2, // jump when the next support block is missing
+    Never    = 3,
+    Now      = 4, // jump_when only
+    Tick     = 5, // jump_when only
+};
+
 struct NavigateTask {
-    float x          = 0.0f;
-    float z          = 0.0f;
-    float tolerance  = 0.35f;
-    bool  sprint     = false;
-    int   maxTicks   = 600;
-    int   elapsed    = 0;
-    int   stuckTicks = 0;
-    float lastX      = 0.0f;
-    float lastZ      = 0.0f;
-    bool  haveLast   = false;
+    float    x             = 0.0f;
+    float    z             = 0.0f;
+    float    tolerance     = 0.35f;
+    bool     sprint        = false;
+    int      maxTicks      = 600;
+    int      elapsed       = 0;
+    int      stuckTicks    = 0;
+    float    lastX         = 0.0f;
+    float    lastZ         = 0.0f;
+    bool     haveLast      = false;
+    JumpMode jumpMode      = JumpMode::Auto;
+    float    jumpDistance  = 1.0f;
+    float    edgeLookahead = 0.55f;
+    int      jumpCooldown  = 0;
+    int      jumps         = 0;
+};
+
+// One-shot jump timed by distance, edge or tick. Unlike navigate it can keep
+// applying forward input while it waits, so a script can "run and jump" in one
+// command instead of a Python feedback loop.
+struct JumpTask {
+    JumpMode mode        = JumpMode::Distance;
+    float    x           = 0.0f;
+    float    z           = 0.0f;
+    float    distance    = 0.6f;
+    float    forward     = 0.0f;
+    bool     sprint      = false;
+    bool     hasYaw      = false;
+    float    yaw         = 0.0f;
+    int      afterTicks  = 1;
+    int      maxTicks    = 60;
+    int      elapsed     = 0;
+    float    edgeLookahead = 0.55f;
+};
+
+struct RouteWaypoint {
+    float    x            = 0.0f;
+    float    z            = 0.0f;
+    float    tolerance    = 0.35f;
+    int      maxTicks     = 600;
+    JumpMode jumpMode     = JumpMode::Auto;
+    float    jumpDistance = 1.0f;
+};
+
+struct RouteTask {
+    // Fixed capacity keeps the per-tick task copy allocation-free. A route
+    // longer than this is split into multiple commands.
+    static constexpr std::size_t MaxWaypoints = 64;
+
+    std::array<RouteWaypoint, MaxWaypoints> points{};
+    std::size_t                             count          = 0;
+    int                                     index          = 0;
+    int                                     elapsed        = 0;
+    int                                     segmentElapsed = 0;
+    int                                     stuckTicks     = 0;
+    float                                   lastX          = 0.0f;
+    float                                   lastZ          = 0.0f;
+    bool                                    haveLast       = false;
+    bool                                    sprint         = false;
+    int                                     jumpCooldown   = 0;
 };
 
 struct MineTask {
@@ -146,6 +205,11 @@ public:
     bool enable();
     bool disable();
 
+    // Small append-only diagnostics file in the mod directory. LeviLamina's own
+    // log location depends on how the game was launched, so this is the one
+    // place a harness bug can always be inspected.
+    void bootLog(std::string const& text);
+
     // Called by the _applyTurnDelta hook: background mouse look must not move
     // the camera, but our own look/task injections must still work.
     [[nodiscard]] bool allowTurnDelta() const;
@@ -173,10 +237,6 @@ private:
     static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info);
     void writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
     void recordCommand(std::string const& line);
-    // Small append-only diagnostics file in the mod directory. LeviLamina's own
-    // log location depends on how the game was launched, so this is the one
-    // place a harness bug can always be inspected.
-    void bootLog(std::string const& text);
     // Runs a callback on the integrated server thread with exception isolation.
     void queueServerTask(std::function<void()> fn);
 
@@ -188,6 +248,8 @@ private:
     // Closed-loop tasks.
     bool tickTask(ClientInstance& client, LocalPlayer& player);
     bool tickNavigate(ClientInstance& client, LocalPlayer& player, NavigateTask& task, nlohmann::json& result);
+    bool tickJump(ClientInstance& client, LocalPlayer& player, JumpTask& task, nlohmann::json& result);
+    bool tickRoute(ClientInstance& client, LocalPlayer& player, RouteTask& task, nlohmann::json& result);
     bool tickMine(LocalPlayer& player, MineTask& task, nlohmann::json& result);
     bool tickPlace(LocalPlayer& player, PlaceTask& task, nlohmann::json& result);
     bool tickUse(LocalPlayer& player, UseTask& task, nlohmann::json& result);
@@ -197,9 +259,11 @@ private:
     void           aimAt(LocalPlayer& player, Vec3 const& point);
 
     // World flow: start/leave an existing world without going through the UI.
-    void enterWorld(std::string const& name, std::string const& id, int intent);
+    void enterWorld(std::string const& name, std::string const& id, int intent, bool force);
     void leaveWorld();
     void listWorlds();
+    void reportSignInState();
+    bool waitForSignIn(int timeoutMs);
     void setOptions(std::string const& text);
     void saveOptions();
     void resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch);
@@ -250,6 +314,9 @@ private:
 
     std::atomic_bool           mRunning{false};
     std::atomic_bool           mInWorld{false};
+    // True between startLocalServerAsync and join/cancel/exit; used to emit a
+    // single enter_world_settled for the entry a client just requested.
+    std::atomic_bool           mJoinPending{false};
     std::atomic<std::uint64_t> mLastTickMs{0};
     std::atomic_bool           mRecording{false};
     std::atomic<std::uint64_t> mTick{0};
@@ -313,6 +380,11 @@ private:
     std::atomic<int>            mSlotRequest{-1};
     // bit 1 direct flags, bit 2 queue, bit 4 handler callbacks, bit 8 toggle fallback
     std::atomic<int> mButtonMode{1 | 2 | 4};
+    // Local jump impulse: bit 1 = LocalPlayer::jumpFromGround,
+    // bit 2 = MobJump::setJumpPendingScale. Measured on 1.26.51.01:
+    // jumpFromGround gives the exact 0.42/0.3332/... arc immediately, while
+    // setJumpPendingScale alone still waits for the server (3-tick snap).
+    std::atomic<int> mJumpImpulseMode{1};
     std::atomic_bool mButtonsRequested{false};
 
     std::mutex mEntityMutex;
@@ -333,6 +405,8 @@ private:
     // executing it.
     std::mutex                  mTaskMutex;
     std::optional<NavigateTask> mNavigateTask;
+    std::optional<JumpTask>     mJumpTask;
+    std::optional<RouteTask>    mRouteTask;
     std::optional<MineTask>     mMineTask;
     std::optional<PlaceTask>    mPlaceTask;
     std::optional<UseTask>      mUseTask;
@@ -396,6 +470,7 @@ private:
     // T2/T3 configuration and diagnostics.
     std::atomic_bool           mAllowMemoryWrite{false};
     std::atomic_bool           mAllowCrashTest{false};
+    std::atomic<int>           mSignInWaitMs{15000};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};
 };

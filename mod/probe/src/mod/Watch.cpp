@@ -131,7 +131,11 @@ bool installOnThread(
         tid
     );
     if (thread == nullptr) {
-        error = "open_thread_failed";
+        DWORD const code = GetLastError();
+        ProbeMod::getInstance().bootLog(
+            "watch: open thread failed tid=" + std::to_string(tid) + " err=" + std::to_string(code)
+        );
+        error = code == ERROR_INVALID_PARAMETER ? "thread_gone" : "open_thread_failed";
         return false;
     }
     bool const self = tid == GetCurrentThreadId();
@@ -174,19 +178,43 @@ bool clearOnThread(DWORD tid, int slot) {
         tid
     );
     if (thread == nullptr) {
+        DWORD const code = GetLastError();
+        // A thread that already exited takes its debug registers with it.
+        if (code == ERROR_INVALID_PARAMETER) {
+            return true;
+        }
+        ProbeMod::getInstance().bootLog(
+            "watch: clear open failed tid=" + std::to_string(tid) + " err=" + std::to_string(code)
+        );
         return false;
     }
     bool const self = tid == GetCurrentThreadId();
     if (!self && SuspendThread(thread) == static_cast<DWORD>(-1)) {
+        ProbeMod::getInstance().bootLog(
+            "watch: clear suspend failed tid=" + std::to_string(tid) + " err="
+            + std::to_string(GetLastError())
+        );
         CloseHandle(thread);
         return false;
     }
     CONTEXT context{};
     context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_CONTROL;
     bool ok              = GetThreadContext(thread, &context) != FALSE;
+    if (!ok) {
+        ProbeMod::getInstance().bootLog(
+            "watch: clear get context failed tid=" + std::to_string(tid) + " err="
+            + std::to_string(GetLastError())
+        );
+    }
     if (ok) {
         applySlot(context, slot, 0, 1, false, false);
         ok = SetThreadContext(thread, &context) != FALSE;
+        if (!ok) {
+            ProbeMod::getInstance().bootLog(
+                "watch: clear set context failed tid=" + std::to_string(tid) + " slot="
+                + std::to_string(slot) + " err=" + std::to_string(GetLastError())
+            );
+        }
     }
     if (!self) {
         ResumeThread(thread);
@@ -395,8 +423,14 @@ nlohmann::json watchRemove(int id) {
         if (static_cast<int>(watch->id.load(std::memory_order_relaxed)) != id) {
             continue;
         }
+        bool cleared = true;
         for (DWORD tid : watch->threads) {
-            clearOnThread(tid, static_cast<int>(slot));
+            cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
+        }
+        if (!cleared) {
+            // Keep the slot owned: the DR7 bit is still set, and treating it as
+            // free would make the next install fail with dr_busy forever.
+            return errorJson("clear_failed");
         }
         watch->threads.clear();
         watch->tag.clear();
@@ -411,21 +445,25 @@ nlohmann::json watchRemove(int id) {
 }
 
 bool watchRemoveAll() {
-    bool removed = false;
+    bool allCleared = true;
     for (std::size_t slot = 0; slot < kSlotCount; ++slot) {
         auto& watch = gWatches[slot];
         if (!watch || !watch->used.load(std::memory_order_acquire)) {
             continue;
         }
+        bool cleared = true;
         for (DWORD tid : watch->threads) {
-            clearOnThread(tid, static_cast<int>(slot));
+            cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
+        }
+        if (!cleared) {
+            allCleared = false;
+            continue; // keep ownership so a later clear can retry
         }
         watch->threads.clear();
         watch->tag.clear();
         watch->used.store(false, std::memory_order_release);
-        removed = true;
     }
-    return removed;
+    return allCleared;
 }
 
 nlohmann::json watchListJson() {

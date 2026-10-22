@@ -156,6 +156,24 @@ def main(argv: list[str] | None = None) -> int:
     navigate.add_argument("--tolerance", type=float, default=0.35)
     navigate.add_argument("--sprint", action="store_true")
     navigate.add_argument("--max-ticks", type=int, default=600)
+    navigate.add_argument("--jump", default="auto", choices=["auto", "distance", "edge", "never"])
+    navigate.add_argument("--jump-distance", type=float, default=1.0)
+    navigate.add_argument("--edge-lookahead", type=float, default=0.55)
+
+    jump_when = sub.add_parser("jump-when", help="jump at a distance/edge/tick")
+    jump_when.add_argument("--mode", default="now", choices=["now", "tick", "distance", "edge"])
+    jump_when.add_argument("--x", type=float)
+    jump_when.add_argument("--z", type=float)
+    jump_when.add_argument("--distance", type=float, default=0.6)
+    jump_when.add_argument("--forward", type=float, default=0.0)
+    jump_when.add_argument("--sprint", action="store_true")
+    jump_when.add_argument("--yaw", type=float)
+    jump_when.add_argument("--after-ticks", type=int, default=1)
+    jump_when.add_argument("--max-ticks", type=int, default=60)
+
+    route = sub.add_parser("route", help="run a waypoint route inside the mod")
+    route.add_argument("waypoints", help="JSON array or a path to a JSON file")
+    route.add_argument("--sprint", action="store_true")
 
     mine = sub.add_parser("mine", help="break one block")
     mine.add_argument("x", type=int)
@@ -180,11 +198,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("task-stop")
 
     sub.add_parser("worlds")
+    sub.add_parser("signin", help="Xbox Live sign-in state at the main menu")
     enter_world = sub.add_parser("enter-world", help="start an existing world without the menu UI")
     enter_world.add_argument("--name")
     enter_world.add_argument("--id")
     enter_world.add_argument("--intent", type=int, default=0)
-    enter_world.add_argument("--wait", action="store_true", help="wait until state.in_world")
+    enter_world.add_argument("--force", action="store_true", help="skip the sign-in gate")
+    enter_world.add_argument(
+        "--wait",
+        action="store_true",
+        help="wait for enter_world_settled and retry the sign-in race",
+    )
     sub.add_parser("leave-world")
 
     options_set = sub.add_parser("options-set", help="apply option save-tag values")
@@ -380,8 +404,41 @@ def main(argv: list[str] | None = None) -> int:
                             tolerance=args.tolerance,
                             sprint=args.sprint,
                             max_ticks=args.max_ticks,
+                            jump=args.jump,
+                            jump_distance=args.jump_distance,
+                            edge_lookahead=args.edge_lookahead,
                         ),
                         ensure_ascii=False,
+                    )
+                )
+            elif args.command == "jump-when":
+                print(
+                    json.dumps(
+                        client.jump_when(
+                            args.mode,
+                            x=args.x,
+                            z=args.z,
+                            distance=args.distance,
+                            forward=args.forward,
+                            sprint=args.sprint,
+                            yaw=args.yaw,
+                            after_ticks=args.after_ticks,
+                            max_ticks=args.max_ticks,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "route":
+                path = Path(args.waypoints)
+                if path.is_file():
+                    waypoints = json.loads(path.read_text(encoding="utf-8"))
+                else:
+                    waypoints = json.loads(args.waypoints)
+                print(
+                    json.dumps(
+                        client.route(waypoints, sprint=args.sprint),
+                        ensure_ascii=False,
+                        indent=2,
                     )
                 )
             elif args.command == "mine":
@@ -416,10 +473,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.task_stop(), ensure_ascii=False))
             elif args.command == "worlds":
                 print(json.dumps(client.worlds(), ensure_ascii=False, indent=2))
+            elif args.command == "signin":
+                print(json.dumps(client.signin(), ensure_ascii=False, indent=2))
             elif args.command == "enter-world":
-                result = client.enter_world(args.name, world_id=args.id, intent=args.intent)
                 if args.wait:
-                    result = client.wait_in_world()
+                    result = client.enter_world_ready(
+                        args.name,
+                        world_id=args.id,
+                        intent=args.intent,
+                        force=args.force,
+                    )
+                else:
+                    result = client.enter_world(
+                        args.name,
+                        world_id=args.id,
+                        intent=args.intent,
+                        force=args.force,
+                    )
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             elif args.command == "leave-world":
                 print(json.dumps(client.leave_world(), ensure_ascii=False))

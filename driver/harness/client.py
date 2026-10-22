@@ -510,12 +510,16 @@ class ModClient:
         tolerance: float = 0.35,
         sprint: bool = False,
         max_ticks: int = 600,
+        jump: str = "auto",
+        jump_distance: float = 1.0,
+        edge_lookahead: float = 0.55,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Walk to ``(x, z)`` in a closed loop on the client tick.
 
-        The mod turns and re-aims every tick, jumps when it stops making
-        progress, and reports ``arrived`` / ``timeout`` once.
+        ``jump`` selects the takeoff policy: ``auto`` (when stuck), ``distance``
+        (within ``jump_distance`` of the target), ``edge`` (support ahead is
+        missing) or ``never``.
         """
         if timeout is None:
             timeout = max_ticks / 20.0 + 15.0
@@ -527,10 +531,87 @@ class ModClient:
                 "tolerance": float(tolerance),
                 "sprint": bool(sprint),
                 "max_ticks": int(max_ticks),
+                "jump": jump,
+                "jump_distance": float(jump_distance),
+                "edge_lookahead": float(edge_lookahead),
             },
             "navigated",
             timeout=timeout,
         )
+
+    def jump_when(
+        self,
+        mode: str = "now",
+        *,
+        x: float | None = None,
+        z: float | None = None,
+        distance: float = 0.6,
+        forward: float = 0.0,
+        sprint: bool = False,
+        yaw: float | None = None,
+        after_ticks: int = 1,
+        max_ticks: int = 60,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Jump at a controlled moment.
+
+        ``mode``: ``now``, ``tick`` (after ``after_ticks``), ``distance``
+        (horizontal distance to x,z <= ``distance``) or ``edge`` (the block
+        ahead has no support). ``forward``/``sprint`` keep the player moving
+        while waiting, so one command can run and jump.
+        """
+        if mode == "distance" and (x is None or z is None):
+            raise ValueError("distance mode requires x and z")
+        message: dict[str, Any] = {
+            "cmd": "jump_when",
+            "mode": mode,
+            "distance": float(distance),
+            "forward": float(forward),
+            "sprint": bool(sprint),
+            "after_ticks": int(after_ticks),
+            "max_ticks": int(max_ticks),
+        }
+        if x is not None:
+            message["x"] = float(x)
+        if z is not None:
+            message["z"] = float(z)
+        if yaw is not None:
+            message["yaw"] = float(yaw)
+        if timeout is None:
+            timeout = max_ticks / 20.0 + 10.0
+        return self.request(message, "jumped", timeout=timeout)
+
+    def route(
+        self,
+        waypoints: Iterable[dict[str, Any]],
+        *,
+        sprint: bool = False,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Run a waypoint route in the mod and return ``route_done``/``route_failed``.
+
+        Each waypoint accepts ``x, z, tolerance, max_ticks, jump, jump_distance``
+        where ``jump`` is ``auto`` (default), ``distance``, ``edge`` or ``never``.
+        """
+        points = [dict(point) for point in waypoints]
+        if not points:
+            raise ValueError("at least one waypoint is required")
+        total_ticks = sum(int(point.get("max_ticks", 600)) for point in points)
+        if timeout is None:
+            timeout = total_ticks / 20.0 + 20.0
+        self.send({"cmd": "route", "waypoints": points, "sprint": bool(sprint)})
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise ModTimeout(f"route 等待完成超时（{timeout:.1f}s）")
+            message = self._next_line(remaining)
+            event = message.get("event")
+            if event in {"route_done", "route_failed"}:
+                return message
+            if event == "error":
+                raise ModProtocolError(f"route: {message.get('reason', message)}")
 
     def mine_block(
         self,
@@ -603,19 +684,28 @@ class ModClient:
         """List cached worlds (id, name, last_saved, game_type)."""
         return self.request({"cmd": "worlds"}, "worlds", timeout=timeout)
 
+    def signin(self) -> dict[str, Any]:
+        """Xbox Live sign-in state from the main-menu model.
+
+        ``known=false`` means the OreUI model is not available (for example
+        in-world); call it from the main menu before entering a world.
+        """
+        return self.request({"cmd": "signin"}, "signin")
+
     def enter_world(
         self,
         name: str | None = None,
         *,
         world_id: str | None = None,
         intent: int = 0,
-        timeout: float = 20.0,
+        force: bool = False,
+        timeout: float = 40.0,
     ) -> dict[str, Any]:
         """Start an existing world without going through the menu UI.
 
-        The mod replies ``enter_world_result`` immediately, then emits
-        ``world_joining`` / ``world_entered``; poll ``state().in_world`` or wait
-        for ``world_entered`` before sending gameplay commands.
+        The mod waits for Xbox Live sign-in first (unless ``force``), replies
+        ``enter_world_result``, then emits ``enter_world_settled`` once the join
+        succeeds or is cancelled.
         """
         if not name and not world_id:
             raise ValueError("name or world_id is required")
@@ -624,7 +714,55 @@ class ModClient:
             message["name"] = name
         if world_id:
             message["id"] = world_id
+        if force:
+            message["force"] = True
         return self.request(message, "enter_world_result", timeout=timeout)
+
+    def wait_enter_settled(self, timeout: float = 45.0) -> dict[str, Any]:
+        """Wait for the join outcome of the most recent ``enter_world``."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ModTimeout(f"等待 enter_world_settled 超时（{timeout:.0f}s）")
+            message = self._next_line(remaining)
+            if message.get("event") == "enter_world_settled":
+                return message
+
+    def enter_world_ready(
+        self,
+        name: str | None = None,
+        *,
+        world_id: str | None = None,
+        intent: int = 0,
+        force: bool = False,
+        attempts: int = 3,
+        retry_delay: float = 4.0,
+        settled_timeout: float = 45.0,
+    ) -> dict[str, Any]:
+        """Enter a world, retrying the async sign-in/join race.
+
+        Returns the ``enter_world_settled`` message on success, or the last
+        failure (``ok=false``) after all attempts.
+        """
+        last: dict[str, Any] = {"ok": False, "reason": "not_attempted"}
+        for attempt in range(max(1, attempts)):
+            result = self.enter_world(
+                name,
+                world_id=world_id,
+                intent=intent,
+                force=force,
+                timeout=settled_timeout,
+            )
+            if not result.get("ok"):
+                last = result
+            else:
+                last = self.wait_enter_settled(timeout=settled_timeout)
+                if last.get("ok"):
+                    return last
+            if attempt + 1 < attempts:
+                time.sleep(retry_delay)
+        return last
 
     def leave_world(self, timeout: float = 20.0) -> dict[str, Any]:
         return self.request({"cmd": "leave_world"}, "leave_world_result", timeout=timeout)
@@ -850,6 +988,12 @@ class Harness:
     def walk_to(self, x: float, z: float, **kwargs: Any) -> dict[str, Any]:
         return self.client.navigate(x, z, **kwargs)
 
+    def jump_when(self, mode: str = "now", **kwargs: Any) -> dict[str, Any]:
+        return self.client.jump_when(mode, **kwargs)
+
+    def route(self, waypoints: Iterable[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        return self.client.route(waypoints, **kwargs)
+
     def mine(self, x: int, y: int, z: int, **kwargs: Any) -> dict[str, Any]:
         return self.client.mine_block(x, y, z, **kwargs)
 
@@ -867,6 +1011,12 @@ class Harness:
 
     def enter_world(self, name: str | None = None, **kwargs: Any) -> dict[str, Any]:
         return self.client.enter_world(name, **kwargs)
+
+    def enter_world_ready(self, name: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        return self.client.enter_world_ready(name, **kwargs)
+
+    def signin(self) -> dict[str, Any]:
+        return self.client.signin()
 
     def leave_world(self) -> dict[str, Any]:
         return self.client.leave_world()

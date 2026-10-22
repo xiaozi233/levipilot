@@ -206,8 +206,15 @@ void ProbeMod::dispatchLine(std::string const& line) {
     }
     if (cmd == "watch_clear") {
         if (j.value("all", false)) {
-            watchRemoveAll();
-            enqueue(R"({"event":"watch_cleared","all":true})");
+            bool const cleared = watchRemoveAll();
+            enqueue(
+                nlohmann::json{
+                    {"event", "watch_cleared"},
+                    {"all",   true           },
+                    {"ok",    cleared        },
+            }
+                    .dump()
+            );
             return;
         }
         int const id = j.value("id", -1);
@@ -426,6 +433,9 @@ void ProbeMod::dispatchLine(std::string const& line) {
             mHandlerStates.fill(false);
             mPrevJump = false;
         }
+        if (j.contains("jump_impulse")) {
+            mJumpImpulseMode.store(std::clamp(j.value("jump_impulse", 1), 0, 3));
+        }
         enqueue(R"({"event":"input_cfg_ok"})");
         return;
     }
@@ -539,7 +549,16 @@ void ProbeMod::dispatchLine(std::string const& line) {
             enqueue(R"({"event":"error","reason":"missing_world"})");
             return;
         }
-        enterWorld(name, id, std::clamp(j.value("intent", 0), 0, 16));
+        enterWorld(
+            name,
+            id,
+            std::clamp(j.value("intent", 0), 0, 16),
+            j.value("force", false)
+        );
+        return;
+    }
+    if (cmd == "signin") {
+        reportSignInState();
         return;
     }
     if (cmd == "leave_world") {
@@ -590,6 +609,16 @@ void ProbeMod::dispatchLine(std::string const& line) {
         task.tolerance = std::max(0.05f, j.value("tolerance", 0.35f));
         task.sprint    = j.value("sprint", false);
         task.maxTicks  = std::clamp(j.value("max_ticks", 600), 1, 200000);
+        std::string const jump = j.value("jump", std::string{"auto"});
+        if (jump == "distance") {
+            task.jumpMode = JumpMode::Distance;
+        } else if (jump == "edge") {
+            task.jumpMode = JumpMode::Edge;
+        } else if (jump == "never") {
+            task.jumpMode = JumpMode::Never;
+        }
+        task.jumpDistance  = std::clamp(j.value("jump_distance", 1.0f), 0.1f, 8.0f);
+        task.edgeLookahead = std::clamp(j.value("edge_lookahead", 0.55f), 0.2f, 1.5f);
         {
             std::lock_guard lock(mTaskMutex);
             ++mTaskEpoch;
@@ -597,6 +626,8 @@ void ProbeMod::dispatchLine(std::string const& line) {
             mMineTask.reset();
             mPlaceTask.reset();
             mUseTask.reset();
+            mJumpTask.reset();
+            mRouteTask.reset();
         }
         beginTask();
         enqueue(
@@ -606,6 +637,120 @@ void ProbeMod::dispatchLine(std::string const& line) {
                 {"z",         task.z            },
                 {"tolerance", task.tolerance    },
                 {"max_ticks", task.maxTicks     },
+                {"jump",      jump              },
+                {"jump_distance", task.jumpDistance},
+        }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "jump_when") {
+        if (!mInWorld.load()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        JumpTask task;
+        std::string const mode = j.value("mode", std::string{"now"});
+        if (mode == "distance") {
+            task.mode = JumpMode::Distance;
+        } else if (mode == "edge") {
+            task.mode = JumpMode::Edge;
+        } else if (mode == "tick") {
+            task.mode = JumpMode::Tick;
+        } else {
+            task.mode = JumpMode::Now;
+        }
+        task.x             = j.value("x", 0.0f);
+        task.z             = j.value("z", 0.0f);
+        task.distance      = std::clamp(j.value("distance", 0.6f), 0.05f, 8.0f);
+        task.forward       = std::clamp(j.value("forward", 0.0f), -1.0f, 1.0f);
+        task.sprint        = j.value("sprint", false);
+        task.hasYaw        = j.contains("yaw");
+        task.yaw           = j.value("yaw", 0.0f);
+        task.afterTicks    = std::clamp(j.value("after_ticks", 1), 1, 2000);
+        task.maxTicks      = std::clamp(j.value("max_ticks", 60), 1, 5000);
+        task.edgeLookahead = std::clamp(j.value("edge_lookahead", 0.55f), 0.2f, 1.5f);
+        {
+            std::lock_guard lock(mTaskMutex);
+            ++mTaskEpoch;
+            mJumpTask = task;
+            mNavigateTask.reset();
+            mRouteTask.reset();
+            mMineTask.reset();
+            mPlaceTask.reset();
+            mUseTask.reset();
+        }
+        beginTask();
+        enqueue(
+            nlohmann::json{
+                {"event",       "jump_when_started"},
+                {"mode",        mode              },
+                {"x",           task.x            },
+                {"z",           task.z            },
+                {"distance",    task.distance     },
+                {"forward",     task.forward      },
+                {"sprint",      task.sprint       },
+                {"after_ticks", task.afterTicks   },
+                {"max_ticks",   task.maxTicks     },
+        }
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "route") {
+        if (!mInWorld.load()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        if (!j.contains("waypoints") || !j["waypoints"].is_array() || j["waypoints"].empty()) {
+            enqueue(R"({"event":"error","reason":"missing_waypoints"})");
+            return;
+        }
+        RouteTask task;
+        task.sprint = j.value("sprint", false);
+        for (auto const& row : j["waypoints"]) {
+            if (!row.is_object()) {
+                continue;
+            }
+            RouteWaypoint point;
+            point.x         = row.value("x", 0.0f);
+            point.z         = row.value("z", 0.0f);
+            point.tolerance = std::clamp(row.value("tolerance", 0.35f), 0.05f, 2.0f);
+            point.maxTicks  = std::clamp(row.value("max_ticks", 600), 1, 200000);
+            std::string const jump = row.value("jump", std::string{"auto"});
+            if (jump == "distance") {
+                point.jumpMode = JumpMode::Distance;
+            } else if (jump == "edge") {
+                point.jumpMode = JumpMode::Edge;
+            } else if (jump == "never") {
+                point.jumpMode = JumpMode::Never;
+            }
+            point.jumpDistance = std::clamp(row.value("jump_distance", 1.0f), 0.1f, 8.0f);
+            task.points[task.count++] = point;
+            if (task.count >= RouteTask::MaxWaypoints) {
+                break;
+            }
+        }
+        if (task.count == 0) {
+            enqueue(R"({"event":"error","reason":"missing_waypoints"})");
+            return;
+        }
+        {
+            std::lock_guard lock(mTaskMutex);
+            ++mTaskEpoch;
+            mRouteTask = task;
+            mNavigateTask.reset();
+            mJumpTask.reset();
+            mMineTask.reset();
+            mPlaceTask.reset();
+            mUseTask.reset();
+        }
+        beginTask();
+        enqueue(
+            nlohmann::json{
+                {"event",     "route_started"    },
+                {"waypoints", task.count         },
+                {"sprint",    task.sprint        },
         }
                 .dump()
         );
@@ -628,6 +773,8 @@ void ProbeMod::dispatchLine(std::string const& line) {
             mNavigateTask.reset();
             mPlaceTask.reset();
             mUseTask.reset();
+            mJumpTask.reset();
+            mRouteTask.reset();
         }
         beginTask();
         enqueue(

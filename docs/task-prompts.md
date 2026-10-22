@@ -259,7 +259,7 @@ Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反�
 验收：
 - 装了 watch + hook_va 后 panic → status 显示 hooks=0、DR7 回到初始值、游戏继续跑、
   tick 计数继续增长；之后还能重新装钩；
-- 不 panic 时行为与现在完全一致（回归 selftest 13/13）。
+- 不 panic 时行为与现在完全一致（回归 selftest 全绿）。
 ```
 
 ---

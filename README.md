@@ -94,7 +94,9 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
 - IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
 - Agent 常驻约定（硬约束 / 已知坑 / 当前优先级）：[`AGENTS.md`](AGENTS.md)
-- 开发任务提示词（mod 优先，P0→P3，可直接派活）：[`docs/task-prompts.md`](docs/task-prompts.md)
+- 开发任务提示词 · 第一轮 T1–T9（mod 优先，可直接派活）：[`docs/task-prompts.md`](docs/task-prompts.md)
+- 开发任务提示词 · 第二轮 F1–F10（修复轮）：[`docs/task-prompts-fixes.md`](docs/task-prompts-fixes.md)
+- 开发任务提示词 · 第三轮 G1–G6（输入事件层）：[`docs/task-prompts-input.md`](docs/task-prompts-input.md)
 
 ## 状态与限制
 

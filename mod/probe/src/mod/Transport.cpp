@@ -168,7 +168,7 @@ void ProbeMod::serverLoop() {
                     {"queue_dropped", mQueueDropped.load()},
                 };
                 helloJson["capabilities"] = nlohmann::json::array(
-                    {"tick_json", "bin_record", "mem", "watch", "signin"}
+                    {"tick_json", "bin_record", "mem", "watch", "signin", "hook"}
                 );
                 auto const hello   = helloJson.dump() + "\n";
                 DWORD      written = 0;

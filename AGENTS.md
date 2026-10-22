@@ -35,8 +35,8 @@ py -3.11 driver/selftest.py
 
 | 路径 | 内容 |
 | --- | --- |
-| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
-| `driver/harness/` | Python 客户端：`protocol`/`client`/`errors`/`cli`，以及 `memory`/`spool`/`watch` 辅助模块 |
+| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
+| `driver/harness/` | Python 客户端：`protocol`/`client`/`errors`/`cli`，以及 `memory`/`spool`/`watch`/`record`/`hooks` 辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
 | `scenarios/` | 场景 DSL 的 JSON |
@@ -82,6 +82,9 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 - 跳跃不能只靠输入标志/队列/handler：1.26.51.01 上前 3 tick 位置不动、第 4 tick 一次性补
   V1+V2+V3（约 0.99 格）。起跳沿必须调 `LocalPlayer::jumpFromGround()`；
   `MobJump::setJumpPendingScale` 单独用不解决。
+- 运行时 hook 的通用 VA detour 只保留 rcx/rdx/r8/r9；float/xmm 参数、向量返回、超过 4 个
+  参数或隐藏返回指针的目标必须写 typed detour，否则 origin 会收到错误参数。
+  VA 只校验“可执行页”，指令边界由 IDA 侧确认。
 - `StateVector.vel` 是摩擦前速度，约为真实逐 tick 位移的 0.546 倍；判速度用相邻 tick 位置差。
 - `pos.y` 是**脚部**；StateVector 里是眼睛（脚部 + 1.6200101）。
 - 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（旧 frida 路线实测置 0 后
@@ -99,9 +102,9 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 任务清单与可直接派活的提示词：[`docs/task-prompts.md`](docs/task-prompts.md)。
 
 - **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（进行中）**：T4 二进制记录环（已完成）→ T5 按 VA 装钩 → T6 ECS/registry 内省
-- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 53/53
-- **P2**：T7 版本指纹 + 签名/偏移解析 → T8 unhook/panic
+- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 66/66
+- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 66/66
+- **P2（下一步）**：T7 版本指纹 + 签名/偏移解析 → T8 unhook/panic
 - **P3**：T9 tick 路径减锁 + 开销自测
 
 改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查，并在 `mod/README.md` 的

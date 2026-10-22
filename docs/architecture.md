@@ -40,6 +40,8 @@ scenario DSL / LLM / shell
 | `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
 | `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
+| `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环 |
+| `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
 
 `Internal.h` 是唯一允许被所有 TU 引用的内部头；它集中引入 Bedrock 头文件，避免每个
 翻译单元各自维护一份包含列表。新增共享工具时放在 `probe::detail`。
@@ -94,6 +96,7 @@ driver/harness/
   errors.py     # ModPipeError / ModTimeout / ModDisconnected / ModProtocolError
   protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定
   client.py     # ModClient（连接/超时/重连）+ Harness（便捷方法）
+  hooks.py      # hook 命中解码、float bits
   memory.py     # 地址/hex 解析、FNV 辅助
   record.py     # 64 字节记录解码、flags、方块名哈希
   spool.py      # 增量、可容忍轮转/半行的 spool 读取器

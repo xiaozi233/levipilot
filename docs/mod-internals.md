@@ -199,6 +199,35 @@
 - `state.effects` 直接读 `Actor::getAllEffects()`；`player_landed` 用起跳/落地的脚部高度差
   计算落差，`player_hurt`/`player_died` 由每 tick 的血量变化触发。
 
+## 运行时装钩（T5）
+
+- `hook_install` 支持两种目标：
+  - `symbol`：编译期符号（`&MobJump::setJumpPendingScale`），使用 **typed detour**
+    `void(EntityContext&, float)`，参数和返回值都按原签名传递；目前只登记了这一个符号。
+  - `va`：来自 IDA 的运行时地址，使用通用 detour，只保存 rcx/rdx/r8/r9 四个整数寄存器；
+    需要 `allow_hook_va=true` 才能真装，`dry_run` 只做地址校验。
+- 地址校验：`VirtualQuery` 要求 `MEM_COMMIT`、非 `PAGE_GUARD`、`PAGE_EXECUTE*`；VA 的
+  指令边界由调用方（IDA）负责，mod 只报 `instruction_boundary:"unverified"`。
+- 安装/卸载走 `ll::memory::hook` / `unhook`（suspendThreads=true），原点指针由 LL 写回；
+  失败返回 `hook_failed` + code，不会留下半装状态。
+- 命中环固定 4096 条：每次命中只写 `{hookId,tid,tick,四个参数,返回地址,4 帧栈}`，
+  按 `sample` 降采样；`hook_drain` 在管道线程序列化，`b_float` 把第二参数按 float 解释。
+- `hook_call` 只是为了验证：tick 线程调用 `MobJump::setJumpPendingScale(ctx, scale)`，
+  该调用会穿过 detour，因此能确定性地产生一条命中。
+
+## ECS 内省（T6）
+
+- 请求在 tick 线程处理（和 `entity` 动作同一个入口），通过 `Actor::getRuntimeActorList()`
+  找目标，再取 `Actor::getEntityContext()`。
+- `EntityContext::getRegistry()` 返回 EnTT v4 的 `basic_registry<EntityId>`；
+  `registry.storage()` 迭代 `(runtime component id, storage)`，`storage.contains(entity)` /
+  `storage.index(entity)` / `storage.value(entity)` 给出该实体的组件指针。
+- 组件字节用 T2 的 `readMemory` 读，长度默认取 stride；stride 由同一 storage 前两个元素的
+  `value()` 地址差推断（单元素 storage 为 0）。
+- `ecs_registries` 报客户端 registry 指针、组件 storage 数和 entity id。服务端 registry
+  没有暴露（服务端对象只能经 `queueServerTask` 访问）。
+- 组件 id 是运行时 EnTT id，不是稳定的 ABI 常量；报告里只有 id/地址/stride/count，没有类型名。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

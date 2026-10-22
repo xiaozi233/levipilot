@@ -87,6 +87,15 @@ struct Checkpoint {
     float pitch = 0.0f;
 };
 
+struct EcsRequest {
+    enum class Kind { Entity, Components, Component, Registries };
+
+    Kind          kind        = Kind::Entity;
+    std::uint64_t runtimeId   = 0;
+    std::uint32_t componentId = 0;
+    std::uint32_t length      = 64;
+};
+
 struct TeleportRequest {
     float x           = 0.0f;
     float y           = 0.0f;
@@ -299,6 +308,7 @@ private:
     void captureState(ClientInstance& client, LocalPlayer& player);
     void captureInventory(LocalPlayer& player);
     void applyEntityAction(LocalPlayer& player, EntityAction const& action);
+    void applyEcs(LocalPlayer& player, EcsRequest const& request);
     void queueInventoryWrite(std::string const& container, int slot, std::string const& item, int count, int aux);
     void queueGive(std::string const& item, int count, int aux);
     void queueClearInventory();
@@ -405,6 +415,8 @@ private:
     std::atomic_bool            mInventoryRequested{false};
     std::mutex                  mEntityActionMutex;
     std::optional<EntityAction> mEntityAction;
+    std::mutex                  mEcsMutex;
+    std::optional<EcsRequest>   mEcsRequest;
     std::atomic<int>            mInputSource{-1};
     std::atomic<int>            mInputController{0};
     std::atomic<int>            mInputFocus{0};
@@ -517,6 +529,7 @@ private:
     // T2/T3 configuration and diagnostics.
     std::atomic_bool           mAllowMemoryWrite{false};
     std::atomic_bool           mAllowCrashTest{false};
+    std::atomic_bool           mAllowHookVa{false};
     std::atomic<int>           mSignInWaitMs{15000};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};

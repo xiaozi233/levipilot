@@ -203,6 +203,7 @@ void ProbeMod::loadAutoConfig() {
     mBackgroundGuard  = config.value("background_guard", true);
     mAllowMemoryWrite = config.value("allow_write", false);
     mAllowCrashTest   = config.value("allow_crash_test", false);
+    mAllowHookVa      = config.value("allow_hook_va", false);
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
@@ -506,6 +507,16 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
             applyEntityAction(player, *action);
         }
     }
+    {
+        std::optional<EcsRequest> request;
+        {
+            std::lock_guard lock(mEcsMutex);
+            request.swap(mEcsRequest);
+        }
+        if (request) {
+            applyEcs(player, *request);
+        }
+    }
 
     {
         bool requested = false;
@@ -544,6 +555,13 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         }
         if (requested) {
             captureScan(player, request);
+        }
+    }
+
+    {
+        nlohmann::json hookResult;
+        if (detail::hookTick(player, hookResult)) {
+            enqueue(hookResult.dump());
         }
     }
 

@@ -44,6 +44,14 @@ xmake -y
 | `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程） |
 | `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
 | `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
+| `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va` |
+| `hook_rm` / `hook_list` | 卸钩 / 列出已装钩与命中统计 |
+| `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`） |
+| `hook_call` | 调用一个已导出符号做自检（当前支持 `MobJump::setJumpPendingScale`） |
+| `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
+| `ecs_entity` | `runtime_id` → actor/context/registry/entity 地址、拥有组件数 |
+| `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count` |
+| `ecs_component` | 读组件原始字节（`len` 默认 stride，最大 512） |
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
@@ -98,7 +106,7 @@ xmake -y
 按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
 
 握手 `hello` 现在带 `protocol:4`、`capabilities`（`tick_json`/`bin_record`/`mem`/`watch`/
-`signin`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
+`signin`/`hook`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
 本次连接会补发的行数）和 `queue_dropped`。`status` 额外带 `spool_rows`、
 `spool_flushes`、`allow_write`、`tick_thread_id`、`tick_probe_addr`、`watch_count`、
 `watch_hits`、`watch_dropped`、`record_active`、`record_rows`、`record_head`、
@@ -119,6 +127,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "background_guard": true,
   "allow_write": false,
   "allow_crash_test": false,
+  "allow_hook_va": false,
   "signin_wait_ms": 15000
 }
 ```
@@ -127,8 +136,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 再进入（后台进世界会触发鼠标捕获）。`options` 会先应用并写回 `options.txt`。
 `background_guard` 默认开启：游戏失去前台时释放光标裁剪，并忽略后台鼠标引起的视角旋转；
 它不会阻止 mod 自己的 `look`/任务。`allow_write` 才能用 `mem_write`；`allow_crash_test`
-才能用会主动结束进程的 `selftest_crash`；`signin_wait_ms` 是进世界前等 Xbox Live 登录的
-上限（默认 15000，设 0 表示查一次就走）。不需要时删除该文件即可。
+才能用会主动结束进程的 `selftest_crash`；`allow_hook_va` 才能按任意 VA 装钩（符号钩不需要）；
+`signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
+不需要时删除该文件即可。
 
 ## 实测（1.26.51.01 创作存档）
 
@@ -165,6 +175,13 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 二进制记录环：连续 **10 分钟**写入 **12,082** 条，`record_dump` 的 JSONL 与 hex 解码数
   都等于 `head`（`lost=0`），`queue_dropped=0`；环固定 32 MB，RSS 在系统 trim 后由
   316 MB 回填到 369 MB（游戏自身内存，环不增长）
+- `hook_install` 按符号 `MobJump::setJumpPendingScale` 装钩成功；`hook_call` 触发后
+  `hook_drain` 读到 `args[0]=EntityContext*`、`b_float=1.0`、返回地址和 4 帧栈；
+  `hook_rm` 后 `hook_list` 为空。VA dry_run 对同一地址返回 `executable=true`，
+  对 `0x10` 返回 `false`
+- `ecs_entity`/`ecs_components`：猪实体读到 **113** 个组件（77 个能推断 stride），其中一个
+  `stride=36`（StateVector 大小），`ecs_component` 按 36 字节读出 hex；客户端 registry
+  有 512 个组件 storage
 - `state.effects`：`/effect @s speed 10 2` 后读到 `id=1, amplifier=2`
 - 存档点：`checkpoint_save` → 传送走 → `checkpoint_load` 落点误差 **0.000** 格
 - `scan` 3×3×4 区域返回 6 个非空气方块
@@ -173,7 +190,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
   命中 tid 等于 tick 线程；`watch_clear` 后不再增加
-- `driver/selftest.py` 53/53 通过
+- `driver/selftest.py` 66/66 通过
 
 ## 限制
 
@@ -205,6 +222,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   裸字节帧，避免破坏行协议。
 - 记录里的 `block_below/feet/head` 是方块类型名的 FNV-1a 32 哈希；用
   `driver.harness.record.block_hash(name)` 对照。
+- `hook_va` 的通用 detour 只保留 4 个整数参数寄存器（rcx/rdx/r8/r9）；float/xmm 参数、
+  向量返回、超过 4 个参数或隐藏返回指针的目标**不安全**，需要 typed detour。目前 typed
+  符号钩只实现了 `MobJump::setJumpPendingScale`。
+- VA 只校验“已提交且可执行”的页，不校验指令边界；地址必须由 IDA 侧确认。
+- `allow_hook_va` 默认关闭；`hook_install` 的 `sample` 用于降采样，命中环固定 4096 条。
+- ECS 组件 id 是**运行时** EnTT id，跨进程/跨版本不稳定；`ecs_components` 只报 id、地址、
+  stride、count，不给类型名。stride 由同一 storage 的两个元素地址差推断，只有一个元素时
+  为 0（此时 `ecs_component` 默认读 64 字节）。目前只暴露客户端 registry。
 
 ## License
 

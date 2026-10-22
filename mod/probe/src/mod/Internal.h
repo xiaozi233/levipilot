@@ -302,4 +302,29 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
 // format: "jsonl" (decoded rows) or "hex" ("bin" is accepted as an alias).
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary);
 
+// ---------------------------------------------------------------------------
+// T5: runtime enter detours.
+//
+// Symbol hooks use a typed detour (currently MobJump::setJumpPendingScale).
+// VA hooks are for addresses obtained from IDA and are disabled unless
+// allow_hook_va is set; their detour preserves the four integer argument
+// registers only, so float/vector/stack arguments are not safe.
+// ---------------------------------------------------------------------------
+bool hookAddressExecutable(std::uint64_t addr);
+
+nlohmann::json hookInstall(
+    std::string const& symbol,
+    std::uint64_t      va,
+    bool               useVa,
+    std::string const& tag,
+    std::uint32_t      sample,
+    bool               dryRun,
+    bool               allowVa
+);
+nlohmann::json hookRemove(int id);
+nlohmann::json hookListJson();
+nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit);
+bool           hookRequestCall(std::string const& symbol, float scale, std::string& error);
+bool           hookTick(LocalPlayer& player, nlohmann::json& result);
+
 } // namespace probe::detail

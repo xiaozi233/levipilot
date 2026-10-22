@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from driver.harness.hooks import decode_hook_hits  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError  # noqa: E402
@@ -225,6 +226,56 @@ def main(argv: list[str] | None = None) -> int:
             "watch_cleared",
             len(after.get("hits", [])) == 0,
             f"hits={len(after.get('hits', []))}",
+        )
+
+        # -- T5: runtime symbol hook ---------------------------------------
+        dry = client.hook_install("MobJump::setJumpPendingScale", dry_run=True)
+        checks.check(
+            "hook_dry_run",
+            dry.get("event") == "hook_dry_run"
+            and int(dry.get("address", 0)) != 0
+            and dry.get("executable") is True,
+            str(dry),
+        )
+        hook_baseline = int(client.hook_list().get("head", 0))
+        installed = client.hook_install("MobJump::setJumpPendingScale", tag="selftest_jps")
+        checks.check(
+            "hook_install",
+            installed.get("event") == "hook_installed",
+            str(installed),
+        )
+        hook_id = int(installed.get("id", -1))
+        called = client.hook_call("MobJump::setJumpPendingScale", 1.0)
+        checks.check("hook_call", called.get("event") == "hook_call_done", str(called))
+        wait_ticks(client, 3)
+        drained_hook = client.hook_drain(hook_baseline)
+        hook_hits = [hit for hit in decode_hook_hits(drained_hook) if hit.hook == hook_id]
+        checks.check("hook_hit", len(hook_hits) >= 1, f"hits={len(hook_hits)}")
+        checks.check(
+            "hook_args",
+            bool(hook_hits)
+            and hook_hits[-1].args[0] != 0
+            and abs(hook_hits[-1].b_float - 1.0) < 1.0e-6,
+            str(hook_hits[-1].args if hook_hits else None),
+        )
+        removed = client.hook_rm(hook_id)
+        checks.check("hook_remove", removed.get("ok") is True, str(removed))
+        checks.check(
+            "hook_list_empty",
+            client.hook_list().get("hooks") == [],
+            str(client.hook_list().get("hooks")),
+        )
+        va_dry = client.hook_install(va=dry["address"], dry_run=True)
+        checks.check(
+            "hook_va_dry_run",
+            va_dry.get("executable") is True and va_dry.get("abi") == "generic4-int",
+            str(va_dry),
+        )
+        bad_va = client.hook_install(va="0x10", dry_run=True)
+        checks.check(
+            "hook_va_bad",
+            bad_va.get("executable") is False,
+            str(bad_va),
         )
 
         # -- parkour jump/route primitives ---------------------------------
@@ -439,6 +490,36 @@ def main(argv: list[str] | None = None) -> int:
             info = client.entity(runtime_id)
             checks.check(
                 "entity_info", int(info.get("runtime_id", -1)) == runtime_id, str(info.get("type"))
+            )
+
+            ecs_entity = client.ecs_entity(runtime_id)
+            checks.check(
+                "ecs_entity",
+                int(ecs_entity.get("components", 0)) > 0
+                and int(ecs_entity.get("registry", 0)) != 0,
+                str({k: ecs_entity.get(k) for k in ("components", "registry", "entity")}),
+            )
+            components = client.ecs_components(runtime_id).get("components", [])
+            sized = [row for row in components if int(row.get("stride", 0)) > 0]
+            checks.check(
+                "ecs_components",
+                bool(components) and bool(sized),
+                f"components={len(components)} sized={len(sized)}",
+            )
+            if sized:
+                component = sized[0]
+                length = min(int(component["stride"]), 512)
+                raw = client.ecs_component(runtime_id, int(component["id"]), length=length)
+                checks.check(
+                    "ecs_component",
+                    bool(raw.get("ok")) and len(str(raw.get("hex", ""))) == 2 * length,
+                    str({k: raw.get(k) for k in ("component_id", "stride", "len", "ok")}),
+                )
+            registries = client.ecs_registries().get("registries", [])
+            checks.check(
+                "ecs_registries",
+                bool(registries) and int(registries[0].get("components", 0)) > 0,
+                str(registries[:1]),
             )
 
             look = client.look_at_entity(runtime_id)

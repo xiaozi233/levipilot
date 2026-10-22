@@ -76,7 +76,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
     auto cmd = j.value("cmd", std::string{});
     if (cmd == "ping") {
         enqueue(
-            R"({"event":"pong","mod":"probe","protocol":4,"capabilities":["tick_json","bin_record","mem","watch","signin"]})"
+            R"({"event":"pong","mod":"probe","protocol":4,"capabilities":["tick_json","bin_record","mem","watch","signin","hook"]})"
         );
         return;
     }
@@ -233,6 +233,66 @@ void ProbeMod::dispatchLine(std::string const& line) {
         std::size_t const limit =
             std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
         enqueue(watchDrainJson(since, limit).dump());
+        return;
+    }
+    if (cmd == "hook_install") {
+        bool const  useVa  = j.contains("va") && !j["va"].is_null();
+        std::string symbol = j.value("symbol", std::string{});
+        std::uint64_t va   = 0;
+        if (useVa && !parseAddress(j["va"], va)) {
+            enqueue(R"({"event":"error","reason":"bad_va"})");
+            return;
+        }
+        if (!useVa && symbol.empty()) {
+            enqueue(R"({"event":"error","reason":"missing_symbol"})");
+            return;
+        }
+        std::uint32_t const sample =
+            std::clamp(j.value("sample", 1), 1, 1000000);
+        bool const dryRun = j.value("dry_run", false);
+        std::string const tag = j.value("tag", std::string{});
+        enqueue(
+            hookInstall(
+                symbol,
+                va,
+                useVa,
+                tag,
+                sample,
+                dryRun,
+                mAllowHookVa.load(std::memory_order_relaxed)
+            )
+                .dump()
+        );
+        return;
+    }
+    if (cmd == "hook_rm") {
+        enqueue(hookRemove(j.value("id", -1)).dump());
+        return;
+    }
+    if (cmd == "hook_list") {
+        enqueue(hookListJson().dump());
+        return;
+    }
+    if (cmd == "hook_drain") {
+        std::uint64_t const since =
+            j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
+        std::size_t const limit = std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
+        enqueue(hookDrainJson(since, limit).dump());
+        return;
+    }
+    if (cmd == "hook_call") {
+        std::string const symbol = j.value("symbol", std::string{});
+        float const       scale  = j.value("scale", 1.0f);
+        std::string       error;
+        if (!hookRequestCall(symbol, scale, error)) {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"      },
+                    {"reason", error        },
+            }
+                    .dump()
+            );
+        }
         return;
     }
     if (cmd == "spool_flush") {
@@ -627,6 +687,37 @@ void ProbeMod::dispatchLine(std::string const& line) {
     }
     if (cmd == "clear_inventory") {
         queueClearInventory();
+        return;
+    }
+    if (cmd == "ecs_registries") {
+        EcsRequest request;
+        request.kind = EcsRequest::Kind::Registries;
+        {
+            std::lock_guard lock(mEcsMutex);
+            mEcsRequest = request;
+        }
+        return;
+    }
+    if (cmd == "ecs_entity" || cmd == "ecs_components" || cmd == "ecs_component") {
+        if (!mInWorld.load()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        EcsRequest request;
+        request.runtimeId = j.value("runtime_id", std::uint64_t{0});
+        if (cmd == "ecs_entity") {
+            request.kind = EcsRequest::Kind::Entity;
+        } else if (cmd == "ecs_components") {
+            request.kind = EcsRequest::Kind::Components;
+        } else {
+            request.kind        = EcsRequest::Kind::Component;
+            request.componentId = j.value("component_id", std::uint32_t{0});
+            request.length      = j.value("len", std::uint32_t{0});
+        }
+        {
+            std::lock_guard lock(mEcsMutex);
+            mEcsRequest = request;
+        }
         return;
     }
     if (cmd == "entity" || cmd == "attack_entity" || cmd == "interact_entity" || cmd == "look_at_entity") {

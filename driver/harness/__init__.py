@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .client import Harness, ModClient
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
+from .hooks import HookHit, decode_hook_hits, float_from_bits
 from .memory import fnv1_64, fnv1a_64, format_address, parse_hex_bytes, to_hex
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder
 from .record import RecordEntry, block_hash, decode_dump, decode_hex
@@ -20,6 +21,7 @@ __all__ = [
     "PIPE_NAME",
     "Harness",
     "HitCursor",
+    "HookHit",
     "LineDecoder",
     "ModClient",
     "ModDisconnected",
@@ -34,6 +36,8 @@ __all__ = [
     "decode_dump",
     "decode_hex",
     "decode_hits",
+    "decode_hook_hits",
+    "float_from_bits",
     "fnv1_64",
     "fnv1a_64",
     "format_address",

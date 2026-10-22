@@ -93,6 +93,25 @@ def main(argv: list[str] | None = None) -> int:
     watch_drain.add_argument("--since", type=int, default=0)
     watch_drain.add_argument("--limit", type=int, default=4096)
 
+    hook_install = sub.add_parser("hook-install", help="install an enter hook")
+    hook_install.add_argument("--symbol", default="MobJump::setJumpPendingScale")
+    hook_install.add_argument("--va")
+    hook_install.add_argument("--tag", default="")
+    hook_install.add_argument("--sample", type=int, default=1)
+    hook_install.add_argument("--dry-run", action="store_true")
+
+    hook_rm = sub.add_parser("hook-rm")
+    hook_rm.add_argument("--id", type=int, required=True)
+    sub.add_parser("hook-list")
+
+    hook_drain = sub.add_parser("hook-drain")
+    hook_drain.add_argument("--since", type=int, default=0)
+    hook_drain.add_argument("--limit", type=int, default=4096)
+
+    hook_call = sub.add_parser("hook-call", help="call a hooked symbol for verification")
+    hook_call.add_argument("--symbol", default="MobJump::setJumpPendingScale")
+    hook_call.add_argument("--scale", type=float, default=1.0)
+
     sub.add_parser("spool-flush")
     sub.add_parser("selftest-av")
 
@@ -161,6 +180,16 @@ def main(argv: list[str] | None = None) -> int:
 
     look_entity = sub.add_parser("look-entity")
     look_entity.add_argument("runtime_id", type=int)
+
+    sub.add_parser("ecs-registries")
+    ecs_entity = sub.add_parser("ecs-entity", help="entity/registry/context addresses")
+    ecs_entity.add_argument("--runtime-id", type=int, required=True)
+    ecs_components = sub.add_parser("ecs-components", help="runtime component IDs and strides")
+    ecs_components.add_argument("--runtime-id", type=int, required=True)
+    ecs_component = sub.add_parser("ecs-component", help="read raw component bytes")
+    ecs_component.add_argument("--runtime-id", type=int, required=True)
+    ecs_component.add_argument("--component-id", type=int, required=True)
+    ecs_component.add_argument("--len", type=int, default=0)
 
     click = sub.add_parser("click")
     click.add_argument("button", choices=["left", "right"])
@@ -362,6 +391,35 @@ def main(argv: list[str] | None = None) -> int:
                         indent=2,
                     )
                 )
+            elif args.command == "hook-install":
+                symbol = None if args.va else args.symbol
+                print(
+                    json.dumps(
+                        client.hook_install(
+                            symbol,
+                            va=args.va,
+                            tag=args.tag,
+                            sample=args.sample,
+                            dry_run=args.dry_run,
+                        ),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            elif args.command == "hook-rm":
+                print(json.dumps(client.hook_rm(args.id), ensure_ascii=False))
+            elif args.command == "hook-list":
+                print(json.dumps(client.hook_list(), ensure_ascii=False, indent=2))
+            elif args.command == "hook-drain":
+                print(
+                    json.dumps(
+                        client.hook_drain(args.since, limit=args.limit),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            elif args.command == "hook-call":
+                print(json.dumps(client.hook_call(args.symbol, args.scale), ensure_ascii=False))
             elif args.command == "spool-flush":
                 print(json.dumps(client.spool_flush(), ensure_ascii=False))
             elif args.command == "selftest-av":
@@ -442,6 +500,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.interact_entity(args.runtime_id), ensure_ascii=False))
             elif args.command == "look-entity":
                 print(json.dumps(client.look_at_entity(args.runtime_id), ensure_ascii=False))
+            elif args.command == "ecs-registries":
+                print(json.dumps(client.ecs_registries(), ensure_ascii=False, indent=2))
+            elif args.command == "ecs-entity":
+                print(json.dumps(client.ecs_entity(args.runtime_id), ensure_ascii=False, indent=2))
+            elif args.command == "ecs-components":
+                print(
+                    json.dumps(client.ecs_components(args.runtime_id), ensure_ascii=False, indent=2)
+                )
+            elif args.command == "ecs-component":
+                print(
+                    json.dumps(
+                        client.ecs_component(args.runtime_id, args.component_id, length=args.len),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             elif args.command == "click":
                 print(json.dumps(client.click(args.button, args.reach)))
             elif args.command == "navigate":

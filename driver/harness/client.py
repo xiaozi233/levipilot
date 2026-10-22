@@ -293,6 +293,64 @@ class ModClient:
             timeout=timeout,
         )
 
+    def hook_install(
+        self,
+        symbol: str | None = None,
+        *,
+        va: int | str | None = None,
+        tag: str = "",
+        sample: int = 1,
+        dry_run: bool = False,
+        timeout: float = 15.0,
+    ) -> dict[str, Any]:
+        """Install an enter hook by LL symbol or (gated) VA; dry_run only validates."""
+        if symbol is None and va is None:
+            raise ValueError("symbol or va is required")
+        message: dict[str, Any] = {
+            "cmd": "hook_install",
+            "tag": tag,
+            "sample": int(sample),
+            "dry_run": bool(dry_run),
+        }
+        if symbol is not None:
+            message["symbol"] = symbol
+        else:
+            message["va"] = va
+        self.send(message)
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise ModTimeout(f"hook_install 等待结果超时（{timeout:.1f}s）")
+            reply = self._next_line(remaining)
+            event = reply.get("event")
+            if event in {"hook_installed", "hook_dry_run"}:
+                return reply
+            if event == "error":
+                raise ModProtocolError(f"hook_install: {reply.get('reason', reply)}")
+
+    def hook_rm(self, hook_id: int) -> dict[str, Any]:
+        return self.request({"cmd": "hook_rm", "id": int(hook_id)}, "hook_removed")
+
+    def hook_list(self) -> dict[str, Any]:
+        return self.request({"cmd": "hook_list"}, "hook_list")
+
+    def hook_drain(self, since: int = 0, *, limit: int = 4096) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "hook_drain", "since": int(since), "limit": int(limit)},
+            "hook_hits",
+        )
+
+    def hook_call(
+        self, symbol: str, scale: float = 1.0, *, timeout: float = 10.0
+    ) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "hook_call", "symbol": symbol, "scale": float(scale)},
+            "hook_call_done",
+            timeout=timeout,
+        )
+
     def spool_flush(self, timeout: float = 10.0) -> dict[str, Any]:
         return self.request({"cmd": "spool_flush"}, "spool_flushed", timeout=timeout)
 
@@ -586,6 +644,42 @@ class ModClient:
     def look_at_entity(self, runtime_id: int) -> dict[str, Any]:
         return self.request(
             {"cmd": "look_at_entity", "runtime_id": int(runtime_id)}, "look_at_done"
+        )
+
+    def ecs_registries(self, timeout: float = 15.0) -> dict[str, Any]:
+        return self.request({"cmd": "ecs_registries"}, "ecs_registries", timeout=timeout)
+
+    def ecs_entity(self, runtime_id: int, timeout: float = 15.0) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "ecs_entity", "runtime_id": int(runtime_id)},
+            "ecs_entity",
+            timeout=timeout,
+        )
+
+    def ecs_components(self, runtime_id: int, timeout: float = 15.0) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "ecs_components", "runtime_id": int(runtime_id)},
+            "ecs_components",
+            timeout=timeout,
+        )
+
+    def ecs_component(
+        self,
+        runtime_id: int,
+        component_id: int,
+        *,
+        length: int = 0,
+        timeout: float = 15.0,
+    ) -> dict[str, Any]:
+        return self.request(
+            {
+                "cmd": "ecs_component",
+                "runtime_id": int(runtime_id),
+                "component_id": int(component_id),
+                "len": int(length),
+            },
+            "ecs_component",
+            timeout=timeout,
         )
 
     def click(self, button: str = "left", reach: float = 5.5) -> dict[str, Any]:
@@ -1055,6 +1149,21 @@ class Harness:
     def watch_drain(self, since: int = 0, **kwargs: Any) -> dict[str, Any]:
         return self.client.watch_drain(since, **kwargs)
 
+    def hook_install(self, symbol: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        return self.client.hook_install(symbol, **kwargs)
+
+    def hook_rm(self, hook_id: int) -> dict[str, Any]:
+        return self.client.hook_rm(hook_id)
+
+    def hook_list(self) -> dict[str, Any]:
+        return self.client.hook_list()
+
+    def hook_drain(self, since: int = 0, **kwargs: Any) -> dict[str, Any]:
+        return self.client.hook_drain(since, **kwargs)
+
+    def hook_call(self, symbol: str, scale: float = 1.0) -> dict[str, Any]:
+        return self.client.hook_call(symbol, scale)
+
     def entities(self, radius: float = 16.0, limit: int = 64) -> list[dict[str, Any]]:
         return list(self.client.entities(radius, limit).get("entities", []))
 
@@ -1078,6 +1187,18 @@ class Harness:
 
     def entity(self, runtime_id: int) -> dict[str, Any]:
         return self.client.entity(runtime_id)
+
+    def ecs_entity(self, runtime_id: int) -> dict[str, Any]:
+        return self.client.ecs_entity(runtime_id)
+
+    def ecs_components(self, runtime_id: int) -> list[dict[str, Any]]:
+        return list(self.client.ecs_components(runtime_id).get("components", []))
+
+    def ecs_component(self, runtime_id: int, component_id: int, **kwargs: Any) -> dict[str, Any]:
+        return self.client.ecs_component(runtime_id, component_id, **kwargs)
+
+    def ecs_registries(self) -> list[dict[str, Any]]:
+        return list(self.client.ecs_registries().get("registries", []))
 
     def attack(self, runtime_id: int) -> dict[str, Any]:
         return self.client.attack_entity(runtime_id)

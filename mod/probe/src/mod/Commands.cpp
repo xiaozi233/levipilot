@@ -931,7 +931,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         }
         return;
     }
-    if (cmd == "ecs_entity" || cmd == "ecs_components" || cmd == "ecs_component") {
+    if (cmd == "ecs_entity" || cmd == "ecs_components" || cmd == "ecs_component" || cmd == "ecs_context") {
         if (!mInWorld.load()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return;
@@ -942,6 +942,15 @@ void ProbeMod::dispatchLine(std::string const& line) {
             request.kind = EcsRequest::Kind::Entity;
         } else if (cmd == "ecs_components") {
             request.kind = EcsRequest::Kind::Components;
+        } else if (cmd == "ecs_context") {
+            std::uint64_t contextAddr = 0;
+            if (!parseAddress(j.value("context", nlohmann::json{}), contextAddr)) {
+                enqueue(R"({"event":"error","reason":"bad_addr"})");
+                return;
+            }
+            request.kind           = EcsRequest::Kind::Context;
+            request.contextAddress = contextAddr;
+            request.componentId    = j.value("component_id", std::uint32_t{0});
         } else {
             request.kind        = EcsRequest::Kind::Component;
             request.componentId = j.value("component_id", std::uint32_t{0});
@@ -1569,6 +1578,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["spool_flushes"]   = mSpoolFlushes.load();
         out["allow_write"]     = mAllowMemoryWrite.load();
         out["tick_thread_id"]  = mTickThreadId.load();
+        out["server_thread_id"] = gServerThreadId.load();
         out["tick_probe_addr"] =
             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
         out["watch_count"]   = watchCount();

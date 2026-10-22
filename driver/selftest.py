@@ -15,6 +15,7 @@ is on Peaceful difficulty.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import sys
@@ -114,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = Checks()
     try:
-        client = ModClient().connect()
+        client = ModClient(connect_timeout=60.0, timeout=30.0).connect()
     except ModPipeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
@@ -193,6 +194,189 @@ def main(argv: list[str] | None = None) -> int:
                 screen0 == "hud_screen" and opened == "inventory_screen" and closed == screen0,
                 f"{screen0}->{opened}->{closed}",
             )
+
+        # -- H0: ability availability gates ---------------------------------
+        diagnostics = client.diagnose()
+        offsets = {
+            (field["struct"], field["field"]): int(field["offset"])
+            for field in diagnostics.get("structs", {}).get("struct_fields", [])
+        }
+        vy_offset = offsets.get(("StateVector", "VelY"))
+        checks.check("h0_offsets_table", vy_offset == 0x1C, f"VelY={vy_offset}")
+
+        state = client.state()
+        runtime_id = int(state.get("runtime_id", 0))
+        components = client.ecs_components(runtime_id).get("components", [])
+        state_vector = next(
+            (item for item in components if item.get("name") == "StateVector"), None
+        )
+        checks.check(
+            "h0_statevector",
+            state_vector is not None
+            and int(state_vector.get("size", 0)) == 36
+            and int(state_vector.get("stride", 0)) in (0, 36),
+            str(state_vector),
+        )
+
+        if state_vector is not None and vy_offset is not None:
+            # H0.1: hardware watch on StateVector.vy while walking + jumping.
+            # A server task must run once so the integrated server thread id is
+            # known; the state vector is written there, not on the tick thread.
+            client.command("time set day")
+            wait_ticks(client, 3)
+            baseline = int(client.watch_list().get("head", 0))
+            watch = client.watch_set(
+                int(state_vector["address"]) + int(vy_offset),
+                size=4,
+                mode="w",
+                tag="h0_vy",
+                thread="both",
+            )
+            checks.check("h0_watch_install", watch.get("event") == "watch_installed", str(watch))
+            client.set_input(forward=1.0, jump=True, ticks=-1)
+            time.sleep(30.0)
+            client.stop_move()
+            wait_ticks(client, 5)
+            hits = client.watch_drain(baseline, limit=64).get("hits", [])
+            server_tid = int(client.status().get("server_thread_id", 0))
+            checks.check(
+                "h0_watch_hits",
+                len(hits) >= 1 and any(int(hit["tid"]) == server_tid for hit in hits),
+                f"hits={len(hits)} server_tid={server_tid}",
+            )
+            evidence = "no code_hex"
+            store_ok = False
+            if hits:
+                hit = hits[0]
+                code_hex = str(hit.get("code_hex", ""))
+                try:
+                    import capstone
+
+                    code = bytes.fromhex(code_hex)
+                    disassembler = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+                    last = None
+                    for instruction in disassembler.disasm(code, int(hit["rip"]) - len(code)):
+                        last = instruction
+                    if last is not None and last.address + last.size == int(hit["rip"]):
+                        evidence = f"{last.mnemonic} {last.op_str} @rip-{last.size}"
+                        width = 0
+                        op = last.op_str.lower()
+                        for marker, size in (
+                            ("xmmword ptr", 16),
+                            ("qword ptr", 8),
+                            ("dword ptr", 4),
+                            ("word ptr", 2),
+                            ("byte ptr", 1),
+                        ):
+                            if marker in op:
+                                width = size
+                                break
+                        displacement = None
+                        if "[" in op and "+" in op:
+                            tail = op.split("+")[-1].split("]")[0].strip()
+                            if tail.startswith("0x"):
+                                displacement = int(tail, 16)
+                        store_ok = (
+                            ("mov" in last.mnemonic or "vmov" in last.mnemonic)
+                            and "[" in op
+                            and displacement is not None
+                            and width > 0
+                            and displacement <= int(vy_offset) < displacement + width
+                        )
+                except ImportError:
+                    evidence = "capstone not installed"
+            checks.check("h0_watch_store", store_ok, evidence)
+            client.watch_clear(all=True)
+
+        # H0.2: probe names/hashes agree with blocks, and record block ids.
+        position = client.state()
+        bx, by, bz = int(position["feet_x"]), int(position["feet_y"]), int(position["feet_z"])
+        client.command(f"setblock {bx + 2} {by} {bz} minecraft:water")
+        for _ in range(40):
+            if client.blocks([[bx + 2, by, bz]])["blocks"][0].get("name") == "minecraft:water":
+                break
+            time.sleep(0.05)
+        samples = [[bx, by - 1, bz], [bx, by, bz], [bx + 2, by, bz]]
+        block_ids: dict[str, int] = {}
+        for sample in samples:
+            info = client.blocks([sample])["blocks"][0]
+            probe = client.probe(info["addr"], "block")
+            legacy = client.probe(probe["legacy"], "legacy")
+            name = str(probe.get("name", ""))
+            checks.check(
+                f"h0_probe_{name.split(':')[-1] or 'unknown'}",
+                name == info.get("name") and int(legacy.get("hash", 0)) == fnv1_64(name),
+                f"{name} hash={legacy.get('hash')}",
+            )
+            block_ids[name] = int(legacy.get("block_id", -1))
+        checks.check(
+            "h0_block_ids",
+            {"minecraft:air", "minecraft:water"} <= set(block_ids) and len(block_ids) >= 3,
+            str(block_ids),
+        )
+        client.command(f"setblock {bx + 2} {by} {bz} minecraft:air")
+
+        # H0.3: the EntityContext captured by a hook resolves to the same
+        # StateVector storage the runtime-id path reports.
+        if state_vector is not None:
+            hook = client.hook_install("MobJump::setJumpPendingScale", tag="h0_ctx")
+            client.hook_call("MobJump::setJumpPendingScale", 1.0)
+            wait_ticks(client, 3)
+            hook_hits = client.hook_drain(0).get("hits", [])
+            context = int(hook_hits[-1]["args"][0]) if hook_hits else 0
+            client_context = int(client.state().get("context", 0))
+            checks.check(
+                "h0_hook_context",
+                context != 0 and context == client_context,
+                f"hook={context:#x} client={client_context:#x}",
+            )
+            if context:
+                # Resolve StateVector twice: once from the hook-captured
+                # context and once from state.context. Enumerating the client
+                # registry while the game mutates it is not safe, so compare
+                # these two lookups and the offset-table size instead.
+                from_hook = client.ecs_context(context, int(state_vector["id"]))
+                from_state = client.ecs_context(client_context, int(state_vector["id"]))
+                checks.check(
+                    "h0_hook_ecs",
+                    int(from_hook.get("address", 0)) != 0
+                    and int(from_hook.get("address", 0)) == int(from_state.get("address", 0))
+                    and int(from_hook.get("count", 0)) == int(from_state.get("count", 0))
+                    and int(from_hook.get("size", 0) or 0) == 36,
+                    str(
+                        {
+                            "hook_address": hex(int(from_hook.get("address", 0))),
+                            "state_address": hex(int(from_state.get("address", 0))),
+                            "count": from_hook.get("count"),
+                            "size": from_hook.get("size"),
+                        }
+                    ),
+                )
+            if hook.get("event") == "hook_installed":
+                client.hook_rm(int(hook["id"]))
+
+        # H0.4: spool tick order survives a panic.
+        mod_spool = Path(str(client.hello.get("spool", "")))
+        client.start(80)
+        while True:
+            event = client.readline(8.0).get("event")
+            if event == "stopped":
+                break
+        client.panic("all")
+        time.sleep(0.2)
+        spool_rows, _ = read_spool(mod_spool)
+        tick_numbers = [int(row["tick"]) for row in spool_rows if row.get("event") == "tick"]
+        monotonic = all(a <= b for a, b in itertools.pairwise(tick_numbers))
+        checks.check(
+            "h0_spool_monotonic",
+            len(tick_numbers) >= 60 and monotonic,
+            f"ticks={len(tick_numbers)} monotonic={monotonic}",
+        )
+        checks.check(
+            "h0_spool_panic",
+            any(row.get("event") == "panic_done" for row in spool_rows),
+            "panic_done in spool",
+        )
 
         # -- T1: spool, crash isolation -------------------------------------
         checks.check("hello_spool", bool(client.hello.get("spool")), str(client.hello.get("spool")))

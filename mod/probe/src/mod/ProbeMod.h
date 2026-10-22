@@ -88,10 +88,12 @@ struct Checkpoint {
 };
 
 struct EcsRequest {
-    enum class Kind { Entity, Components, Component, Registries };
+    enum class Kind { Entity, Components, Component, Registries, Context };
 
     Kind          kind        = Kind::Entity;
     std::uint64_t runtimeId   = 0;
+    // Kind::Context: raw EntityContext* captured by a hook argument.
+    std::uint64_t contextAddress = 0;
     std::uint32_t componentId = 0;
     std::uint32_t length      = 64;
 };

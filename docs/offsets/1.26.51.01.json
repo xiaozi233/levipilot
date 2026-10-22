@@ -30,6 +30,14 @@
       "BlockId": "0x17E",
       "FloatA": "0x15C",
       "FloatB": "0x178"
+    },
+    "StateVector": {
+      "PositionX": "0x00",
+      "PositionY": "0x04",
+      "PositionZ": "0x08",
+      "VelX": "0x18",
+      "VelY": "0x1C",
+      "VelZ": "0x20"
     }
   },
   "components": {

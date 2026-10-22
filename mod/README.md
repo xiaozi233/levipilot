@@ -53,6 +53,7 @@ xmake -y
 | `signature_check` | `name,expected_hex`；对任意期望签名做比对（负路径自检） |
 | `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec`、`paths.{record,watch,hook}` 调用率 |
 | `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），需 `allow_selftest_stress=true` |
+| `ecs_context` | `context,component_id`；从 hook 捕获的 `EntityContext*` 直接解析组件（address/index/count/size） |
 | `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
 | `ecs_entity` | `runtime_id` → actor/context/registry/entity 地址、拥有组件数 |
 | `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count` |
@@ -236,7 +237,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   结论：事件层注入能复现疾跑，1.3x 差异不在输入事件层，G5 不启动
 - G4：`macro_run event_level=true` 三次回放落点误差 **0.0000**；左右键事件各 +2；
   旧路径（`event_level=false`）仍走 GameMode，MouseInputEvent 计数为 0
-- `driver/selftest.py` 92/92 通过
+- H0.1：对 StateVector.vy（offsets 表 `VelY=0x1C`）设写观察点，walk+jump 30 秒捕获 64+ 次；
+  唯一写者是**集成服务端线程**（`thread="both"`），`code_hex` 反汇编为
+  `mov qword ptr [rbx + 0x18], rax`（覆盖 0x1C）
+- H0.2：同一坐标 `blocks` / `probe block` / `probe legacy` 名字与 FNV-1-64 一致；
+  51 版方块 id：air=0、grass_block=2、water=9
+- H0.3：hook 捕获的 `EntityContext*` == `state.context`；`ecs_context` 从两个来源解析到
+  同一个 StateVector 地址、count=2、size=36
+- H0.4：`driver/spool_forensics.py panic|taskkill|verify`；panic 与 taskkill 都单调连续
+  （taskkill 丢失 0 tick）；leave_world 需桌面点击，脚本明确返回不支持
+- `driver/selftest.py` 105/105 通过
 
 ## 限制
 
@@ -265,6 +275,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   签名解析是 T7 的工作。
 - 硬件观察点全局共 4 个 DR 槽；线程已被调试器（或其他工具）占用时回 `dr_busy`，
   不会强抢。x86 的 `rw` 实际是“读写/IO”语义，没有纯读观察点。
+- 玩家的 StateVector 由**集成服务端线程**写入（不是 tick 线程）；观察它用
+  `watch_set(thread="both")`（tick + server），`thread="all"` 装 100+ 线程会把游戏搞崩。
+- `ecs_entity/ecs_components` 按 runtime id 解析到的是服务端 Actor；客户端玩家的 context
+  从 `state.context` 取，`ecs_context` 用它做交叉验证。不要在 tick 线程枚举客户端 registry
+  （会和游戏线程竞争并崩溃）。
 - spool 每 100 ms 或 64 KB 刷一次，进程被强杀时最多丢最后约 100 ms 的记录；队列溢出
   会写一条 `queue_dropped` 标记进 spool。
 - `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。

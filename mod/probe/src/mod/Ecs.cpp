@@ -63,6 +63,42 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
         return;
     }
 
+    if (request.kind == EcsRequest::Kind::Context) {
+        // H0.3: resolve a component from an EntityContext* captured by a hook
+        // argument, so the hook view and the runtime_id view can be compared.
+        auto& context  = *reinterpret_cast<EntityContext*>(request.contextAddress);
+        auto& registry = context.getRegistry();
+        auto* storage  = registry.storage(static_cast<entt::id_type>(request.componentId));
+        if (storage == nullptr || !storage->contains(context.mEntity)) {
+            enqueue(
+                nlohmann::json{
+                    {"event",        "error"             },
+                    {"reason",       "component_not_found"},
+                    {"component_id", request.componentId },
+                }
+                    .dump()
+            );
+            return;
+        }
+        void const* value = storage->value(context.mEntity);
+        std::uint32_t size = 0;
+        bool const    sized = componentSize(request.componentId, size);
+        enqueue(
+            nlohmann::json{
+                {"event",        "ecs_context"                              },
+                {"context",      request.contextAddress                     },
+                {"entity",       static_cast<std::uint64_t>(context.mEntity.mRawId)},
+                {"component_id", request.componentId                        },
+                {"address",      reinterpret_cast<std::uint64_t>(value)     },
+                {"index",        static_cast<std::uint64_t>(storage->index(context.mEntity))},
+                {"count",        static_cast<std::uint64_t>(storage->size())},
+                {"size",         sized ? nlohmann::json(size) : nlohmann::json(nullptr)},
+            }
+                .dump()
+        );
+        return;
+    }
+
     Actor* actor = findActorByRuntimeId(request.runtimeId);
     if (actor == nullptr) {
         enqueue(R"({"event":"error","reason":"entity_not_found"})");

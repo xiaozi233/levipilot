@@ -48,6 +48,8 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
     j["dimension"]     = static_cast<int>(player.getDimensionId());
     j["name"]          = player.getRealName();
     j["uuid"]          = player.getUuid().asString();
+    j["runtime_id"]    = static_cast<std::uint64_t>(player.getRuntimeID());
+    j["context"]       = reinterpret_cast<std::uint64_t>(&player.getEntityContext());
     j["selected_slot"] = player.getSelectedItemSlot();
 
     auto attrValue = [&](Attribute const& attribute) -> std::optional<float> {

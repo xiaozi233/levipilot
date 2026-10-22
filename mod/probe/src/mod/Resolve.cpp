@@ -57,6 +57,13 @@ StructField kStructFields[] = {
     {"BlockLegacy", "BlockId",       0x17E, false},
     {"BlockLegacy", "FloatA",        0x15C, false},
     {"BlockLegacy", "FloatB",        0x178, false},
+    // ECS component layout used by the H0 watch check (stride 36, 3 Vec3s).
+    {"StateVector", "PositionX",     0x00,  false},
+    {"StateVector", "PositionY",     0x04,  false},
+    {"StateVector", "PositionZ",     0x08,  false},
+    {"StateVector", "VelX",          0x18,  false},
+    {"StateVector", "VelY",          0x1C,  false},
+    {"StateVector", "VelZ",          0x20,  false},
 };
 
 struct ComponentEntry {

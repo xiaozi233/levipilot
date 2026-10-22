@@ -236,6 +236,7 @@ bool queryXblSignedIn(bool& signedIn);
 // ---------------------------------------------------------------------------
 extern std::atomic<std::uint64_t> gWatchTick;
 extern std::atomic<std::uint32_t> gTickThreadId;
+extern std::atomic<std::uint32_t> gServerThreadId;
 
 void watchInit();
 void watchShutdown();

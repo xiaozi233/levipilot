@@ -107,6 +107,10 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
   在 1.26.51.01 上没有触发世界攻击（攻击绑定不在这一层），不要用它代替 `click`。
 - 真实鼠标会转动相机并让宏回放落点漂移；`background_guard` 只拦后台转向，selftest 的宏
   确定性检查在检测到相机被外部移动时会标记 skipped。
+- 玩家 StateVector 在集成服务端线程上写；观察用 `watch_set(thread="both")`。
+  `thread="all"`（100+ 线程）实测会把游戏搞崩，不要再用。
+- 按 runtime id 查 ECS 得到的是服务端 Actor；客户端 context 用 `state.context`，
+  再走 `ecs_context`。不要在 tick 线程枚举客户端 registry。
 - `xmake` 默认吃满所有核心，构建用 `xmake -j4`；只改 `.cpp` 是增量，改 `Internal.h`/`ProbeMod.h`
   会全量重编（约 2–3 分钟）。
 
@@ -115,16 +119,18 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 当前完成度见下面的清单；任务提示词不在仓库内（本地维护）。
 
 - **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 92/92
-- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 92/92
+- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 105/105
+- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 105/105
 - **P2（已完成）**：T7 版本指纹 + 签名/偏移解析；T8 unhook/panic
 - **P3（已完成）**：T9 tick 开销自测 + 请求块 seqlock（input/look/teleport 合成一块，tick 读路径无锁）
 - **修复轮 P1（已完成）**：F1 命令缓冲上界 + 超长行重同步 / F2 hook_va 安装窗口与挂起死锁 /
-  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 92/92
+  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 105/105
 - **修复轮 P2（已完成）**：F5 offsets 表接线（structs/components、null 删除、no_offset）/
   F6 spool 顺序与轮转 / F7 watch 细节（目标槽 foreign、`code_hex`、`allow_watch`）/
   F8 记录环零分配方块采样 + 高度越界 / F9 开销语义（`tick_interval_*`、epoch 守卫）/
-  F10 防御小项；selftest 92/92
+  F10 防御小项；selftest 105/105
+- **封包前验收 H0（已完成）**：StateVector.vy watch（写者=集成服务端线程）、
+  probe×blocks 方块 id、hook context×ECS 交叉、spool panic/taskkill 取证；selftest 105/105
 - **输入事件层（已完成）**：G1 `key_event` / G2 `mouse_event` / G3 sprint 三组对照 /
   G4 macro 事件级回放 / G6 世界内 UI；G5 未做（G3 结论：C≈B≈0.2805 格/tick，
   差异不在输入事件层，不需要 raw-input hook）

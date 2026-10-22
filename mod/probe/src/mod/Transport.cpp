@@ -124,6 +124,7 @@ void ProbeMod::queueServerTask(std::function<void()> fn) {
         return;
     }
     server->queueForServerThread([this, fn = std::move(fn)] {
+        gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
         try {
             fn();
         } catch (std::exception const& e) {

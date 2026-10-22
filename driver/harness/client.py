@@ -747,6 +747,15 @@ class ModClient:
     def ecs_registries(self, timeout: float = 15.0) -> dict[str, Any]:
         return self.request({"cmd": "ecs_registries"}, "ecs_registries", timeout=timeout)
 
+    def ecs_context(
+        self, context: int | str, component_id: int, timeout: float = 15.0
+    ) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "ecs_context", "context": context, "component_id": int(component_id)},
+            "ecs_context",
+            timeout=timeout,
+        )
+
     def ecs_entity(self, runtime_id: int, timeout: float = 15.0) -> dict[str, Any]:
         return self.request(
             {"cmd": "ecs_entity", "runtime_id": int(runtime_id)},

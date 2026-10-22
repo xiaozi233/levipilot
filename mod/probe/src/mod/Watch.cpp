@@ -10,6 +10,7 @@ namespace probe::detail {
 
 std::atomic<std::uint64_t> gWatchTick{0};
 std::atomic<std::uint32_t> gTickThreadId{0};
+std::atomic<std::uint32_t> gServerThreadId{0};
 
 namespace {
 
@@ -329,6 +330,24 @@ nlohmann::json watchInstall(
         targets.push_back(tid);
     } else if (thread == "all") {
         targets = processThreads();
+        if (targets.empty()) {
+            return errorJson("no_threads");
+        }
+    } else if (thread == "server") {
+        DWORD const tid = gServerThreadId.load(std::memory_order_relaxed);
+        if (tid == 0) {
+            return errorJson("no_server_thread");
+        }
+        targets.push_back(tid);
+    } else if (thread == "both") {
+        DWORD const tick   = gTickThreadId.load(std::memory_order_relaxed);
+        DWORD const server = gServerThreadId.load(std::memory_order_relaxed);
+        if (tick != 0) {
+            targets.push_back(tick);
+        }
+        if (server != 0 && server != tick) {
+            targets.push_back(server);
+        }
         if (targets.empty()) {
             return errorJson("no_threads");
         }

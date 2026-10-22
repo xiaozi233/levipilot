@@ -334,6 +334,27 @@
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
 - `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
 
+## 能力可用性验收（H0）
+
+- **StateVector 写者**：`state.runtime_id` / `state.context` 给出玩家标识；StateVector 的
+  `VelY` 偏移来自 offsets 表（`0x1C`）。玩家位置/速度由**集成服务端线程**写入，所以观察点
+  用 `watch_set(thread="both")`（tick + server）。实测命中指令为
+  `mov qword ptr [rbx + 0x18], rax`（8 字节写覆盖 0x18–0x1F，包含 vy）。
+- `thread="all"` 会给 100+ 个线程装 DR，实测导致游戏崩溃；`status.server_thread_id`
+  在第一次 `queueServerTask` 后可用，`thread=server|both` 用它。
+- **probe × blocks**：`blocks` 给出 `Block*`，`probe block` 跟到 legacy 指针，
+  `probe legacy` 的 name/hash 与 blocks 一致。51 版实测 block id：air=0、grass_block=2、water=9
+  （结构布局跨版本不变的假设目前成立）。
+- **hook context × ECS**：`ecs_entity/ecs_components` 按 runtime id 解析到服务端 Actor；
+  客户端玩家的 `EntityContext*` 从 `state.context` 取。`ecs_context {context,component_id}`
+  在 tick 线程用这个指针直接查 registry，与 `state.context` 的查询结果（地址/count/size）
+  一致。**不要**在 tick 线程枚举客户端 registry（会与游戏线程竞争并崩溃，已实测）。
+- **落盘三连**：`driver/spool_forensics.py panic|taskkill|verify`。panic 路径 spool 单调连续
+  且末事件为 `panic_done`；taskkill 最多丢 100 ms（实测 0 tick）；leave_world 需要桌面点
+  “Save & Quit”，脚本明确返回不支持，不静默通过。
+- selftest 对应检查：`h0_offsets_table` / `h0_statevector` / `h0_watch_*` / `h0_probe_*` /
+  `h0_block_ids` / `h0_hook_*` / `h0_spool_*`。
+
 ## 输入事件层（G1–G6）
 
 - **键盘（G1）**：`HIDController::onKeyDown(code, InputOrigin::Virtual|Hardware)` 是游戏自己的

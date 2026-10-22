@@ -66,6 +66,8 @@ xmake -y
 | `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
 | `packet_capture` | `on,ids?,sample?`；只记录 `(tick,seq,id,tid)`，需 `allow_packet_capture=true`；denylist 硬挡 |
 | `packet_drain` | `since,limit`；身份记录（无字节），`seq` 单调、`injected` 预留 |
+| `packet_bytes` | `since,limit`；B3 白名单序列化的 `{seq,id,size,hex}`（最多前 128 B） |
+| `symbol_resolve` | `name`；编译期锚点 + E9/FF25 跟随，返回 `{anchor,real,module,rva}` |
 | `packet_stats` | 记录数/丢失/denied/peer_sends/hook 状态 |
 | `screen` | 当前界面名（`hud_screen` / `inventory_screen` / `chat_screen` / `pause_screen`） |
 | `set` | `forward,strafe,sprint,sneak,jump,ticks`；`ticks=-1` 持续 |
@@ -260,7 +262,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   字节若要拿，只能走服务端接收侧（B2）或白名单序列化（B3）
 - H3 预演：B（`set_input` sprint）与 C（ctrl+W 事件）各 3 秒的 id 序列几乎相同
   （B: 144×65/175×3，C: 144×66/175×5）⇒ 身份层没有差异；结合 G3 的速度结论，不需要 packet tap 定案
-- `driver/selftest.py` 113/113 通过
+- H1-B 地址解析：`BatchedNetworkPeer::$sendPacket` = `Minecraft.Windows.exe+0x46EB60`
+  （无 thunk）；`LoopbackPacketSender::$sendToServer` 锚点 `+0xD809E0`，跟随 3 跳落到
+  `dmf.dll+0x8AC10`（说明已被 dmf/LL 链式 hook）。`LocalNetworkPeer` 仍只有导入声明。
+- H1-B 决策表（走/跳/命令）：`sendToServer` 有流量；`BatchedNetworkPeer::sendPacket`
+  与 `NetworkConnection::receivePacket` 均为 **0** ⇒ 单机回环绕过字节层，走 B3。
+- H1-B B3：`packet_capture {serialize_ids:[144]}` 后 `packet_bytes` 拿到
+  `PlayerAuthInput` 的 91–93 字节，`seq` 与身份记录一一对应（32/32 匹配）；tick 19.7–20.0，
+  `dropped=0`。序列化只在白名单 id 上发生，关闭 capture 时零调用。
+- `driver/selftest.py` 115/115 通过
 
 ## 限制
 
@@ -279,8 +289,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   用 G1/G2 注入，已经覆盖按键/鼠标边沿；录制端仍然依赖真实 raw input。
 - `mouse_event` 的按键只到 `MouseInputEvent` 层：计数会涨，但在 1.26.51.01 上不会触发世界攻击；
   攻击仍用 `click`/`attack_entity`。`action=move` 的 dx 能转向。
-- H1 目前只有**身份** tap（id/tick/seq/tid），没有字节；`peer_sends` 恒为 0 是构建限制，
-  不是没流量。注入路径（H2）还没做。
+- H1 的身份 tap 始终可用；字节只对 `serialize_ids` 白名单生效（默认无），且只在 capture
+  开启时调用 `Packet::write`（首次会分配一次线程局部缓冲）。`peer_sends` 恒为 0 是实测结果：
+  单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。
+- 注入路径（H2）还没做。
 - 暂停菜单不响应注入按键（Esc/Enter 都无效）；退出暂停仍需桌面点击 Resume。背包（E）
   和聊天（`/`）可以开，背包用 Esc 能回到 hud。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。

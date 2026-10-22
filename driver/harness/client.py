@@ -318,11 +318,14 @@ class ModClient:
         *,
         ids: list[int] | None = None,
         sample: int = 1,
+        serialize_ids: list[int] | None = None,
         timeout: float = 20.0,
     ) -> dict[str, Any]:
         message: dict[str, Any] = {"cmd": "packet_capture", "on": bool(on), "sample": int(sample)}
         if ids is not None:
             message["ids"] = [int(value) for value in ids]
+        if serialize_ids is not None:
+            message["serialize_ids"] = [int(value) for value in serialize_ids]
         return self.request(message, "packet_capture", timeout=timeout)
 
     def packet_drain(self, since: int = 0, limit: int = 1024) -> dict[str, Any]:
@@ -331,8 +334,17 @@ class ModClient:
             "packet_drain",
         )
 
+    def packet_bytes(self, since: int = 0, limit: int = 256) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "packet_bytes", "since": int(since), "limit": int(limit)},
+            "packet_bytes",
+        )
+
     def packet_stats(self) -> dict[str, Any]:
         return self.request({"cmd": "packet_stats"}, "packet_stats")
+
+    def symbol_resolve(self, name: str) -> dict[str, Any]:
+        return self.request({"cmd": "symbol_resolve", "name": name}, "symbol_resolve")
 
     def mouse_event(
         self,
@@ -1371,6 +1383,9 @@ class Harness:
 
     def packet_stats(self) -> dict[str, Any]:
         return self.client.packet_stats()
+
+    def packet_bytes(self, since: int = 0, limit: int = 256) -> dict[str, Any]:
+        return self.client.packet_bytes(since, limit)
 
     def mouse_event(self, action: int | str, **kwargs: Any) -> dict[str, Any]:
         return self.client.mouse_event(action, **kwargs)

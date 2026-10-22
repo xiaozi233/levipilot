@@ -438,6 +438,34 @@ def main(argv: list[str] | None = None) -> int:
             )
             rate = float(client.overhead().get("tick_hz", 0))
             checks.check("packet_tick_rate", rate >= 15.0, f"tick_hz={rate:.2f}")
+            # B3: serialize only PlayerAuthInput (144) and correlate by seq.
+            client.packet_capture(True, serialize_ids=[144], sample=1)
+            client.set_input(forward=1.0, ticks=-1)
+            wait_ticks(client, 40)
+            client.stop_move()
+            wait_ticks(client, 3)
+            byte_dump = client.packet_bytes(0, limit=32)
+            byte_rows = [row for row in byte_dump.get("hits", []) if int(row["id"]) == 144]
+            identity = {
+                int(row["seq"]): int(row["id"])
+                for row in client.packet_drain(0, limit=4096).get("hits", [])
+            }
+            checks.check(
+                "packet_bytes",
+                bool(byte_rows)
+                and all(
+                    int(row["size"]) > 0 and len(str(row["hex"])) == 2 * min(int(row["size"]), 128)
+                    for row in byte_rows
+                ),
+                f"rows={len(byte_rows)} size={byte_rows[0]['size'] if byte_rows else 0}",
+            )
+            checks.check(
+                "packet_bytes_seq",
+                bool(byte_rows)
+                and all(identity.get(int(row["seq"])) == int(row["id"]) for row in byte_rows),
+                f"matched={sum(1 for row in byte_rows if identity.get(int(row['seq'])) == int(row['id']))}",
+            )
+
             client.packet_capture(False)
             quiet = int(client.packet_stats().get("records", 0))
             client.set_input(forward=1.0, ticks=20)

@@ -334,6 +334,27 @@
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
 - `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
 
+## 封包字节与层选择（H1-B）
+
+- 运行时符号解析：`symbol_resolve {name}` 先查编译期锚点（`&BatchedNetworkPeer::$sendPacket`、
+  `&LoopbackPacketSender::$sendToServer`、`&NetworkConnection::receivePacket`），再跟随
+  `E9 rel32` / `FF 25 [rip+disp]`；返回 `{anchor, real, thunk_hops, module, rva, executable}`。
+  LL 的 `SymbolView::resolve()` 对游戏导入名返回 0，不能依赖它。
+- 实测：`BatchedNetworkPeer::$sendPacket` = `Minecraft.Windows.exe+0x46EB60`（无 thunk）；
+  `LoopbackPacketSender::$sendToServer` 锚点 `+0xD809E0`，跟随 3 跳到 `dmf.dll+0x8AC10`
+  （已被扩展链式 hook）；`LocalNetworkPeer::$sendPacket` 只有导入声明，链接不到。
+- 计数决策（`hook_va` 只计数，不读参数）：
+  `sendToServer` 走/跳/命令都有流量；`BatchedNetworkPeer::sendPacket` 和
+  `NetworkConnection::receivePacket` 在单机里都是 0 ⇒ 本地回环绕过序列化/peer 层，
+  B1/B2 拿不到字节，转 B3。
+- B3：`packet_capture {serialize_ids:[144,77]}` 时，仅对这些 id 在 `sendToServer` 钩子里
+  用 `BinaryStream(std::string&)` 调 `Packet::write`，前 128 B 写进 4096 条字节环；
+  `seq` 复用身份环的 order，`packet_bytes` 返回 `{seq,id,size,hex}`。
+  代价：首次调用分配线程局部缓冲；关闭 capture 时零调用；denylist 的 id 不能进白名单。
+- 实测 `PlayerAuthInput(144)` 序列化后 91–93 B，前几字节是位置浮点（可读），
+  32 条字节记录与身份记录 100% 对上。
+- 注意：序列化在客户端线程、发包钩子内进行；只对 1–2 个白名单 id 启用，不要扩成全量。
+
 ## 封包身份 tap（H1 阶段 A）
 
 - 锚点：`LoopbackPacketSender::$sendToServer(Packet&)`（LL 符号 hook，见

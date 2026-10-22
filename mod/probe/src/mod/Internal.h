@@ -27,6 +27,7 @@
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/deps/core/math/Vec2.h"
 #include "mc/deps/core/math/Vec3.h"
+#include "mc/deps/core/utility/BinaryStream.h"
 #include "mc/deps/core/utility/MCRESULT.h"
 #include "mc/deps/input/InputEventQueue.h"
 #include "mc/deps/input/InputHandler.h"
@@ -46,8 +47,10 @@
 #include "mc/legacy/ActorRuntimeID.h"
 #include "mc/platform/UUID.h"
 #include "mc/platform/brstd/bitset.h"
+#include "mc/network/BatchedNetworkPeer.h"
 #include "mc/network/LocalNetworkPeer.h"
 #include "mc/network/LoopbackPacketSender.h"
+#include "mc/network/NetworkConnection.h"
 #include "mc/network/MinecraftPacketIds.h"
 #include "mc/network/Packet.h"
 #include "mc/server/ServerInstance.h"
@@ -377,5 +380,6 @@ bool           structOffset(char const* type, char const* field, std::uint64_t& 
 bool           componentSize(std::uint32_t id, std::uint32_t& size);
 std::string    componentName(std::uint32_t id);
 nlohmann::json structTableJson();
+nlohmann::json symbolResolve(std::string const& name);
 
 } // namespace probe::detail

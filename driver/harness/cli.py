@@ -87,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     packet_drain.add_argument("--since", type=int, default=0)
     packet_drain.add_argument("--limit", type=int, default=1024)
 
+    packet_bytes = sub.add_parser("packet-bytes")
+    packet_bytes.add_argument("--since", type=int, default=0)
+    packet_bytes.add_argument("--limit", type=int, default=256)
+
     sub.add_parser("packet-stats")
 
     mouse_event = sub.add_parser("mouse-event", help="inject a mouse event (allow_input_inject)")
@@ -430,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif args.command == "packet-drain":
                 print(json.dumps(client.packet_drain(args.since, args.limit), ensure_ascii=False))
+            elif args.command == "packet-bytes":
+                print(json.dumps(client.packet_bytes(args.since, args.limit), ensure_ascii=False))
             elif args.command == "packet-stats":
                 print(json.dumps(client.packet_stats(), ensure_ascii=False))
             elif args.command == "mouse-event":

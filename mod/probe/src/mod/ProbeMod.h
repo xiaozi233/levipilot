@@ -273,7 +273,20 @@ public:
         std::uint8_t               injected = 0;
         std::uint8_t               pad[3]{};
     };
-    static constexpr std::size_t kPacketRing = 1u << 14;
+    struct PacketBytes {
+        std::atomic<std::uint64_t> seq{0};
+        std::uint64_t              order = 0;
+        std::uint32_t              id    = 0;
+        std::uint32_t              size  = 0;
+        std::uint32_t              tid   = 0;
+        std::uint8_t               data[128]{};
+    };
+    static constexpr std::size_t kPacketRing      = 1u << 14;
+    static constexpr std::size_t kPacketByteRing  = 1u << 12;
+    std::unique_ptr<PacketBytes[]> mPacketByteRing;
+    std::atomic<std::uint64_t>     mPacketByteHead{0};
+    std::array<std::int32_t, 4>    mPacketSerializeIds{};
+    std::size_t                    mPacketSerializeCount = 0;
     std::unique_ptr<PacketRecord[]> mPacketRing;
     std::atomic<std::uint64_t>      mPacketHead{0};
     std::atomic<std::uint64_t>      mPacketSeq{0};
@@ -291,6 +304,7 @@ public:
     void                            packetCaptureStop();
     nlohmann::json                  packetCaptureStatus();
     nlohmann::json                  packetDrain(std::uint64_t since, std::size_t limit);
+    nlohmann::json                  packetBytesDrain(std::uint64_t since, std::size_t limit);
 
     std::atomic_bool           mAllowPacketCapture{false};
     std::atomic_bool           mAllowInputInject{false};

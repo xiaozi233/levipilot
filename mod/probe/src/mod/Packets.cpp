@@ -2,6 +2,7 @@
 
 using namespace probe::detail;
 
+
 LL_TYPE_INSTANCE_HOOK(
     ProbePacketSendHook,
     ll::memory::HookPriority::Normal,
@@ -96,6 +97,36 @@ void ProbeMod::onPacketSent(Packet& packet) {
     record.injected = 0;
     std::atomic_thread_fence(std::memory_order_release);
     record.seq.store(index + 1, std::memory_order_release);
+
+    // B3: serialize only the explicitly whitelisted ids. This is the one place
+    // the hook allocates (the first call grows a thread-local buffer), which is
+    // why the whitelist is tiny and capture is opt-in.
+    bool serialize = false;
+    for (std::size_t slot = 0; slot < mPacketSerializeCount; ++slot) {
+        if (mPacketSerializeIds[slot] == id) {
+            serialize = true;
+            break;
+        }
+    }
+    if (!serialize || !mPacketByteRing) {
+        return;
+    }
+    static thread_local std::string buffer;
+    buffer.clear();
+    BinaryStream stream{buffer};
+    packet.write(stream);
+    std::uint64_t const byteIndex = mPacketByteHead.fetch_add(1, std::memory_order_acq_rel);
+    PacketBytes&        bytes     = mPacketByteRing[byteIndex % kPacketByteRing];
+    bytes.order = order;
+    bytes.id    = static_cast<std::uint32_t>(id);
+    bytes.size  = static_cast<std::uint32_t>(buffer.size());
+    bytes.tid   = record.tid;
+    std::size_t const copy = std::min<std::size_t>(buffer.size(), sizeof(bytes.data));
+    if (copy > 0) {
+        std::memcpy(bytes.data, buffer.data(), copy);
+    }
+    std::atomic_thread_fence(std::memory_order_release);
+    bytes.seq.store(byteIndex + 1, std::memory_order_release);
 }
 
 nlohmann::json ProbeMod::packetCaptureStart(bool enable, nlohmann::json const& args) {
@@ -141,10 +172,36 @@ nlohmann::json ProbeMod::packetCaptureStart(bool enable, nlohmann::json const& a
     std::uint32_t const sample =
         std::clamp<std::uint32_t>(args.value("sample", 1u), 1, 10000);
 
+    std::array<std::int32_t, 4> serializeIds{};
+    std::size_t                 serializeCount = 0;
+    if (args.contains("serialize_ids") && args["serialize_ids"].is_array()) {
+        for (auto const& item : args["serialize_ids"]) {
+            if (!item.is_number_integer()) {
+                return nlohmann::json{{"event", "error"}, {"reason", "bad_id"}};
+            }
+            std::int32_t const id = item.get<std::int32_t>();
+            if (id < 0 || id > 2000 || isDeniedPacketId(id) || serializeCount >= serializeIds.size()) {
+                return nlohmann::json{
+                    {"event",  "error"    },
+                    {"reason", isDeniedPacketId(id) ? "denied_id" : "bad_id"},
+                    {"id",     id          },
+                };
+            }
+            serializeIds[serializeCount++] = id;
+        }
+    }
+
     packetCaptureStop();
     if (!mPacketRing) {
         mPacketRing = std::unique_ptr<PacketRecord[]>(new (std::nothrow) PacketRecord[kPacketRing]());
         if (!mPacketRing) {
+            return nlohmann::json{{"event", "error"}, {"reason", "no_memory"}};
+        }
+    }
+    if (serializeCount > 0 && !mPacketByteRing) {
+        mPacketByteRing =
+            std::unique_ptr<PacketBytes[]>(new (std::nothrow) PacketBytes[kPacketByteRing]());
+        if (!mPacketByteRing) {
             return nlohmann::json{{"event", "error"}, {"reason", "no_memory"}};
         }
     }
@@ -154,6 +211,9 @@ nlohmann::json ProbeMod::packetCaptureStart(bool enable, nlohmann::json const& a
     mPacketDenied.store(0, std::memory_order_relaxed);
     mPacketIds      = ids;
     mPacketIdCount  = idCount;
+    mPacketSerializeIds   = serializeIds;
+    mPacketSerializeCount = serializeCount;
+    mPacketByteHead.store(0, std::memory_order_relaxed);
     mPacketSample.store(sample, std::memory_order_relaxed);
 
     int const  sendStatus = ProbePacketSendHook::hook();
@@ -170,6 +230,8 @@ nlohmann::json ProbeMod::packetCaptureStart(bool enable, nlohmann::json const& a
     // this build, so the peer-level byte tap is not reachable via symbols.
     // That is itself the answer: local client->server traffic does not expose a
     // serialized byte buffer through this layer.
+    // Measured: a hook_va probe on BatchedNetworkPeer::sendPacket sees 0 calls
+    // during local play (loopback bypasses the serialized peer layer).
     bool const peerHooked = false;
     mPacketPeerHooked.store(false, std::memory_order_release);
     mPacketCapture.store(true, std::memory_order_release);
@@ -179,9 +241,16 @@ nlohmann::json ProbeMod::packetCaptureStart(bool enable, nlohmann::json const& a
         {"active",      true                    },
         {"send_hooked", sendHooked              },
         {"peer_hooked", peerHooked              },
-        {"peer_reason", "local_network_peer_symbol_unavailable"},
+        {"peer_reason", "peer_send_packet_zero_traffic"},
         {"sample",      sample                  },
         {"ids",         packetCaptureStatus()["ids"]},
+        {"serialize_ids", [&] {
+            nlohmann::json list = nlohmann::json::array();
+            for (std::size_t slot = 0; slot < serializeCount; ++slot) {
+                list.push_back(serializeIds[slot]);
+            }
+            return serializeCount == 0 ? nlohmann::json(nullptr) : list;
+        }()},
     };
 }
 
@@ -260,5 +329,53 @@ nlohmann::json ProbeMod::packetDrain(std::uint64_t since, std::size_t limit) {
     };
 }
 
-} // namespace probe
+nlohmann::json ProbeMod::packetBytesDrain(std::uint64_t since, std::size_t limit) {
+    std::uint64_t const head   = mPacketByteHead.load(std::memory_order_acquire);
+    std::uint64_t const oldest = head > kPacketByteRing ? head - kPacketByteRing : 0;
+    std::uint64_t       start  = since;
+    std::uint64_t       lost   = 0;
+    if (start < oldest) {
+        lost  = oldest - start;
+        start = oldest;
+    }
+    if (start > head) {
+        start = head;
+    }
+    if (limit == 0) {
+        limit = 1024;
+    }
+    std::uint64_t const end   = std::min(head, start + limit);
+    nlohmann::json      rows  = nlohmann::json::array();
+    std::size_t         count = 0;
+    if (!mPacketByteRing) {
+        return nlohmann::json{{"event", "packet_bytes"}, {"hits", std::move(rows)}, {"count", 0}};
+    }
+    for (std::uint64_t index = start; index < end; ++index) {
+        PacketBytes const& record = mPacketByteRing[index % kPacketByteRing];
+        if (record.seq.load(std::memory_order_acquire) != index + 1) {
+            continue;
+        }
+        std::size_t const shown = std::min<std::size_t>(record.size, sizeof(record.data));
+        rows.push_back({
+            {"index",      index + 1     },
+            {"seq",        record.order  },
+            {"id",         record.id     },
+            {"size",       record.size   },
+            {"tid",        record.tid    },
+            {"hex",        hexEncode(record.data, shown)},
+            {"serialized", true          },
+        });
+        ++count;
+    }
+    return nlohmann::json{
+        {"event", "packet_bytes"},
+        {"since", since         },
+        {"next",  end           },
+        {"head",  head          },
+        {"lost",  lost          },
+        {"count", count         },
+        {"hits",  std::move(rows)},
+    };
+}
 
+} // namespace probe

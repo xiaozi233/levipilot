@@ -414,6 +414,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
             return;
         }
     }
+    if (cmd == "symbol_resolve") {
+        enqueue(symbolResolve(j.value("name", std::string{})).dump());
+        return;
+    }
     if (cmd == "packet_capture") {
         bool const enable = j.value("on", j.value("enable", true));
         if (!versionOk()) {
@@ -431,6 +435,12 @@ void ProbeMod::dispatchLine(std::string const& line) {
         std::uint64_t const since = j.value("since", std::uint64_t{0});
         std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 1024), 1, 8192);
         enqueue(packetDrain(since, limit).dump());
+        return;
+    }
+    if (cmd == "packet_bytes") {
+        std::uint64_t const since = j.value("since", std::uint64_t{0});
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 256), 1, 4096);
+        enqueue(packetBytesDrain(since, limit).dump());
         return;
     }
     if (cmd == "packet_stats") {

@@ -431,6 +431,92 @@ nlohmann::json structTableJson() {
     };
 }
 
+nlohmann::json symbolResolve(std::string const& name) {
+    nlohmann::json out{
+        {"event", "symbol_resolve"},
+        {"name",  name            },
+    };
+    // H1-B: baked-in compile-time anchors for symbols that the import library
+    // exposes; SymbolView alone does not resolve game imports.
+    std::uint64_t anchor = 0;
+    if (name == "BatchedNetworkPeer::$sendPacket") {
+        anchor = reinterpret_cast<std::uint64_t>(
+            ll::memory::toFuncPtr(&BatchedNetworkPeer::$sendPacket)
+        );
+    } else if (name == "NetworkConnection::receivePacket") {
+        anchor = reinterpret_cast<std::uint64_t>(
+            ll::memory::toFuncPtr(&NetworkConnection::receivePacket)
+        );
+    } else if (name == "LoopbackPacketSender::$sendToServer") {
+        anchor = reinterpret_cast<std::uint64_t>(
+            ll::memory::toFuncPtr(&LoopbackPacketSender::$sendToServer)
+        );
+    } else {
+        try {
+            anchor = reinterpret_cast<std::uint64_t>(ll::memory::SymbolView{name}.resolve());
+        } catch (...) {
+            anchor = 0;
+        }
+    }
+    out["anchor"] = anchor;
+    if (anchor == 0) {
+        out["ok"]     = false;
+        out["reason"] = "symbol_not_found";
+        return out;
+    }
+    // Follow `jmp qword ptr [rip+disp]` import stubs to the real function.
+    std::uint64_t real = anchor;
+    int           hops = 0;
+    while (hops < 4) {
+        std::uint8_t bytes[6]{};
+        if (!readMemory(real, bytes, sizeof(bytes))) {
+            break;
+        }
+        std::uint64_t target = 0;
+        if (bytes[0] == 0xFF && bytes[1] == 0x25) {
+            // jmp qword ptr [rip+disp] (import stub)
+            std::int32_t disp = 0;
+            std::memcpy(&disp, bytes + 2, sizeof(disp));
+            std::uint64_t const slot = real + 6 + static_cast<std::int64_t>(disp);
+            if (!readMemory(slot, &target, sizeof(target))) {
+                break;
+            }
+        } else if (bytes[0] == 0xE9) {
+            // jmp rel32 (relative thunk, often into another module)
+            std::int32_t rel = 0;
+            std::memcpy(&rel, bytes + 1, sizeof(rel));
+            target = real + 5 + static_cast<std::int64_t>(rel);
+        } else {
+            break;
+        }
+        if (target == 0) {
+            break;
+        }
+        real = target;
+        ++hops;
+    }
+    out["real"]       = real;
+    out["thunk_hops"] = hops;
+    out["thunked"]    = real != anchor;
+    out["executable"] = hookAddressExecutable(real);
+
+    HMODULE module = nullptr;
+    if (GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(real),
+            &module
+        )
+        && module != nullptr) {
+        wchar_t path[MAX_PATH]{};
+        if (GetModuleFileNameW(module, path, MAX_PATH) != 0) {
+            out["module"] = std::filesystem::path(path).filename().string();
+        }
+        out["rva"] = real - reinterpret_cast<std::uint64_t>(module);
+    }
+    out["ok"] = out["executable"];
+    return out;
+}
+
 nlohmann::json diagnoseJson() {
     nlohmann::json out;
     out["event"] = "diagnose";

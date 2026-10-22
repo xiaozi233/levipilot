@@ -248,20 +248,26 @@ class HarnessForwardingTests(unittest.TestCase):
                 self.calls.append(("drain", since, limit))
                 return {"event": "packet_drain"}
 
+            def packet_bytes(self, since=0, limit=256):
+                self.calls.append(("bytes", since, limit))
+                return {"event": "packet_bytes"}
+
             def packet_stats(self):
                 self.calls.append(("stats",))
                 return {"event": "packet_stats"}
 
         harness = Harness.__new__(Harness)
         harness.client = Recorder()  # type: ignore[assignment]
-        harness.packet_capture(True, ids=[144], sample=2)
+        harness.packet_capture(True, ids=[144], serialize_ids=[144], sample=2)
         harness.packet_drain(5, 100)
+        harness.packet_bytes(7, 8)
         harness.packet_stats()
         self.assertEqual(
             harness.client.calls,
             [
-                ("capture", True, {"ids": [144], "sample": 2}),
+                ("capture", True, {"ids": [144], "serialize_ids": [144], "sample": 2}),
                 ("drain", 5, 100),
+                ("bytes", 7, 8),
                 ("stats",),
             ],
         )

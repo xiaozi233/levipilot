@@ -51,8 +51,8 @@ xmake -y
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、停任务并清输入，不杀进程 |
 | `diagnose` | 版本、4 个符号锚点的地址/24 字节签名匹配/耗时 |
 | `signature_check` | `name,expected_hex`；对任意期望签名做比对（负路径自检） |
-| `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec` |
-| `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），用于验证开销指标 |
+| `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec`、`paths.{record,watch,hook}` 调用率 |
+| `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），需 `allow_selftest_stress=true` |
 | `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
 | `ecs_entity` | `runtime_id` → actor/context/registry/entity 地址、拥有组件数 |
 | `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count` |
@@ -133,6 +133,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "allow_write": false,
   "allow_crash_test": false,
   "allow_hook_va": false,
+  "allow_selftest_stress": false,
   "signin_wait_ms": 15000
 }
 ```
@@ -142,6 +143,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 `background_guard` 默认开启：游戏失去前台时释放光标裁剪，并忽略后台鼠标引起的视角旋转；
 它不会阻止 mod 自己的 `look`/任务。`allow_write` 才能用 `mem_write`；`allow_crash_test`
 才能用会主动结束进程的 `selftest_crash`；`allow_hook_va` 才能按任意 VA 装钩（符号钩不需要）；
+`allow_selftest_stress` 才允许 `selftest_busy` 在 tick 里忙等（默认关闭，避免误让 tick 卡近 1 秒）；
 `signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
 不需要时删除该文件即可。
 
@@ -189,8 +191,13 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 负路径：把其中一个内置签名字节改掉后重启 → `version_ok=false`，
   `version_failures=["LocalPlayer::normalTick"]`，`hook_install`/`record_start`/`watch_set`
   全部回 `version_mismatch`，游戏仍存活；改回后 4 个锚点恢复匹配
-- `overhead`（空闲）：`hook_p50=12 µs`、`hook_p99=30 µs`、`tick_p50=49.985 ms`、
-  `tick_p99=54.596 ms`、20.0 Hz；注入 1 ms busy ×20 tick 后 `hook_p99=1017 µs`
+- `overhead`（空闲，1024 样本）：`hook_p50=10 µs`、`hook_p99=38 µs`、`tick_p50=50.006 ms`、
+  `tick_p99=50.970 ms`、20.0 Hz；同一场景改前 `tick_p99=54.596 ms`、`hook_p99=30 µs`
+  （tick p99 未劣化）。注入 1 ms busy ×20 tick 后 `hook_p99=1013 µs`、`hook_max=1040 µs`
+- 请求块合并成 seqlock 后，tick 读路径不再取 `mInput/mLook/mTeleport` 三个 mutex；
+  管道线程仍是单写者（`mRequestSeq` 奇偶校验）
+- `line_too_long`：发 2 MiB 无换行 → 收到 `error/line_too_long`（1 次），补一个换行后
+  `ping` 仍正常，进程不增长
 - `panic all`：先装 1 个 hook + 1 个 watch，`panic` 后两者列表都为空、任务空闲、
   tick 继续增长
 - `ecs_entity`/`ecs_components`：猪实体读到 **113** 个组件（77 个能推断 stride），其中一个
@@ -204,7 +211,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
   命中 tid 等于 tick 线程；`watch_clear` 后不再增加
-- `driver/selftest.py` 77/77 通过
+- `driver/selftest.py` 80/80 通过
 
 ## 限制
 

@@ -227,6 +227,7 @@ void storeHit(int slot, CONTEXT& context) {
     if (!gRing) {
         return;
     }
+    pathCount(PathCounter::Watch);
     std::uint64_t const index = gHead.fetch_add(1, std::memory_order_acq_rel);
     HitRecord&          record = gRing[index % kRingCapacity];
     record.watchId             = gWatches[slot] ? gWatches[slot]->id.load(std::memory_order_relaxed) : 0;

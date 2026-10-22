@@ -238,17 +238,40 @@
 - 回 `panic_done {ok, hooks_removed, watches_cleared, tasks_cancelled}`；进程和 tick 都不受影响，
   之后可以重新装钩/观察点。`unhook_all` 是 `panic hooks` 的别名。
 
-## tick 开销测量（T9）
+## tick 开销测量与请求块（T9）
 
+- 请求块 seqlock：`mInput`/`mLook`/`mTeleport` 合并成一个 `RequestBlock`。管道线程在
+  `mRequestWriteMutex` 下写入并推进 `mRequestSeq`（奇数=写入中）；tick 线程每 tick 只做一次
+  `readRequests()` 原子快照，**读路径不再取任何 mutex**。每条命令带自己的序号
+  （`inputSeq/jumpSeq/lookSeq/teleportSeq`），tick 侧用本地计数器消费一次并自行递减
+  `ticks`，所以 `ticks<0`（直到 stop）和一次性 jump/teleport 的语义不变。
+  `beginTask`/内部错误仍会写块（罕见），但只占写锁，不走读路径。
+- 快照同时用于 teleport（进 tick 前）、移动和 look（tick 后），保证同一 tick 看到一致的一组请求。
 - `onPlayerTick` 进入时取一次 QPC，`safeTickPre` 结束后算 pre 耗时；`afterPlayerTick` 同理算
   post 耗时。`hook_us = pre + post`（不含 `origin()` 的游戏 tick），
   `tick_us` 是相邻两次 pre 开始的间隔。
 - 1024 条定长样本环，tick 线程单写者（写完再 publish head）；`overhead`/`status.overhead`
   在管道线程复制、排序并给出 p50/p99/max、`tick_hz`、`calls_per_sec`。
-- `selftest_busy {us,ticks}` 在 `safeTickPost` 里忙等，用于证明指标接对了：
-  实测注入 1 ms ×20 tick 后 `hook_p99=1017 µs`；空闲时 `hook_p50=12 µs`、`hook_p99=30 µs`。
-- 请求块仍是 mutex（`mInput/mLook/mTeleport/mTask`）；seqlock 合并没有做，20 TPS 下不是瓶颈。
-  指标本身会显示是否需要。
+- `overhead.paths.{record,watch,hook}` 给出三条路径各自的 `calls_per_sec` 与 `calls_total`
+  （窗口从首次调用起算），用于发现异常回调频率。
+- `selftest_busy {us,ticks}` 在 `safeTickPost` 里忙等，需要 `allow_selftest_stress=true`
+  （默认拒绝，避免误让 tick 卡近 1 秒）；关闭时回 `error/stress_disabled`。
+- 实机（1.26.51.01，20 TPS，seqlock 改后空闲 1024 样本）：`tick_p50=50.006 ms`、
+  `tick_p99=50.970 ms`、`hook_p50=10 µs`、`hook_p99=38 µs`；改前空闲为
+  `tick_p99=54.596 ms`、`hook_p99=30 µs`。tick p99 没有劣化。
+  注入 1 ms ×20 tick 后 `hook_p99=1013 µs`、`hook_max=1040 µs`，证明指标可观测。
+
+## hook_va 安装与生命周期（F2/F3）
+
+- 槽位在 `gHookMutex` 内预留（`used=true`、`ready=false`）后**释放锁**再调
+  `ll::memory::hook(..., suspend=true)`，避免持锁挂起线程造成堆/Loader 死锁。
+- 补丁生效后、origin 发布前，detour 用 `ready` 有界自旋（200k 次 `YieldProcessor`），
+  不再静默 `return 0`；origin 用原子发布，`ready` 最后置位。
+- 失败路径：`status!=0` 直接释放槽位；`status==0 && origin==nullptr` 先 `unhook`，
+  失败则保留槽位（`unhook_failed`，panic 可重试），成功才释放。同一地址重复安装回
+  `hook_duplicate`。
+- 主菜单（不在世界）安装回 `not_in_world`：LL 在该状态不挂起线程，直接改代码不安全。
+- `hook_install` 的 `inject_fail`（仅 `allow_hook_va=true` 时生效）用于自检 F3 失败路径。
 
 ## 版本指纹与锚点（T7）
 

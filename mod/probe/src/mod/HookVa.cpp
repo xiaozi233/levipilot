@@ -39,22 +39,39 @@ struct HookSlot {
     std::atomic<std::uint32_t> id{0};
     std::atomic<std::uint64_t> hits{0};
     std::atomic<std::uint64_t> captured{0};
+    // F2: set once the origin (and everything captureHit reads) is published.
+    // A detour that runs between the patch and this flag spins briefly instead
+    // of silently returning 0.
+    std::atomic_bool           ready{false};
     bool                       symbol = false;
     std::string                tag;
     std::string                name;
     std::uint64_t              address = 0;
-    std::uint32_t              sample  = 1;
-    ll::memory::FuncPtr        target  = nullptr;
-    ll::memory::FuncPtr        detour  = nullptr;
-    SetJumpPendingScaleFn      originTyped = nullptr;
+    std::atomic<std::uint32_t> sample{1};
+    ll::memory::FuncPtr        target = nullptr;
+    ll::memory::FuncPtr        detour = nullptr;
+    std::atomic<SetJumpPendingScaleFn> originTyped{nullptr};
 };
 
 std::unique_ptr<HookHit[]>          gRing;
 std::atomic<std::uint64_t>          gRingHead{0};
 std::atomic<std::uint32_t>          gNextId{1};
 HookSlot                            gSlots[kHookSlots];
-GenericFn                           gGenericOrigins[kHookSlots]{};
+std::atomic<GenericFn>              gGenericOrigins[kHookSlots]{};
 std::mutex                          gHookMutex;
+
+// Bounded wait for the install window. 200k pauses is a few milliseconds on
+// current CPUs and far longer than publishing an origin takes.
+constexpr int kReadySpinLimit = 200000;
+
+void waitReady(std::size_t slot) {
+    for (int spin = 0; spin < kReadySpinLimit; ++spin) {
+        if (gSlots[slot].ready.load(std::memory_order_acquire)) {
+            return;
+        }
+        YieldProcessor();
+    }
+}
 
 std::atomic_bool  gCallPending{false};
 std::atomic<float> gCallScale{1.0f};
@@ -90,8 +107,9 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
         return;
     }
     HookSlot&                  watch = gSlots[slot];
+    pathCount(PathCounter::Hook);
     std::uint64_t const        hit   = watch.hits.fetch_add(1, std::memory_order_relaxed) + 1;
-    std::uint32_t const        sample = watch.sample;
+    std::uint32_t const        sample = watch.sample.load(std::memory_order_relaxed);
     if (sample > 1 && (hit % sample) != 0) {
         return;
     }
@@ -114,6 +132,10 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
 
 template <int Slot>
 void detourSetJumpPendingScale(EntityContext& context, float scale) {
+    // F2: the patch is live before the origin is published; wait it out rather
+    // than returning a fake result. The spin is bounded and install failure
+    // sets ready before removing the patch.
+    waitReady(static_cast<std::size_t>(Slot));
     captureHit(
         static_cast<std::size_t>(Slot),
         reinterpret_cast<std::uint64_t>(&context),
@@ -121,8 +143,8 @@ void detourSetJumpPendingScale(EntityContext& context, float scale) {
         0,
         0
     );
-    if (gSlots[Slot].originTyped) {
-        gSlots[Slot].originTyped(context, scale);
+    if (auto origin = gSlots[Slot].originTyped.load(std::memory_order_acquire)) {
+        origin(context, scale);
     }
 }
 
@@ -141,8 +163,9 @@ ll::memory::FuncPtr typedDetour(std::size_t slot) {
 
 template <int Slot>
 std::uint64_t detourGeneric(std::uint64_t a, std::uint64_t b, std::uint64_t c, std::uint64_t d) {
+    waitReady(static_cast<std::size_t>(Slot));
     captureHit(static_cast<std::size_t>(Slot), a, b, c, d);
-    GenericFn origin = gGenericOrigins[Slot];
+    GenericFn origin = gGenericOrigins[Slot].load(std::memory_order_acquire);
     return origin ? origin(a, b, c, d) : 0;
 }
 
@@ -199,7 +222,9 @@ nlohmann::json hookInstall(
     std::string const& tag,
     std::uint32_t      sample,
     bool               dryRun,
-    bool               allowVa
+    bool               allowVa,
+    bool               inWorld,
+    bool               injectFail
 ) {
     std::uint64_t targetAddress = 0;
     std::string   name;
@@ -233,40 +258,98 @@ nlohmann::json hookInstall(
     if (useVa && !allowVa) {
         return errorJson("hook_va_disabled");
     }
-
-    std::lock_guard lock(gHookMutex);
-    int const       slot = findFreeSlot();
-    if (slot < 0) {
-        return errorJson("no_free_slot");
+    if (!inWorld) {
+        // Patching code that the main menu is actively running is unsafe: LL
+        // does not suspend threads in that state.
+        return errorJson("not_in_world");
     }
-    ensureRing();
 
-    HookSlot& watch = gSlots[static_cast<std::size_t>(slot)];
-    watch.symbol    = !useVa;
-    watch.tag       = tag;
-    watch.name      = name;
-    watch.address   = targetAddress;
-    watch.sample    = std::max<std::uint32_t>(1, sample);
-    watch.target    = reinterpret_cast<ll::memory::FuncPtr>(targetAddress);
-    watch.detour    = useVa ? genericDetour(static_cast<std::size_t>(slot))
-                            : typedDetour(static_cast<std::size_t>(slot));
-    watch.id.store(gNextId.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
-    watch.hits.store(0, std::memory_order_relaxed);
-    watch.captured.store(0, std::memory_order_relaxed);
-    watch.originTyped = nullptr;
-    gGenericOrigins[slot] = nullptr;
+    int                slot   = -1;
+    ll::memory::FuncPtr target = nullptr;
+    ll::memory::FuncPtr detour = nullptr;
+    {
+        std::lock_guard lock(gHookMutex);
+        // F3: one hook per address; a second install on the same VA would
+        // trample the first trampoline.
+        for (auto const& existing : gSlots) {
+            if (existing.used.load(std::memory_order_acquire) && existing.address == targetAddress) {
+                return errorJson("hook_duplicate");
+            }
+        }
+        slot = findFreeSlot();
+        if (slot < 0) {
+            return errorJson("no_free_slot");
+        }
+        ensureRing();
 
+        HookSlot& watch = gSlots[static_cast<std::size_t>(slot)];
+        watch.symbol    = !useVa;
+        watch.tag       = tag;
+        watch.name      = name;
+        watch.address   = targetAddress;
+        watch.sample.store(std::max<std::uint32_t>(1, sample), std::memory_order_relaxed);
+        watch.target = reinterpret_cast<ll::memory::FuncPtr>(targetAddress);
+        watch.detour = useVa ? genericDetour(static_cast<std::size_t>(slot))
+                             : typedDetour(static_cast<std::size_t>(slot));
+        watch.id.store(gNextId.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
+        watch.hits.store(0, std::memory_order_relaxed);
+        watch.captured.store(0, std::memory_order_relaxed);
+        watch.originTyped.store(nullptr, std::memory_order_relaxed);
+        gGenericOrigins[slot].store(nullptr, std::memory_order_relaxed);
+        watch.ready.store(false, std::memory_order_release);
+        // Reserve the slot before dropping the lock so a concurrent install
+        // cannot pick it.
+        watch.used.store(true, std::memory_order_release);
+        target = watch.target;
+        detour = watch.detour;
+    }
+
+    // F2: do not hold gHookMutex across hook(). It suspends the other threads
+    // and may allocate the trampoline while a suspended thread owns the heap.
     ll::memory::FuncPtr originRaw = nullptr;
     int const           status    = ll::memory::hook(
-        watch.target,
-        watch.detour,
+        target,
+        detour,
         &originRaw,
         ll::memory::HookPriority::Normal,
         true
     );
-    if (status != 0 || originRaw == nullptr) {
+
+    HookSlot& watch = gSlots[static_cast<std::size_t>(slot)];
+    if (status == 0 && originRaw != nullptr && injectFail) {
+        // Test-only: hook() succeeded for real, but pretend it published no
+        // origin so the F3 cleanup path (unhook + release) is exercised.
+        originRaw = nullptr;
+    }
+    if (status != 0) {
+        // The patch was never applied, so nothing can be executing the detour.
+        watch.ready.store(true, std::memory_order_release);
+        watch.used.store(false, std::memory_order_release);
         watch.target = nullptr;
         watch.detour = nullptr;
+        watch.address = 0;
+        watch.tag.clear();
+        watch.name.clear();
+        return nlohmann::json{
+            {"event",  "error"       },
+            {"reason", "hook_failed" },
+            {"code",   status        },
+        };
+    }
+    if (originRaw == nullptr) {
+        // F3: hook() reported success but produced no origin. The patch is in
+        // the code, so remove it before releasing the slot. If unhook fails,
+        // keep the slot owned so hook_rm/panic can retry.
+        watch.ready.store(true, std::memory_order_release);
+        if (!ll::memory::unhook(target, detour, true)) {
+            return errorJson("unhook_failed");
+        }
+        watch.used.store(false, std::memory_order_release);
+        watch.target = nullptr;
+        watch.detour = nullptr;
+        watch.address = 0;
+        watch.tag.clear();
+        watch.name.clear();
         return nlohmann::json{
             {"event",  "error"       },
             {"reason", "hook_failed" },
@@ -274,11 +357,16 @@ nlohmann::json hookInstall(
         };
     }
     if (useVa) {
-        gGenericOrigins[slot] = reinterpret_cast<GenericFn>(originRaw);
+        gGenericOrigins[slot].store(reinterpret_cast<GenericFn>(originRaw), std::memory_order_release);
     } else {
-        watch.originTyped = reinterpret_cast<SetJumpPendingScaleFn>(originRaw);
+        watch.originTyped.store(
+            reinterpret_cast<SetJumpPendingScaleFn>(originRaw),
+            std::memory_order_release
+        );
     }
-    watch.used.store(true, std::memory_order_release);
+    // Publish last: every field captureHit reads is visible before a detour
+    // stops spinning.
+    watch.ready.store(true, std::memory_order_release);
 
     nlohmann::json out{
         {"event",   "hook_installed"},
@@ -286,7 +374,7 @@ nlohmann::json hookInstall(
         {"slot",    slot            },
         {"address", targetAddress   },
         {"tag",     tag             },
-        {"sample",  watch.sample    },
+        {"sample",  watch.sample.load() },
         {"abi",     useVa ? "generic4-int" : "typed"},
     };
     out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
@@ -307,12 +395,13 @@ nlohmann::json hookRemove(int id) {
             return errorJson("unhook_failed");
         }
         watch.used.store(false, std::memory_order_release);
-        watch.target      = nullptr;
-        watch.detour      = nullptr;
-        watch.originTyped = nullptr;
+        watch.target = nullptr;
+        watch.detour = nullptr;
+        watch.originTyped.store(nullptr, std::memory_order_relaxed);
+        watch.address = 0;
         watch.tag.clear();
         watch.name.clear();
-        gGenericOrigins[slot] = nullptr;
+        gGenericOrigins[slot].store(nullptr, std::memory_order_relaxed);
         return nlohmann::json{
             {"event", "hook_removed"},
             {"id",    id           },
@@ -334,18 +423,20 @@ int hookRemoveAll() {
             continue; // keep it owned so the caller can retry
         }
         watch.used.store(false, std::memory_order_release);
-        watch.target      = nullptr;
-        watch.detour      = nullptr;
-        watch.originTyped = nullptr;
+        watch.target = nullptr;
+        watch.detour = nullptr;
+        watch.originTyped.store(nullptr, std::memory_order_relaxed);
+        watch.address = 0;
         watch.tag.clear();
         watch.name.clear();
-        gGenericOrigins[slot] = nullptr;
+        gGenericOrigins[slot].store(nullptr, std::memory_order_relaxed);
         ++removed;
     }
     return removed;
 }
 
 nlohmann::json hookListJson() {
+    std::lock_guard lock(gHookMutex);
     nlohmann::json out;
     out["event"]  = "hook_list";
     out["hooks"]  = nlohmann::json::array();
@@ -364,7 +455,7 @@ nlohmann::json hookListJson() {
             {"va",       watch.symbol ? nlohmann::json(nullptr) : nlohmann::json(watch.address)},
             {"address",  watch.address                },
             {"tag",      watch.tag                    },
-            {"sample",   watch.sample                 },
+            {"sample",   watch.sample.load()          },
             {"hits",     watch.hits.load()            },
             {"captured", watch.captured.load()        },
         });
@@ -373,6 +464,7 @@ nlohmann::json hookListJson() {
 }
 
 nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
+    std::lock_guard     lock(gHookMutex);
     std::uint64_t const head   = gRingHead.load(std::memory_order_acquire);
     std::uint64_t const oldest = head > kHookRingCapacity ? head - kHookRingCapacity : 0;
     std::uint64_t       start  = since;

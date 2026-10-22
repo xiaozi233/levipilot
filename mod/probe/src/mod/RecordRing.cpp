@@ -76,6 +76,7 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
     if (!gRecording.load(std::memory_order_acquire) || !gRing) {
         return;
     }
+    pathCount(PathCounter::Record);
     std::uint64_t const counter = gTickCounter.fetch_add(1, std::memory_order_relaxed);
     std::uint32_t const period  = gPeriod.load(std::memory_order_relaxed);
     if (period > 1 && (counter % period) != 0) {

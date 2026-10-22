@@ -81,16 +81,15 @@ void ProbeMod::cancelTasks() {
 }
 
 void ProbeMod::beginTask() {
-    {
-        std::lock_guard lock(mInputMutex);
-        mDesired       = ControlState{};
-        mDesiredTicks  = 0;
-        mJumpRequested = false;
-    }
-    {
-        std::lock_guard lock(mLookMutex);
-        mLookTicks = 0;
-    }
+    updateRequests([](RequestBlock& request) {
+        request.input      = ControlState{};
+        request.inputTicks = 0;
+        ++request.inputSeq;
+        request.jumpCancel = true;
+        ++request.jumpSeq;
+        request.lookTicks = 0;
+        ++request.lookSeq;
+    });
     // A task takes over movement; a running macro would fight it for the input.
     mMacroPlaying       = false;
     mMacroStopRequested = true;

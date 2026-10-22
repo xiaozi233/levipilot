@@ -319,7 +319,9 @@ nlohmann::json hookInstall(
     std::string const& tag,
     std::uint32_t      sample,
     bool               dryRun,
-    bool               allowVa
+    bool               allowVa,
+    bool               inWorld,
+    bool               injectFail
 );
 nlohmann::json hookRemove(int id);
 int            hookRemoveAll();
@@ -338,6 +340,12 @@ void           overheadRequestBusy(std::uint32_t us, std::uint32_t ticks);
 void           overheadBusyTick();
 std::uint64_t  qpcNow();
 std::uint64_t  qpcElapsedUs(std::uint64_t start, std::uint64_t end);
+
+// Per-path call rates so an unexpected callback storm is visible before it
+// shows up as a crash or a dropped tick.
+enum class PathCounter { Record, Watch, Hook };
+void pathCount(PathCounter path);
+nlohmann::json pathRatesJson();
 
 // ---------------------------------------------------------------------------
 // T7: executable version fingerprint and symbol-anchor signatures.

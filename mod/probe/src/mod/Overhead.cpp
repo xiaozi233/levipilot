@@ -22,6 +22,62 @@ std::atomic<std::uint32_t> gBusyTicks{0};
 std::uint64_t              gFrequency = 0;
 std::mutex                 gInitMutex;
 
+// Per-path rate windows. A window starts on the first call after the counter
+// is read for the first time and is never reset; the rate therefore smooths
+// over the whole session, which is what matters for spotting a storm.
+struct RateCounter {
+    std::atomic<std::uint64_t> total{0};
+    std::atomic<std::uint64_t> windowStartMs{0};
+    std::atomic<std::uint64_t> windowCount{0};
+};
+
+RateCounter gRecordRate;
+RateCounter gWatchRate;
+RateCounter gHookRate;
+
+RateCounter& rateCounter(PathCounter path) {
+    switch (path) {
+    case PathCounter::Record:
+        return gRecordRate;
+    case PathCounter::Watch:
+        return gWatchRate;
+    case PathCounter::Hook:
+    default:
+        return gHookRate;
+    }
+}
+
+void rateCount(RateCounter& counter) {
+    counter.total.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t const now   = GetTickCount64();
+    std::uint64_t       start = counter.windowStartMs.load(std::memory_order_relaxed);
+    if (start == 0) {
+        if (counter.windowStartMs.compare_exchange_strong(
+                start,
+                now,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed
+            )) {
+            counter.windowCount.store(0, std::memory_order_relaxed);
+        }
+    }
+    counter.windowCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+nlohmann::json rateJson(RateCounter& counter) {
+    std::uint64_t const now   = GetTickCount64();
+    std::uint64_t const start = counter.windowStartMs.load(std::memory_order_acquire);
+    std::uint64_t const count = counter.windowCount.load(std::memory_order_relaxed);
+    double              rate  = 0.0;
+    if (start != 0 && now > start) {
+        rate = static_cast<double>(count) * 1000.0 / static_cast<double>(now - start);
+    }
+    return nlohmann::json{
+        {"calls_per_sec", rate                                         },
+        {"calls_total",   counter.total.load(std::memory_order_relaxed)},
+    };
+}
+
 std::uint32_t percentile(std::vector<std::uint32_t> const& values, double fraction) {
     if (values.empty()) {
         return 0;
@@ -83,6 +139,7 @@ nlohmann::json overheadJson() {
     );
     nlohmann::json out;
     out["event"] = "overhead";
+    out["paths"] = pathRatesJson();
     if (!gSamples || count == 0) {
         out["samples"] = 0;
         return out;
@@ -121,6 +178,16 @@ nlohmann::json overheadJson() {
 void overheadRequestBusy(std::uint32_t us, std::uint32_t ticks) {
     gBusyUs.store(std::min<std::uint32_t>(us, 5000), std::memory_order_relaxed);
     gBusyTicks.store(std::min<std::uint32_t>(ticks, 200), std::memory_order_release);
+}
+
+void pathCount(PathCounter path) { rateCount(rateCounter(path)); }
+
+nlohmann::json pathRatesJson() {
+    return nlohmann::json{
+        {"record", rateJson(gRecordRate)},
+        {"watch",  rateJson(gWatchRate) },
+        {"hook",   rateJson(gHookRate)  },
+    };
 }
 
 void overheadBusyTick() {

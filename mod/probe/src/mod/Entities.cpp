@@ -96,13 +96,13 @@ void ProbeMod::applyEntityAction(LocalPlayer& player, EntityAction const& action
         if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
             applyTurnDelta(player, Vec2{dpitch, dyaw});
         }
-        {
-            std::lock_guard lock(mInputMutex);
-            mDesired        = ControlState{};
-            mDesired.rmb    = true;
-            mDesired.active = true;
-            mDesiredTicks   = 3;
-        }
+        updateRequests([](RequestBlock& request) {
+            request.input        = ControlState{};
+            request.input.rmb    = true;
+            request.input.active = true;
+            request.inputTicks   = 3;
+            ++request.inputSeq;
+        });
 
         enqueue(
             nlohmann::json{

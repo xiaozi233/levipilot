@@ -110,6 +110,9 @@ bool ProbeMod::enable() {
                 R"({"event":"enter_world_settled","ok":false,"reason":"left_while_joining"})"
             );
         }
+        // F4: this listener may run on the client thread; ask the spool thread
+        // to flush immediately instead of doing file IO here.
+        mSpoolForce.store(true, std::memory_order_release);
     });
     mCancelJoinLevelListener = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
         mJoinPending = false;
@@ -161,8 +164,16 @@ bool ProbeMod::disable() {
     if (wake != INVALID_HANDLE_VALUE) {
         CloseHandle(wake);
     }
+    // F10: a client that connected but stopped reading would otherwise leave
+    // the pipe thread blocked in WriteFile and hang unload.
+    if (HANDLE thread = mServerThreadHandle.load(std::memory_order_acquire)) {
+        CancelSynchronousIo(thread);
+    }
     if (mServerThread.joinable()) {
         mServerThread.join();
+    }
+    if (HANDLE thread = mServerThreadHandle.exchange(nullptr, std::memory_order_acq_rel)) {
+        CloseHandle(thread);
     }
     if (mAutoThread.joinable()) {
         mAutoThread.join();
@@ -206,6 +217,7 @@ void ProbeMod::loadAutoConfig() {
     mAllowMemoryWrite = config.value("allow_write", false);
     mAllowCrashTest   = config.value("allow_crash_test", false);
     mAllowHookVa      = config.value("allow_hook_va", false);
+    mAllowSelftestStress = config.value("allow_selftest_stress", false);
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
@@ -299,14 +311,14 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
 
     latchActionClicks(player);
 
+    // T9: one lock-free snapshot of movement/look/teleport requests per tick.
+    RequestBlock const requests = readRequests();
+
     // Queued teleport goes through the integrated server so the position is
     // authoritative; a client-only _setPos is corrected back on the next tick.
-    {
-        std::lock_guard lock(mTeleportMutex);
-        if (mTeleportRequested) {
-            mTeleportRequested = false;
-            requestServerTeleport(player, mTeleportRequest);
-        }
+    if (requests.teleportSeq != mSeenTeleportSeq) {
+        mSeenTeleportSeq = requests.teleportSeq;
+        requestServerTeleport(player, requests.teleport);
     }
 
     if (int fly = mFlyRequest.exchange(-1); fly >= 0) {
@@ -390,24 +402,30 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
 
     ControlState state;
     bool         apply = false;
-    {
-        std::lock_guard lock(mInputMutex);
-        if (mDesiredTicks != 0) {
-            state = mDesired;
-            apply = state.active || state.jump;
-            if (mDesiredTicks > 0) {
-                --mDesiredTicks;
-                if (mDesiredTicks == 0) {
-                    mDesired = ControlState{};
-                }
+    if (requests.inputSeq != mSeenInputSeq) {
+        mSeenInputSeq     = requests.inputSeq;
+        mActiveInput      = requests.input;
+        mActiveInputTicks = requests.inputTicks;
+    }
+    if (requests.jumpSeq != mSeenJumpSeq) {
+        mSeenJumpSeq        = requests.jumpSeq;
+        mJumpRequestPending = !requests.jumpCancel;
+    }
+    if (mActiveInputTicks != 0) {
+        state = mActiveInput;
+        apply = state.active || state.jump;
+        if (mActiveInputTicks > 0) {
+            --mActiveInputTicks;
+            if (mActiveInputTicks == 0) {
+                mActiveInput = ControlState{};
             }
         }
-        if (mJumpRequested) {
-            mJumpRequested = false;
-            state.jump     = true;
-            state.active   = true;
-            apply          = true;
-        }
+    }
+    if (mJumpRequestPending) {
+        mJumpRequestPending = false;
+        state.jump          = true;
+        state.active        = true;
+        apply               = true;
     }
     if (apply) {
         applyControls(*client, player, state);
@@ -416,25 +434,22 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     }
 
     // Absolute look targets are applied after movement so the rotation matches the current tick.
-    bool  lookActive = false;
-    bool  lookRel    = true;
-    float lookYaw    = 0.0f;
-    float lookPitch  = 0.0f;
-    {
-        std::lock_guard lock(mLookMutex);
-        lookActive = mLookTicks != 0;
-        lookRel    = mLookRelative;
-        lookYaw    = mLookYaw;
-        lookPitch  = mLookPitch;
-        if (mLookTicks > 0) {
-            --mLookTicks;
-        }
+    if (requests.lookSeq != mSeenLookSeq) {
+        mSeenLookSeq        = requests.lookSeq;
+        mActiveLookRelative = requests.lookRelative;
+        mActiveLookYaw      = requests.lookYaw;
+        mActiveLookPitch    = requests.lookPitch;
+        mActiveLookTicks    = requests.lookTicks;
     }
+    bool const lookActive = mActiveLookTicks != 0;
     if (lookActive) {
         auto const rot = player.getRotation();
         // _applyTurnDelta uses the opposite pitch sign from ActorRotation.x.
-        float dy = lookRel ? lookYaw : wrapDegrees(lookYaw - rot.y);
-        float dp = lookRel ? -lookPitch : (rot.x - lookPitch);
+        float dy = mActiveLookRelative ? mActiveLookYaw : wrapDegrees(mActiveLookYaw - rot.y);
+        float dp = mActiveLookRelative ? -mActiveLookPitch : (rot.x - mActiveLookPitch);
+        if (mActiveLookTicks > 0) {
+            --mActiveLookTicks;
+        }
         if (std::fabs(dy) > 1.0e-5f || std::fabs(dp) > 1.0e-5f) {
             applyTurnDelta(player, Vec2{dp, dy});
         }
@@ -857,12 +872,13 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
 }
 
 void ProbeMod::reportInternalError(char const* phase, std::string const& message) {
-    {
-        std::lock_guard lock(mInputMutex);
-        mDesired       = ControlState{};
-        mDesiredTicks  = 0;
-        mJumpRequested = false;
-    }
+    updateRequests([](RequestBlock& request) {
+        request.input      = ControlState{};
+        request.inputTicks = 0;
+        ++request.inputSeq;
+        request.jumpCancel = true;
+        ++request.jumpSeq;
+    });
     cancelTasks();
 
     std::uint64_t const now  = GetTickCount64();

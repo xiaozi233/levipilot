@@ -21,19 +21,19 @@ void ProbeMod::enqueue(std::string line) {
 void ProbeMod::spoolThreadLoop() {
     while (mRunning.load(std::memory_order_relaxed)) {
         Sleep(25);
-        flushSpool(false);
+        flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
     }
     flushSpool(true);
 }
 
-void ProbeMod::flushSpool(bool force) {
+std::uint64_t ProbeMod::flushSpool(bool force) {
     std::string data;
     {
         std::lock_guard lock(mQueueMutex);
         std::uint64_t const now = GetTickCount64();
         bool const due = force || mSpoolBuffer.size() >= (64u << 10) || now - mLastFlushMs >= 100;
         if (!due) {
-            return;
+            return 0;
         }
         mLastFlushMs = now;
         data.swap(mSpoolBuffer);
@@ -50,7 +50,7 @@ void ProbeMod::flushSpool(bool force) {
             data += '\n';
         }
         if (data.empty()) {
-            return;
+            return 0;
         }
     }
 
@@ -60,7 +60,8 @@ void ProbeMod::flushSpool(bool force) {
         std::filesystem::create_directories(mSpoolPath.parent_path(), ec);
         mSpoolFile.open(mSpoolPath, std::ios::app | std::ios::binary);
         if (!mSpoolFile) {
-            return;
+            mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+            return 0;
         }
     }
     mSpoolFile.write(data.data(), static_cast<std::streamsize>(data.size()));
@@ -73,6 +74,7 @@ void ProbeMod::flushSpool(bool force) {
     }
     mSpoolRows.fetch_add(rows, std::memory_order_relaxed);
     mSpoolFlushes.fetch_add(1, std::memory_order_relaxed);
+    return rows;
 }
 
 void ProbeMod::bootLog(std::string const& text) {
@@ -114,6 +116,19 @@ void ProbeMod::queueServerTask(std::function<void()> fn) {
 void ProbeMod::serverLoop() {
     HANDLE pipe      = INVALID_HANDLE_VALUE;
     bool   connected = false;
+
+    HANDLE threadHandle = nullptr;
+    if (DuplicateHandle(
+            GetCurrentProcess(),
+            GetCurrentThread(),
+            GetCurrentProcess(),
+            &threadHandle,
+            0,
+            FALSE,
+            DUPLICATE_SAME_ACCESS
+        )) {
+        mServerThreadHandle.store(threadHandle, std::memory_order_release);
+    }
 
     while (mRunning.load(std::memory_order_relaxed)) {
         try {
@@ -203,7 +218,20 @@ void ProbeMod::serverLoop() {
                     pipe = INVALID_HANDLE_VALUE;
                     continue;
                 }
-                mCommandBuffer.append(buf.data(), read);
+                if (mDiscardPartial) {
+                    // Resync: drop everything up to and including the newline
+                    // that ends the oversized line.
+                    DWORD start = 0;
+                    while (start < read && buf[start] != '\n') {
+                        ++start;
+                    }
+                    if (start < read) {
+                        mDiscardPartial = false;
+                        mCommandBuffer.append(buf.data() + start + 1, read - start - 1);
+                    }
+                } else {
+                    mCommandBuffer.append(buf.data(), read);
+                }
 
                 size_t pos = 0;
                 while ((pos = mCommandBuffer.find('\n')) != std::string::npos) {
@@ -215,6 +243,25 @@ void ProbeMod::serverLoop() {
                     if (!line.empty()) {
                         handleLine(line);
                     }
+                }
+
+                // F1: a client that never sends '\n' must not grow the partial
+                // line without bound. Complete lines above are still handled,
+                // and the tail is discarded until the next newline so later
+                // commands are not glued to the oversized line.
+                constexpr std::size_t kMaxCommandLine = 1u << 20;
+                if (mCommandBuffer.size() > kMaxCommandLine) {
+                    std::uint64_t const bytes = mCommandBuffer.size();
+                    mCommandBuffer.clear();
+                    mDiscardPartial = true;
+                    enqueue(
+                        nlohmann::json{
+                            {"event",  "error"       },
+                            {"reason", "line_too_long"},
+                            {"bytes",  bytes          },
+                    }
+                            .dump()
+                    );
                 }
             }
 

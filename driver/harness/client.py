@@ -177,6 +177,22 @@ class ModClient:
             self.close()
             raise ModDisconnected(f"pipe 写入失败：{exc}") from exc
 
+    def send_raw(self, payload: bytes) -> None:
+        """Write bytes without appending a newline (used by the line-bound test)."""
+        if self._file is None:
+            raise ModDisconnected("尚未连接")
+        view = memoryview(payload)
+        try:
+            while view:
+                written = self._file.write(view)
+                if not written:
+                    raise OSError("pipe write returned 0")
+                view = view[written:]
+            self._file.flush()
+        except (OSError, ValueError) as exc:
+            self.close()
+            raise ModDisconnected(f"pipe 写入失败：{exc}") from exc
+
     def readline(self, timeout: float | None = None) -> dict[str, Any]:
         return self._next_line(timeout)
 

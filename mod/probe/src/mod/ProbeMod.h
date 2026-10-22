@@ -255,13 +255,16 @@ private:
     void serverLoop();
     void handleLine(std::string const& line);
     bool dispatchWithSeh(std::string const& line);
-    void dispatchLine(std::string const& line);
+    // Not inlined: keeps the SEH (__try) frame out of the command dispatcher
+    // and avoids C2712 with LTCG.
+    __declspec(noinline) void dispatchLine(std::string const& line);
     void enqueue(std::string line);
 
     // T1: durable record spool and crash forensics. Records are appended to
     // <modDir>/spool-<pid>.jsonl so a killed/crashed game still leaves data.
     void spoolThreadLoop();
-    void flushSpool(bool force);
+    // Returns the number of rows written; 0 when nothing was due/queued.
+    std::uint64_t flushSpool(bool force);
     void installCrashHandler();
     static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info);
     void writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
@@ -347,6 +350,9 @@ private:
     ll::event::ListenerPtr mExitLevelListener;
     ll::event::ListenerPtr mCancelJoinLevelListener;
     std::thread            mServerThread;
+    // F10: duplicated handle for CancelSynchronousIo so disable() is not stuck
+    // behind a WriteFile to a client that stopped reading.
+    std::atomic<HANDLE>    mServerThreadHandle{nullptr};
     std::thread            mAutoThread;
     std::string            mAutoEnterWorld;
     std::string            mAutoEnterOptions;
@@ -366,11 +372,68 @@ private:
     std::atomic<std::uint64_t> mTick{0};
     std::atomic<std::uint64_t> mMaxTicks{0};
 
-    // Continuous movement input. ticks < 0 means "until stopped".
-    std::mutex   mInputMutex;
-    ControlState mDesired;
-    int          mDesiredTicks  = 0;
-    bool         mJumpRequested = false;
+    // T9: movement, look and teleport requests share one seqlock'd block so the
+    // client tick can take a single lock-free snapshot. Pipe-thread writers
+    // publish under mRequestWriteMutex; the tick thread never takes it on the
+    // read path. Sequence numbers make each command visible exactly once, which
+    // keeps the tick-local countdowns (ticks < 0 means "until stopped").
+    struct RequestBlock {
+        ControlState  input;
+        int           inputTicks = 0;
+        std::uint32_t inputSeq   = 0;
+        // A new jumpSeq either requests a jump or cancels a pending one
+        // (beginTask / internal-error reset); jumpCancel disambiguates.
+        bool          jumpCancel = false;
+        std::uint32_t jumpSeq    = 0;
+        bool          lookRelative = true;
+        float         lookYaw      = 0.0f;
+        float         lookPitch    = 0.0f;
+        int           lookTicks    = 0;
+        std::uint32_t lookSeq      = 0;
+        TeleportRequest teleport;
+        std::uint32_t   teleportSeq = 0;
+    };
+
+    template <typename Fn>
+    void updateRequests(Fn&& fn) {
+        std::lock_guard writeLock(mRequestWriteMutex);
+        std::uint32_t const seq = mRequestSeq.load(std::memory_order_relaxed);
+        mRequestSeq.store(seq + 1, std::memory_order_relaxed); // odd: write in progress
+        std::atomic_thread_fence(std::memory_order_release);
+        fn(mRequestBlock);
+        mRequestSeq.store(seq + 2, std::memory_order_release); // even: stable
+    }
+
+    [[nodiscard]] RequestBlock readRequests() const {
+        for (;;) {
+            std::uint32_t const before = mRequestSeq.load(std::memory_order_acquire);
+            if ((before & 1u) == 0) {
+                RequestBlock copy = mRequestBlock;
+                std::atomic_thread_fence(std::memory_order_acquire);
+                if (mRequestSeq.load(std::memory_order_relaxed) == before) {
+                    return copy;
+                }
+            }
+            std::this_thread::yield();
+        }
+    }
+
+    alignas(64) std::atomic<std::uint32_t> mRequestSeq{0};
+    RequestBlock                           mRequestBlock;
+    std::mutex                             mRequestWriteMutex;
+    // Tick-thread consumption state for the block above.
+    std::uint32_t mSeenInputSeq      = 0;
+    ControlState  mActiveInput;
+    int           mActiveInputTicks  = 0;
+    std::uint32_t mSeenJumpSeq       = 0;
+    bool          mJumpRequestPending = false;
+    std::uint32_t mSeenLookSeq       = 0;
+    bool          mActiveLookRelative = true;
+    float         mActiveLookYaw     = 0.0f;
+    float         mActiveLookPitch   = 0.0f;
+    int           mActiveLookTicks   = 0;
+    std::uint32_t mSeenTeleportSeq   = 0;
+
     bool         mPrevSprint    = false;
     bool         mPrevSneak     = false;
     bool         mInjected      = false;
@@ -408,12 +471,7 @@ private:
     std::array<bool, 9> mButtonStates{};
     std::array<bool, 9> mHandlerStates{};
 
-    // Look is separate so an absolute target can be held across ticks.
-    std::mutex mLookMutex;
-    int        mLookTicks    = 0;
-    bool       mLookRelative = true;
-    float      mLookYaw      = 0.0f;
-    float      mLookPitch    = 0.0f;
+    // Look requests live in RequestBlock above (mLookMutex removed in T9).
 
     std::atomic_bool            mStateRequested{false};
     std::atomic_bool            mInventoryRequested{false};
@@ -459,9 +517,7 @@ private:
     std::atomic<float>  mLastPitch{0.0f};
     std::atomic_bool    mPoseValid{false};
 
-    std::mutex      mTeleportMutex;
-    bool            mTeleportRequested = false;
-    TeleportRequest mTeleportRequest;
+    // Teleport requests live in RequestBlock above (mTeleportMutex removed in T9).
 
     // Only one closed-loop task may run at a time. The epoch guards against a
     // task that was cancelled from the pipe thread while the tick thread was
@@ -504,6 +560,8 @@ private:
     std::mutex                 mQueueMutex;
     std::deque<std::string>    mQueue;
     std::string                mCommandBuffer;
+    // Pipe thread only: true after a line_too_long until the next newline.
+    bool                       mDiscardPartial = false;
     std::atomic<std::uint64_t> mQueueDropped{0};
     std::atomic<std::uint64_t> mLastInternalErrorMs{0};
 
@@ -520,6 +578,10 @@ private:
     wchar_t                    mModDirW[1024]{};
     std::atomic<std::uint64_t> mSpoolRows{0};
     std::atomic<std::uint64_t> mSpoolFlushes{0};
+    // F4: set by non-spool threads that need the next flush to be immediate
+    // (world_left, panic_done) without doing file IO on the tick thread.
+    std::atomic_bool           mSpoolForce{false};
+    std::atomic<std::uint64_t> mSpoolErrors{0};
 
     // Crash report context. The pipe thread is the only writer of
     // mLastCommand; the tick thread is the only writer of the pose fields.
@@ -534,6 +596,7 @@ private:
     std::atomic_bool           mAllowMemoryWrite{false};
     std::atomic_bool           mAllowCrashTest{false};
     std::atomic_bool           mAllowHookVa{false};
+    std::atomic_bool           mAllowSelftestStress{false};
     std::atomic<int>           mSignInWaitMs{15000};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};

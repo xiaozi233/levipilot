@@ -41,8 +41,9 @@ void ProbeMod::handleLine(std::string const& line) {
     // the request, not to the process. The flag must be visible to the crash
     // VEH, which runs before the __except filter below.
     struct DispatchFlag {
+        bool previous = gDispatchSehActive;
         DispatchFlag() { gDispatchSehActive = true; }
-        ~DispatchFlag() { gDispatchSehActive = false; }
+        ~DispatchFlag() { gDispatchSehActive = previous; }
     } dispatchFlag;
     // nlohmann throws on type mismatches, and a bad line from a script must not
     // kill the pipe thread (which would make the whole harness unreachable).
@@ -281,7 +282,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
                 tag,
                 sample,
                 dryRun,
-                mAllowHookVa.load(std::memory_order_relaxed)
+                mAllowHookVa.load(std::memory_order_relaxed),
+                mInWorld.load(std::memory_order_relaxed),
+                j.value("inject_fail", false)
+                    && mAllowHookVa.load(std::memory_order_relaxed)
             )
                 .dump()
         );
@@ -312,6 +316,11 @@ void ProbeMod::dispatchLine(std::string const& line) {
             cancelTasks();
             beginTask();
         }
+        // F4: panic is usually called before an incident, so make sure the
+        // evidence already queued reaches disk before we answer.
+        std::uint64_t const errorsBefore = mSpoolErrors.load(std::memory_order_relaxed);
+        std::uint64_t const flushedRows  = flushSpool(true);
+        bool const          flushOk      = mSpoolErrors.load(std::memory_order_relaxed) == errorsBefore;
         enqueue(
             nlohmann::json{
                 {"event",            "panic_done"       },
@@ -320,9 +329,12 @@ void ProbeMod::dispatchLine(std::string const& line) {
                 {"hooks_removed",    hooksRemoved       },
                 {"watches_cleared",  watchesRemoved     },
                 {"tasks_cancelled",  tasksLevel         },
+                {"flushed_rows",     flushedRows        },
+                {"flush_ok",         flushOk            },
         }
                 .dump()
         );
+        mSpoolForce.store(true, std::memory_order_release);
         return;
     }
     if (cmd == "hook_list") {
@@ -528,57 +540,58 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "move") {
-        {
-            std::lock_guard lock(mInputMutex);
-            mDesired.forward = j.value("forward", 0.0f);
-            mDesired.strafe  = j.value("strafe", 0.0f);
-            mDesired.active  = true;
-            mDesiredTicks    = j.value("ticks", 1);
-        }
+        updateRequests([&j](RequestBlock& request) {
+            request.input.forward = j.value("forward", 0.0f);
+            request.input.strafe  = j.value("strafe", 0.0f);
+            request.input.active  = true;
+            request.inputTicks    = j.value("ticks", 1);
+            ++request.inputSeq;
+        });
         enqueue(R"({"event":"moving"})");
         return;
     }
     if (cmd == "stopmove") {
-        {
-            std::lock_guard lock(mInputMutex);
-            mDesired      = ControlState{};
-            mDesiredTicks = 0;
-        }
+        updateRequests([](RequestBlock& request) {
+            request.input      = ControlState{};
+            request.inputTicks = 0;
+            ++request.inputSeq;
+        });
         enqueue(R"({"event":"stopping"})");
         return;
     }
     if (cmd == "set") {
-        {
-            std::lock_guard lock(mInputMutex);
-            mDesired.forward = j.value("forward", 0.0f);
-            mDesired.strafe  = j.value("strafe", 0.0f);
-            mDesired.sprint  = j.value("sprint", false);
-            mDesired.sneak   = j.value("sneak", false);
-            mDesired.jump    = j.value("jump", false);
-            mDesired.rmb     = j.value("rmb", false);
-            mDesired.lmb     = j.value("lmb", false);
-            mDesired.active  = true;
-            mDesiredTicks    = j.value("ticks", 1);
-        }
+        updateRequests([&j](RequestBlock& request) {
+            request.input        = ControlState{};
+            request.input.forward = j.value("forward", 0.0f);
+            request.input.strafe  = j.value("strafe", 0.0f);
+            request.input.sprint  = j.value("sprint", false);
+            request.input.sneak   = j.value("sneak", false);
+            request.input.jump    = j.value("jump", false);
+            request.input.rmb     = j.value("rmb", false);
+            request.input.lmb     = j.value("lmb", false);
+            request.input.active  = true;
+            request.inputTicks    = j.value("ticks", 1);
+            ++request.inputSeq;
+        });
         enqueue(R"({"event":"set_ok"})");
         return;
     }
     if (cmd == "jump") {
-        {
-            std::lock_guard lock(mInputMutex);
-            mJumpRequested = true;
-        }
+        updateRequests([](RequestBlock& request) {
+            request.jumpCancel = false;
+            ++request.jumpSeq;
+        });
         enqueue(R"({"event":"jump_ok"})");
         return;
     }
     if (cmd == "look") {
-        {
-            std::lock_guard lock(mLookMutex);
-            mLookRelative = j.value("relative", true);
-            mLookYaw      = j.value("yaw", 0.0f);
-            mLookPitch    = j.value("pitch", 0.0f);
-            mLookTicks    = j.value("ticks", 1);
-        }
+        updateRequests([&j](RequestBlock& request) {
+            request.lookRelative = j.value("relative", true);
+            request.lookYaw      = j.value("yaw", 0.0f);
+            request.lookPitch    = j.value("pitch", 0.0f);
+            request.lookTicks    = j.value("ticks", 1);
+            ++request.lookSeq;
+        });
         enqueue(R"({"event":"look_ok"})");
         return;
     }
@@ -1137,16 +1150,15 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "teleport") {
-        {
-            std::lock_guard lock(mTeleportMutex);
-            mTeleportRequest.x           = j.value("x", 0.0f);
-            mTeleportRequest.y           = j.value("y", 0.0f);
-            mTeleportRequest.z           = j.value("z", 0.0f);
-            mTeleportRequest.hasRotation = j.contains("yaw") || j.contains("pitch");
-            mTeleportRequest.yaw         = j.value("yaw", 0.0f);
-            mTeleportRequest.pitch       = j.value("pitch", 0.0f);
-            mTeleportRequested           = true;
-        }
+        updateRequests([&j](RequestBlock& request) {
+            request.teleport.x           = j.value("x", 0.0f);
+            request.teleport.y           = j.value("y", 0.0f);
+            request.teleport.z           = j.value("z", 0.0f);
+            request.teleport.hasRotation = j.contains("yaw") || j.contains("pitch");
+            request.teleport.yaw         = j.value("yaw", 0.0f);
+            request.teleport.pitch       = j.value("pitch", 0.0f);
+            ++request.teleportSeq;
+        });
         // "teleported" is emitted from the server thread once the move is applied.
         return;
     }
@@ -1359,6 +1371,13 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "selftest_busy") {
+        // F10: this can stall the tick for ~1 s, so it needs an explicit opt-in.
+        if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {
+            enqueue(
+                R"({"event":"error","reason":"stress_disabled","hint":"set allow_selftest_stress=true"})"
+            );
+            return;
+        }
         std::uint32_t const us    = std::clamp(j.value("us", 1000), 1, 5000);
         std::uint32_t const ticks = std::clamp(j.value("ticks", 5), 1, 200);
         overheadRequestBusy(us, ticks);

@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
-from driver.transport_mod import ModClient, ModPipeError, ModProtocolError  # noqa: E402
+from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
 
 
 class Checks:
@@ -96,6 +96,20 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         checks.check("ping", client.ping().get("event") == "pong")
+
+        # -- F1: a client that never sends '\n' cannot grow the buffer ------
+        client.send_raw(b"A" * (2 << 20) + b"\n")
+        too_long = 0
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            try:
+                event = client.readline(0.5)
+            except ModTimeout:
+                break
+            if event.get("event") == "error" and event.get("reason") == "line_too_long":
+                too_long += 1
+        checks.check("line_too_long", too_long >= 1, f"events={too_long}")
+        checks.check("line_too_long_alive", client.ping().get("event") == "pong")
 
         # -- T1: spool, crash isolation -------------------------------------
         checks.check("hello_spool", bool(client.hello.get("spool")), str(client.hello.get("spool")))
@@ -333,15 +347,30 @@ def main(argv: list[str] | None = None) -> int:
             and "hook_p99_us" in overhead_before,
             str({k: overhead_before.get(k) for k in ("samples", "tick_p99_us", "hook_p99_us")}),
         )
-        client.selftest_busy(1000, 20)
-        wait_ticks(client, 30)
-        overhead_after = client.overhead()
+        paths = overhead_before.get("paths", {})
         checks.check(
-            "overhead_busy",
-            float(overhead_after.get("hook_p99_us", 0)) >= 900
-            and float(overhead_after.get("hook_max_us", 0)) >= 900,
-            str({k: overhead_after.get(k) for k in ("hook_p50_us", "hook_p99_us", "hook_max_us")}),
+            "overhead_paths",
+            all(isinstance(paths.get(name), dict) for name in ("record", "watch", "hook")),
+            str(paths),
         )
+        busy = client.request({"cmd": "selftest_busy", "us": 1000, "ticks": 20})
+        if busy.get("reason") == "stress_disabled":
+            checks.check("selftest_busy_gated", True, "stress_disabled")
+            overhead_after = overhead_before
+        else:
+            checks.check(
+                "selftest_busy",
+                busy.get("event") == "busy_test_started",
+                str(busy),
+            )
+            wait_ticks(client, 30)
+            overhead_after = client.overhead()
+            checks.check(
+                "overhead_busy",
+                float(overhead_after.get("hook_p99_us", 0)) >= 900
+                and float(overhead_after.get("hook_max_us", 0)) >= 900,
+                str({k: overhead_after.get(k) for k in ("hook_p50_us", "hook_p99_us", "hook_max_us")}),
+            )
         checks.check("overhead_alive", wait_ticks(client, 3) >= 3)
 
         # -- parkour jump/route primitives ---------------------------------

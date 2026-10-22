@@ -56,10 +56,6 @@ void ProbeMod::requestServerTeleport(LocalPlayer& player, TeleportRequest const&
 void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch) {
     cancelTasks();
     beginTask();
-    {
-        std::lock_guard lock(mLookMutex);
-        mLookTicks = 0;
-    }
     mClickRequest.store(-1);
     mSlotRequest.store(-1);
 
@@ -83,11 +79,10 @@ void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bo
     auto const rotation = player->getRotation();
     request.yaw         = hasYaw ? yaw : rotation.y;
     request.pitch       = hasPitch ? pitch : rotation.x;
-    {
-        std::lock_guard lock(mTeleportMutex);
-        mTeleportRequest   = request;
-        mTeleportRequested = true;
-    }
+    updateRequests([&request](RequestBlock& block) {
+        block.teleport    = request;
+        ++block.teleportSeq;
+    });
 
     enqueue(
         nlohmann::json{

@@ -251,7 +251,7 @@ bool parseAddress(nlohmann::json const& value, std::uint64_t& out) {
         char*                   end   = nullptr;
         errno                         = 0;
         unsigned long long const parsed = std::strtoull(text.c_str(), &end, 0);
-        if (end == text.c_str() || end == nullptr || *end != '\0' || errno == ERANGE) {
+        if (text.front() == '-' || end == text.c_str() || end == nullptr || *end != '\0' || errno == ERANGE) {
             return false;
         }
         out = static_cast<std::uint64_t>(parsed);
@@ -271,6 +271,18 @@ bool parseSize(nlohmann::json const& value, std::uint32_t& out) {
     out = static_cast<std::uint32_t>(parsed);
     return true;
 }
+
+namespace {
+
+bool addOffset(std::uint64_t base, std::uint64_t offset, std::uint64_t& out) {
+    if (base > UINT64_MAX - offset) {
+        return false;
+    }
+    out = base + offset;
+    return true;
+}
+
+} // namespace
 
 nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::size_t len) {
     nlohmann::json out;
@@ -294,8 +306,11 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
     }
 
     if (kind == "block") {
-        std::uint64_t legacy = 0;
-        if (!readValue(addr + BlockLayout::LegacyPointer, legacy)) {
+        std::uint64_t legacy     = 0;
+        std::uint64_t legacyPtr  = 0;
+        std::uint64_t nameAddr   = 0;
+        if (!addOffset(addr, BlockLayout::LegacyPointer, legacyPtr)
+            || !readValue(legacyPtr, legacy)) {
             out["ok"]     = false;
             out["reason"] = "bad_addr";
             return out;
@@ -305,7 +320,10 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
         out["legacy"] = legacy;
         // Read the name through the legacy pointer so callers can cross-check
         // against the existing `blocks` command without a second round trip.
-        std::string name = readStdString(legacy + BlockLegacyLayout::Name);
+        std::string name;
+        if (addOffset(legacy, BlockLegacyLayout::Name, nameAddr)) {
+            name = readStdString(nameAddr);
+        }
         if (!name.empty()) {
             out["name"] = name;
         }
@@ -313,14 +331,24 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
     }
 
     if (kind == "legacy") {
-        std::uint64_t hash    = 0;
-        std::uint16_t blockId = 0;
-        float         valueA  = 0.0f;
-        float         valueB  = 0.0f;
-        if (!readValue(addr + BlockLegacyLayout::NameHash, hash)
-            || !readValue(addr + BlockLegacyLayout::BlockId, blockId)
-            || !readValue(addr + BlockLegacyLayout::FloatA, valueA)
-            || !readValue(addr + BlockLegacyLayout::FloatB, valueB)) {
+        std::uint64_t hash      = 0;
+        std::uint16_t blockId   = 0;
+        float         valueA    = 0.0f;
+        float         valueB    = 0.0f;
+        std::uint64_t hashAddr  = 0;
+        std::uint64_t idAddr    = 0;
+        std::uint64_t floatAAdr = 0;
+        std::uint64_t floatBAdr = 0;
+        std::uint64_t nameAddr  = 0;
+        if (!addOffset(addr, BlockLegacyLayout::NameHash, hashAddr)
+            || !addOffset(addr, BlockLegacyLayout::BlockId, idAddr)
+            || !addOffset(addr, BlockLegacyLayout::FloatA, floatAAdr)
+            || !addOffset(addr, BlockLegacyLayout::FloatB, floatBAdr)
+            || !addOffset(addr, BlockLegacyLayout::Name, nameAddr)
+            || !readValue(hashAddr, hash)
+            || !readValue(idAddr, blockId)
+            || !readValue(floatAAdr, valueA)
+            || !readValue(floatBAdr, valueB)) {
             out["ok"]     = false;
             out["reason"] = "bad_addr";
             return out;
@@ -328,7 +356,7 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
         out["ok"]       = true;
         out["legacy"]   = addr;
         out["hash"]     = hash;
-        out["name"]     = readStdString(addr + BlockLegacyLayout::Name);
+        out["name"]     = readStdString(nameAddr);
         out["block_id"] = blockId;
         out["float_a"]  = finiteOrZero(valueA);
         out["float_b"]  = finiteOrZero(valueB);

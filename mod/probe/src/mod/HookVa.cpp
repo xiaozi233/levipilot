@@ -322,6 +322,29 @@ nlohmann::json hookRemove(int id) {
     return errorJson("not_found");
 }
 
+int hookRemoveAll() {
+    std::lock_guard lock(gHookMutex);
+    int             removed = 0;
+    for (std::size_t slot = 0; slot < kHookSlots; ++slot) {
+        HookSlot& watch = gSlots[slot];
+        if (!watch.used.load(std::memory_order_acquire)) {
+            continue;
+        }
+        if (!ll::memory::unhook(watch.target, watch.detour, true)) {
+            continue; // keep it owned so the caller can retry
+        }
+        watch.used.store(false, std::memory_order_release);
+        watch.target      = nullptr;
+        watch.detour      = nullptr;
+        watch.originTyped = nullptr;
+        watch.tag.clear();
+        watch.name.clear();
+        gGenericOrigins[slot] = nullptr;
+        ++removed;
+    }
+    return removed;
+}
+
 nlohmann::json hookListJson() {
     nlohmann::json out;
     out["event"]  = "hook_list";

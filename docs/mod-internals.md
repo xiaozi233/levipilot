@@ -228,6 +228,16 @@
   没有暴露（服务端对象只能经 `queueServerTask` 访问）。
 - 组件 id 是运行时 EnTT id，不是稳定的 ABI 常量；报告里只有 id/地址/stride/count，没有类型名。
 
+## panic（T8）
+
+- `panic {level:"hooks"|"tasks"|"all"}`：
+  - `hooks`：`hookRemoveAll()` 逐个 `ll::memory::unhook`，再 `watchRemoveAll()` 清 DR 观察点；
+    卸载失败的钩保留占用，便于重试。
+  - `tasks`：`cancelTasks()` 递增 epoch 并清空所有闭环任务，`beginTask()` 停 macro、清移动输入。
+  - `all`：两者都做。
+- 回 `panic_done {ok, hooks_removed, watches_cleared, tasks_cancelled}`；进程和 tick 都不受影响，
+  之后可以重新装钩/观察点。`unhook_all` 是 `panic hooks` 的别名。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

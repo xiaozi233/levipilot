@@ -278,6 +278,24 @@ def main(argv: list[str] | None = None) -> int:
             str(bad_va),
         )
 
+        # -- T8: panic removes hooks/watches and cancels tasks -------------
+        probe_addr = int(client.status().get("tick_probe_addr", 0))
+        client.hook_install("MobJump::setJumpPendingScale", tag="panic_hook")
+        client.watch_set(probe_addr, size=8, tag="panic_watch")
+        panicked = client.panic("all")
+        checks.check(
+            "panic_done",
+            panicked.get("event") == "panic_done"
+            and panicked.get("ok") is True
+            and int(panicked.get("hooks_removed", 0)) >= 1
+            and int(panicked.get("watches_cleared", 0)) >= 1,
+            str(panicked),
+        )
+        checks.check("panic_hooks_empty", client.hook_list().get("hooks") == [])
+        checks.check("panic_watches_empty", client.watch_list().get("watches") == [])
+        checks.check("panic_task_idle", client.task_status().get("active") is None)
+        checks.check("panic_alive", wait_ticks(client, 3) >= 3)
+
         # -- parkour jump/route primitives ---------------------------------
         jump_now = client.jump_when("now")
         checks.check(

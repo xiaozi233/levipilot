@@ -322,6 +322,7 @@ nlohmann::json hookInstall(
     bool               allowVa
 );
 nlohmann::json hookRemove(int id);
+int            hookRemoveAll();
 nlohmann::json hookListJson();
 nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit);
 bool           hookRequestCall(std::string const& symbol, float scale, std::string& error);

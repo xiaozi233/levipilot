@@ -269,6 +269,40 @@ void ProbeMod::dispatchLine(std::string const& line) {
         enqueue(hookRemove(j.value("id", -1)).dump());
         return;
     }
+    if (cmd == "panic" || cmd == "unhook_all") {
+        std::string const level =
+            cmd == "unhook_all" ? std::string{"hooks"} : j.value("level", std::string{"all"});
+        if (level != "hooks" && level != "tasks" && level != "all") {
+            enqueue(R"({"event":"error","reason":"bad_panic_level","levels":["hooks","tasks","all"]})");
+            return;
+        }
+        bool const        hooksLevel = level == "hooks" || level == "all";
+        bool const        tasksLevel = level == "tasks" || level == "all";
+        std::size_t const watchesBefore = hooksLevel ? watchCount() : 0;
+        int const         hooksRemoved  = hooksLevel ? hookRemoveAll() : 0;
+        std::size_t       watchesRemoved = 0;
+        bool              watchesOk      = true;
+        if (hooksLevel) {
+            watchesOk      = watchRemoveAll();
+            watchesRemoved = watchesOk ? watchesBefore : 0;
+        }
+        if (tasksLevel) {
+            cancelTasks();
+            beginTask();
+        }
+        enqueue(
+            nlohmann::json{
+                {"event",            "panic_done"       },
+                {"level",            level              },
+                {"ok",               watchesOk          },
+                {"hooks_removed",    hooksRemoved       },
+                {"watches_cleared",  watchesRemoved     },
+                {"tasks_cancelled",  tasksLevel         },
+        }
+                .dump()
+        );
+        return;
+    }
     if (cmd == "hook_list") {
         enqueue(hookListJson().dump());
         return;

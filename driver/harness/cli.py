@@ -112,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
     hook_call.add_argument("--symbol", default="MobJump::setJumpPendingScale")
     hook_call.add_argument("--scale", type=float, default=1.0)
 
+    panic = sub.add_parser("panic", help="remove hooks/watches and cancel tasks")
+    panic.add_argument("--level", default="all", choices=["hooks", "tasks", "all"])
+
     sub.add_parser("spool-flush")
     sub.add_parser("selftest-av")
 
@@ -420,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif args.command == "hook-call":
                 print(json.dumps(client.hook_call(args.symbol, args.scale), ensure_ascii=False))
+            elif args.command == "panic":
+                print(json.dumps(client.panic(args.level), ensure_ascii=False))
             elif args.command == "spool-flush":
                 print(json.dumps(client.spool_flush(), ensure_ascii=False))
             elif args.command == "selftest-av":

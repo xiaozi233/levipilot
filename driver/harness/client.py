@@ -336,6 +336,12 @@ class ModClient:
     def hook_list(self) -> dict[str, Any]:
         return self.request({"cmd": "hook_list"}, "hook_list")
 
+    def panic(self, level: str = "all", timeout: float = 10.0) -> dict[str, Any]:
+        """Remove hooks/watches and cancel tasks without killing the game."""
+        if level not in {"hooks", "tasks", "all"}:
+            raise ValueError("level must be hooks, tasks or all")
+        return self.request({"cmd": "panic", "level": level}, "panic_done", timeout=timeout)
+
     def hook_drain(self, since: int = 0, *, limit: int = 4096) -> dict[str, Any]:
         return self.request(
             {"cmd": "hook_drain", "since": int(since), "limit": int(limit)},
@@ -1259,6 +1265,9 @@ class Harness:
 
     def stop_task(self) -> dict[str, Any]:
         return self.client.task_stop()
+
+    def panic(self, level: str = "all") -> dict[str, Any]:
+        return self.client.panic(level)
 
     def reconnect(self) -> Harness:
         self.client.reconnect()

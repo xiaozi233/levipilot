@@ -229,6 +229,17 @@ class ModClient:
     def status(self) -> dict[str, Any]:
         return self.request({"cmd": "status"}, "status")
 
+    def overhead(self) -> dict[str, Any]:
+        """Tick/hook timing percentiles (T9)."""
+        return self.request({"cmd": "overhead"}, "overhead")
+
+    def selftest_busy(self, us: int = 1000, ticks: int = 20) -> dict[str, Any]:
+        """Burn ``us`` microseconds in the tick for ``ticks`` ticks (metric proof)."""
+        return self.request(
+            {"cmd": "selftest_busy", "us": int(us), "ticks": int(ticks)},
+            "busy_test_started",
+        )
+
     def diag(self) -> dict[str, Any]:
         """Report which server-side objects the mod can see (teleport diagnostics)."""
         return self.request({"cmd": "diag"}, "diag")
@@ -1139,6 +1150,12 @@ class Harness:
 
     def state(self) -> dict[str, Any]:
         return self.client.state()
+
+    def overhead(self) -> dict[str, Any]:
+        return self.client.overhead()
+
+    def selftest_busy(self, us: int = 1000, ticks: int = 20) -> dict[str, Any]:
+        return self.client.selftest_busy(us, ticks)
 
     def mem_read(self, addr: int | str, length: int = 16) -> dict[str, Any]:
         return self.client.mem_read(addr, length)

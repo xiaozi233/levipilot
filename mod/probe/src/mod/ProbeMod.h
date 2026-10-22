@@ -358,6 +358,10 @@ private:
     // single enter_world_settled for the entry a client just requested.
     std::atomic_bool           mJoinPending{false};
     std::atomic<std::uint64_t> mLastTickMs{0};
+    // QPC timestamps for the T9 overhead metric (tick thread only).
+    std::uint64_t mTickStartQpc     = 0;
+    std::uint64_t mPrevTickStartQpc = 0;
+    std::uint64_t mPreUs            = 0;
     std::atomic_bool           mRecording{false};
     std::atomic<std::uint64_t> mTick{0};
     std::atomic<std::uint64_t> mMaxTicks{0};

@@ -1328,6 +1328,24 @@ void ProbeMod::dispatchLine(std::string const& line) {
         );
         return;
     }
+    if (cmd == "overhead") {
+        enqueue(overheadJson().dump());
+        return;
+    }
+    if (cmd == "selftest_busy") {
+        std::uint32_t const us    = std::clamp(j.value("us", 1000), 1, 5000);
+        std::uint32_t const ticks = std::clamp(j.value("ticks", 5), 1, 200);
+        overheadRequestBusy(us, ticks);
+        enqueue(
+            nlohmann::json{
+                {"event", "busy_test_started"},
+                {"us",    us                 },
+                {"ticks", ticks              },
+        }
+                .dump()
+        );
+        return;
+    }
     if (cmd == "status") {
         nlohmann::json out;
         out["event"]           = "status";
@@ -1353,6 +1371,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["record_head"]     = recordHead();
         out["record_period"]   = recordPeriod();
         out["record_capacity"] = RecordCapacity;
+        out["overhead"]        = overheadJson();
         enqueue(out.dump());
         return;
     }

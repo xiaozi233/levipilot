@@ -115,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     panic = sub.add_parser("panic", help="remove hooks/watches and cancel tasks")
     panic.add_argument("--level", default="all", choices=["hooks", "tasks", "all"])
 
+    sub.add_parser("overhead", help="tick/hook timing percentiles")
+    busy_test = sub.add_parser("busy-test", help="burn microseconds in the tick")
+    busy_test.add_argument("--us", type=int, default=1000)
+    busy_test.add_argument("--ticks", type=int, default=20)
+
     sub.add_parser("spool-flush")
     sub.add_parser("selftest-av")
 
@@ -425,6 +430,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.hook_call(args.symbol, args.scale), ensure_ascii=False))
             elif args.command == "panic":
                 print(json.dumps(client.panic(args.level), ensure_ascii=False))
+            elif args.command == "overhead":
+                print(json.dumps(client.overhead(), ensure_ascii=False, indent=2))
+            elif args.command == "busy-test":
+                print(json.dumps(client.selftest_busy(args.us, args.ticks), ensure_ascii=False))
             elif args.command == "spool-flush":
                 print(json.dumps(client.spool_flush(), ensure_ascii=False))
             elif args.command == "selftest-av":

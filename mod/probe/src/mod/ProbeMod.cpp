@@ -69,6 +69,7 @@ bool ProbeMod::enable() {
                / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
     installCrashHandler();
     watchInit();
+    overheadInit();
 
     loadAutoConfig();
     loadCheckpoints();
@@ -262,6 +263,7 @@ void ProbeMod::autoEnterLoop() {
 }
 
 void ProbeMod::onPlayerTick(LocalPlayer& player) {
+    mTickStartQpc = qpcNow();
     // A bug in our own code must not take the game down with it.
     try {
         safeTickPre(player);
@@ -270,6 +272,7 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
     } catch (...) {
         reportInternalError("tick_pre", "unknown exception");
     }
+    mPreUs = qpcElapsedUs(mTickStartQpc, qpcNow());
 }
 
 void ProbeMod::safeTickPre(LocalPlayer& player) {
@@ -438,6 +441,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
 }
 
 void ProbeMod::afterPlayerTick(LocalPlayer& player) {
+    std::uint64_t const postStart = qpcNow();
     try {
         safeTickPost(player);
     } catch (std::exception const& e) {
@@ -445,6 +449,15 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     } catch (...) {
         reportInternalError("tick_post", "unknown exception");
     }
+    std::uint64_t const postEnd = qpcNow();
+    std::uint64_t const hookUs  = mPreUs + qpcElapsedUs(postStart, postEnd);
+    std::uint64_t const tickUs =
+        mPrevTickStartQpc != 0 ? qpcElapsedUs(mPrevTickStartQpc, mTickStartQpc) : 0;
+    overheadRecord(
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(tickUs, 0xFFFFFFFFull)),
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(hookUs, 0xFFFFFFFFull))
+    );
+    mPrevTickStartQpc = mTickStartQpc;
 }
 
 void ProbeMod::safeTickPost(LocalPlayer& player) {
@@ -456,6 +469,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         return;
     }
     updateFocusState();
+    overheadBusyTick();
 
     // T1/T3: the tick thread is the default target for hardware watchpoints,
     // and the pose below is what the crash report captures.

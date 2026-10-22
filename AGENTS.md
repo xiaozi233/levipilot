@@ -102,10 +102,10 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 任务清单与可直接派活的提示词：[`docs/task-prompts.md`](docs/task-prompts.md)。
 
 - **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 71/71
-- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 71/71
-- **P2（进行中）**：T7 版本指纹 + 签名/偏移解析 → T8 unhook/panic（已完成）
-- **P3**：T9 tick 路径减锁 + 开销自测
+- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 74/74
+- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 74/74
+- **P2（进行中）**：T7 版本指纹 + 签名/偏移解析；T8 unhook/panic（已完成）
+- **P3（已完成）**：T9 tick 开销自测（减锁未做）
 
 改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查，并在 `mod/README.md` 的
 「实测 / 限制」里补一行 —— 这个仓库的文档是活的，别让它和代码脱节。

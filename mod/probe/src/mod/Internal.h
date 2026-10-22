@@ -328,4 +328,15 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit);
 bool           hookRequestCall(std::string const& symbol, float scale, std::string& error);
 bool           hookTick(LocalPlayer& player, nlohmann::json& result);
 
+// ---------------------------------------------------------------------------
+// T9: tick-path overhead measurement.
+// ---------------------------------------------------------------------------
+void           overheadInit();
+void           overheadRecord(std::uint32_t tickUs, std::uint32_t hookUs);
+nlohmann::json overheadJson();
+void           overheadRequestBusy(std::uint32_t us, std::uint32_t ticks);
+void           overheadBusyTick();
+std::uint64_t  qpcNow();
+std::uint64_t  qpcElapsedUs(std::uint64_t start, std::uint64_t end);
+
 } // namespace probe::detail

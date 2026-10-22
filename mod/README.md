@@ -49,6 +49,8 @@ xmake -y
 | `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`） |
 | `hook_call` | 调用一个已导出符号做自检（当前支持 `MobJump::setJumpPendingScale`） |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、停任务并清输入，不杀进程 |
+| `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec` |
+| `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），用于验证开销指标 |
 | `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
 | `ecs_entity` | `runtime_id` → actor/context/registry/entity 地址、拥有组件数 |
 | `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count` |
@@ -180,6 +182,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   `hook_drain` 读到 `args[0]=EntityContext*`、`b_float=1.0`、返回地址和 4 帧栈；
   `hook_rm` 后 `hook_list` 为空。VA dry_run 对同一地址返回 `executable=true`，
   对 `0x10` 返回 `false`
+- `overhead`（空闲）：`hook_p50=12 µs`、`hook_p99=30 µs`、`tick_p50=49.985 ms`、
+  `tick_p99=54.596 ms`、20.0 Hz；注入 1 ms busy ×20 tick 后 `hook_p99=1017 µs`
 - `panic all`：先装 1 个 hook + 1 个 watch，`panic` 后两者列表都为空、任务空闲、
   tick 继续增长
 - `ecs_entity`/`ecs_components`：猪实体读到 **113** 个组件（77 个能推断 stride），其中一个
@@ -193,7 +197,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   名字的 FNV-1-64
 - `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
   命中 tid 等于 tick 线程；`watch_clear` 后不再增加
-- `driver/selftest.py` 71/71 通过
+- `driver/selftest.py` 74/74 通过
 
 ## 限制
 

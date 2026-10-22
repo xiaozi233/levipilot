@@ -238,6 +238,18 @@
 - 回 `panic_done {ok, hooks_removed, watches_cleared, tasks_cancelled}`；进程和 tick 都不受影响，
   之后可以重新装钩/观察点。`unhook_all` 是 `panic hooks` 的别名。
 
+## tick 开销测量（T9）
+
+- `onPlayerTick` 进入时取一次 QPC，`safeTickPre` 结束后算 pre 耗时；`afterPlayerTick` 同理算
+  post 耗时。`hook_us = pre + post`（不含 `origin()` 的游戏 tick），
+  `tick_us` 是相邻两次 pre 开始的间隔。
+- 1024 条定长样本环，tick 线程单写者（写完再 publish head）；`overhead`/`status.overhead`
+  在管道线程复制、排序并给出 p50/p99/max、`tick_hz`、`calls_per_sec`。
+- `selftest_busy {us,ticks}` 在 `safeTickPost` 里忙等，用于证明指标接对了：
+  实测注入 1 ms ×20 tick 后 `hook_p99=1017 µs`；空闲时 `hook_p50=12 µs`、`hook_p99=30 µs`。
+- 请求块仍是 mutex（`mInput/mLook/mTeleport/mTask`）；seqlock 合并没有做，20 TPS 下不是瓶颈。
+  指标本身会显示是否需要。
+
 ## 健壮性
 
 - tick 前置/后置钩子各自 `try/catch`；异常会清空输入和任务，并限制为每秒最多上报一次

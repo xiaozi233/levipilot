@@ -296,6 +296,26 @@ def main(argv: list[str] | None = None) -> int:
         checks.check("panic_task_idle", client.task_status().get("active") is None)
         checks.check("panic_alive", wait_ticks(client, 3) >= 3)
 
+        # -- T9: tick/hook overhead metric ---------------------------------
+        overhead_before = client.overhead()
+        checks.check(
+            "overhead",
+            int(overhead_before.get("samples", 0)) > 20
+            and float(overhead_before.get("tick_p99_us", 0)) > 0
+            and "hook_p99_us" in overhead_before,
+            str({k: overhead_before.get(k) for k in ("samples", "tick_p99_us", "hook_p99_us")}),
+        )
+        client.selftest_busy(1000, 20)
+        wait_ticks(client, 30)
+        overhead_after = client.overhead()
+        checks.check(
+            "overhead_busy",
+            float(overhead_after.get("hook_p99_us", 0)) >= 900
+            and float(overhead_after.get("hook_max_us", 0)) >= 900,
+            str({k: overhead_after.get(k) for k in ("hook_p50_us", "hook_p99_us", "hook_max_us")}),
+        )
+        checks.check("overhead_alive", wait_ticks(client, 3) >= 3)
+
         # -- parkour jump/route primitives ---------------------------------
         jump_now = client.jump_when("now")
         checks.check(

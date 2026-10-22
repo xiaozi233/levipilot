@@ -78,6 +78,17 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("screen", help="current game screen name")
 
+    packet_capture = sub.add_parser("packet-capture", help="toggle the packet identity tap")
+    packet_capture.add_argument("--off", action="store_true")
+    packet_capture.add_argument("--ids", type=int, nargs="*", default=None)
+    packet_capture.add_argument("--sample", type=int, default=1)
+
+    packet_drain = sub.add_parser("packet-drain")
+    packet_drain.add_argument("--since", type=int, default=0)
+    packet_drain.add_argument("--limit", type=int, default=1024)
+
+    sub.add_parser("packet-stats")
+
     mouse_event = sub.add_parser("mouse-event", help="inject a mouse event (allow_input_inject)")
     mouse_event.add_argument("action")
     mouse_event.add_argument("--data", default=None)
@@ -410,6 +421,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.key_state(args.code), ensure_ascii=False))
             elif args.command == "screen":
                 print(json.dumps(client.screen(), ensure_ascii=False))
+            elif args.command == "packet-capture":
+                print(
+                    json.dumps(
+                        client.packet_capture(not args.off, ids=args.ids, sample=args.sample),
+                        ensure_ascii=False,
+                    )
+                )
+            elif args.command == "packet-drain":
+                print(json.dumps(client.packet_drain(args.since, args.limit), ensure_ascii=False))
+            elif args.command == "packet-stats":
+                print(json.dumps(client.packet_stats(), ensure_ascii=False))
             elif args.command == "mouse-event":
                 down: bool | None = None
                 if args.up:

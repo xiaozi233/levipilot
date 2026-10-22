@@ -312,6 +312,28 @@ class ModClient:
     def screen(self) -> dict[str, Any]:
         return self.request({"cmd": "screen"}, "screen")
 
+    def packet_capture(
+        self,
+        on: bool = True,
+        *,
+        ids: list[int] | None = None,
+        sample: int = 1,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {"cmd": "packet_capture", "on": bool(on), "sample": int(sample)}
+        if ids is not None:
+            message["ids"] = [int(value) for value in ids]
+        return self.request(message, "packet_capture", timeout=timeout)
+
+    def packet_drain(self, since: int = 0, limit: int = 1024) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "packet_drain", "since": int(since), "limit": int(limit)},
+            "packet_drain",
+        )
+
+    def packet_stats(self) -> dict[str, Any]:
+        return self.request({"cmd": "packet_stats"}, "packet_stats")
+
     def mouse_event(
         self,
         action: int | str,
@@ -1340,6 +1362,15 @@ class Harness:
 
     def screen(self) -> dict[str, Any]:
         return self.client.screen()
+
+    def packet_capture(self, on: bool = True, **kwargs: Any) -> dict[str, Any]:
+        return self.client.packet_capture(on, **kwargs)
+
+    def packet_drain(self, since: int = 0, limit: int = 1024) -> dict[str, Any]:
+        return self.client.packet_drain(since, limit)
+
+    def packet_stats(self) -> dict[str, Any]:
+        return self.client.packet_stats()
 
     def mouse_event(self, action: int | str, **kwargs: Any) -> dict[str, Any]:
         return self.client.mouse_event(action, **kwargs)

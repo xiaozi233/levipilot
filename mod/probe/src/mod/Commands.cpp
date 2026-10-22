@@ -313,6 +313,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         std::size_t       watchesRemoved = 0;
         bool              watchesOk      = true;
         if (hooksLevel) {
+            packetCaptureStop();
             watchesOk      = watchRemoveAll();
             watchesRemoved = watchesOk ? watchesBefore : 0;
         }
@@ -412,6 +413,29 @@ void ProbeMod::dispatchLine(std::string const& line) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return;
         }
+    }
+    if (cmd == "packet_capture") {
+        bool const enable = j.value("on", j.value("enable", true));
+        if (!versionOk()) {
+            enqueue(R"({"event":"error","reason":"version_mismatch"})");
+            return;
+        }
+        if (enable && !mInWorld.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        enqueue(packetCaptureStart(enable, j).dump());
+        return;
+    }
+    if (cmd == "packet_drain") {
+        std::uint64_t const since = j.value("since", std::uint64_t{0});
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 1024), 1, 8192);
+        enqueue(packetDrain(since, limit).dump());
+        return;
+    }
+    if (cmd == "packet_stats") {
+        enqueue(packetCaptureStatus().dump());
+        return;
     }
     if (cmd == "screen") {
         auto              client = ll::service::getClientInstance();
@@ -1579,6 +1603,9 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["allow_write"]     = mAllowMemoryWrite.load();
         out["tick_thread_id"]  = mTickThreadId.load();
         out["server_thread_id"] = gServerThreadId.load();
+        out["packet_capture"]   = mPacketCapture.load();
+        out["packet_records"]   = mPacketHead.load();
+        out["packet_peer_sends"] = mPacketPeerCount.load();
         out["tick_probe_addr"] =
             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
         out["watch_count"]   = watchCount();

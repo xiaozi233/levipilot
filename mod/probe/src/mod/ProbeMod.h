@@ -23,6 +23,7 @@
 #include <windows.h>
 
 class ClientInstance;
+class Packet;
 class LocalPlayer;
 class Level;
 class Vec2;
@@ -262,6 +263,36 @@ public:
     void                       tickInputInjection();
     bool                       hidKeyEvent(int code, bool down, bool hardware, std::string& error);
 
+    // H1 stage A: packet identity tap. Only id/tick/seq/tid, no bytes.
+    struct PacketRecord {
+        std::atomic<std::uint64_t> seq{0};
+        std::uint64_t              order    = 0;
+        std::uint64_t              tick     = 0;
+        std::int32_t               id       = 0;
+        std::uint32_t              tid      = 0;
+        std::uint8_t               injected = 0;
+        std::uint8_t               pad[3]{};
+    };
+    static constexpr std::size_t kPacketRing = 1u << 14;
+    std::unique_ptr<PacketRecord[]> mPacketRing;
+    std::atomic<std::uint64_t>      mPacketHead{0};
+    std::atomic<std::uint64_t>      mPacketSeq{0};
+    std::atomic<std::uint64_t>      mPacketPeerCount{0};
+    std::atomic<std::uint64_t>      mPacketDenied{0};
+    std::atomic_bool                mPacketCapture{false};
+    std::atomic_bool                mPacketSendHooked{false};
+    std::atomic_bool                mPacketPeerHooked{false};
+    std::array<std::int32_t, 64>    mPacketIds{};
+    std::size_t                     mPacketIdCount = 0;
+    std::atomic<std::uint32_t>      mPacketSample{1};
+    void                            onPacketSent(Packet& packet);
+    void                            packetPeerTick();
+    nlohmann::json                  packetCaptureStart(bool enable, nlohmann::json const& args);
+    void                            packetCaptureStop();
+    nlohmann::json                  packetCaptureStatus();
+    nlohmann::json                  packetDrain(std::uint64_t since, std::size_t limit);
+
+    std::atomic_bool           mAllowPacketCapture{false};
     std::atomic_bool           mAllowInputInject{false};
     std::atomic_bool           mInjectingInput{false};
     // Tick until which a game-side turn is allowed because we injected a mouse

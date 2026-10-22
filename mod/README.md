@@ -64,6 +64,9 @@ xmake -y
 | `key_event` | `code,down,repeat,repeat_ms,via=hid/queue/hardware`；走 HID `onKeyDown`（默认）或 `Keyboard::_inputs()`；需 `allow_input_inject=true` |
 | `key_state` | `code`；游戏侧 `Keyboard::_states`、LL KeyInputEvent 计数、注入计数 |
 | `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
+| `packet_capture` | `on,ids?,sample?`；只记录 `(tick,seq,id,tid)`，需 `allow_packet_capture=true`；denylist 硬挡 |
+| `packet_drain` | `since,limit`；身份记录（无字节），`seq` 单调、`injected` 预留 |
+| `packet_stats` | 记录数/丢失/denied/peer_sends/hook 状态 |
 | `screen` | 当前界面名（`hud_screen` / `inventory_screen` / `chat_screen` / `pause_screen`） |
 | `set` | `forward,strafe,sprint,sneak,jump,ticks`；`ticks=-1` 持续 |
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
@@ -141,6 +144,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "allow_selftest_stress": false,
   "allow_watch": true,
   "allow_input_inject": false,
+  "allow_packet_capture": false,
   "signin_wait_ms": 15000
 }
 ```
@@ -153,6 +157,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 `allow_selftest_stress` 才允许 `selftest_busy` 在 tick 里忙等（默认关闭，避免误让 tick 卡近 1 秒）；
 `allow_watch`（默认 true）关闭后 `watch_set` 回 `watch_disabled`；
 `allow_input_inject` 才能用 `key_event`/`mouse_event`（默认关闭，命令会写 boot log）；
+`allow_packet_capture` 才能开 H1 的封包身份 tap（默认关闭）；
 `signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
 不需要时删除该文件即可。
 
@@ -246,7 +251,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   同一个 StateVector 地址、count=2、size=36
 - H0.4：`driver/spool_forensics.py panic|taskkill|verify`；panic 与 taskkill 都单调连续
   （taskkill 丢失 0 tick）；leave_world 需桌面点击，脚本明确返回不支持
-- `driver/selftest.py` 105/105 通过
+- H1 阶段 A：开启后 3.5 秒抓到 **122** 条客户端→服务端包，`seq` 0..121 无丢失，
+  tid 固定 11684；主序列 `PlayerAuthInput(144)` + `SubChunkRequest(175)`，
+  另有 Interact(33)、InventoryTransaction(30)、PlayerSkin(93) 等。`denied` 计数 >0，
+  `packet_capture(ids=[1])` 回 `denied_id`
+- H1 阶段 A 的字节层结论：`LocalNetworkPeer::$sendPacket` 在本构建里是 dllimport-only，
+  链接不到导出 thunk ⇒ 不能按符号在 NetworkPeer 层拿序列化字节（`peer_hooked=false`）；
+  字节若要拿，只能走服务端接收侧（B2）或白名单序列化（B3）
+- H3 预演：B（`set_input` sprint）与 C（ctrl+W 事件）各 3 秒的 id 序列几乎相同
+  （B: 144×65/175×3，C: 144×66/175×5）⇒ 身份层没有差异；结合 G3 的速度结论，不需要 packet tap 定案
+- `driver/selftest.py` 113/113 通过
 
 ## 限制
 
@@ -265,6 +279,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   用 G1/G2 注入，已经覆盖按键/鼠标边沿；录制端仍然依赖真实 raw input。
 - `mouse_event` 的按键只到 `MouseInputEvent` 层：计数会涨，但在 1.26.51.01 上不会触发世界攻击；
   攻击仍用 `click`/`attack_entity`。`action=move` 的 dx 能转向。
+- H1 目前只有**身份** tap（id/tick/seq/tid），没有字节；`peer_sends` 恒为 0 是构建限制，
+  不是没流量。注入路径（H2）还没做。
 - 暂停菜单不响应注入按键（Esc/Enter 都无效）；退出暂停仍需桌面点击 Resume。背包（E）
   和聊天（`/`）可以开，背包用 Esc 能回到 hud。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。

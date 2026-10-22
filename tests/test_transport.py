@@ -235,6 +235,37 @@ class HarnessForwardingTests(unittest.TestCase):
             ],
         )
 
+    def test_packet_commands_forward(self) -> None:
+        class Recorder:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def packet_capture(self, on=True, **kwargs):
+                self.calls.append(("capture", on, kwargs))
+                return {"event": "packet_capture"}
+
+            def packet_drain(self, since=0, limit=1024):
+                self.calls.append(("drain", since, limit))
+                return {"event": "packet_drain"}
+
+            def packet_stats(self):
+                self.calls.append(("stats",))
+                return {"event": "packet_stats"}
+
+        harness = Harness.__new__(Harness)
+        harness.client = Recorder()  # type: ignore[assignment]
+        harness.packet_capture(True, ids=[144], sample=2)
+        harness.packet_drain(5, 100)
+        harness.packet_stats()
+        self.assertEqual(
+            harness.client.calls,
+            [
+                ("capture", True, {"ids": [144], "sample": 2}),
+                ("drain", 5, 100),
+                ("stats",),
+            ],
+        )
+
     def test_play_macro_forwards_event_level(self) -> None:
         class Recorder:
             def __init__(self) -> None:

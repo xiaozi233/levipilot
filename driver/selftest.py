@@ -378,6 +378,76 @@ def main(argv: list[str] | None = None) -> int:
             "panic_done in spool",
         )
 
+        # -- H1 stage A: packet identity tap --------------------------------
+        packet_enabled = True
+        try:
+            started = client.packet_capture(True, sample=1)
+            checks.check(
+                "packet_capture_on",
+                started.get("active") is True and started.get("send_hooked") is True,
+                str(started),
+            )
+        except ModProtocolError as exc:
+            packet_enabled = False
+            checks.check("packet_capture_gate", "packet_capture_disabled" in str(exc), str(exc))
+        if packet_enabled:
+            denied = False
+            try:
+                client.packet_capture(True, ids=[1])
+            except ModProtocolError as exc:
+                denied = "denied_id" in str(exc)
+            checks.check("packet_denylist", denied, "login id 1 rejected")
+            # If the denied request left capture off, turn it back on.
+            client.packet_capture(True, sample=1)
+            base = int(client.packet_stats().get("records", 0))
+            client.set_input(forward=1.0, ticks=-1)
+            time.sleep(2.0)
+            client.stop_move()
+            client.jump_when("now")
+            time.sleep(0.4)
+            client.command("summon minecraft:pig ~2 ~ ~")
+            time.sleep(0.4)
+            nearby = client.entities(radius=16, limit=3).get("entities", [])
+            if nearby:
+                client.attack_entity(int(nearby[0]["runtime_id"]))
+            time.sleep(0.4)
+            drained = client.packet_drain(base, limit=4096)
+            hits = drained.get("hits", [])
+            ids = {int(hit["id"]) for hit in hits}
+            sequences = [int(hit["seq"]) for hit in hits]
+            checks.check(
+                "packet_records",
+                len(hits) > 0 and 144 in ids,
+                f"count={len(hits)} ids={sorted(ids)[:12]}",
+            )
+            checks.check(
+                "packet_seq",
+                all(b > a for a, b in itertools.pairwise(sequences)),
+                f"n={len(sequences)}",
+            )
+            checks.check(
+                "packet_source",
+                all(int(hit["tid"]) != 0 and hit["injected"] is False for hit in hits),
+                f"tids={sorted({int(hit['tid']) for hit in hits})}",
+            )
+            stats = client.packet_stats()
+            checks.check(
+                "packet_no_drop",
+                int(stats.get("dropped", 0)) == 0 and stats.get("active") is True,
+                str({k: stats.get(k) for k in ("records", "dropped", "peer_sends", "peer_hooked")}),
+            )
+            rate = float(client.overhead().get("tick_hz", 0))
+            checks.check("packet_tick_rate", rate >= 15.0, f"tick_hz={rate:.2f}")
+            client.packet_capture(False)
+            quiet = int(client.packet_stats().get("records", 0))
+            client.set_input(forward=1.0, ticks=20)
+            wait_ticks(client, 25)
+            checks.check(
+                "packet_off_zero",
+                int(client.packet_stats().get("records", 0)) == quiet,
+                f"records={quiet}",
+            )
+
         # -- T1: spool, crash isolation -------------------------------------
         checks.check("hello_spool", bool(client.hello.get("spool")), str(client.hello.get("spool")))
 

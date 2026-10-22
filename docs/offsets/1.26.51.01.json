@@ -40,6 +40,14 @@
       "VelZ": "0x20"
     }
   },
+  "packets": {
+    "sendToServer": {
+      "kind": "symbol",
+      "symbol": "LoopbackPacketSender::$sendToServer",
+      "expected_hex": "",
+      "note": "H1 uses the LL symbol hook directly; the 24-byte signature is still pending."
+    }
+  },
   "components": {
     "StateVector": { "id": 459100728, "size": 36 }
   }

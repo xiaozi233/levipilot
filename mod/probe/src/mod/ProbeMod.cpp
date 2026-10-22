@@ -158,6 +158,7 @@ bool ProbeMod::disable() {
 
     mMacroRecording = false;
     mMacroPlaying   = false;
+    packetCaptureStop();
 
     if (mMouseListener) {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
@@ -248,6 +249,7 @@ void ProbeMod::loadAutoConfig() {
     mAllowHookVa      = config.value("allow_hook_va", false);
     mAllowSelftestStress = config.value("allow_selftest_stress", false);
     mAllowWatch      = config.value("allow_watch", true);
+    mAllowPacketCapture = config.value("allow_packet_capture", false);
     mAllowInputInject = config.value("allow_input_inject", false);
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {

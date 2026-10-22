@@ -334,6 +334,29 @@
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
 - `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
 
+## 封包身份 tap（H1 阶段 A）
+
+- 锚点：`LoopbackPacketSender::$sendToServer(Packet&)`（LL 符号 hook，见
+  `docs/offsets/1.26.51.01.json` 的 `packets.sendToServer`；24 B 签名待补）。
+- 钩子体只做四件事：`packet.getId()`（虚函数，返回 `MinecraftPacketIds`，无分配）、
+  `mPacketSeq.fetch_add`、`mTick`、`GetCurrentThreadId()`；写进 16384 条 MPSC 环，
+  每条用自己的 `seq` 发布。**不调用 `getName()`**（返回 `std::string_view`，但约定是
+  身份层不碰字符串）。
+- 环记录：`{order, tick, id, tid, injected}`；`injected=false` 预留给 H2。
+- denylist（硬挡，任何 `ids` 参数都无效）：KeepAlive 0、Login 1、PlayStatus 2、
+  Handshake 3/4、Disconnect 5、ResourcePack 6/7/8/82/83/84、Transfer 85、
+  SubclientLogin 94、NetworkSettings 143/193、ResourcePacksReady 340。
+- 采样 `sample=1/N` 基于 order；`allow_packet_capture=false` 时不装钩、零记录；
+  `panic`/`disable` 会 `packetCaptureStop()`。
+- 实测：3.5 秒 122 条，`seq` 0..121 单调无丢失，tid 固定 11684；id 分布以
+  `PlayerAuthInput(144)`、`SubChunkRequest(175)` 为主，攻击/放置产生
+  `InventoryTransaction(30)`、`Interact(33)`。
+- 字节层决策：`LocalNetworkPeer::$sendPacket` 是 dllimport-only（链接不到导出 thunk），
+  所以 B1 的“NetworkPeer 字节 tap”无法按符号实现，`peer_sends` 恒为 0。
+  如果要字节，走 B2（服务端接收侧，需按包类型/分派器定位）或 B3（白名单序列化）。
+- H3 预演：B（标志）与 C（事件）各 3 秒的 id 序列几乎一致（144 占绝对多数），
+  身份层无差异；G3 已证明速度也一致，所以不需要用封包解释疾跑。
+
 ## 能力可用性验收（H0）
 
 - **StateVector 写者**：`state.runtime_id` / `state.context` 给出玩家标识；StateVector 的

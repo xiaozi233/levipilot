@@ -16,40 +16,34 @@
 
 ## 构建
 
-```bash
-cd mod/probe
-
-export PATH="/d/Tools/LLVM22/bin:/d/Tools/xmake:$PATH"
-export XMAKE_GLOBALDIR='D:\Tools\xmake-home'
-export XMAKE_PKG_INSTALLDIR='D:\Tools\xmake-packages'
-
-xmake f -c -y -p windows -a x64 -m release --target_type=client
-xmake -j4 -y   # 限制并行编译，避免吃满所有核心
+```powershell
+$env:PATH = 'D:\Tools\xmake;' + $env:PATH
+$env:XMAKE_GLOBALDIR = 'D:\Tools\xmake-home'
+$env:XMAKE_PKG_INSTALLDIR = 'D:\Tools\xmake-packages'
+./.github/scripts/build-mod.ps1 -LlvmRoot D:/Tools/LLVM22
 ```
 
-产物在 `bin/probe/`：`probe.dll`、`probe.pdb`、`manifest.json`
-（`"platform": "client"`）。DLL 已确认导入 `LeviLamina.dll`。
+脚本验证 LLVM 主版本为 22，以绝对路径将 `clang-cl.exe` 传给 xmake 的
+`--cc` / `--cxx`，并设置 `LEVIPILOT_LLVM_ROOT`，让 SDK 包使用同一编译器。
+构建使用 `-j4`。已用未经修改的 xmake 3.1.2 便携版本机验证；不再需要修改
+全局 `toolchains/clang-cl/check.lua`，也不依赖开发者固定的磁盘布局。
 
-## 必须保留的两个修正
+产物在 `mod/probe/bin/probe/`：`probe.dll`、`probe.pdb`、`manifest.json`
+（`"platform": "client"`）。构建日志写入 `out/ci-mod-build.log`。
 
-### 1. 强制 xmake 使用 LLVM22，而不是 VS 自带的 clang 19
+## CI 完整构建
 
-xmake 的 `clang-cl` 工具链会通过 VS 环境优先找到
-`D:\Tools\VSBuildTools\VC\Tools\Llvm\x64\bin\clang-cl.exe`（clang 19），
-而 LL 26.51.7 的源码需要 clang 22 才能稳定编译。
+`tests.yml` 的 `mod-build` 在 Windows 2022 runner 上安装固定版本 LLVM 22.1.8
+与 xmake 3.1.2，下载前后校验发布文件的 SHA256，缓存 SDK 依赖，再调用同一脚本
+编译和链接完整客户端 mod。成功产物与构建日志作为 Actions artifacts 保留 7 天。
+单测在独立 job 运行。CI 不启动 Minecraft，世界切换与输入行为由本机 live selftest 验证。
 
-已修改（原文件备份为 `check.lua.orig`）：
+工具安装脚本见 `.github/scripts/setup-native.ps1`。如需升级工具链，版本、下载地址和
+校验值应一起更新，并重新执行一次无缓存构建。
 
-```
-D:\Tools\xmake\toolchains\clang-cl\check.lua
-```
+## SDK 头文件修正
 
-改动内容：把 `D:/Tools/LLVM22/bin` 放到搜索路径最前，并过滤掉
-`VSBuildTools\...\Llvm` 路径。
-
-> 不要恢复，否则构建会退回 clang 19 并失败。
-
-### 2. LL 26.51.7 源码的完整类型/循环包含补丁
+### LL 26.51.7 源码的完整类型/循环包含补丁
 
 LL 的 auto-generated 头文件大量使用“前向声明 + `std::unique_ptr`/`std::vector`”，
 在当前 MSVC STL 14.44 下默认析构函数会要求完整类型。补丁放在本地包仓库：

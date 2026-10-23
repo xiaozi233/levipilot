@@ -78,10 +78,22 @@ package("levilamina")
             io.writefile(rakpeer, rp .. crlf .. '#include "mc/deps/raknet/ShadowBanList.h"' .. crlf)
             print("APPENDED " .. rakpeer)
         end
-        local cc = "D:/Tools/LLVM22/bin/clang-cl.exe"
-        if package:config("target_type") == "server" then
-            import("package.tools.xmake").install(package, {"--cc=" .. cc, "--cxx=" .. cc})
+        -- The caller selects the toolchain; never bake a developer's drive
+        -- layout into an SDK package recipe.
+        import("lib.detect.find_tool")
+        local llvm_root = os.getenv("LEVIPILOT_LLVM_ROOT")
+        local cc
+        if llvm_root then
+            cc = path.join(llvm_root, "bin", "clang-cl.exe")
+            assert(os.isfile(cc), "LEVIPILOT_LLVM_ROOT does not contain bin/clang-cl.exe")
         else
-            import("package.tools.xmake").install(package, {"--target_type=client", "--cc=" .. cc, "--cxx=" .. cc})
+            local tool = find_tool("clang-cl")
+            assert(tool, "clang-cl not found; set LEVIPILOT_LLVM_ROOT to an LLVM 22 installation")
+            cc = tool.program
+        end
+        if package:config("target_type") == "server" then
+            import("package.tools.xmake").install(package, {"--cc=" .. cc, "--cxx=" .. cc}, {jobs = 4})
+        else
+            import("package.tools.xmake").install(package, {"--target_type=client", "--cc=" .. cc, "--cxx=" .. cc}, {jobs = 4})
         end
     end)

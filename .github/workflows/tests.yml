@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     runs-on: windows-latest
@@ -43,3 +46,43 @@ jobs:
 
       - name: Unit tests (no game required)
         run: python -m unittest discover -s tests -v
+
+  mod-build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install verified LLVM 22 and xmake
+        shell: pwsh
+        run: ./.github/scripts/setup-native.ps1 -ToolsDirectory "${{ runner.temp }}/levipilot-native"
+
+      - name: Cache SDK dependencies
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/levipilot-native/packages
+          key: native-windows-2022-llvm22-xmake312-${{ hashFiles('mod/probe/xmake.lua', 'mod/probe/local-repo/**', '.github/scripts/build-mod.ps1') }}
+
+      - name: Build complete client mod
+        shell: pwsh
+        run: ./.github/scripts/build-mod.ps1
+
+      - name: Upload client mod
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: probe-client-${{ github.sha }}
+          path: |
+            mod/probe/bin/probe/probe.dll
+            mod/probe/bin/probe/probe.pdb
+            mod/probe/bin/probe/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: mod-build-log-${{ github.sha }}
+          path: out/ci-mod-build.log
+          if-no-files-found: warn
+          retention-days: 7

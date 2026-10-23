@@ -23,7 +23,7 @@ scenario DSL / LLM / shell
 | 文件 | 职责 |
 | --- | --- |
 | `ProbeMod.h` | `ProbeMod` 的生命周期接口与领域组件；任务状态由 `TaskController` 封装 |
-| `ProbeMod.cpp` | 生命周期（load/enable/disable）、tick 前后编排、钩子注册、错误上报 |
+| `ProbeMod.cpp` | mod 生命周期、tick 前后编排、钩子注册、错误上报；世界生命周期委托 `WorldSession` |
 | `Internal.h` / `Internal.cpp` | 共享工具：数学、JSON 解析、物品/方块辅助、输入快照 |
 | `Input.cpp` | 移动/视角注入、按键事件、左右键动作、macro 的单 tick 应用 |
 | `InputEvents.cpp` | HID/键鼠事件注入队列与事件计数 |
@@ -35,7 +35,9 @@ scenario DSL / LLM / shell
 | `Inventory.cpp` | 背包快照与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `Server.cpp` | 服务端权威传送 |
-| `World.cpp` | 世界列表、`enter_world` / `leave_world`、登录门、世界事件 |
+| `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
+| `World.cpp` | 世界列表、进入与退出的主线程实现 |
+| `ClientDispatch.cpp` | 游戏平台主线程投递与 SEH/C++ 异常隔离；主菜单也能执行 |
 | `SignIn.cpp` | 主菜单 Xbox Live 登录态查询（OreUI → MainMenuScreenModel） |
 | `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
@@ -74,6 +76,11 @@ scenario DSL / LLM / shell
   分发命令。它不直接调用游戏对象，只设置请求标志或调用 `queueServerTask`。
 - **服务端线程**：通过 `ServerInstance::queueForServerThread` 执行传送、命令、背包写入和使用物品。
   所有回调由 `queueServerTask` 包装，异常不会穿过游戏服务端 tick。
+- **客户端主线程**：世界列表、进退世界、登录查询和自动进入经 `queueClientTask` 投递到
+  `AppPlatform::queueForMainThread_DEPRECATED`，由 SEH/C++ 异常边界保护。
+  登录与自动进入的延迟用 wall-clock timer 计时，再排回主线程；`WorldSession::stop`
+  取消计时器并更新代次，使过期回调失效。LL 默认 `ClientThreadExecutor` 仅在世界 tick 执行，
+  保留给世界内聊天快照，不能用来处理主菜单请求。
 - **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
   `spool-<pid>.jsonl`；`world_left` / `panic` / `stop` / `disable` 会强制刷盘。
   该线程也消费任务定长事件、格式化响应并调度 `use` 的服务端工作。

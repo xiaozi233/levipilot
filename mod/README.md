@@ -339,9 +339,27 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   修复导航绕圈、空效果槽与封包自检假阳性。Python **165/165**、live selftest **209/209**，
   宏严格复测 **2/2**（视角漂移 0°、落点差 0）；C++ 构建、ruff/mypy/profile 检查通过。
   新客户端任务方法需要配套新 mod；迁移和验证限制见 [`refactoring.md`](../docs/refactoring.md)。
+- 2026-10-23 world session 续轮：`leave_world` 后立即 `enter_world` 的崩溃已修复。
+  根因是（1）`auto_enter` 与显式进入并发启动两个本地服务端；（2）三个 leave-done 标志
+  在屏幕仍为 `world_saving_progress_screen - world_loading_progress_screen` 时就返回 true。
+  现在进入串行化（第二次回 `already_starting`），并且只在主菜单 screen
+  （`start_screen` / `ui://…`）启动。30 cycles（第 9/19/29 真实退出并立即重进）**123/123**，
+  完整 live selftest + stress **332/332**，单测 **167/167**；日志见 `refactoring.md`。
 
 ## 限制
 
+- 组合压力验证：无游戏测试使用真实 Windows 管道完成 32 次连接、512 个双线程竞争请求，
+  native 控制器执行 2500 次并发任务替换/取消/完成；
+  `py -3.11 driver/selftest.py --stress-cycles 30 --stress-world "超平坦测试"`
+  可复现任务替换、重连、退出/重进世界的组合验证。超长未结束命令的丢弃状态在新连接重置。
+- 世界生命周期由 `WorldSession` 管理，进退世界、世界列表与登录查询均投递到游戏平台主线程；
+  自动进入和登录重试使用可取消的延迟回调，退出/重进世界由上述压力自检覆盖。
+- 进入世界只在主菜单 screen（`start_screen` 或 HBUI 的 `ui://…`）发生；任何
+  `*progress_screen`（saving/loading）都会继续等待，超过 `signin_wait_ms` 回 `world_busy`。
+  换版本后如果菜单 screen 改名，先看启动日志的 `enter_world: start|blocked screen=…`。
+- `auto_enter` 与显式 `enter_world` 不会并发：显式进入会取消待执行的自动进入；已有一个
+  进入在飞时，第二次请求回 `enter_world_result {ok:true, reason:"already_starting"}`，
+  由 join 事件收尾。
 - CI 在运行无 SDK 的 native 任务模型测试前显式检查 LLVM 并配置 PATH；
   checkout / setup-python 更新到上游稳定版本，移除 Node.js 20 弃用依赖。
   游戏内任务行为仍需用 `driver/selftest.py` 的 `check_task_lifecycle` 等检查验证。

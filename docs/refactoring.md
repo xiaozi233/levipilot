@@ -306,3 +306,74 @@ CI 找不到编译器时失败，不默默跳过。
 最终日志：`out/redesign-unittest-accepted.log`、`out/redesign-chat-build.log`、
 `out/redesign-selftest-accepted.log`、`out/redesign-macro-verified.log`、
 `out/redesign-chat-error-repro.log`；安装备份为 `out/redesign-backup-32084/`。
+
+## 快速退出/重进崩溃（world session 续轮）
+
+### 现象与证据
+
+压力测试在 `leave_world` 后立即 `enter_world` 时崩溃：`0xC0000005`，`last_command` 是
+`enter_world`，三次崩溃都落在 `Minecraft.Windows.exe+0x8140139`
+（`crash-35000-2400.dmp`、`crash-36764-147.dmp`、`crash-28396-192.dmp`）。
+
+dump 的异常参数是 `READ at 0x498`（`NullPointer + 0x498`），崩溃指令为：
+
+```text
+movq 0x230(%rcx), %rax   ; rcx = 全局单例；rax = null
+movq 0x498(%rax), %rcx   ; 访问违例
+```
+
+崩溃栈全部在游戏模块内（没有 probe/LeviLamina 帧），是一条 UI 调度/回调链
+（`MC+0x8148530 → 0x8147bc0 → 0x8141700 → 0x8141150 → … → 0x8140070`），
+说明不是直接的 `startLocalServerAsync` 入口，而是它破坏 UI 状态后在后续过渡里爆掉。
+
+启动日志给出两个直接原因：
+
+```text
+22:29:32.928 enter_world: starting 超平坦测试 signed_in=1
+22:29:34.627 auto: entering 超平坦测试
+22:29:34.627 enter_world: starting 超平坦测试 signed_in=1     # 同一进程第二次 start
+```
+
+以及修复前最后一次重进的进入条件：
+
+```text
+enter_world: start phase=menu screen=world_saving_progress_screen - world_loading_progress_screen
+               leave_done=1 client_leave_done=1 can_start=1
+```
+
+即 `isLeaveGameDone()` / `ClientInstance::isLeaveGameDone()` / `canStartLocalServer()` 三者都已为
+true，但 UI 仍停在旧世界的 saving/loading 过渡屏。此时 `startLocalServerAsync` 会留下不完整的
+screen 栈，约 10 秒后（tick 147–192）在 UI 回调里空指针崩溃。
+
+### 修复
+
+- `WorldSession::mEntryInFlight`：同一时刻只允许一个本地服务端启动。显式 `enter` 会先取消
+  `auto_enter` 的延迟回调；已在加载中时第二次进入返回
+  `{"event":"enter_world_result","ok":true,"reason":"already_starting"}`，由 join 事件收尾。
+  `autoEnterOnClient` 发现进入在飞时直接停止自己的重试链，不再启动第二个服务端。
+- 主菜单 screen 门：`isMenuScreen()` 只接受 `start_screen` 或 HBUI 主菜单
+  （`ui://…`），并显式拒绝任何 `progress_screen`。离开世界后必须等 UI 回到菜单，
+  即使 leave-done 标志已经为 true。等待仍以 100 ms 的状态轮询进行，不是固定 Sleep；
+  超时（`signin_wait_ms`）返回 `world_busy` 并记录 blocked 日志。
+- 进入前记录一行状态（phase/screen/leave_done/client_leave_done/can_start），
+  以后换版本能直接从日志判断 gating 是否仍然成立。
+- 压力测试 `finally`：恢复失败不再覆盖原始异常；正常结束时清理移动、任务、宏、
+  观察点并回读确认（`stress_cleanup`）。
+
+### 验证
+
+- 定向复现 `out/followup-stress.py`（30 cycles，第 9/19/29 cycle 真实退出并立即重进）：
+  **123/123 通过**，日志 `out/followup-stress-run3.log`。
+- 重复 enter 探针：第二次返回 `already_starting`，只产生一次 `enter_world: start` 且正常 join。
+- 完整 live selftest + 30-cycle stress：**332/332 通过**（`out/final-selftest.log`）。
+- 离线：单测 **167/167**，ruff lint/format、mypy（25 文件）、`gen_profiles.py --check` 通过。
+- 结束后恢复玩家位置/朝向/槽位/模式，任务、移动、宏、记录、观察点均为空；
+  安装 DLL 与构建 DLL SHA256 一致。
+
+### CI 的 mod-build
+
+`ci: build the complete client mod with a portable LLVM toolchain`（run 39969952524，两次 attempt）
+的 unit job 通过，mod-build 在**从源码安装 LeviLamina 包**时失败。同样的配方与 LLVM 22.1.8
+在本机干净缓存下可以成功安装（`out/ci-repro-configure.log`），因此属于 runner 环境问题；
+失败详情在 runner 的 `installdir.failed/logs/install.txt`。工作流已加入失败时打印/上传该文件，
+拿到真实错误后再修复，未凭本地成功宣称 CI 通过。

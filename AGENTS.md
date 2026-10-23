@@ -47,7 +47,9 @@ py -3.11 driver/selftest.py
 ## 硬约束（改代码前先读这段）
 
 1. **`Internal.h` 是唯一被所有 TU 引用的内部头**；新共享工具放 `probe::detail`。
-2. **管道线程绝不直接碰游戏对象**：只设请求标志，或走 `queueServerTask()`。
+2. **管道线程绝不直接碰游戏对象**：只设请求标志，服务端操作走 `queueServerTask()`，
+   世界/UI 操作走 `queueClientTask()`（游戏平台主线程队列，在主菜单也运行）。
+   LL 的 `ClientThreadExecutor` 只随世界 tick 执行，不能用来进世界或等主菜单登录。
 3. **需要逐 tick 反馈的逻辑留在游戏线程**（`safeTickPre` / `safeTickPost`），
    不要让 Python 进入反馈环。
 4. **热路径纪律**：tick 内、以及任何可能被高频调用的钩子体里，禁止

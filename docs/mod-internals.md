@@ -118,7 +118,10 @@
 
 ## 世界与设置
 
-- `worlds`：`IMinecraftGame::getLevelListCache().getLevelList(...)`，在管道线程直接调用即可。
+- `WorldSession` 集中持有世界状态、四个事件订阅及登录/自动进入计时器。
+  `worlds` / `enter_world` / `leave_world` / `signin` 均经游戏平台主线程队列执行，
+  管道线程只提交参数副本；主线程入口由 SEH 与 C++ 异常边界隔离。
+- `worlds`：主线程调用 `IMinecraftGame::getLevelListCache().getLevelList(...)`。
 - `enter_world`：按名字或 id 取 `LevelSummary`，用它构造 `LevelSettings`，再调用
   `IGameServerStartup::startLocalServerAsync(levelId, levelName, contentIdentity, settings, intent)`。
   `startLocalServerAsyncFromSummary` 没有被 LeviLamina 导出，直接链接会报 LNK2019；纯虚重载
@@ -127,6 +130,8 @@
   "你必须通过 Microsoft 服务身份验证"。进入前通过 `SceneProvider → FacetRegistryFactory →
   ScreenModelProvider::getMainMenuScreenModel() → isSignedInToXBL()` 查询，未登录则轮询等待
   `signin_wait_ms`（默认 15 s），仍未登录回 `signin_required`（`force=true` 可跳过）。
+  轮询通过 wall-clock timer 延迟后重新排入主线程，禁止在主线程 Sleep。
+  LL 默认 `ClientThreadExecutor` 只随世界 tick 执行，主菜单不能使用。
   join 结果用 `enter_world_settled` 通知，超时/取消回 `ok=false` 和原因。
 - `leave_world`：`IGameServerShutdown::requestLeaveGame(true, true)`。
 - 世界事件：`ClientStartJoinLevelEvent` → `world_joining`，`ClientJoinLevelEvent` →
@@ -135,8 +140,9 @@
 - `options_set`：`IOptionRegistry::loadOptionsFromString` 实时应用（gamma/FOV 立刻可见），
   然后自行更新 `options.txt`。游戏自带的 `saveIfNeeded` 在当前版本不会立刻写盘，所以
   mod 读改写同一个文件（保留 CRLF 和未修改的行），再 `MoveFileExW` 原子替换。
-- `harness.json`：`auto_enter` / `options` / `delay_ms`。自动线程先等客户端存在且世界列表
-  非空，再应用选项并进世界，避免在加载阶段调用。
+- `harness.json`：`auto_enter` / `options` / `delay_ms`。`WorldSession` 用可取消的延迟回调，
+  在主线程等客户端存在、世界列表非空且游戏在前台，再应用选项并进世界。
+  disable 会更新调度代次并取消计时器，已排队的旧代次回调不会再触碰游戏对象。
 
 ## 记录落盘与崩溃取证
 

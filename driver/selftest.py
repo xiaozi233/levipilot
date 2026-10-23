@@ -366,11 +366,25 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(0.2)
         spool_rows, _ = read_spool(mod_spool)
         tick_numbers = [int(row["tick"]) for row in spool_rows if row.get("event") == "tick"]
-        monotonic = all(a <= b for a, b in itertools.pairwise(tick_numbers))
+        # The spool contains every recording run in this process; a decrease
+        # marks a new run. Check the last run only.
+        runs: list[list[int]] = []
+        current: list[int] = []
+        for tick in tick_numbers:
+            if current and tick < current[-1]:
+                runs.append(current)
+                current = []
+            current.append(tick)
+        if current:
+            runs.append(current)
+        last_run = runs[-1] if runs else []
+        monotonic = (
+            last_run == list(range(last_run[0], last_run[0] + len(last_run))) if last_run else False
+        )
         checks.check(
             "h0_spool_monotonic",
-            len(tick_numbers) >= 60 and monotonic,
-            f"ticks={len(tick_numbers)} monotonic={monotonic}",
+            len(last_run) >= 60 and monotonic,
+            f"ticks={len(last_run)} runs={len(runs)} monotonic={monotonic}",
         )
         checks.check(
             "h0_spool_panic",
@@ -517,7 +531,14 @@ def main(argv: list[str] | None = None) -> int:
                     int(client.status().get("chat_sent", 0)) - before_sent >= 2,
                     str(client.status().get("chat_sent")),
                 )
-                client.packet_capture(False)
+                # Panic must close the tap even while capture is active.
+                client.panic("all")
+                wait_ticks(client, 2)
+                checks.check(
+                    "packet_panic_off",
+                    client.packet_stats().get("active") is False,
+                    str(client.packet_stats().get("active")),
+                )
 
             client.packet_capture(False)
             quiet = int(client.packet_stats().get("records", 0))

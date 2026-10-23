@@ -11,6 +11,7 @@ from typing import Any
 
 from .client import ModClient
 from .errors import ModPipeError
+from .packets import decode_packet
 from .protocol import PIPE_NAME
 from .record import decode_dump
 from .spool import read_spool
@@ -92,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
     packet_bytes.add_argument("--limit", type=int, default=256)
 
     sub.add_parser("packet-stats")
+
+    packet_decode = sub.add_parser("packet-decode", help="decode a packet payload hex")
+    packet_decode.add_argument("hex")
+    packet_decode.add_argument("--id", type=int, required=True)
 
     mouse_event = sub.add_parser("mouse-event", help="inject a mouse event (allow_input_inject)")
     mouse_event.add_argument("action")
@@ -384,6 +389,10 @@ def main(argv: list[str] | None = None) -> int:
         selected = rows if args.all else rows[-args.tail :] if args.tail > 0 else []
         for row in selected:
             print(json.dumps(row, ensure_ascii=False))
+        return 0
+
+    if args.command == "packet-decode":
+        print(json.dumps(decode_packet(args.id, bytes.fromhex(args.hex)), ensure_ascii=False))
         return 0
 
     try:

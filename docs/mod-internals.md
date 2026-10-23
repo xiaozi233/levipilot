@@ -334,6 +334,19 @@
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
 - `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
 
+## 封包解码注册表（H4）
+
+- `driver/harness/packets.py`：`PACKET_NAMES`（常用 id）、`decode_packet(id, bytes)`、
+  `decode_row(packet_bytes_row)`。未知 id 返回 `{id,name:"id_N",hex}`，不抛异常。
+- 已实现布局：
+  - `77 CommandRequest`：命令字符串、origin 类型/名字/UUID、requestId、playerId、版本。
+    **用实机抓到的 77 包验证**（`/give @s minecraft:stone 5`，origin=ClientAutomation）。
+  - `36 PlayerAction`：runtimeId varint、action varint、x/y/z float、face varint。
+  - `19 MovePlayer`：runtimeId、位置、pitch/yaw/headYaw、mode、onGround、ridden、tick。
+    36/19 是标准 Bedrock 布局，目前只有合成样例单测（本客户端移动走 PlayerAuthInput）。
+- B3 存的是 payload 字节，不含包 id varint；解码器从第一个字段开始读。
+- CLI：`py -3.11 -m driver.harness.cli packet-decode --id 77 <hex>`。
+
 ## 命令包注入（H2）
 
 - `CommandRequestPacketPayload` 的默认构造没有导出，所以不自己拼 payload；

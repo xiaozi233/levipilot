@@ -281,7 +281,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   位移正好 1.000 格、`/fill`/`/give` 生效；注入前后 tick p99 不变（19.8 Hz）。
   捕获模板需要先用 `/` + `text_input` + Enter 发一条真实命令；客户端命令还要求
   `op_self`（世界 commands 已开启时仍可能是 Member 权限）。
-- `driver/selftest.py` 120/120 通过
+- H4：`driver/harness/packets.py` 提供 `decode_packet(id, hex)` / `decode_row(row)`；
+  已知 id 映射 + 77/36/19 三种布局，未知 id 保留 hex 不报错；CLI
+  `packet-decode --id 77 <hex>`。77 的布局用真实抓包验证，36/19 用合成样例单测
+- `driver/selftest.py` 121/121 通过
 
 ## 限制
 
@@ -303,6 +306,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - H1 的身份 tap 始终可用；字节只对 `serialize_ids` 白名单生效（默认无），且只在 capture
   开启时调用 `Packet::write`（首次会分配一次线程局部缓冲）。`peer_sends` 恒为 0 是实测结果：
   单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。
+- H4 的 36/19 解码是标准 Bedrock 布局，本客户端移动走 `PlayerAuthInput(144)`，
+  所以 36/19 只在单测里验证过；接 recv tap 后可直接复用。
 - H2 只能注入 `CommandRequestPacket(77)`，而且必须先有一条真实的 77 包做模板；
   `op_self` 会修改世界里的玩家权限（测试世界用，别在日常存档里开）。
   `chat_send` 的 ok=true 只代表包已发出，命令是否执行要用 `blocks`/位置回读验证。

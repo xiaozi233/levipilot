@@ -343,6 +343,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 ## 限制
 
 - CI 在运行无 SDK 的 native 任务模型测试前显式检查 LLVM 并配置 PATH；
+  checkout / setup-python 更新到上游稳定版本，移除 Node.js 20 弃用依赖。
   游戏内任务行为仍需用 `driver/selftest.py` 的 `check_task_lifecycle` 等检查验证。
 - 2026-10-23 结构重构：命令处理拆为 8 个 `Command<领域>.cpp`，Python 拆为连接、命令、脚本门面；
   协议 4 和旧导入保持兼容。`selftest.py` 新增 `dispatch_*` 检查（8 个领域、未知命令、参数错误恢复）；

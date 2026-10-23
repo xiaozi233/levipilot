@@ -22,7 +22,22 @@ try {
     # xmake's installation nor the SDK needs a machine-specific path patch.
     & xmake f -y -p windows -a x64 -m release --target_type=client `
         "--cc=$compiler" "--cxx=$compiler" 2>&1 | Tee-Object -FilePath $buildLog
-    if ($LASTEXITCODE -ne 0) { throw "xmake configure failed; see $buildLog" }
+    if ($LASTEXITCODE -ne 0) {
+        # Package install failures keep the compiler output in install.txt.
+        # Surface it before failing so a clean runner failure is diagnosable.
+        if ($env:XMAKE_GLOBALDIR) {
+            $installLog = Get-ChildItem -Path (Join-Path $env:XMAKE_GLOBALDIR '.xmake/cache/packages') `
+                -Recurse -Filter 'install.txt' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($installLog) {
+                Write-Output "===== package install log: $($installLog.FullName) ====="
+                Get-Content -LiteralPath $installLog.FullName | Write-Output
+                Copy-Item -LiteralPath $installLog.FullName `
+                    -Destination (Join-Path $logDirectory 'ci-install.log') -Force
+            }
+        }
+        throw "xmake configure failed; see $buildLog"
+    }
     & xmake -j4 -y 2>&1 | Tee-Object -FilePath $buildLog -Append
     if ($LASTEXITCODE -ne 0) { throw "xmake build failed; see $buildLog" }
     foreach ($name in @('probe.dll', 'probe.pdb', 'manifest.json')) {

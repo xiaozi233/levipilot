@@ -83,6 +83,8 @@ jobs:
         uses: actions/upload-artifact@v7.0.2
         with:
           name: mod-build-log-${{ github.sha }}
-          path: out/ci-mod-build.log
+          path: |
+            out/ci-mod-build.log
+            out/ci-install.log
           if-no-files-found: warn
           retention-days: 7

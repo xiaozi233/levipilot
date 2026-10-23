@@ -252,6 +252,8 @@ void ProbeMod::loadAutoConfig() {
     mAllowPacketCapture = config.value("allow_packet_capture", false);
     mAllowPacketInject  = config.value("allow_packet_inject", false);
     mAllowInputInject = config.value("allow_input_inject", false);
+    mAllowVersionMismatch = config.value("allow_version_mismatch", false);
+    setAllowVersionMismatch(mAllowVersionMismatch.load());
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
@@ -323,7 +325,7 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
 }
 
 void ProbeMod::safeTickPre(LocalPlayer& player) {
-    if (!mRunning.load(std::memory_order_relaxed) || !versionOk()) {
+    if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
         return;
     }
     mJumpEdgeThisTick = false;
@@ -515,7 +517,7 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
 }
 
 void ProbeMod::safeTickPost(LocalPlayer& player) {
-    if (!mRunning.load(std::memory_order_relaxed) || !versionOk()) {
+    if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
         return;
     }
     auto client = ll::service::getClientInstance();
@@ -749,7 +751,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 }
 
 bool ProbeMod::allowTurnDelta() const {
-    if (!mRunning.load(std::memory_order_relaxed) || !mBackgroundGuard || !versionOk()) {
+    if (!mRunning.load(std::memory_order_relaxed) || !mBackgroundGuard || !hooksAllowed()) {
         return true;
     }
     if (mInjectingLook.load(std::memory_order_relaxed)) {

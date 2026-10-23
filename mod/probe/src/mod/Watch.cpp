@@ -28,6 +28,17 @@ struct Watch {
     int                        slot      = -1;
     std::string                tag;
     std::vector<DWORD>         threads;
+
+    // Only threads we armed may be credited with a hit. A single-step on any
+    // other thread comes from a stale or foreign DR setting and is not ours.
+    [[nodiscard]] bool ownsThread(DWORD tid) const {
+        for (DWORD armed : threads) {
+            if (armed == tid) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 struct HitRecord {
@@ -45,6 +56,8 @@ std::unique_ptr<Watch>              gWatches[kSlotCount];
 std::unique_ptr<HitRecord[]>        gRing;
 std::atomic<std::uint64_t>          gHead{0};
 std::atomic<std::uint64_t>          gTotalHits{0};
+std::atomic<std::uint64_t>          gForeignHits{0};
+std::mutex                          gWatchThreadsMutex;
 std::atomic<std::uint32_t>          gNextId{1};
 std::atomic_bool                    gInitialized{false};
 PVOID                               gVehHandle = nullptr;
@@ -253,6 +266,7 @@ LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     CONTEXT&   context = *info->ContextRecord;
+    DWORD const tid    = GetCurrentThreadId();
     bool       matched = false;
     for (int slot = 0; slot < static_cast<int>(kSlotCount); ++slot) {
         std::uint64_t const bit = 1ull << slot;
@@ -262,8 +276,18 @@ LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
         // Clear the status bit so the kernel does not report the same hit again.
         context.Dr6 &= ~bit;
         matched      = true;
+        bool ours    = false;
         if (gWatches[slot] && gWatches[slot]->used.load(std::memory_order_acquire)) {
+            std::lock_guard lock(gWatchThreadsMutex);
+            ours = gWatches[slot]->ownsThread(tid);
+        }
+        if (ours) {
             storeHit(slot, context);
+        } else {
+            // A single-step on a thread we did not arm: another tool (or a DR
+            // left behind by a previous owner) is using this slot. Consume the
+            // exception but never credit it to our ring.
+            gForeignHits.fetch_add(1, std::memory_order_relaxed);
         }
     }
     if (!matched) {
@@ -300,6 +324,7 @@ void watchShutdown() {
     gRing.reset();
     gHead.store(0, std::memory_order_relaxed);
     gTotalHits.store(0, std::memory_order_relaxed);
+    gForeignHits.store(0, std::memory_order_relaxed);
     gInitialized.store(false, std::memory_order_release);
 }
 
@@ -390,14 +415,20 @@ nlohmann::json watchInstall(
     std::string error;
     for (DWORD tid : targets) {
         if (installOnThread(tid, slot, addr, size, readWrite, error)) {
+            std::lock_guard lock(gWatchThreadsMutex);
             watch.threads.push_back(tid);
         } else if (thread == "tick") {
             // A watch requested for the tick thread must not silently apply to
             // zero threads.
-            for (DWORD installed : watch.threads) {
-                clearOnThread(installed, slot);
+            std::vector<DWORD> installed;
+            {
+                std::lock_guard lock(gWatchThreadsMutex);
+                installed = watch.threads;
+                watch.threads.clear();
             }
-            watch.threads.clear();
+            for (DWORD previous : installed) {
+                clearOnThread(previous, slot);
+            }
             watch.tag.clear();
             return errorJson(error.empty() ? "install_failed" : error.c_str());
         }
@@ -418,8 +449,11 @@ nlohmann::json watchInstall(
     out["mode"]    = readWrite ? "rw" : "w";
     out["tag"]     = tag;
     out["threads"] = nlohmann::json::array();
-    for (DWORD tid : watch.threads) {
-        out["threads"].push_back(tid);
+    {
+        std::lock_guard lock(gWatchThreadsMutex);
+        for (DWORD tid : watch.threads) {
+            out["threads"].push_back(tid);
+        }
     }
     out["suspends_tick_thread"] = true;
     return out;
@@ -435,7 +469,12 @@ nlohmann::json watchRemove(int id) {
             continue;
         }
         bool cleared = true;
-        for (DWORD tid : watch->threads) {
+        std::vector<DWORD> tids;
+        {
+            std::lock_guard lock(gWatchThreadsMutex);
+            tids = watch->threads;
+        }
+        for (DWORD tid : tids) {
             cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
         }
         if (!cleared) {
@@ -443,7 +482,10 @@ nlohmann::json watchRemove(int id) {
             // free would make the next install fail with dr_busy forever.
             return errorJson("clear_failed");
         }
-        watch->threads.clear();
+        {
+            std::lock_guard lock(gWatchThreadsMutex);
+            watch->threads.clear();
+        }
         watch->tag.clear();
         watch->used.store(false, std::memory_order_release);
         return nlohmann::json{
@@ -463,14 +505,22 @@ bool watchRemoveAll() {
             continue;
         }
         bool cleared = true;
-        for (DWORD tid : watch->threads) {
+        std::vector<DWORD> tids;
+        {
+            std::lock_guard lock(gWatchThreadsMutex);
+            tids = watch->threads;
+        }
+        for (DWORD tid : tids) {
             cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
         }
         if (!cleared) {
             allCleared = false;
             continue; // keep ownership so a later clear can retry
         }
-        watch->threads.clear();
+        {
+            std::lock_guard lock(gWatchThreadsMutex);
+            watch->threads.clear();
+        }
         watch->tag.clear();
         watch->used.store(false, std::memory_order_release);
     }
@@ -501,6 +551,7 @@ nlohmann::json watchListJson() {
         out["watches"].push_back(std::move(row));
     }
     out["hits"]    = gTotalHits.load(std::memory_order_relaxed);
+    out["foreign_hits"] = gForeignHits.load(std::memory_order_relaxed);
     out["dropped"] = watchDroppedHits();
     out["head"]    = gHead.load(std::memory_order_acquire);
     return out;

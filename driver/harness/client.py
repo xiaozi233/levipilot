@@ -253,6 +253,14 @@ class ModClient:
         """Executable version, anchor addresses and signature matches (T7)."""
         return self.request({"cmd": "diagnose"}, "diagnose")
 
+    def profile_dump(self) -> dict[str, Any]:
+        """Version profile read from the live build; ``profile`` is saveable JSON."""
+        return self.request({"cmd": "profile_dump"}, "profile_dump")
+
+    def profile_probe(self, build_id: str) -> dict[str, Any]:
+        """Report which profile a given build id would select (porting check)."""
+        return self.request({"cmd": "profile_probe", "build_id": build_id}, "profile_probe")
+
     def signature_check(self, name: str, expected_hex: str) -> dict[str, Any]:
         return self.request(
             {"cmd": "signature_check", "name": name, "expected_hex": expected_hex},
@@ -1308,6 +1316,9 @@ class Harness:
 
     def diagnose(self) -> dict[str, Any]:
         return self.client.diagnose()
+
+    def profile_dump(self) -> dict[str, Any]:
+        return self.client.profile_dump()
 
     def signature_check(self, name: str, expected_hex: str) -> dict[str, Any]:
         return self.client.signature_check(name, expected_hex)

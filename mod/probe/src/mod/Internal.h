@@ -377,8 +377,17 @@ nlohmann::json pathRatesJson();
 // ---------------------------------------------------------------------------
 void           resolveInit(std::filesystem::path const& modDir);
 bool           versionOk();
+// Porting: hooks run when the build has a matching profile, or when the user
+// explicitly opts into compat mode (allow_version_mismatch).
+bool           hooksAllowed();
+bool           allowVersionMismatch();
+void           setAllowVersionMismatch(bool allow);
 std::string    buildId();
 nlohmann::json diagnoseJson();
+nlohmann::json profileJson();
+nlohmann::json profileDump();
+nlohmann::json profileProbe(std::string const& buildId);
+nlohmann::json capabilitiesJson();
 nlohmann::json signatureCheck(std::string const& name, std::string const& expectedHex);
 
 // F5: offsets are data, not code constants.

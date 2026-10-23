@@ -1,5 +1,7 @@
 #include "mod/Internal.h"
 
+#include "mod/GeneratedProfiles.h"
+
 #include <fstream>
 
 using namespace probe::detail;
@@ -10,60 +12,40 @@ namespace {
 
 constexpr std::size_t kAnchorCount    = 4;
 constexpr std::size_t kSignatureBytes = 24;
-constexpr int         kExpectedMajor  = 1;
-constexpr int         kExpectedMinor  = 26;
-constexpr int         kExpectedBuild  = 51;
+constexpr std::size_t kMaxStructFields = 64;
+constexpr std::size_t kMaxComponents   = 64;
 
 struct Anchor {
-    char const*                name;
+    char const*                name = nullptr;
     std::uint64_t              address = 0;
     std::uint64_t              resolved = 0;
     std::array<std::uint8_t, kSignatureBytes> expected{};
     std::size_t                expectedLength = 0;
+    bool                       configured     = false;
     bool                       match          = true;
     std::uint64_t              elapsedUs      = 0;
 };
 
 struct VersionInfo {
-    bool        prefixOk = false;
     std::string buildId;
     int         major = 0;
     int         minor = 0;
     int         build = 0;
     int         revision = 0;
+    bool        profileFound = false;
+    std::string profileVersion;
+    std::string profileBuildId;
+    char const* matchSource = "none";
+    bool        signaturesOk = true;
 };
 
-Anchor         gAnchors[kAnchorCount];
-VersionInfo    gVersion;
-std::atomic_bool gVersionOk{true};
-std::string    gSource = "builtin";
-
-// ---------------------------------------------------------------------------
-// F5: struct/component offset table. Built-ins mirror docs/offsets/<ver>.json;
-// an offsets.json in the mod directory may override individual fields.
-// ---------------------------------------------------------------------------
 struct StructField {
-    char const*   type;
-    char const*   field;
+    std::string   type;
+    std::string   field;
     std::uint64_t offset      = 0;
     bool          overridden  = false;
     bool          present     = true;
-};
-
-StructField kStructFields[] = {
-    {"Block",       "LegacyPointer", 0x68,  false},
-    {"BlockLegacy", "NameHash",      0xE0,  false},
-    {"BlockLegacy", "Name",          0xE8,  false},
-    {"BlockLegacy", "BlockId",       0x17E, false},
-    {"BlockLegacy", "FloatA",        0x15C, false},
-    {"BlockLegacy", "FloatB",        0x178, false},
-    // ECS component layout used by the H0 watch check (stride 36, 3 Vec3s).
-    {"StateVector", "PositionX",     0x00,  false},
-    {"StateVector", "PositionY",     0x04,  false},
-    {"StateVector", "PositionZ",     0x08,  false},
-    {"StateVector", "VelX",          0x18,  false},
-    {"StateVector", "VelY",          0x1C,  false},
-    {"StateVector", "VelZ",          0x20,  false},
+    bool          fromProfile = false;
 };
 
 struct ComponentEntry {
@@ -71,14 +53,21 @@ struct ComponentEntry {
     std::uint32_t size       = 0;
     std::string   name;
     bool          overridden = false;
+    bool          fromProfile = false;
 };
 
-constexpr std::size_t kMaxComponents = 64;
-// 459100728 was read live from a 1.26.51.01 pig entity (stride 36).
-ComponentEntry        kComponents[kMaxComponents] = {
-    {459100728, 36, "StateVector", false},
-};
-std::size_t kComponentCount = 1;
+Anchor         gAnchors[kAnchorCount] = {};
+VersionInfo    gVersion;
+std::atomic_bool gVersionOk{false};
+std::atomic_bool gHooksAllowed{false};
+std::atomic_bool gAllowVersionMismatch{false};
+std::string    gOffsetSource = "builtin";
+
+StructField    gStructFields[kMaxStructFields];
+std::size_t    gStructFieldCount = 0;
+ComponentEntry gComponents[kMaxComponents];
+std::size_t    gComponentCount = 0;
+
 std::atomic<std::uint32_t> gMissingFields{0};
 std::mutex                 gMissingMutex;
 char                       gLastMissing[160]{};
@@ -87,6 +76,17 @@ void noteMissing(char const* type, char const* field) {
     gMissingFields.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lock(gMissingMutex);
     std::snprintf(gLastMissing, sizeof(gLastMissing), "%s.%s", type, field);
+}
+
+void resetTables() {
+    gStructFieldCount = 0;
+    gComponentCount   = 0;
+}
+
+std::string offsetText(std::uint64_t value) {
+    char buffer[32]{};
+    std::snprintf(buffer, sizeof(buffer), "0x%llX", static_cast<unsigned long long>(value));
+    return buffer;
 }
 
 bool parseOffsetValue(nlohmann::json const& value, std::uint64_t& out) {
@@ -119,6 +119,131 @@ bool parseOffsetValue(nlohmann::json const& value, std::uint64_t& out) {
     return false;
 }
 
+bool parseHexInto(
+    std::string const&                         text,
+    std::array<std::uint8_t, kSignatureBytes>& out,
+    std::size_t&                               length
+) {
+    std::vector<std::uint8_t> bytes;
+    std::string               cleaned;
+    for (char ch : text) {
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            cleaned.push_back(ch);
+        }
+    }
+    if (!parseHexBytes(cleaned, bytes) || bytes.empty() || bytes.size() > kSignatureBytes) {
+        return false;
+    }
+    out.fill(0);
+    std::copy(bytes.begin(), bytes.end(), out.begin());
+    length = bytes.size();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Version profiles. The data lives in docs/offsets/*.json and is compiled into
+// GeneratedProfiles.h; adding a game version does not touch C++ code.
+// ---------------------------------------------------------------------------
+VersionProfile const* selectProfile(VersionInfo& version) {
+    for (std::size_t index = 0; index < kProfileCount; ++index) {
+        if (version.buildId == kProfiles[index].buildId) {
+            version.matchSource = "exact";
+            return &kProfiles[index];
+        }
+    }
+    for (std::size_t index = 0; index < kProfileCount; ++index) {
+        char const* prefix = kProfiles[index].versionPrefix;
+        if (prefix == nullptr || *prefix == '\0') {
+            continue;
+        }
+        std::string const anchored = std::string{prefix} + ".";
+        if (version.buildId.rfind(anchored, 0) == 0) {
+            version.matchSource = "prefix";
+            return &kProfiles[index];
+        }
+    }
+    for (std::size_t index = 0; index < kProfileCount; ++index) {
+        if (version.buildId == kProfiles[index].version) {
+            version.matchSource = "version";
+            return &kProfiles[index];
+        }
+    }
+    version.matchSource = "none";
+    return nullptr;
+}
+
+void loadProfileAnchors(VersionProfile const& profile) {
+    for (auto& anchor : gAnchors) {
+        anchor.expectedLength = 0;
+        anchor.configured     = false;
+        anchor.expected.fill(0);
+        for (std::size_t slot = 0; slot < profile.anchorCount; ++slot) {
+            if (std::strcmp(anchor.name, profile.anchors[slot].name) != 0) {
+                continue;
+            }
+            std::size_t length = 0;
+            if (parseHexInto(profile.anchors[slot].expectedHex, anchor.expected, length)) {
+                anchor.expectedLength = length;
+                anchor.configured     = true;
+            }
+            break;
+        }
+    }
+}
+
+void loadProfileFields(VersionProfile const& profile) {
+    for (std::size_t slot = 0; slot < profile.fieldCount && gStructFieldCount < kMaxStructFields;
+         ++slot) {
+        auto const& source = profile.fields[slot];
+        char*                end    = nullptr;
+        errno                       = 0;
+        unsigned long long const parsed = std::strtoull(source.offset, &end, 0);
+        if (source.offset == nullptr || end == source.offset || *end != '\0' || errno == ERANGE) {
+            continue;
+        }
+        gStructFields[gStructFieldCount++] = StructField{
+            source.type,
+            source.field,
+            static_cast<std::uint64_t>(parsed),
+            false,
+            source.present,
+            true,
+        };
+    }
+}
+
+void loadProfileComponents(VersionProfile const& profile) {
+    for (std::size_t slot = 0; slot < profile.componentCount && gComponentCount < kMaxComponents;
+         ++slot) {
+        auto const& source = profile.components[slot];
+        gComponents[gComponentCount++] = ComponentEntry{
+            source.id,
+            source.size,
+            source.name,
+            false,
+            true,
+        };
+    }
+}
+
+StructField* findStructField(std::string const& type, std::string const& field) {
+    for (std::size_t index = 0; index < gStructFieldCount; ++index) {
+        if (gStructFields[index].type == type && gStructFields[index].field == field) {
+            return &gStructFields[index];
+        }
+    }
+    return nullptr;
+}
+
+ComponentEntry* findComponent(std::string const& name) {
+    for (std::size_t index = 0; index < gComponentCount; ++index) {
+        if (gComponents[index].name == name) {
+            return &gComponents[index];
+        }
+    }
+    return nullptr;
+}
+
 void loadStructOverrides(nlohmann::json const& root) {
     auto structs = root.find("structs");
     if (structs == root.end() || !structs->is_object()) {
@@ -129,9 +254,9 @@ void loadStructOverrides(nlohmann::json const& root) {
             continue;
         }
         for (auto fieldIt = typeIt.value().begin(); fieldIt != typeIt.value().end(); ++fieldIt) {
-            // "field": null removes a built-in entry, which makes probe report
-            // no_offset instead of silently reading the wrong field.
-            bool const remove = fieldIt.value().is_null();
+            // "field": null removes an entry, so probe reports no_offset instead
+            // of silently reading the wrong field.
+            bool const    remove = fieldIt.value().is_null();
             std::uint64_t offset = 0;
             if (!remove && !parseOffsetValue(fieldIt.value(), offset)) {
                 ProbeMod::getInstance().bootLog(
@@ -139,25 +264,31 @@ void loadStructOverrides(nlohmann::json const& root) {
                 );
                 continue;
             }
-            bool matched = false;
-            for (auto& field : kStructFields) {
-                if (typeIt.key() == field.type && fieldIt.key() == field.field) {
-                    if (remove) {
-                        field.present = false;
-                    } else {
-                        field.offset    = offset;
-                        field.present   = true;
-                    }
-                    field.overridden = true;
-                    matched          = true;
-                    break;
+            if (auto* existing = findStructField(typeIt.key(), fieldIt.key())) {
+                if (remove) {
+                    existing->present = false;
+                } else {
+                    existing->offset  = offset;
+                    existing->present = true;
                 }
+                existing->overridden = true;
+                continue;
             }
-            if (!matched) {
-                ProbeMod::getInstance().bootLog(
-                    "resolve: unknown struct field " + typeIt.key() + "." + fieldIt.key()
-                );
+            if (remove) {
+                continue;
             }
+            if (gStructFieldCount >= kMaxStructFields) {
+                ProbeMod::getInstance().bootLog("resolve: too many struct fields");
+                break;
+            }
+            gStructFields[gStructFieldCount++] = StructField{
+                typeIt.key(),
+                fieldIt.key(),
+                offset,
+                true,
+                true,
+                false,
+            };
         }
     }
 }
@@ -176,18 +307,45 @@ void loadComponentOverrides(nlohmann::json const& root) {
         if (!parseOffsetValue(it.value()["id"], id) || !parseOffsetValue(it.value()["size"], size)) {
             continue;
         }
-        if (size == 0 || size > 4096 || kComponentCount >= kMaxComponents) {
+        if (size == 0 || size > 4096) {
             continue;
         }
-        kComponents[kComponentCount++] = ComponentEntry{
+        if (auto* existing = findComponent(it.key())) {
+            existing->id         = static_cast<std::uint32_t>(id);
+            existing->size       = static_cast<std::uint32_t>(size);
+            existing->overridden = true;
+            continue;
+        }
+        if (gComponentCount >= kMaxComponents) {
+            ProbeMod::getInstance().bootLog("resolve: too many components");
+            break;
+        }
+        gComponents[gComponentCount++] = ComponentEntry{
             static_cast<std::uint32_t>(id),
             static_cast<std::uint32_t>(size),
             it.key(),
             true,
+            false,
         };
     }
 }
 
+void recomputeGates() {
+    bool signaturesOk = true;
+    for (auto const& anchor : gAnchors) {
+        if (anchor.configured && !anchor.match) {
+            signaturesOk = false;
+            break;
+        }
+    }
+    gVersion.signaturesOk = signaturesOk;
+    bool const versionOk  = gVersion.profileFound && signaturesOk;
+    gVersionOk.store(versionOk, std::memory_order_release);
+    gHooksAllowed.store(
+        versionOk || gAllowVersionMismatch.load(std::memory_order_relaxed),
+        std::memory_order_release
+    );
+}
 
 std::uint64_t anchorAddress(std::size_t index) {
     switch (index) {
@@ -219,7 +377,6 @@ std::uint64_t followThunk(std::uint64_t address) {
     return target != 0 ? target : address;
 }
 
-
 VersionInfo readVersion() {
     VersionInfo out;
     wchar_t     path[MAX_PATH]{};
@@ -247,29 +404,10 @@ VersionInfo readVersion() {
     out.revision = static_cast<int>(LOWORD(info->dwFileVersionLS));
     out.buildId  = std::to_string(out.major) + "." + std::to_string(out.minor) + "."
                 + std::to_string(out.build) + "." + std::to_string(out.revision);
-    out.prefixOk =
-        out.major == kExpectedMajor && out.minor == kExpectedMinor && out.build == kExpectedBuild;
     return out;
 }
 
-bool parseHexInto(std::string const& text, std::array<std::uint8_t, kSignatureBytes>& out, std::size_t& length) {
-    std::vector<std::uint8_t> bytes;
-    std::string               cleaned;
-    for (char ch : text) {
-        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
-            cleaned.push_back(ch);
-        }
-    }
-    if (!parseHexBytes(cleaned, bytes) || bytes.empty() || bytes.size() > kSignatureBytes) {
-        return false;
-    }
-    out.fill(0);
-    std::copy(bytes.begin(), bytes.end(), out.begin());
-    length = bytes.size();
-    return true;
-}
-
-void loadOverrides(std::filesystem::path const& path) {
+void loadOffsetsFile(std::filesystem::path const& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         return;
@@ -279,20 +417,30 @@ void loadOverrides(std::filesystem::path const& path) {
         ProbeMod::getInstance().bootLog("resolve: offsets json invalid");
         return;
     }
-    gSource = path.filename().string();
-    auto anchors = parsed.find("anchors");
+    gOffsetSource = path.filename().string();
+    auto anchors  = parsed.find("anchors");
     if (anchors != parsed.end() && anchors->is_object()) {
         for (auto it = anchors->begin(); it != anchors->end(); ++it) {
             if (!it.value().is_object() || !it.value().contains("expected_hex")) {
                 continue;
             }
             for (auto& anchor : gAnchors) {
-                if (it.key() == anchor.name) {
-                    std::size_t length = 0;
-                    if (parseHexInto(it.value().value("expected_hex", std::string{}), anchor.expected, length)) {
-                        anchor.expectedLength = length;
-                    }
+                if (std::strcmp(it.key().c_str(), anchor.name) != 0) {
+                    continue;
                 }
+                std::size_t length = 0;
+                if (it.value().value("expected_hex", std::string{}).empty()) {
+                    anchor.expectedLength = 0;
+                    anchor.configured     = false;
+                } else if (parseHexInto(
+                               it.value().value("expected_hex", std::string{}),
+                               anchor.expected,
+                               length
+                           )) {
+                    anchor.expectedLength = length;
+                    anchor.configured     = true;
+                }
+                break;
             }
         }
     }
@@ -303,67 +451,85 @@ void loadOverrides(std::filesystem::path const& path) {
 } // namespace
 
 void resolveInit(std::filesystem::path const& modDir) {
-    // Populate the built-in signature table first; a user-supplied offsets.json
-    // may override individual anchors without a rebuild.
-    // Filled from the live 1.26.51.01 build; see docs/offsets/1.26.51.01.json.
-    static constexpr std::array<std::array<std::uint8_t, kSignatureBytes>, kAnchorCount> Builtin{{
-        {0x55, 0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x81, 0xec, 0xf0, 0x00, 0x00, 0x00, 0x48, 0x8d, 0xac, 0x24, 0x80, 0x00, 0x00, 0x00, 0x0f, 0x29, 0x75},
-        {0x56, 0x57, 0x53, 0x48, 0x83, 0xec, 0x50, 0x48, 0x89, 0xce, 0x8b, 0x05, 0x20, 0x72, 0x0e, 0x00, 0x65, 0x48, 0x8b, 0x0c, 0x25, 0x58, 0x00, 0x00},
-        {0x48, 0x83, 0xc1, 0x08, 0x48, 0xff, 0x25, 0x95, 0x43, 0x26, 0x00, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x48, 0x83, 0xc1, 0x08, 0x48, 0xff, 0x25, 0xe5},
-        {0x48, 0x8b, 0x51, 0x10, 0x8b, 0x41, 0x18, 0x48, 0x8b, 0x4a, 0x48, 0x4c, 0x8b, 0x42, 0x50, 0x49, 0x29, 0xc8, 0x49, 0xc1, 0xe8, 0x03, 0x41, 0xff},
-    }};
-    static constexpr std::array<std::size_t, kAnchorCount> BuiltinLength{{24, 24, 24, 24}};
+    gVersion = readVersion();
+    gOffsetSource = "builtin";
+
     static constexpr char const* Names[kAnchorCount] = {
         "LocalPlayer::normalTick",
         "LocalPlayer::_applyTurnDelta",
         "Actor::getHealth",
         "Actor::isOnGround",
     };
-
-    gVersion = readVersion();
     for (std::size_t index = 0; index < kAnchorCount; ++index) {
-        Anchor& anchor       = gAnchors[index];
-        anchor.name          = Names[index];
-        anchor.address       = anchorAddress(index);
-        anchor.resolved      = followThunk(anchor.address);
-        anchor.expected      = Builtin[index];
-        anchor.expectedLength = BuiltinLength[index];
-        anchor.match         = true;
-        anchor.elapsedUs     = 0;
+        Anchor& anchor        = gAnchors[index];
+        anchor.name           = Names[index];
+        anchor.address        = anchorAddress(index);
+        anchor.resolved       = followThunk(anchor.address);
+        anchor.expected.fill(0);
+        anchor.expectedLength = 0;
+        anchor.configured     = false;
+        anchor.match          = true;
+        anchor.elapsedUs      = 0;
     }
-    loadOverrides(modDir / "offsets.json");
 
-    bool signaturesOk = true;
+    resetTables();
+    VersionProfile const* profile = selectProfile(gVersion);
+    if (profile != nullptr) {
+        gVersion.profileFound   = true;
+        gVersion.profileVersion = profile->version;
+        gVersion.profileBuildId = profile->buildId;
+        loadProfileAnchors(*profile);
+        loadProfileFields(*profile);
+        loadProfileComponents(*profile);
+    }
+
+    // Runtime override: same schema, individual fields only. This is how a new
+    // version can be tried without touching the compiled profile.
+    loadOffsetsFile(modDir / "offsets.json");
+
     for (auto& anchor : gAnchors) {
-        if (anchor.expectedLength == 0) {
-            continue; // unconfigured: version check only
+        if (!anchor.configured) {
+            continue;
         }
         std::uint64_t const start = qpcNow();
         std::array<std::uint8_t, kSignatureBytes> actual{};
         bool const readable = readMemory(anchor.resolved, actual.data(), anchor.expectedLength);
         anchor.elapsedUs    = qpcElapsedUs(start, qpcNow());
         anchor.match        = readable
-                        && std::memcmp(actual.data(), anchor.expected.data(), anchor.expectedLength) == 0;
-        if (!anchor.match) {
-            signaturesOk = false;
-        }
+                       && std::memcmp(actual.data(), anchor.expected.data(), anchor.expectedLength) == 0;
     }
-    bool const ok = gVersion.prefixOk && signaturesOk;
-    gVersionOk.store(ok, std::memory_order_release);
+
+    recomputeGates();
     ProbeMod::getInstance().bootLog(
-        "resolve: version=" + gVersion.buildId + " expected=" + std::to_string(kExpectedMajor) + "."
-        + std::to_string(kExpectedMinor) + "." + std::to_string(kExpectedBuild) + " ok="
-        + (ok ? "1" : "0") + " source=" + gSource
+        "resolve: version=" + gVersion.buildId
+        + " profile=" + (gVersion.profileFound ? gVersion.profileVersion : std::string{"none"})
+        + " match=" + gVersion.matchSource + " ok=" + (versionOk() ? "1" : "0")
+        + " hooks=" + (hooksAllowed() ? "1" : "0") + " source=" + gOffsetSource
     );
 }
 
 bool versionOk() { return gVersionOk.load(std::memory_order_acquire); }
 
+bool hooksAllowed() { return gHooksAllowed.load(std::memory_order_acquire); }
+
+void setAllowVersionMismatch(bool allow) {
+    gAllowVersionMismatch.store(allow, std::memory_order_release);
+    recomputeGates();
+    if (allow && !versionOk()) {
+        ProbeMod::getInstance().bootLog(
+            "resolve: compat mode enabled; hooked features run without a matching profile"
+        );
+    }
+}
+
+bool allowVersionMismatch() { return gAllowVersionMismatch.load(std::memory_order_acquire); }
+
 std::string buildId() { return gVersion.buildId; }
 
 bool structOffset(char const* type, char const* field, std::uint64_t& out) {
-    for (auto const& entry : kStructFields) {
-        if (std::strcmp(type, entry.type) == 0 && std::strcmp(field, entry.field) == 0) {
+    for (std::size_t index = 0; index < gStructFieldCount; ++index) {
+        auto const& entry = gStructFields[index];
+        if (entry.type == type && entry.field == field) {
             if (!entry.present) {
                 noteMissing(type, field);
                 return false;
@@ -377,9 +543,9 @@ bool structOffset(char const* type, char const* field, std::uint64_t& out) {
 }
 
 bool componentSize(std::uint32_t id, std::uint32_t& size) {
-    for (std::size_t index = 0; index < kComponentCount; ++index) {
-        if (kComponents[index].id == id) {
-            size = kComponents[index].size;
+    for (std::size_t index = 0; index < gComponentCount; ++index) {
+        if (gComponents[index].id == id) {
+            size = gComponents[index].size;
             return true;
         }
     }
@@ -387,9 +553,9 @@ bool componentSize(std::uint32_t id, std::uint32_t& size) {
 }
 
 std::string componentName(std::uint32_t id) {
-    for (std::size_t index = 0; index < kComponentCount; ++index) {
-        if (kComponents[index].id == id) {
-            return kComponents[index].name;
+    for (std::size_t index = 0; index < gComponentCount; ++index) {
+        if (gComponents[index].id == id) {
+            return gComponents[index].name;
         }
     }
     return {};
@@ -397,22 +563,26 @@ std::string componentName(std::uint32_t id) {
 
 nlohmann::json structTableJson() {
     nlohmann::json fields = nlohmann::json::array();
-    for (auto const& entry : kStructFields) {
+    for (std::size_t index = 0; index < gStructFieldCount; ++index) {
+        auto const& entry = gStructFields[index];
         fields.push_back({
             {"struct",     entry.type      },
             {"field",      entry.field     },
             {"offset",     entry.offset    },
             {"overridden", entry.overridden},
             {"present",    entry.present   },
+            {"builtin",    entry.fromProfile},
         });
     }
     nlohmann::json components = nlohmann::json::array();
-    for (std::size_t index = 0; index < kComponentCount; ++index) {
+    for (std::size_t index = 0; index < gComponentCount; ++index) {
+        auto const& entry = gComponents[index];
         components.push_back({
-            {"id",         kComponents[index].id         },
-            {"name",       kComponents[index].name       },
-            {"size",       kComponents[index].size       },
-            {"overridden", kComponents[index].overridden },
+            {"id",         entry.id         },
+            {"name",       entry.name       },
+            {"size",       entry.size       },
+            {"overridden", entry.overridden },
+            {"builtin",    entry.fromProfile},
         });
     }
     std::string lastMissing;
@@ -421,14 +591,152 @@ nlohmann::json structTableJson() {
         lastMissing = gLastMissing;
     }
     return nlohmann::json{
-        {"source",             gSource                                  },
-        {"struct_fields",      std::move(fields)                        },
-        {"struct_field_count", std::size(kStructFields)                 },
-        {"components",         std::move(components)                    },
-        {"component_count",    kComponentCount                          },
+        {"source",             gOffsetSource          },
+        {"profile_found",      gVersion.profileFound  },
+        {"profile_version",    gVersion.profileVersion},
+        {"struct_fields",      std::move(fields)      },
+        {"struct_field_count", gStructFieldCount      },
+        {"components",         std::move(components)  },
+        {"component_count",    gComponentCount        },
         {"missing_lookups",    gMissingFields.load(std::memory_order_relaxed)},
-        {"last_missing",       lastMissing                              },
+        {"last_missing",       lastMissing            },
     };
+}
+
+nlohmann::json profileJson() {
+    std::size_t configured = 0;
+    std::size_t matched    = 0;
+    for (auto const& anchor : gAnchors) {
+        if (!anchor.configured) {
+            continue;
+        }
+        ++configured;
+        if (anchor.match) {
+            ++matched;
+        }
+    }
+    return nlohmann::json{
+        // Legacy diagnose fields kept for older clients.
+        {"expected",          gVersion.profileFound ? gVersion.profileVersion
+                                                    : std::string{"unknown"}},
+        {"file",              gVersion.buildId                  },
+        {"prefix_ok",         gVersion.profileFound             },
+        {"version",           gVersion.buildId                  },
+        {"profile_found",     gVersion.profileFound             },
+        {"profile_version",   gVersion.profileVersion           },
+        {"profile_build_id",  gVersion.profileBuildId           },
+        {"match",             gVersion.matchSource              },
+        {"version_ok",        versionOk()                       },
+        {"signatures_ok",     gVersion.signaturesOk             },
+        {"compat",            allowVersionMismatch()            },
+        {"hooks_allowed",     hooksAllowed()                    },
+        {"anchors_configured", configured                       },
+        {"anchors_matched",   matched                           },
+        {"offset_source",     gOffsetSource                     },
+        {"struct_fields",     gStructFieldCount                 },
+        {"components",        gComponentCount                   },
+    };
+}
+
+nlohmann::json capabilitiesJson() {
+    bool const hooks = hooksAllowed();
+    bool const offsets = gStructFieldCount > 0 || gComponentCount > 0;
+    return nlohmann::json{
+        {"hooks",      hooks          },
+        {"input",      hooks          },
+        {"watch",      hooks          },
+        {"record",     hooks          },
+        {"packets",    hooks          },
+        {"offsets",    offsets        },
+        {"components", gComponentCount > 0},
+        {"profile",    gVersion.profileFound},
+        {"compat",     allowVersionMismatch()},
+    };
+}
+
+nlohmann::json profileDump() {
+    nlohmann::json anchors = nlohmann::json::object();
+    for (auto const& anchor : gAnchors) {
+        std::size_t const length =
+            anchor.expectedLength > 0 ? anchor.expectedLength : kSignatureBytes;
+        std::array<std::uint8_t, kSignatureBytes> actual{};
+        bool const readable = readMemory(anchor.resolved, actual.data(), length);
+        anchors[anchor.name] = {
+            {"kind",         "symbol"                                   },
+            {"expected_hex", readable ? hexEncode(actual.data(), length) : ""},
+        };
+    }
+
+    nlohmann::json structs = nlohmann::json::object();
+    for (std::size_t index = 0; index < gStructFieldCount; ++index) {
+        auto const& entry = gStructFields[index];
+        structs[entry.type][entry.field] =
+            entry.present ? nlohmann::json(offsetText(entry.offset)) : nlohmann::json(nullptr);
+    }
+
+    nlohmann::json components = nlohmann::json::object();
+    for (std::size_t index = 0; index < gComponentCount; ++index) {
+        auto const& entry = gComponents[index];
+        components[entry.name] = {
+            {"id",   entry.id  },
+            {"size", entry.size},
+        };
+    }
+
+    std::string const versionPrefix =
+        std::to_string(gVersion.major) + "." + std::to_string(gVersion.minor) + "."
+        + std::to_string(gVersion.build);
+
+    nlohmann::json profile = {
+        {"runtime",        true                  },
+        {"version",        gVersion.buildId      },
+        {"build_id",       gVersion.buildId      },
+        {"version_prefix", versionPrefix         },
+        {"note",           "Generated by profile_dump; save as docs/offsets/<version>.json and "
+                           "run driver/gen_profiles.py."},
+        {"anchors",        anchors               },
+        {"structs",        structs               },
+        {"components",     components            },
+    };
+
+    return nlohmann::json{
+        {"event",         "profile_dump"            },
+        {"version",       gVersion.buildId          },
+        {"build_id",      gVersion.buildId          },
+        {"version_prefix", versionPrefix            },
+        {"profile_found", gVersion.profileFound     },
+        {"profile_version", gVersion.profileVersion },
+        {"profile_build_id", gVersion.profileBuildId},
+        {"match",         gVersion.matchSource      },
+        {"version_ok",    versionOk()               },
+        {"compat",        allowVersionMismatch()    },
+        {"anchors",       anchors                   },
+        {"structs",       structs                   },
+        {"components",    components                },
+        {"profile",       profile                   },
+    };
+}
+
+nlohmann::json profileProbe(std::string const& buildId) {
+    VersionInfo probe;
+    probe.buildId = buildId;
+    VersionProfile const* profile = selectProfile(probe);
+    nlohmann::json out{
+        {"event",         "profile_probe"                     },
+        {"build_id",      buildId                             },
+        {"profile_found", profile != nullptr                  },
+        {"match",         probe.matchSource                   },
+        {"simulated",     buildId != gVersion.buildId         },
+        {"current",       gVersion.buildId                    },
+    };
+    if (profile != nullptr) {
+        out["profile_version"]  = profile->version;
+        out["profile_build_id"] = profile->buildId;
+        out["anchors"]          = profile->anchorCount;
+        out["struct_fields"]    = profile->fieldCount;
+        out["components"]       = profile->componentCount;
+    }
+    return out;
 }
 
 nlohmann::json symbolResolve(std::string const& name) {
@@ -519,14 +827,11 @@ nlohmann::json symbolResolve(std::string const& name) {
 
 nlohmann::json diagnoseJson() {
     nlohmann::json out;
-    out["event"] = "diagnose";
-    out["version"] = {
-        {"expected",  "1.26.51.01"  },
-        {"file",      gVersion.buildId},
-        {"prefix_ok", gVersion.prefixOk},
-    };
+    out["event"]      = "diagnose";
+    out["version"]    = profileJson();
     out["version_ok"] = versionOk();
-    out["source"]     = gSource;
+    out["source"]     = gOffsetSource;
+    out["capabilities"] = capabilitiesJson();
     out["structs"]    = structTableJson();
     out["anchors"]    = nlohmann::json::array();
     for (auto const& anchor : gAnchors) {
@@ -534,7 +839,7 @@ nlohmann::json diagnoseJson() {
             {"name",       anchor.name                     },
             {"address",    anchor.address                  },
             {"resolved",   anchor.resolved                 },
-            {"configured", anchor.expectedLength != 0      },
+            {"configured", anchor.configured               },
             {"match",      anchor.match                    },
             {"signature_bytes", anchor.expectedLength      },
             {"elapsed_us", anchor.elapsedUs                },

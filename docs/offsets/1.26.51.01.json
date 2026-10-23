@@ -1,6 +1,8 @@
 {
+  "runtime": true,
   "version": "1.26.51.01",
   "build_id": "1.26.51.1",
+  "version_prefix": "1.26.51",
   "note": "Copy to <mods>/probe/offsets.json to override built-in signatures and struct offsets without a rebuild. expected_hex is read at the resolved symbol anchor and compared byte-for-byte. A struct field set to null removes the built-in entry (probe then reports no_offset). components ids are runtime EnTT ids.",
   "anchors": {
     "LocalPlayer::normalTick": {

@@ -317,22 +317,36 @@
 - `window_samples=1024`、`qpc_resolution_ns` 随响应返回；样本环读写用 `gEpoch` 奇偶守卫，
   `consistent=false` 表示读侧重试 64 次仍未拿到完整窗口。
 
-## 版本指纹与锚点（T7）
+## 版本指纹与锚点（T7 / 版本 profile）
 
-- 启动时用 `GetFileVersionInfoW` 读主模块版本，前缀必须是 **1.26.51**；`build_id` 记录完整
-  文件版本（当前 `1.26.51.1`）。
-- 4 个锚点都走符号地址：`LocalPlayer::$normalTick`、`LocalPlayer::_applyTurnDelta`、
-  `Actor::getHealth`、`Actor::isOnGround`。LL 的导入符号可能是
-  `jmp qword ptr [rip+0]` thunk，先跟随它到真实函数（`Actor::getHealth` 还带
-  `add rcx,8` 的 this 调整，入口字节本身是稳定的），再读 **24 字节**比对。
-- 内置签名来自实机 1.26.51.01，写在 `Resolve.cpp`；`docs/offsets/1.26.51.01.json` 是同一份
-  数据，复制到 `<mods>/probe/offsets.json` 可覆盖 `expected_hex`，不改代码即可适配小版本。
-- 任一锚点不匹配或版本前缀不符：`version_ok=false`，`safeTickPre/Post` 立即返回，
-  `hook_install`/`watch_set`/`record_start` 回 `version_mismatch`；`allowTurnDelta` 放行，
-  保证玩家正常操作。管道、`status`、`diagnose`、`mem_read`/`probe` 仍可用，便于对比签名。
+- 启动时用 `GetFileVersionInfoW` 读主模块版本，得到 `build_id`（当前 `1.26.51.1`）。
+  **不再在 C++ 里写期望版本号**：`build_id` 去 `GeneratedProfiles.h` 里找 profile。
+- profile 数据源是 `docs/offsets/*.json`（带 `"runtime": true` 的文件），由
+  `driver/gen_profiles.py` 生成 `mod/probe/src/mod/GeneratedProfiles.h`。加一个游戏版本 =
+  加/改 JSON + 重新生成 + 重编，不改任何 C++ 逻辑。
+- 选择顺序：`build_id` 精确匹配 → `version_prefix`（如 `1.26.51.`，兼容小版本修订）→
+  `version` 字符串 → 没有 profile。`profile_probe {build_id}` 可以离线验证某版本会选中谁。
+- 4 个锚点仍是固定集合（`LocalPlayer::$normalTick`、`LocalPlayer::_applyTurnDelta`、
+  `Actor::getHealth`、`Actor::isOnGround`），地址走符号；LL 导入桩可能是
+  `jmp qword ptr [rip+0]` thunk，先跟随到真实函数再读 24 字节。
+  签名来自 profile 的 `anchors.<name>.expected_hex`；**没配置的锚点不参与判定**。
+- 结构体偏移和组件 id 也来自 profile（不再有编译期常量）。运行时
+  `<mods>/probe/offsets.json` 可以只覆盖其中几项；也可以追加 profile 里没有的字段/
+  组件（用于新版本临时试跑，不必重编）。
+- 门禁语义：
+  - `version_ok` = 找到 profile 且所有已配置锚点匹配；
+  - `hooks_allowed` = `version_ok` 或 `allow_version_mismatch=true`；
+  - tick 钩子、`watch_set`、`hook_install`、`record_start`、输入注入、封包 tap 都看
+    `hooks_allowed`；
+  - 没有 profile 时偏移表为空，`probe`/`record` 的方块字段回 `no_offset`，其余功能仍可用。
+- `status`/`diagnose` 输出 `profile` 和 `capabilities`（hooks/input/watch/record/packets/
+  offsets/components/profile/compat），新版本上先看这两个就知道哪些能力可用。
+- `profile_dump` 从**当前运行的游戏**读 4 个锚点的真实字节、当前结构偏移和组件表，并给出
+  一份可直接保存为 `docs/offsets/<version>.json` 的 `profile` 对象。移植流程见
+  [`porting.md`](porting.md)。
 - `diagnose` 输出每个锚点的地址、resolved 地址、配置状态、匹配结果和耗时；
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
-- `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
+- `docs/offsets/1.26.45.01.json` 没有 `runtime` 标记，是历史数据，不参与生成。
 
 ## 封包解码注册表（H4）
 

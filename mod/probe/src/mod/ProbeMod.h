@@ -730,6 +730,7 @@ private:
     std::atomic_bool           mAllowHookVa{false};
     std::atomic_bool           mAllowSelftestStress{false};
     std::atomic_bool           mAllowWatch{true};
+    std::atomic_bool           mAllowVersionMismatch{false};
     std::atomic<int>           mSignInWaitMs{15000};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};

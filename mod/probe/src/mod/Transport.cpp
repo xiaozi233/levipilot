@@ -216,6 +216,9 @@ void ProbeMod::serverLoop() {
                 );
                 helloJson["build_id"]   = buildId();
                 helloJson["version_ok"] = versionOk();
+                helloJson["hooks_allowed"] = hooksAllowed();
+                helloJson["compat"]        = allowVersionMismatch();
+                helloJson["profile"]       = profileJson();
                 auto const hello   = helloJson.dump() + "\n";
                 DWORD      written = 0;
                 BOOL const helloOk = WriteFile(pipe, hello.data(), static_cast<DWORD>(hello.size()), &written, nullptr);

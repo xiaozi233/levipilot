@@ -57,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status")
     sub.add_parser("diag")
     sub.add_parser("diagnose")
+    profile_dump = sub.add_parser("profile-dump", help="dump the live version profile")
+    profile_dump.add_argument("--write", help="write the saveable profile JSON to this path")
+    profile_probe = sub.add_parser("profile-probe", help="which profile a build id would select")
+    profile_probe.add_argument("--build-id", required=True)
     signature_check = sub.add_parser("signature-check")
     signature_check.add_argument("--name", required=True)
     signature_check.add_argument("--expected-hex", required=True)
@@ -413,6 +417,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(client.diag(), ensure_ascii=False))
             elif args.command == "diagnose":
                 print(json.dumps(client.diagnose(), ensure_ascii=False, indent=2))
+            elif args.command == "profile-dump":
+                dump = client.profile_dump()
+                if args.write:
+                    Path(args.write).write_text(
+                        json.dumps(dump["profile"], ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    print(f"wrote {args.write}")
+                else:
+                    print(json.dumps(dump, ensure_ascii=False, indent=2))
+            elif args.command == "profile-probe":
+                print(json.dumps(client.profile_probe(args.build_id), ensure_ascii=False, indent=2))
             elif args.command == "signature-check":
                 print(
                     json.dumps(

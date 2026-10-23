@@ -38,9 +38,10 @@ py -3.11 driver/selftest.py
 | `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
 | `driver/harness/` | Python 客户端：`protocol`/`client`/`errors`/`cli`，以及 `memory`/`spool`/`watch`/`record`/`hooks` 辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
+| `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
 | `scenarios/` | 场景 DSL 的 JSON |
-| `docs/` | 架构、场景 DSL、跑酷、UI 自动化、mod 构建、旧 frida 资料、`offsets/` 版本表 |
+| `docs/` | 架构、场景 DSL、跑酷、UI 自动化、mod 构建、移植流程（`porting.md`）、`offsets/` 版本 profile |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 
 ## 硬约束（改代码前先读这段）
@@ -54,8 +55,11 @@ py -3.11 driver/selftest.py
    格式化放管道线程或 Python 侧。
 5. **错误不穿透游戏 tick**：一切异常变成事件（`internal_error` 等）。注意 MSVC 默认
    `/EHsc` 下访问违例**不是**可捕获异常 —— 新写的 handler 用 `__try/__except` 包住。
-6. **版本**：只支持 1.26.51.01。禁止把 1.26.45.01 的硬编码 VA 写进 `.cpp`（注释里也不要当常量）；
-   锚点走符号或签名解析（见 `docs/mod-internals.md` 的版本指纹一节）。
+6. **版本数据只进 profile**：版本号、锚点签名、结构偏移、组件 id 一律写
+   `docs/offsets/<version>.json`（带 `"runtime": true`），再跑
+   `py -3.11 driver/gen_profiles.py` 生成 `GeneratedProfiles.h`。`.cpp` 里禁止出现这些常量；
+   没有 profile 时功能降级（`version_ok=false`、偏移表为空），不是崩溃。
+   移植流程见 `docs/porting.md`。
 7. **协议只做增量变更**：`{"event":"hello","protocol":4,"capabilities":[...]}` 是握手；
    升号时旧字段必须继续可用，未知命令仍回 `error/unknown_cmd`。
 8. **强能力默认关闭**：任意内存写、任意地址装钩这类能力必须显式开启并留审计日志。
@@ -96,6 +100,13 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
   辅助层在单机里实测 0 调用，`NetworkConnection::receivePacket` 也是 0。recv 默认关闭，
   用 `packet_capture {directions:["send","recv"]}` 开；同一 tick 同对象会去重，
   原始投递次数看 `packet_stats.recv_anchors`。
+- 改 `docs/offsets/*.json` 后必须跑 `py -3.11 driver/gen_profiles.py`；`GeneratedProfiles.h`
+  是提交物，`tests/test_profiles.py` 会比对，忘了生成 CI 直接红。
+- `docs/offsets/1.26.45.01.json` 是旧 schema（绝对 VA），没有 `"runtime": true`，
+  生成器会跳过；不要把它改成 runtime。
+- `allow_version_mismatch` 只是移植开关：没有 profile 校验，偏移可能读错；日常配置保持关闭。
+- 硬件观察点只记录**装过 DR 的线程**；其他线程上的 DR6 事件计入 `watch_list.foreign_hits`。
+  旧线程遗留的 DR 曾导致服务端线程被误记为写 tick 变量。
 - 主菜单/世界列表/暂停菜单/对话框仍需桌面 UI 操作（见 `docs/ui-automation.md`），
   但日常开发循环不需要。
 - tick 记录会同时写入 `<modDir>/spool-<pid>.jsonl`（100 ms / 64 KB 刷盘）；连接时不再清空队列，
@@ -144,6 +155,10 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 - **H1-C 接收侧 tap（已完成）**：`directions:["send","recv"]` 装 9 个钩子；
   `LoopbackPacketSender::$sendToClient` 两个重载有流量、`Packet::sendTo*` 层实测 0；
   记录/字节带 `dir`，同 tick 同对象去重；selftest 126/126
+- **版本移植（已完成）**：`docs/offsets/*.json` → `driver/gen_profiles.py` →
+  `GeneratedProfiles.h`；按 `build_id`/`version_prefix` 选 profile，签名/偏移/组件 id
+  全部数据化；无 profile 时降级，`allow_version_mismatch` 可选放行钩子；
+  `profile_dump`/`profile_probe` + `capabilities`；selftest 132/132
 - **封包前验收 H0（已完成）**：StateVector.vy watch（写者=集成服务端线程）、
   probe×blocks 方块 id、hook context×ECS 交叉、spool panic/taskkill 取证；selftest 121/121
 - **输入事件层（已完成）**：G1 `key_event` / G2 `mouse_event` / G3 sprint 三组对照 /

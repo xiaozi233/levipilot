@@ -49,7 +49,9 @@ xmake -y
 | `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`） |
 | `hook_call` | 调用一个已导出符号做自检（当前支持 `MobJump::setJumpPendingScale`） |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、停任务并清输入，不杀进程 |
-| `diagnose` | 版本、4 个符号锚点的地址/24 字节签名匹配/耗时 |
+| `diagnose` | 版本/profile、4 个符号锚点的地址/24 字节签名匹配/耗时、能力表 |
+| `profile_dump` | 导出当前实机的锚点字节、结构偏移、组件表，以及可直接保存的 profile JSON |
+| `profile_probe` | `build_id`；不启动对应版本也能看它会选中哪个 profile（exact/prefix/none） |
 | `signature_check` | `name,expected_hex`；对任意期望签名做比对（负路径自检） |
 | `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec`、`paths.{record,watch,hook}` 调用率 |
 | `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），需 `allow_selftest_stress=true` |
@@ -210,6 +212,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   对 `0x10` 返回 `false`
 - `diagnose`：4 个锚点（normalTick/_applyTurnDelta/getHealth/isOnGround）24 字节全部匹配，
   `build_id=1.26.51.1`、`version_ok=true`
+- 版本 profile（移植）：`GeneratedProfiles.h` 由 `docs/offsets/*.json` 生成，C++ 里不再有
+  版本号、签名、结构偏移和组件 id。实测 `profile.match=exact`、`anchors_matched=4/4`、
+  `struct_fields=12`、`components=1`；`profile_probe 1.26.51.7` 选中同一 profile（`prefix`），
+  `9.9.9.9` 回 `none`。`profile_dump` 导出的 `profile` 可直接保存为新的 offsets JSON。
+  `allow_version_mismatch=true` 时 `hooks_allowed=true`（`compat=true`），默认关闭。
 - 负路径：把其中一个内置签名字节改掉后重启 → `version_ok=false`，
   `version_failures=["LocalPlayer::normalTick"]`，`hook_install`/`record_start`/`watch_set`
   全部回 `version_mismatch`，游戏仍存活；改回后 4 个锚点恢复匹配
@@ -329,11 +336,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。
 - 跳跃必须走本地 `jumpFromGround`；只靠输入标志/队列/handler 在 1.26.51.01 上会有
   3 tick 延迟并一次性补位移。`jump_impulse` 只用于对照实验，正常不要改。
-- 只对应 **1.26.51.01**，不能直接套 1.26.45 的偏移。
-- `probe` 的 Block/Legacy 字段偏移集中在 `Memory.cpp` 的布局常量里，仍是版本相关；
-  签名解析是 T7 的工作。
+- 只支持 **1.26.51.01** 的实测结论；换版本按 [`docs/porting.md`](../docs/porting.md)
+  走 profile 流程，不要直接套 1.26.45 的偏移。
+- 版本数据（锚点签名、结构偏移、组件 id）只存在于 `docs/offsets/*.json` 和生成出来的
+  `GeneratedProfiles.h`；`.cpp` 里不允许再写死。改了 JSON 必须跑
+  `py -3.11 driver/gen_profiles.py`，否则 `tests/test_profiles.py` 会挂。
+- 没有匹配 profile 时 `version_ok=false`、偏移表为空；`allow_version_mismatch=true`
+  可以在移植期间让钩子继续跑（`compat=true`），但它不校验签名，日常配置不要开。
 - 硬件观察点全局共 4 个 DR 槽；线程已被调试器（或其他工具）占用时回 `dr_busy`，
   不会强抢。x86 的 `rw` 实际是“读写/IO”语义，没有纯读观察点。
+  只有装过 DR 的线程才会被记为命中：别的线程上的 DR6 事件进 `foreign_hits`，
+  不会污染命中环（曾经在旧线程遗留 DR 时误记成服务端线程写 tick 变量）。
 - 玩家的 StateVector 由**集成服务端线程**写入（不是 tick 线程）；观察它用
   `watch_set(thread="both")`（tick + server），`thread="all"` 装 100+ 线程会把游戏搞崩。
 - `ecs_entity/ecs_components` 按 runtime id 解析到的是服务端 Actor；客户端玩家的 context
@@ -352,10 +365,13 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   符号钩只实现了 `MobJump::setJumpPendingScale`。
 - VA 只校验“已提交且可执行”的页，不校验指令边界；地址必须由 IDA 侧确认。
 - `allow_hook_va` 默认关闭；`hook_install` 的 `sample` 用于降采样，命中环固定 4096 条。
-- 版本校验比较 exe 文件版本前缀（1.26.51）和 4 个符号锚点的 24 字节入口签名；任一不符时
-  tick 注入/观察、装钩、观察点、二进制记录全部拒绝（回 `version_mismatch`）；管道、
-  `diagnose`、`mem_read`/`probe` 仍可用，方便排查。锚点先跟随 `jmp [rip+0]` 导入 thunk，再取真实函数。
-- 可把 `docs/offsets/1.26.51.01.json` 复制到 `mods/probe/offsets.json` 覆盖内置签名，无需重编译。
+- 版本校验：`build_id` 选中 profile，且 profile 里配置的 4 个符号锚点 24 字节入口签名全部
+  匹配时 `version_ok=true`。不匹配时 tick 注入/观察、装钩、观察点、二进制记录回
+  `version_mismatch`；管道、`diagnose`、`profile_dump`、`mem_read`/`probe` 仍可用。
+  `allow_version_mismatch=true` 时改看 `hooks_allowed`，钩子照常运行（移植用）。
+  锚点先跟随 `jmp [rip+0]` 导入 thunk，再取真实函数。
+- `mods/probe/offsets.json` 可以在运行时覆盖签名/结构偏移/组件 id，不用重编译；
+  它只会改当前进程里已选中的 profile。
 - ECS 组件 id 是**运行时** EnTT id，跨进程/跨版本不稳定；`ecs_components` 只报 id、地址、
   stride、count，不给类型名。stride 由同一 storage 的两个元素地址差推断，只有一个元素时
   为 0（此时 `ecs_component` 默认读 64 字节）。目前只暴露客户端 registry。

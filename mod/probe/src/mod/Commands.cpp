@@ -99,6 +99,14 @@ void ProbeMod::dispatchLine(std::string const& line) {
         enqueue(diagnoseJson().dump());
         return;
     }
+    if (cmd == "profile_dump") {
+        enqueue(profileDump().dump());
+        return;
+    }
+    if (cmd == "profile_probe") {
+        enqueue(profileProbe(j.value("build_id", std::string{})).dump());
+        return;
+    }
     if (cmd == "signature_check") {
         enqueue(
             signatureCheck(
@@ -192,7 +200,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "watch_set") {
-        if (!versionOk()) {
+        if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
@@ -259,7 +267,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "hook_install") {
-        if (!versionOk()) {
+        if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
@@ -399,7 +407,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "key_event" || cmd == "key_state" || cmd == "mouse_event") {
-        if (!versionOk()) {
+        if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
@@ -497,7 +505,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "chat_send") {
-        if (!versionOk()) {
+        if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
@@ -526,7 +534,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
     }
     if (cmd == "packet_capture") {
         bool const enable = j.value("on", j.value("enable", true));
-        if (!versionOk()) {
+        if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
@@ -790,7 +798,7 @@ void ProbeMod::dispatchLine(std::string const& line) {
         return;
     }
     if (cmd == "record_start") {
-        if (!versionOk()) {
+        if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return;
         }
@@ -1739,6 +1747,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["overhead"]        = overheadJson();
         out["build_id"]        = buildId();
         out["version_ok"]      = versionOk();
+        out["hooks_allowed"]   = hooksAllowed();
+        out["compat"]          = mAllowVersionMismatch.load();
+        out["profile"]         = profileJson();
+        out["capabilities"]    = capabilitiesJson();
         out["version_failures"] = nlohmann::json::array();
         {
             auto diagnostics = diagnoseJson();

@@ -633,6 +633,66 @@ def main(argv: list[str] | None = None) -> int:
                 str(wrong),
             )
 
+        # -- porting: profiles are data and dumpable from the live build -----
+        status = client.status()
+        profile = status.get("profile", {})
+        checks.check(
+            "profile_selected",
+            profile.get("profile_found") is True
+            and profile.get("match") in ("exact", "prefix", "version")
+            and int(profile.get("anchors_configured", 0)) == len(anchors)
+            and int(profile.get("anchors_matched", 0)) == len(anchors),
+            str(profile),
+        )
+        capabilities = status.get("capabilities", {})
+        checks.check(
+            "profile_capabilities",
+            status.get("hooks_allowed") is True
+            and capabilities.get("hooks") is True
+            and capabilities.get("offsets") is True
+            and capabilities.get("profile") is True,
+            str(capabilities),
+        )
+        checks.check(
+            "compat_default_off",
+            status.get("compat") is False and status.get("version_ok") is True,
+            f"compat={status.get('compat')} version_ok={status.get('version_ok')}",
+        )
+        checks.check(
+            "hello_profile",
+            client.hello.get("hooks_allowed") is True
+            and client.hello.get("profile", {}).get("profile_found") is True,
+            str(client.hello.get("profile")),
+        )
+        dump = client.profile_dump()
+        saveable = dump.get("profile", {})
+        checks.check(
+            "profile_dump",
+            dump.get("build_id") == status.get("build_id")
+            and saveable.get("runtime") is True
+            and saveable.get("build_id") == status.get("build_id")
+            and len(saveable.get("anchors", {})) == len(anchors)
+            and all(
+                len(str(entry.get("expected_hex", ""))) == 48
+                for entry in saveable.get("anchors", {}).values()
+            )
+            and "StateVector" in saveable.get("structs", {}),
+            f"anchors={len(saveable.get('anchors', {}))}",
+        )
+        exact = client.profile_probe(str(status.get("build_id", "")))
+        near = client.profile_probe("1.26.51.7")
+        unknown = client.profile_probe("9.9.9.9")
+        checks.check(
+            "profile_probe",
+            exact.get("match") == "exact"
+            and exact.get("profile_found") is True
+            and near.get("match") == "prefix"
+            and near.get("profile_found") is True
+            and unknown.get("profile_found") is False
+            and unknown.get("match") == "none",
+            f"exact={exact.get('match')} near={near.get('match')} unknown={unknown.get('match')}",
+        )
+
         client.start(5)
         while True:
             event = client.readline(5.0).get("event")

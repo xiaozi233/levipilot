@@ -75,8 +75,33 @@ package("levilamina")
         local rakpeer = "src/mc/deps/raknet/RakPeer.h"
         local rp = io.readfile(rakpeer)
         if rp and not rp:find("mc/deps/raknet/ShadowBanList.h", 1, true) then
-            io.writefile(rakpeer, rp .. crlf .. '#include "mc/deps/raknet/ShadowBanList.h"' .. crlf)
+            rp = rp .. crlf .. '#include "mc/deps/raknet/ShadowBanList.h"' .. crlf
             print("APPENDED " .. rakpeer)
+        end
+        -- RakPeer's inline defaulted destructor needs a complete ShadowBanList,
+        -- but ShadowBanList.h includes RakPeer.h for the nested
+        -- RemoteSystemStruct, so no include order satisfies both. Move the
+        -- destructor out of line; a generated TU defines it after both types
+        -- are complete. Without this, TUs compiled without the PCH fail on
+        -- default_delete's incomplete-type static_assert.
+        local dtorMarker = "virtual ~RakPeer() /*override*/ = default;"
+        local dtorSource = "src/mc/deps/raknet/RakPeerDtorPatch.cpp"
+        local dtorPatched = false
+        if rp then
+            local pos = rp:find(dtorMarker, 1, true)
+            if pos then
+                rp = rp:sub(1, pos - 1) .. "virtual ~RakPeer() /*override*/;" .. rp:sub(pos + #dtorMarker)
+                dtorPatched = true
+                print("PATCHED ~RakPeer out of line")
+            end
+            io.writefile(rakpeer, rp)
+        end
+        if dtorPatched and not os.isfile(dtorSource) then
+            io.writefile(dtorSource,
+                '#include "mc/deps/raknet/RakPeer.h"' .. crlf
+                .. '#include "mc/deps/raknet/ShadowBanList.h"' .. crlf
+                .. "namespace RakNet { RakPeer::~RakPeer() = default; }" .. crlf)
+            print("ADDED " .. dtorSource)
         end
         -- The caller selects the toolchain; never bake a developer's drive
         -- layout into an SDK package recipe.

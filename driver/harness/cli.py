@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from .client import ModClient
+from .commands import ModClient
 from .errors import ModPipeError
 from .packets import decode_packet
 from .protocol import PIPE_NAME

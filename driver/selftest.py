@@ -106,6 +106,33 @@ def find_item(snapshot: dict[str, Any], item_type: str) -> tuple[int | None, dic
     return None, None
 
 
+def check_dispatch_compatibility(client: ModClient, checks: Checks) -> None:
+    """Exercise every extracted domain and the shared error boundary."""
+    requests = (
+        ("diagnostics", {"cmd": "ping"}, "pong"),
+        ("inspection", {"cmd": "mem_read", "addr": "invalid"}, "mem_read"),
+        ("input", {"cmd": "mouse"}, "mouse"),
+        ("packets", {"cmd": "packet_stats"}, "packet_stats"),
+        ("recording", {"cmd": "record_dump", "limit": 1}, "record_dump"),
+        ("query", {"cmd": "state"}, "state"),
+        ("world", {"cmd": "worlds"}, "worlds"),
+        ("tasks", {"cmd": "task_status"}, "task_status"),
+    )
+    for domain, payload, event in requests:
+        reply = client.request(payload, event)
+        checks.check(f"dispatch_{domain}", reply.get("event") == event)
+        if domain == "inspection":
+            checks.check("dispatch_bad_addr", reply.get("reason") == "bad_addr")
+
+    # A handled validation error must not fall through to unknown_cmd. A
+    # following ping also exposes a duplicate error left in the response stream.
+    unknown = client.request({"cmd": "__selftest_unknown_command__"}, "error")
+    checks.check("dispatch_unknown_cmd", unknown.get("reason") == "unknown_cmd")
+    bad_type = client.request({"cmd": "mem_read", "addr": "1", "len": []}, "error")
+    checks.check("dispatch_bad_command", bad_type.get("reason") == "bad_command")
+    checks.check("dispatch_error_recovery", client.ping().get("event") == "pong")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
@@ -123,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         checks.check("ping", client.ping().get("event") == "pong")
+        check_dispatch_compatibility(client, checks)
 
         # -- F1: a client that never sends '\n' cannot grow the buffer ------
         client.send_raw(b"A" * (2 << 20) + b"\n")
@@ -549,12 +577,22 @@ def main(argv: list[str] | None = None) -> int:
                 client.packet_capture(True, serialize_ids=[77], sample=1)
                 client.key_event(191)
                 client.key_event(191, False)
-                wait_ticks(client, 3)
+                opened = wait_screen(client, "chat_screen")
+                checks.check("packet_chat_open", opened == "chat_screen", opened)
                 client.text_input("say harness_template")
-                wait_ticks(client, 2)
+                # The chat UI consumes HID text asynchronously after the game
+                # tick; allow it to apply the text before injecting Enter.
+                wait_ticks(client, 10)
                 client.key_event(13)
                 client.key_event(13, False)
-                wait_ticks(client, 5)
+                closed = wait_screen(client, "hud_screen")
+                checks.check("packet_chat_closed", closed == "hud_screen", closed)
+                if closed == "chat_screen":
+                    # A failed chat submission must not block later movement
+                    # tests. Keep the packet assertions below as failures.
+                    client.key_event(27)
+                    client.key_event(27, False)
+                    wait_screen(client, "hud_screen")
                 template_rows = [
                     row for row in client.packet_bytes(0, limit=64)["hits"] if int(row["id"]) == 77
                 ]
@@ -978,6 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
             z=feet[2],
             distance=1.0,
             forward=1.0,
+            yaw=-90.0,  # +X target; yaw=0 would walk along +Z forever.
             max_ticks=100,
         )
         checks.check(

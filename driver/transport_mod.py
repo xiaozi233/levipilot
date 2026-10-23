@@ -4,6 +4,8 @@ The implementation now lives in :mod:`driver.harness`:
 
 - :mod:`driver.harness.protocol` – pipe name and line framing
 - :mod:`driver.harness.client` – ``ModClient`` / ``Harness``
+- :mod:`driver.harness.connection` / :mod:`driver.harness.commands` /
+  :mod:`driver.harness.facade` – connection, game commands and script helpers
 - :mod:`driver.harness.cli` – command-line entry point
 
 ``python driver/transport_mod.py ...`` and ``python -m driver.transport_mod``

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import unittest
 
+import driver.harness as public_api
+import driver.harness.client as client_api
+import driver.transport_mod as legacy_api
 from driver.transport_mod import (
     Harness,
     LineDecoder,
@@ -44,6 +47,84 @@ class LineDecoderTests(unittest.TestCase):
     def test_ignores_blank_lines(self) -> None:
         decoder = LineDecoder()
         self.assertEqual(decoder.feed(b"\n\r\n"), [])
+
+
+class CompatibilityTests(unittest.TestCase):
+    def test_legacy_exports_keep_the_same_objects(self) -> None:
+        for name in legacy_api.__all__:
+            if name != "main":
+                with self.subTest(name=name):
+                    self.assertIs(getattr(legacy_api, name), getattr(public_api, name))
+        self.assertIs(client_api.ModClient, public_api.ModClient)
+        self.assertIs(client_api.Harness, public_api.Harness)
+
+
+class WriteTests(unittest.TestCase):
+    class Pipe:
+        def __init__(self) -> None:
+            self.data = bytearray()
+            self.flushed = False
+            self.closed = False
+            self.fail_write = False
+            self.fail_flush = False
+
+        def write(self, data: memoryview) -> int:
+            if self.fail_write:
+                return 0
+            written = min(2, len(data))
+            self.data.extend(data[:written])
+            return written
+
+        def flush(self) -> None:
+            if self.fail_flush:
+                raise OSError("flush failed")
+            self.flushed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    def test_short_writes_preserve_json_and_raw_bytes(self) -> None:
+        for raw in (False, True):
+            with self.subTest(raw=raw):
+                client = ModClient()
+                pipe = self.Pipe()
+                client._file = pipe
+                if raw:
+                    client.send_raw(b"\xffpartial")
+                    expected = b"\xffpartial"
+                else:
+                    client.send({"cmd": "ping", "text": "中"})
+                    expected = b'{"cmd":"ping","text":"\\u4e2d"}\n'
+                self.assertEqual(pipe.data, expected)
+                self.assertTrue(pipe.flushed)
+                client.close()
+
+    def test_zero_write_and_flush_failure_close_both_write_paths(self) -> None:
+        for method in ("send", "send_raw"):
+            for failure in ("fail_write", "fail_flush"):
+                with self.subTest(method=method, failure=failure):
+                    client = ModClient()
+                    pipe = self.Pipe()
+                    setattr(pipe, failure, True)
+                    client._file = pipe
+                    payload = {"cmd": "ping"} if method == "send" else b"raw"
+                    with self.assertRaisesRegex(ModDisconnected, "pipe 写入失败"):
+                        getattr(client, method)(payload)
+                    self.assertIsNone(client._file)
+                    self.assertTrue(pipe.closed)
+
+    def test_disconnection_precedes_serialization_but_encoding_errors_keep_connection(self) -> None:
+        client = ModClient()
+        message = {"unserializable": object()}
+        with self.assertRaisesRegex(ModDisconnected, "尚未连接"):
+            client.send(message)
+        pipe = self.Pipe()
+        client._file = pipe
+        with self.assertRaises(TypeError):
+            client.send(message)
+        self.assertIs(client._file, pipe)
+        self.assertEqual(pipe.data, b"")
+        client.close()
 
 
 class RequestTests(unittest.TestCase):

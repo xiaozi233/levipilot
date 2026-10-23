@@ -17,7 +17,7 @@ export XMAKE_GLOBALDIR='D:\Tools\xmake-home'
 export XMAKE_PKG_INSTALLDIR='D:\Tools\xmake-packages'
 
 xmake f -c -y -p windows -a x64 -m release --target_type=client
-xmake -y
+xmake -j4 -y
 ```
 
 产物在 `bin/probe/`：`probe.dll`、`probe.pdb`、`manifest.json`（client 平台）。
@@ -300,9 +300,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   `driver/packet_dump.py --seconds 5 --walk [--directions send,recv]` 导出
   `out/packets-<ts>.jsonl`（实测 105 行 send、54 行 recv）。
 - `driver/selftest.py` 126/126 通过
+- 2026-10-23 结构重构验收：Python 单测 **150/150**、完整 live selftest **146/146**、
+  ruff/mypy/profile 一致性检查与 C++ release 构建通过；新增 8 个领域分发、错误恢复检查。
+  同步修正自检的 +X 起跳朝向和聊天界面等待，未改游戏侧输入/任务行为。
 
 ## 限制
 
+- 2026-10-23 结构重构：命令处理拆为 8 个 `Command<领域>.cpp`，Python 拆为连接、命令、脚本门面；
+  协议 4 和旧导入保持兼容。`selftest.py` 新增 `dispatch_*` 检查（8 个领域、未知命令、参数错误恢复）；
+  验收范围与执行结果见 [`refactoring.md`](../docs/refactoring.md)。
 - 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
 - HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
   本 mod 只提供脚本/LLM 使用的 API。

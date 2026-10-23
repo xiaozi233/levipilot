@@ -27,11 +27,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver import scenario as scenario_mod  # noqa: E402
+from driver.harness import ModPipeError  # noqa: E402
 from driver.mod_agent import AgentError, ModAgent  # noqa: E402
 from driver.output import write_run  # noqa: E402
 from driver.runner import RunError, run_scenario  # noqa: E402
 from driver.scenario import ScenarioError  # noqa: E402
-from driver.transport_mod import ModPipeError  # noqa: E402
 
 
 def _probe_scenario(ticks: int) -> scenario_mod.Scenario:

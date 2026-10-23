@@ -380,6 +380,15 @@ private:
     // Not inlined: keeps the SEH (__try) frame out of the command dispatcher
     // and avoids C2712 with LTCG.
     __declspec(noinline) void dispatchLine(std::string const& line);
+    // Pipe-thread handlers: true means consumed, including validation failures.
+    bool dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchInspectionCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchInputCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchRecordingCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchQueryCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchWorldCommand(std::string const& cmd, nlohmann::json& j);
+    bool dispatchTasksCommand(std::string const& cmd, nlohmann::json& j);
     void enqueue(std::string line);
 
     // T1: durable record spool and crash forensics. Records are appended to

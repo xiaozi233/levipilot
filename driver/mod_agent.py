@@ -27,7 +27,7 @@ import math
 import time
 from typing import Any
 
-from driver.transport_mod import Harness, ModPipeError
+from driver.harness import Harness, ModPipeError
 
 MOVE_FLAGS = {"none", "sneak"}
 
@@ -80,7 +80,7 @@ def _tick_row(message: dict[str, Any]) -> dict[str, Any]:
 
 
 class ModAgent:
-    """Agent-like wrapper around :class:`driver.transport_mod.Harness`."""
+    """Agent-like wrapper around :class:`driver.harness.Harness`."""
 
     def __init__(self, pipe_name: str | None = None) -> None:
         self.harness = Harness() if pipe_name is None else Harness(pipe_name)

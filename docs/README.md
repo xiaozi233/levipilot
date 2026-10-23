@@ -7,6 +7,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [`architecture.md`](architecture.md) | 进程内线程模型、管道协议、生命周期、spool、VEH |
+| [`refactoring.md`](refactoring.md) | 结构审阅、问题优先级、重构范围、实施顺序与验收记录 |
 | [`mod-internals.md`](mod-internals.md) | 各模块实现细节：内存原语、watch、hook、ECS、版本 profile、开销指标、输入事件层 |
 | [`porting.md`](porting.md) | 换游戏版本的移植流程：profile、生成头文件、兼容模式与排查命令 |
 | [`parkour.md`](parkour.md) | 跑酷相关的起跳/落点/记录口径与实验方法 |

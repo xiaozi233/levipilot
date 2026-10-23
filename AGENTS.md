@@ -36,7 +36,7 @@ py -3.11 driver/selftest.py
 | 路径 | 内容 |
 | --- | --- |
 | `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
-| `driver/harness/` | Python 客户端：`protocol`/`client`/`errors`/`cli`，以及 `memory`/`spool`/`watch`/`record`/`hooks` 辅助模块 |
+| `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands`（ModClient）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`/`cli`，以及解码辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
@@ -66,13 +66,14 @@ py -3.11 driver/selftest.py
 
 ## 加东西的标准步骤
 
-**加一个管道命令**：`Commands.cpp` 的 `dispatchLine` 加分支 → `ProbeMod.h` 加请求字段/方法 →
-对应模块实现 → `driver/harness/client.py` 加 `request(..., expected_event)` →
+**加一个管道命令**：对应 `Command<领域>.cpp` 加分支（处理后返回 true，含拒绝/参数错误；未识别才返回 false）→
+`ProbeMod.h` 加请求字段/方法 → 对应模块实现 → `driver/harness/commands.py` 加 `request(..., expected_event)` →
 `cli.py` 加子命令 → `tests/` 加无游戏单测（需要游戏的检查加到 `driver/selftest.py`）。
+新增领域时才在 `Commands.cpp::dispatchLine` 接入；它统一负责 JSON 解析、未知命令与请求级异常隔离。
 
-**加一个闭环任务**：`ProbeMod.h` 定义 `XxxTask` 与 `std::optional<XxxTask>` → `Commands.cpp` 解析参数、
+**加一个闭环任务**：`ProbeMod.h` 定义 `XxxTask` 与 `std::optional<XxxTask>` → `CommandTasks.cpp` 解析参数、
 `beginTask()`、回 `xxx_started` → `Tasks.cpp` 实现 `tickXxx` 并在 `tickTask()` 分派、结束时发 `xxx_done` →
-client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**，不要只看返回值。
+`commands`/`facade.Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**，不要只看返回值。
 
 ## 已知坑（别重复踩）
 

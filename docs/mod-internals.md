@@ -346,6 +346,8 @@
     36/19 是标准 Bedrock 布局，目前只有合成样例单测（本客户端移动走 PlayerAuthInput）。
 - B3 存的是 payload 字节，不含包 id varint；解码器从第一个字段开始读。
 - CLI：`py -3.11 -m driver.harness.cli packet-decode --id 77 <hex>`。
+- `driver/packet_dump.py` 把身份环 + 字节环按 seq 拼起来，解码后写
+  `out/packets-<ts>.jsonl`；实测走 5 秒得到 105 行 PlayerAuthInput。
 
 ## 命令包注入（H2）
 

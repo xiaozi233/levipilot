@@ -283,7 +283,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   `op_self`（世界 commands 已开启时仍可能是 Member 权限）。
 - H4：`driver/harness/packets.py` 提供 `decode_packet(id, hex)` / `decode_row(row)`；
   已知 id 映射 + 77/36/19 三种布局，未知 id 保留 hex 不报错；CLI
-  `packet-decode --id 77 <hex>`。77 的布局用真实抓包验证，36/19 用合成样例单测
+  `packet-decode --id 77 <hex>`。77 的布局用真实抓包验证，36/19 用合成样例单测。
+  `driver/packet_dump.py --seconds 5 --walk` 导出 `out/packets-<ts>.jsonl`（实测 105 行）
 - `driver/selftest.py` 121/121 通过
 
 ## 限制

@@ -103,6 +103,22 @@ package("levilamina")
                 .. "namespace RakNet { RakPeer::~RakPeer() = default; }" .. crlf)
             print("ADDED " .. dtorSource)
         end
+        -- optional_ref::and_then returns std::remove_cvref_t<Ret>{} in the
+        -- empty branch. Some clang/SDK combinations reject void{} there
+        -- ("illegal initializer type ... aka 'void'"), so guard that case.
+        local optionalRef = "src/mc/deps/core/utility/optional_ref.h"
+        local orf = io.readfile(optionalRef)
+        if orf then
+            local marker = "            return std::remove_cvref_t<Ret>{};"
+            local pos = orf:find(marker, 1, true)
+            if pos then
+                orf = orf:sub(1, pos - 1)
+                    .. "            if constexpr (std::is_void_v<Ret>) { return; } else { return std::remove_cvref_t<Ret>{}; }"
+                    .. orf:sub(pos + #marker)
+                io.writefile(optionalRef, orf)
+                print("PATCHED optional_ref::and_then void return")
+            end
+        end
         -- The caller selects the toolchain; never bake a developer's drive
         -- layout into an SDK package recipe.
         import("lib.detect.find_tool")

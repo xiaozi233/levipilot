@@ -15,8 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class TaskModelTests(unittest.TestCase):
     def test_native_lifecycle_and_allocation_contract(self) -> None:
         compiler = shutil.which("clang++")
-        # Windows runners install LLVM here even when its bin is not on PATH.
-        # Keep discovery in the test so CI can use the existing workflow.
+        # Also support local LLVM installations without a PATH entry.
         candidates = (
             Path("C:/Program Files/LLVM/bin/clang++.exe"),
             Path("D:/Tools/LLVM22/bin/clang++.exe"),

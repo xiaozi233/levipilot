@@ -299,8 +299,9 @@ H2 现在选择预先回读为空气的单元，验证空气 → 金块，再在
   备份与日志保存在忽略的 `out/redesign-*`；验证针对本机 1.26.51.01 单人测试世界，
   不据此宣称其他版本或所有并发场景都已覆盖。
 
-CI 复用现有工作流；native 测试自行从 PATH、Windows 标准 LLVM 安装目录或本机工具目录
-寻找 clang++，CI 找不到编译器时失败，不默默跳过。
+CI 工作流显式检查 Windows runner 的 LLVM 编译器版本，并将其安装目录加入 PATH。
+native 测试也支持从 Windows 标准 LLVM 安装目录或本机工具目录寻找 clang++；
+CI 找不到编译器时失败，不默默跳过。
 
 最终日志：`out/redesign-unittest-accepted.log`、`out/redesign-chat-build.log`、
 `out/redesign-selftest-accepted.log`、`out/redesign-macro-verified.log`、

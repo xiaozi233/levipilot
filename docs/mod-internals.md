@@ -12,11 +12,16 @@
 - 按钮：`MoveInputComponent` 标志 + `InputEventQueue::enqueueButton` + 输入 handler 回调；
   `input_cfg` 的 `mode` 位掩码：1=直接标志，2=队列，4=handler，8=toggle fallback。
 - 跳跃：只靠上面的输入管道会等服务器确认——实测前 3 tick 位置不动，第 4 tick 一次性补
-  `V1+V2+V3 ≈ 0.99` 格，看起来像卡回弹。起跳沿必须额外调用
+  `V1+V2+V3 ≈ 0.99` 格，看起来像卡回弹。注入跳跃在按住且接地时必须额外调用
   `LocalPlayer::jumpFromGround()`，之后逐 tick 的位移是 0.4200、0.3332、0.2481、0.1648…
   （顶点 1.252 格，滞空 11 tick）。`MobJump::setJumpPendingScale` 单独用仍是延迟的
   （dmf-mpk 报告里它只是辅助）。`input_cfg jump_impulse`：1=仅 jumpFromGround（默认），
   2=setJumpPendingScale，3=两者，0=都不做（对比用）。
+- 持续跳跃：不能只在 `jumpEdge` 时补本地起跳，否则落地后仍按住的第二跳起又变成
+  一次性 +0.99143 格。`jumpNow && isOnGround()` 在每次落地后补本地起跳；`jump_edge`
+  仍只表示按下沿，不伪造新的按键沿。`selftest` 的 `jump_motion_*` 用二进制逐 tick 位置
+  比较 HID 空格绑定、持续 `set` 和单次 `jump_when` 的完整地面到地面轨迹，且检查松开后落地。
+  H0 的 vy 写线程取证只做一次原地跳跃、等待 25 tick，不再前进并按住跳跃 30 秒。
 - 潜行：`LocalPlayer::setSneaking(true)` + `MoveInputComponent` 标志；实测 20 tick 前进
   4.316 格，潜行 1.295 格（约 0.30x 速度）。
 - 状态：`LocalPlayer` + `MoveInputComponent` + `PlayerActionComponent` + 属性 +

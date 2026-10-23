@@ -175,8 +175,12 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
   12.04 格、接地 100%
-- 跳跃：起跳沿同时调用 `jumpFromGround`，逐 tick 位移为 0.4200、0.3332、0.2481、0.1648…，
+- 跳跃：注入时调用 `jumpFromGround`，逐 tick 位移为 0.4200、0.3332、0.2481、0.1648…，
   顶点 1.252 格、滞空 11 tick；修复了此前前 3 tick 不动、第 4 tick 一次性 +0.99 的“卡回弹”
+- 持续跳跃修复（2026-10-23）：按住且接地时补 `jumpFromGround`，避免第二跳起又出现
+  +0.99143 格的延迟纠正。原地连续 4 跳与 HID 空格绑定的完整逐 tick 位置轨迹相符
+  （误差 < 0.0001 格），单次 `jump_when` 和松开落地也通过 `jump_motion_*` 回归检查。
+  H0 的 vy 写线程取证改为一次原地跳跃 + 25 tick 采样，删除了 30 秒前进连跳。
 - 潜行：20 tick 前进 4.316 格，潜行时 1.295 格（约 0.30x）
 - `fly` 同时写服务端，传送后不会自己恢复飞行
 - `click left` 破坏、`click right` 放置；`select_slot` 3→空手、0→草方块
@@ -257,7 +261,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   结论：事件层注入能复现疾跑，1.3x 差异不在输入事件层，G5 不启动
 - G4：`macro_run event_level=true` 三次回放落点误差 **0.0000**；左右键事件各 +2；
   旧路径（`event_level=false`）仍走 GameMode，MouseInputEvent 计数为 0
-- H0.1：对 StateVector.vy（offsets 表 `VelY=0x1C`）设写观察点，walk+jump 30 秒捕获 64+ 次；
+- H0.1：对 StateVector.vy（offsets 表 `VelY=0x1C`）设写观察点，原地单跳后采样 25 tick；
   唯一写者是**集成服务端线程**（`thread="both"`），`code_hex` 反汇编为
   `mov qword ptr [rbx + 0x18], rax`（覆盖 0x1C）
 - H0.2：同一坐标 `blocks` / `probe block` / `probe legacy` 名字与 FNV-1-64 一致；

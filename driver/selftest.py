@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
+from driver.harness.record import RecordEntry  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
 
@@ -104,6 +105,102 @@ def find_item(snapshot: dict[str, Any], item_type: str) -> tuple[int | None, dic
         if item and item.get("type") == item_type:
             return int(row["slot"]), item
     return None, None
+
+
+def jump_arcs(entries: list[RecordEntry]) -> list[list[float]]:
+    """Extract complete, contiguous ground-to-ground arcs relative to takeoff."""
+    arcs: list[list[float]] = []
+    start: int | None = None
+    for index in range(1, len(entries)):
+        before, row = entries[index - 1], entries[index]
+        if row.tick != before.tick + 1:
+            start = None
+            continue
+        if before.on_ground and not row.on_ground and row.feet_y > before.feet_y + 0.05:
+            start = index - 1
+        if start is not None and row.on_ground:
+            floor = entries[start].feet_y
+            arcs.append([entry.feet_y - floor for entry in entries[start : index + 1]])
+            start = None
+    return arcs
+
+
+def check_jump_motion(client: ModClient, checks: Checks, inject_enabled: bool) -> None:
+    """Compare repeated scripted jumps with Space's HID binding, in place."""
+    original = client.state()
+    ready = (
+        original.get("on_ground")
+        and not original.get("flying")
+        and not original.get("in_water")
+        and not original.get("effects")
+        and client.screen().get("name") == "hud_screen"
+    )
+    if not checks.check("jump_motion_ready", ready, "dry ground, no effects, HUD"):
+        return
+    pose = [float(original[f"feet_{axis}"]) for axis in "xyz"]
+    runs: dict[str, list[list[float]]] = {}
+    modes = ["set_hold", "jump_when"]
+    if inject_enabled:
+        modes.insert(0, "hid_hold")
+    try:
+        for mode in modes:
+            client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            wait_ticks(client, 8)
+            wait_still(client)
+            client.record_bin_start(period=1)
+            wait_ticks(client, 3)
+            if mode == "hid_hold":
+                client.key_event(32, True, via="hid")
+            elif mode == "set_hold":
+                client.set_input(jump=True, ticks=48)
+            else:
+                client.jump_when("now")
+            wait_ticks(client, 48)
+            if mode == "hid_hold":
+                client.key_event(32, False, via="hid")
+            client.stop_move()
+            wait_ticks(client, 25)
+            client.record_bin_stop()
+            rows = client.record_dump_all(format="bin")
+            arcs = jump_arcs(rows)
+            runs[mode] = arcs
+            checks.check(
+                f"jump_motion_{mode}",
+                (len(arcs) == 1 if mode == "jump_when" else len(arcs) >= 3)
+                and all(len(arc) > 4 and abs(arc[1] - 0.42) < 1e-4 for arc in arcs),
+                f"arcs={len(arcs)} first_dy={[round(arc[1], 5) for arc in arcs]}",
+            )
+            checks.check(
+                f"jump_motion_{mode}_settled",
+                len(rows) >= 5
+                and all(row.on_ground and abs(row.feet_y - pose[1]) < 1e-4 for row in rows[-5:])
+                and all(math.hypot(row.x - pose[0], row.z - pose[2]) < 1e-4 for row in rows),
+                "stationary; released jump returns to ground",
+            )
+        if inject_enabled:
+            reference = runs["hid_hold"][0] if runs["hid_hold"] else []
+            compared = runs["set_hold"] + runs["jump_when"]
+            checks.check(
+                "jump_motion_matches_space",
+                bool(reference)
+                and bool(compared)
+                and all(
+                    len(arc) == len(reference)
+                    and all(
+                        abs(actual - expected) < 1e-4
+                        for actual, expected in zip(arc, reference, strict=True)
+                    )
+                    for arc in compared
+                ),
+                f"complete arcs compared={len(compared)} tolerance=0.0001 blocks",
+            )
+    finally:
+        if inject_enabled:
+            client.key_event(32, False, via="hid")
+        client.stop_move()
+        client.record_bin_stop()
+        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+        wait_ticks(client, 8)
 
 
 def check_dispatch_compatibility(client: ModClient, checks: Checks) -> None:
@@ -247,7 +344,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if state_vector is not None and vy_offset is not None:
-            # H0.1: hardware watch on StateVector.vy while walking + jumping.
+            # H0.1: identify the vy writer with one stationary jump. This is
+            # thread forensics; jump physics are checked separately below.
             # A server task must run once so the integrated server thread id is
             # known; the state vector is written there, not on the tick thread.
             client.command("time set day")
@@ -261,11 +359,13 @@ def main(argv: list[str] | None = None) -> int:
                 thread="both",
             )
             checks.check("h0_watch_install", watch.get("event") == "watch_installed", str(watch))
-            client.set_input(forward=1.0, jump=True, ticks=-1)
-            time.sleep(30.0)
-            client.stop_move()
-            wait_ticks(client, 5)
-            hits = client.watch_drain(baseline, limit=64).get("hits", [])
+            try:
+                client.jump_when("now")
+                wait_ticks(client, 25)
+                hits = client.watch_drain(baseline, limit=64).get("hits", [])
+            finally:
+                client.stop_move()
+                client.watch_clear(all=True)
             server_tid = int(client.status().get("server_thread_id", 0))
             checks.check(
                 "h0_watch_hits",
@@ -314,7 +414,6 @@ def main(argv: list[str] | None = None) -> int:
                 except ImportError:
                     evidence = "capstone not installed"
             checks.check("h0_watch_store", store_ok, evidence)
-            client.watch_clear(all=True)
 
         # H0.2: probe names/hashes agree with blocks, and record block ids.
         position = client.state()
@@ -992,6 +1091,8 @@ def main(argv: list[str] | None = None) -> int:
         checks.check("overhead_alive", wait_ticks(client, 3) >= 3)
 
         # -- parkour jump/route primitives ---------------------------------
+        check_jump_motion(client, checks, inject_enabled)
+
         jump_now = client.jump_when("now")
         checks.check(
             "jump_now",

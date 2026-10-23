@@ -373,7 +373,19 @@ screen 栈，约 10 秒后（tick 147–192）在 UI 回调里空指针崩溃。
 ### CI 的 mod-build
 
 `ci: build the complete client mod with a portable LLVM toolchain`（run 39969952524，两次 attempt）
-的 unit job 通过，mod-build 在**从源码安装 LeviLamina 包**时失败。同样的配方与 LLVM 22.1.8
-在本机干净缓存下可以成功安装（`out/ci-repro-configure.log`），因此属于 runner 环境问题；
-失败详情在 runner 的 `installdir.failed/logs/install.txt`。工作流已加入失败时打印/上传该文件，
-拿到真实错误后再修复，未凭本地成功宣称 CI 通过。
+的 unit job 通过，mod-build 在**从源码安装 LeviLamina 包**时失败。工作流先加入失败时
+打印/上传 `installdir.failed/logs/install.txt`，随后定位到两个上游头文件问题
+（本机干净缓存安装可以过，干净 runner 暴露了它们）：
+
+1. `RakPeer.h` 的内联默认析构函数持有 `unique_ptr<ShadowBanList>`，而
+   `ShadowBanList.h` 反向包含 `RakPeer.h`（为使用嵌套的 `RemoteSystemStruct`），
+   两个包含顺序都无法让析构函数看到完整类型；没有 PCH 的编译单元会触发
+   `std::default_delete` 的 incomplete-type 断言。配方把析构函数改成声明，并生成
+   `RakPeerDtorPatch.cpp` 在两个类型都完整后定义它。
+2. `optional_ref::and_then` 在空值分支返回 `std::remove_cvref_t<Ret>{}`；
+   `Packet.cpp` 传入返回 void 的 lambda 时，干净 runner 报
+   `illegal initializer type ... aka 'void'`。配方给该分支加
+   `if constexpr (std::is_void_v<Ret>)`。
+
+修复后 run **39987591253**（`bf642f1`）的 unit 与 mod-build 均成功；artifact
+`probe-client-bf642f1…` 包含 `probe.dll`、`probe.pdb`、`manifest.json`。

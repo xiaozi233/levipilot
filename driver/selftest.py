@@ -480,6 +480,59 @@ def main(argv: list[str] | None = None) -> int:
                 f"matched={sum(1 for row in byte_rows if identity.get(int(row['seq'])) == int(row['id']))}",
             )
 
+            # H1-C: recv-side tap. Server -> client traffic goes through the
+            # loopback sender; the Packet* helper hooks measured zero here.
+            client.command("summon minecraft:pig ~2 ~ ~")
+            wait_ticks(client, 10)
+            recv_started = client.packet_capture(
+                True, directions=["send", "recv"], sample=1, serialize_ids=[111]
+            )
+            checks.check(
+                "packet_recv_on",
+                recv_started.get("recv_hooked") is True
+                and recv_started.get("send_hooked") is True
+                and all(int(code) == 0 for code in recv_started.get("recv_anchors", {}).values()),
+                str(recv_started.get("recv_anchors")),
+            )
+            recv_base = int(client.packet_stats().get("records", 0))
+            time.sleep(2.5)
+            recv_drained = client.packet_drain(recv_base, limit=8192)
+            recv_hits = [hit for hit in recv_drained.get("hits", []) if hit.get("dir") == "recv"]
+            recv_ids = {int(hit["id"]) for hit in recv_hits}
+            recv_stats = client.packet_stats()
+            checks.check(
+                "packet_recv_records",
+                len(recv_hits) > 0 and all(int(hit["tid"]) != 0 for hit in recv_hits),
+                f"count={len(recv_hits)} ids={sorted(recv_ids)[:8]}",
+            )
+            checks.check(
+                "packet_recv_stats",
+                int(recv_stats.get("recv_records", 0)) > 0
+                and int(recv_stats.get("recv_hooks", 0)) == 9
+                and int(
+                    recv_stats.get("recv_anchors", {})
+                    .get("loopback_sendToClient", {})
+                    .get("hits", 0)
+                )
+                > 0,
+                str({k: recv_stats.get(k) for k in ("recv_records", "recv_hooks")}),
+            )
+            recv_bytes = [
+                row
+                for row in client.packet_bytes(0, limit=512).get("hits", [])
+                if row.get("dir") == "recv"
+            ]
+            checks.check(
+                "packet_recv_bytes",
+                bool(recv_bytes) and all(int(row["size"]) > 0 for row in recv_bytes),
+                f"rows={len(recv_bytes)} ids={sorted({int(r['id']) for r in recv_bytes})[:6]}",
+            )
+            checks.check(
+                "packet_recv_dir_field",
+                all(hit.get("dir") in ("send", "recv") for hit in recv_drained.get("hits", [])),
+                "every row carries dir",
+            )
+
             # H2: command packet injection uses a captured 77 payload template.
             inject_enabled = True
             try:

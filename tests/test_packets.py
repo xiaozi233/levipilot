@@ -95,5 +95,32 @@ class UnknownTests(unittest.TestCase):
             Reader(b"").u8()
 
 
+class PacketNameTableTests(unittest.TestCase):
+    def test_table_matches_the_1_26_51_enum(self) -> None:
+        from driver.harness.packets import PACKET_NAMES
+
+        self.assertEqual(PACKET_NAMES[13], "AddActor")
+        self.assertEqual(PACKET_NAMES[19], "MovePlayer")
+        self.assertEqual(PACKET_NAMES[36], "PlayerAction")
+        self.assertEqual(PACKET_NAMES[77], "CommandRequest")
+        self.assertEqual(PACKET_NAMES[111], "MoveDeltaActor")
+        self.assertEqual(PACKET_NAMES[144], "PlayerAuthInputPacket")
+        self.assertGreaterEqual(len(PACKET_NAMES), 250)
+        self.assertNotIn("EndId", PACKET_NAMES.values())
+
+    def test_recv_row_decodes_with_direction_kept(self) -> None:
+        payload = (
+            varint(9)
+            + struct.pack("<ffffff", 1.0, 2.0, 3.0, 10.0, 20.0, 30.0)
+            + bytes([0, 1])
+            + varint(0)
+            + varint(42)
+        )
+        row = {"id": 19, "hex": payload.hex(), "dir": "recv"}
+        decoded = decode_row(row)
+        self.assertEqual(decoded["name"], "MovePlayer")
+        self.assertEqual(row["dir"], "recv")
+
+
 if __name__ == "__main__":
     unittest.main()

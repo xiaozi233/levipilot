@@ -2,11 +2,12 @@
 
     py -3.11 driver/packet_dump.py --seconds 5 --walk
     py -3.11 driver/packet_dump.py --seconds 10 --ids 144,77,36
+    py -3.11 driver/packet_dump.py --directions send,recv --serialize-ids 144,111
 
 Rows look like::
 
     {"seq": 12, "tick": 345, "id": 144, "name": "PlayerAuthInput",
-     "size": 92, "hex": "0000...", "fields": {...}}
+     "dir": "send", "size": 92, "hex": "0000...", "fields": {...}}
 
 Identity-only ids (not in --serialize-ids) are written without size/hex.
 Exits non-zero when fewer than --min rows are captured.
@@ -46,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
         help="ids to serialize (<=128 bytes each); default 144,77",
     )
     parser.add_argument("--sample", type=int, default=1)
+    parser.add_argument(
+        "--directions",
+        default="send",
+        help="comma-separated tap directions: send, recv, or send,recv (default send)",
+    )
     parser.add_argument("--walk", action="store_true", help="walk forward while capturing")
     parser.add_argument("--min", type=int, default=20)
     parser.add_argument("--out", type=Path)
@@ -62,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             ids=parse_ids(args.ids),
             sample=args.sample,
             serialize_ids=serialize_ids,
+            directions=[part.strip() for part in args.directions.split(",") if part.strip()],
         )
         if args.walk:
             client.set_input(forward=1.0, ticks=-1)
@@ -81,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                     "tick": int(known.get("tick", 0)),
                     "id": int(row["id"]),
                     "name": decoded["name"],
+                    "dir": str(row.get("dir", known.get("dir", "send"))),
                     "size": int(row["size"]),
                     "hex": row["hex"],
                     **({"fields": decoded["fields"]} if "fields" in decoded else {}),

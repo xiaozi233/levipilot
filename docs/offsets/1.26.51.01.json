@@ -46,6 +46,28 @@
       "symbol": "LoopbackPacketSender::$sendToServer",
       "expected_hex": "",
       "note": "H1 uses the LL symbol hook directly; the 24-byte signature is still pending."
+    },
+    "sendToClient": {
+      "kind": "symbol",
+      "symbol": "LoopbackPacketSender::$sendToClient",
+      "overloads": [
+        "NetworkIdentifier const&, Packet const&, SubClientId",
+        "UserEntityIdentifierComponent const*, Packet const&"
+      ],
+      "note": "H1-C recv tap; carries all server->client traffic in single-player."
+    },
+    "sendToHelpers": {
+      "kind": "symbol",
+      "symbols": [
+        "Packet::sendTo(Player const&)",
+        "Packet::sendTo(Actor const&, optional_ref<Player const>)",
+        "Packet::sendTo(BlockPos const&, DimensionType, optional_ref<Player const>)",
+        "Packet::sendToClient(NetworkIdentifier const&, SubClientId)",
+        "Packet::sendToClient(NetworkIdentifierWithSubId const&)",
+        "Packet::sendToClients()",
+        "Packet::sendToClients(NetworkIdentifier const&, SubClientId)"
+      ],
+      "note": "H1-C fallback layer; measured zero calls during local play."
     }
   },
   "components": {

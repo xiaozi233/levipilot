@@ -319,6 +319,7 @@ class ModClient:
         ids: list[int] | None = None,
         sample: int = 1,
         serialize_ids: list[int] | None = None,
+        directions: list[str] | None = None,
         timeout: float = 20.0,
     ) -> dict[str, Any]:
         message: dict[str, Any] = {"cmd": "packet_capture", "on": bool(on), "sample": int(sample)}
@@ -326,6 +327,8 @@ class ModClient:
             message["ids"] = [int(value) for value in ids]
         if serialize_ids is not None:
             message["serialize_ids"] = [int(value) for value in serialize_ids]
+        if directions is not None:
+            message["directions"] = [str(value) for value in directions]
         return self.request(message, "packet_capture", timeout=timeout)
 
     def packet_drain(self, since: int = 0, limit: int = 1024) -> dict[str, Any]:

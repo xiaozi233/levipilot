@@ -336,18 +336,22 @@
 
 ## 封包解码注册表（H4）
 
-- `driver/harness/packets.py`：`PACKET_NAMES`（常用 id）、`decode_packet(id, bytes)`、
-  `decode_row(packet_bytes_row)`。未知 id 返回 `{id,name:"id_N",hex}`，不抛异常。
+- `driver/harness/packets.py`：`PACKET_NAMES`（由 `MinecraftPacketIds.h` 全量生成的
+  256 项 id→名字表）、`decode_packet(id, bytes)`、`decode_row(packet_bytes_row)`。
+  未知 id 返回 `{id,name:"id_N",hex}`，不抛异常。
 - 已实现布局：
   - `77 CommandRequest`：命令字符串、origin 类型/名字/UUID、requestId、playerId、版本。
     **用实机抓到的 77 包验证**（`/give @s minecraft:stone 5`，origin=ClientAutomation）。
   - `36 PlayerAction`：runtimeId varint、action varint、x/y/z float、face varint。
   - `19 MovePlayer`：runtimeId、位置、pitch/yaw/headYaw、mode、onGround、ridden、tick。
-    36/19 是标准 Bedrock 布局，目前只有合成样例单测（本客户端移动走 PlayerAuthInput）。
+    36 是客户端→服务端；19 需要另一个玩家才会在单机出现，所以两者仍然只有合成样例单测
+    （本客户端移动走 PlayerAuthInput(144)）。H1-C 的接收侧只实测到 9/13/65/111，
+    这些 id 暂无解码器，保留 hex。
 - B3 存的是 payload 字节，不含包 id varint；解码器从第一个字段开始读。
 - CLI：`py -3.11 -m driver.harness.cli packet-decode --id 77 <hex>`。
 - `driver/packet_dump.py` 把身份环 + 字节环按 seq 拼起来，解码后写
-  `out/packets-<ts>.jsonl`；实测走 5 秒得到 105 行 PlayerAuthInput。
+  `out/packets-<ts>.jsonl`（行内带 `dir`）；`--directions send,recv` 时实测 5 秒
+  105 行 send、54 行 recv。
 
 ## 命令包注入（H2）
 
@@ -389,6 +393,30 @@
 - 实测 `PlayerAuthInput(144)` 序列化后 91–93 B，前几字节是位置浮点（可读），
   32 条字节记录与身份记录 100% 对上。
 - 注意：序列化在客户端线程、发包钩子内进行；只对 1–2 个白名单 id 启用，不要扩成全量。
+
+## 封包接收侧 tap（H1-C）
+
+- 目标：补上服务端→客户端方向。单机里集成服务端同进程运行，回环投递不经过
+  `NetworkConnection::receivePacket`（H1-B 实测 0），所以要挂投递层。
+- 两层锚点，共 9 个钩子，`packet_capture {directions:["send","recv"]}` 才安装：
+  1. `Packet::sendTo(Player)` / `sendTo(Actor, optional_ref)` / `sendTo(BlockPos, DimensionType, optional_ref)`、
+     `Packet::sendToClient(NetworkIdentifier, SubClientId)` / `(NetworkIdentifierWithSubId)`、
+     `Packet::sendToClients()` / `(exceptId, exceptSubId)`——服务端常用的发送辅助；
+  2. `LoopbackPacketSender::$sendToClient(NetworkIdentifier, Packet const&, SubClientId)` 和
+     `...(UserEntityIdentifierComponent const*, Packet const&)`——实际回环投递。
+- 实测（1.26.51.01，超平坦，3.5 秒）：layer 1 **全部 0 hit**；layer 2
+  `sendToClient` 66 hit、`sendToClient(user)` 4 hit。说明服务端代码直接走 sender 虚函数，
+  不经过 `Packet::sendTo*` 辅助。`packet_stats.recv_anchors` 保留每个锚点的原始 hit 数。
+- 接收方向主序列：`MoveDeltaActor(111)`（附近实体移动）、`AddActor(13)`、
+  `LegacyTelemetryEvent(65)`、`Text(9)` 等。`/tp` 成功消息出现在 `Text(9)` payload 的
+  JSON 原文里（`commands.tp.successVictim...`），可用来验证字节层。
+- 去重：两层可能对同一包各触发一次；`onPacketReceived` 用
+  “同 tick + 同 Packet 对象 + 同 id”折叠重复，广播到多个客户端只留一条身份记录。
+  原始投递次数看 `recv_anchors`。
+- 记录与字节环都新增 `dir` 字段（`"send"`/`"recv"`），`packet_drain` / `packet_bytes`
+  原样返回；`selftest` 有 5 条 recv 检查（开启、记录、统计、字节、dir 字段）。
+- 字节层：`serialize_ids` 对接收方向同样生效；`Packet::write` 是 const，在投递钩子里
+  调用是安全的，白名单与 denylist 规则和发送方向一致。
 
 ## 封包身份 tap（H1 阶段 A）
 

@@ -281,11 +281,18 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   位移正好 1.000 格、`/fill`/`/give` 生效；注入前后 tick p99 不变（19.8 Hz）。
   捕获模板需要先用 `/` + `text_input` + Enter 发一条真实命令；客户端命令还要求
   `op_self`（世界 commands 已开启时仍可能是 Member 权限）。
+- H1-C 接收侧 tap：`directions:["send","recv"]` 时额外装 9 个钩子。单机里流量全部来自
+  `LoopbackPacketSender::$sendToClient`（3.5 秒 66 hit）和 `...sendToClient(user)`（4 hit），
+  `Packet::sendTo*` 辅助层实测 **0**。接收侧主序列 `MoveDeltaActor(111)`、`AddActor(13)`、
+  `LegacyTelemetryEvent(65)`；`/say`/`/tp` 的 `Text(9)` payload 里能直接读到 JSON 原文。
+  同一 tick 内同一 `Packet` 对象的重复投递会去重，per-anchor 计数仍保留原始次数。
 - H4：`driver/harness/packets.py` 提供 `decode_packet(id, hex)` / `decode_row(row)`；
-  已知 id 映射 + 77/36/19 三种布局，未知 id 保留 hex 不报错；CLI
-  `packet-decode --id 77 <hex>`。77 的布局用真实抓包验证，36/19 用合成样例单测。
-  `driver/packet_dump.py --seconds 5 --walk` 导出 `out/packets-<ts>.jsonl`（实测 105 行）
-- `driver/selftest.py` 121/121 通过
+  id→名字表由 `MinecraftPacketIds.h` 全量生成（256 项，1.26.51.01），已实现 77/36/19
+  三种布局，未知 id 保留 hex 不报错；CLI `packet-decode --id 77 <hex>`。
+  77 的布局用真实抓包验证，36/19 用合成样例单测。
+  `driver/packet_dump.py --seconds 5 --walk [--directions send,recv]` 导出
+  `out/packets-<ts>.jsonl`（实测 105 行 send、54 行 recv）。
+- `driver/selftest.py` 126/126 通过
 
 ## 限制
 
@@ -307,8 +314,13 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - H1 的身份 tap 始终可用；字节只对 `serialize_ids` 白名单生效（默认无），且只在 capture
   开启时调用 `Packet::write`（首次会分配一次线程局部缓冲）。`peer_sends` 恒为 0 是实测结果：
   单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。
-- H4 的 36/19 解码是标准 Bedrock 布局，本客户端移动走 `PlayerAuthInput(144)`，
-  所以 36/19 只在单测里验证过；接 recv tap 后可直接复用。
+- H1-C 的 recv tap 是 opt-in（`directions` 默认只有 `send`）。`Packet::sendTo*` 辅助层的
+  7 个钩子会装上但实测 0 调用；真正投递走 `LoopbackPacketSender::$sendToClient` 两个重载。
+  重叠层可能对同一包各触发一次，记录按“同 tick + 同对象 + 同 id”去重，所以广播只看得到
+  一条记录（要看投递次数用 `packet_stats.recv_anchors`）。
+- H4 的 36/19 解码是标准 Bedrock 布局：36 是客户端→服务端，19 在单机里没有对端玩家，
+  两者都仍然只有单测；接收侧已实测到 `Text(9)`、`AddActor(13)`、`MoveDeltaActor(111)`，
+  但没有对应的解码器（保持原始 hex）。
 - H2 只能注入 `CommandRequestPacket(77)`，而且必须先有一条真实的 77 包做模板；
   `op_self` 会修改世界里的玩家权限（测试世界用，别在日常存档里开）。
   `chat_send` 的 ok=true 只代表包已发出，命令是否执行要用 `blocks`/位置回读验证。

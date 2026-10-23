@@ -1721,6 +1721,8 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["server_thread_id"] = gServerThreadId.load();
         out["packet_capture"]   = mPacketCapture.load();
         out["packet_records"]   = mPacketHead.load();
+        out["packet_recv_records"] = mPacketRecvRecords.load();
+        out["packet_recv_hooked"]  = mPacketRecvEnabled.load();
         out["packet_peer_sends"] = mPacketPeerCount.load();
         out["packet_inject"]     = mAllowPacketInject.load();
         out["chat_sent"]         = mChatSent.load();

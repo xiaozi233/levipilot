@@ -83,6 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     packet_capture.add_argument("--off", action="store_true")
     packet_capture.add_argument("--ids", type=int, nargs="*", default=None)
     packet_capture.add_argument("--sample", type=int, default=1)
+    packet_capture.add_argument(
+        "--directions",
+        nargs="*",
+        choices=["send", "recv"],
+        default=None,
+        help="tap directions; default is send only",
+    )
+    packet_capture.add_argument("--serialize-ids", type=int, nargs="*", default=None)
 
     packet_drain = sub.add_parser("packet-drain")
     packet_drain.add_argument("--since", type=int, default=0)
@@ -437,7 +445,13 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "packet-capture":
                 print(
                     json.dumps(
-                        client.packet_capture(not args.off, ids=args.ids, sample=args.sample),
+                        client.packet_capture(
+                            not args.off,
+                            ids=args.ids,
+                            sample=args.sample,
+                            directions=args.directions,
+                            serialize_ids=args.serialize_ids,
+                        ),
                         ensure_ascii=False,
                     )
                 )

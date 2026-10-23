@@ -92,6 +92,10 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
 - 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（旧 frida 路线实测置 0 后
   后台仍满速 tick）；raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
 - `harness.json` 的 `auto_enter` 要求游戏在**前台**（后台进世界会触发鼠标捕获）。
+- 接收侧封包只能挂 `LoopbackPacketSender::$sendToClient`（两个重载）；`Packet::sendTo*`
+  辅助层在单机里实测 0 调用，`NetworkConnection::receivePacket` 也是 0。recv 默认关闭，
+  用 `packet_capture {directions:["send","recv"]}` 开；同一 tick 同对象会去重，
+  原始投递次数看 `packet_stats.recv_anchors`。
 - 主菜单/世界列表/暂停菜单/对话框仍需桌面 UI 操作（见 `docs/ui-automation.md`），
   但日常开发循环不需要。
 - tick 记录会同时写入 `<modDir>/spool-<pid>.jsonl`（100 ms / 64 KB 刷盘）；连接时不再清空队列，
@@ -137,6 +141,9 @@ client/`Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**
   B3 白名单序列化 + `packet_bytes`；selftest 121/121
 - **H1 阶段 A（已完成）**：`packet_capture/drain/stats` 身份 tap（id/tick/seq/tid、denylist、
   `allow_packet_capture`）；`LocalNetworkPeer` 符号不可用，字节层待 B2/B3；selftest 121/121
+- **H1-C 接收侧 tap（已完成）**：`directions:["send","recv"]` 装 9 个钩子；
+  `LoopbackPacketSender::$sendToClient` 两个重载有流量、`Packet::sendTo*` 层实测 0；
+  记录/字节带 `dir`，同 tick 同对象去重；selftest 126/126
 - **封包前验收 H0（已完成）**：StateVector.vy watch（写者=集成服务端线程）、
   probe×blocks 方块 id、hook context×ECS 交叉、spool panic/taskkill 取证；selftest 121/121
 - **输入事件层（已完成）**：G1 `key_event` / G2 `mouse_event` / G3 sprint 三组对照 /

@@ -546,12 +546,122 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
         )
 
 
+def check_lifecycle_stress(
+    client: ModClient, checks: Checks, cycles: int, world: str | None = None
+) -> None:
+    """Opt-in soak: task replacement, pipe generations and world teardown."""
+    original = client.state()
+    pose = [float(original[f"feet_{axis}"]) for axis in "xyz"]
+    previous_id = 0
+    completed = False
+    try:
+        # A discarded oversized fragment belongs only to its connection.
+        client.send_raw(b"x" * ((1 << 20) + 4096))
+        rejected = client.wait_event("error", 20)
+        checks.check("stress_oversize_fragment", rejected.get("reason") == "line_too_long")
+        client.reconnect()
+        checks.check("stress_fragment_reconnect", client.ping().get("event") == "pong")
+        for cycle in range(cycles):
+            first = client.request(
+                {
+                    "cmd": "jump_when",
+                    "mode": "tick",
+                    "after_ticks": 2000,
+                    "max_ticks": 5000,
+                    "forward": 0,
+                },
+                "jump_when_started",
+            )
+            second = client.request({"cmd": "use", "ticks": 2000}, "use_started")
+            first_id, second_id = int(first["task_id"]), int(second["task_id"])
+            cancelled = client.wait_event(
+                "task_cancelled",
+                5,
+                predicate=lambda row, task_id=first_id: row.get("task_id") == task_id,
+            )
+            checks.check(
+                f"stress_{cycle}_replacement",
+                previous_id < first_id < second_id and cancelled.get("reason") == "replaced",
+            )
+            previous_id = second_id
+            if world and (cycle + 1) % 10 == 0:
+                left = client.leave_world()
+                client.wait_event("world_left", 30)
+                terminal = client.wait_event(
+                    "task_cancelled",
+                    5,
+                    predicate=lambda row, task_id=second_id: row.get("task_id") == task_id,
+                )
+                checks.check(
+                    f"stress_{cycle}_world_cancel",
+                    left.get("ok") and terminal.get("reason") == "world_left",
+                )
+                joined = client.enter_world_ready(world)
+                checks.check(f"stress_{cycle}_world_join", joined.get("ok"))
+                client.wait_in_world(timeout=60)
+                client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+                wait_ticks(client, 10)
+            else:
+                # The server task remains owned while the client reconnects.
+                client.reconnect()
+                checks.check(
+                    f"stress_{cycle}_owner", client.task_status().get("task_id") == second_id
+                )
+                client.task_stop()
+                terminal = client.wait_event(
+                    "task_cancelled",
+                    5,
+                    predicate=lambda row, task_id=second_id: row.get("task_id") == task_id,
+                )
+                checks.check(f"stress_{cycle}_stopped", terminal.get("reason") == "stopped")
+            checks.check(
+                f"stress_{cycle}_recovered",
+                client.task_status().get("active") is None and client.ping().get("event") == "pong",
+            )
+        completed = True
+    finally:
+        # Recovery must never replace the failure that brought us here: if the
+        # client crashed, the pipe is gone and reconnecting is the only check
+        # that can run. Report it without masking the original exception.
+        try:
+            if not client.connected:
+                client.reconnect()
+            if world and not client.state().get("in_world"):
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+            client.stop_move()
+            client.task_stop()
+            client.macro_stop()
+            client.watch_clear(all=True)
+            client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            wait_ticks(client, 10)
+            checks.check(
+                "stress_cleanup",
+                client.task_status().get("active") is None
+                and client.watch_list().get("watches") == []
+                and client.state().get("input", {}).get("move_x") == 0.0,
+                "tasks/motion/watch cleared",
+            )
+        except Exception as exc:  # Recovery is best effort, never mask the failure.
+            checks.check("stress_cleanup", False, f"recovery failed: {exc}")
+            if completed:
+                raise
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
     parser.add_argument("--keep", action="store_true", help="do not remove the test entity")
     parser.add_argument("--radius", type=float, default=10.0)
+    parser.add_argument("--stress-cycles", type=int, default=0, help="opt-in lifecycle soak cycles")
+    parser.add_argument(
+        "--stress-world", help="leave/re-enter this test world every 10 soak cycles"
+    )
     args = parser.parse_args(argv)
+    if args.stress_cycles < 0 or (args.stress_world and args.stress_cycles < 10):
+        parser.error(
+            "--stress-cycles must be nonnegative; --stress-world requires at least 10 cycles"
+        )
 
     checks = Checks()
     try:
@@ -563,6 +673,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         checks.check("ping", client.ping().get("event") == "pong")
+        if args.stress_cycles:
+            check_lifecycle_stress(client, checks, args.stress_cycles, args.stress_world)
         client.command('tellraw @s {"rawtext":[{"text":"LeviPilot chat snapshot selftest"}]}')
         wait_ticks(client, 3)
         chat = client.chat_history(limit=4)

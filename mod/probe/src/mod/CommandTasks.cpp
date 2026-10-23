@@ -10,7 +10,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
             return true;
         }
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -31,7 +31,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "navigate") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -76,7 +76,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "jump_when") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -128,7 +128,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "route") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -188,7 +188,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "mine") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -216,7 +216,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "place") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -270,7 +270,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "use") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }

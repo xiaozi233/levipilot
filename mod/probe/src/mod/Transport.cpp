@@ -182,6 +182,7 @@ void ProbeMod::serverLoop() {
                     continue;
                 }
                 mCommandBuffer.clear();
+                mDiscardPartial = false; // Framing state belongs to this pipe instance.
                 connected = false;
                 bootLog("pipe: instance created");
             }

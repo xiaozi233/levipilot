@@ -146,7 +146,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
     if (cmd == "macro_status") {
         nlohmann::json out;
         out["event"]          = "macro_status";
-        out["in_world"]       = mInWorld.load();
+        out["in_world"]       = mWorld.inWorld();
         out["playing"]        = mMacroPlaying.load();
         out["index"]          = mMacroIndex.load();
         out["recording"]      = mMacroRecording.load();

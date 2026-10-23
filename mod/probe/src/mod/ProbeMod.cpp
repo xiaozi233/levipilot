@@ -97,55 +97,11 @@ bool ProbeMod::enable() {
     watchInit();
     overheadInit();
 
+    mWorld.start();
     loadAutoConfig();
     loadCheckpoints();
 
     mSpoolThread = std::thread([this] { spoolThreadLoop(); });
-
-    // World flow events: the USB/UI-independent entry point reports through
-    // these, so scripts do not have to poll mInWorld.
-    auto& bus                = ll::event::EventBus::getInstance();
-    mStartJoinLevelListener  = bus.emplaceListener<ll::event::client::ClientStartJoinLevelEvent>([this](auto& event) {
-        mJoinPending = true;
-        enqueue(
-            nlohmann::json{
-                {"event", "world_joining"  },
-                {"world", event.worldName()}
-        }.dump()
-        );
-    });
-    mJoinLevelListener       = bus.emplaceListener<ll::event::client::ClientJoinLevelEvent>([this](auto& event) {
-        mInWorld    = true;
-        mJoinPending = false;
-        enqueue(
-            nlohmann::json{
-                {"event",  "world_entered"             },
-                {"player", event.player().getRealName()},
-        }
-                .dump()
-        );
-        enqueue(R"({"event":"enter_world_settled","ok":true,"reason":"joined"})");
-    });
-    mExitLevelListener       = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
-        mInWorld = false;
-        cancelTasks("world_left");
-        beginTask();
-        bool const wasJoining = mJoinPending.exchange(false);
-        enqueue(R"({"event":"world_left"})");
-        if (wasJoining) {
-            enqueue(
-                R"({"event":"enter_world_settled","ok":false,"reason":"left_while_joining"})"
-            );
-        }
-        // F4: this listener may run on the client thread; ask the spool thread
-        // to flush immediately instead of doing file IO here.
-        mSpoolForce.store(true, std::memory_order_release);
-    });
-    mCancelJoinLevelListener = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
-        mJoinPending = false;
-        enqueue(R"({"event":"world_join_cancelled"})");
-        enqueue(R"({"event":"enter_world_settled","ok":false,"reason":"cancelled"})");
-    });
 
     mServerThread = std::thread([this] { serverLoop(); });
     getSelf().getLogger().info("harness: enabled, pipe=\\\\.\\pipe\\mcbe-harness");
@@ -171,26 +127,7 @@ bool ProbeMod::disable() {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::KeyInputEvent>(mKeyListener);
         mKeyListener.reset();
     }
-    if (mStartJoinLevelListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientStartJoinLevelEvent>(
-            mStartJoinLevelListener
-        );
-        mStartJoinLevelListener.reset();
-    }
-    if (mJoinLevelListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientJoinLevelEvent>(mJoinLevelListener);
-        mJoinLevelListener.reset();
-    }
-    if (mExitLevelListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientExitLevelEvent>(mExitLevelListener);
-        mExitLevelListener.reset();
-    }
-    if (mCancelJoinLevelListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientCancelJoinLevelEvent>(
-            mCancelJoinLevelListener
-        );
-        mCancelJoinLevelListener.reset();
-    }
+    mWorld.stop();
 
     // Wake a server thread blocked in ConnectNamedPipe, then let it exit.
     HANDLE wake = CreateFileW(PipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -207,9 +144,6 @@ bool ProbeMod::disable() {
     }
     if (HANDLE thread = mServerThreadHandle.exchange(nullptr, std::memory_order_acq_rel)) {
         CloseHandle(thread);
-    }
-    if (mAutoThread.joinable()) {
-        mAutoThread.join();
     }
     if (mSpoolThread.joinable()) {
         mSpoolThread.join();
@@ -228,7 +162,6 @@ bool ProbeMod::disable() {
         mQueue.clear();
     }
     mRecording = false;
-    mInWorld   = false;
     getSelf().getLogger().info("harness: disabled");
     return true;
 }
@@ -244,8 +177,9 @@ void ProbeMod::loadAutoConfig() {
         bootLog("config: invalid json");
         return;
     }
-    mAutoEnterWorld   = config.value("auto_enter", std::string{});
-    mAutoEnterDelayMs = std::clamp(config.value("delay_ms", 2000), 0, 60000);
+    auto const autoWorld = config.value("auto_enter", std::string{});
+    auto const autoDelayMs = std::clamp(config.value("delay_ms", 2000), 0, 60000);
+    std::string autoOptions;
     mBackgroundGuard  = config.value("background_guard", true);
     mAllowMemoryWrite = config.value("allow_write", false);
     mAllowCrashTest   = config.value("allow_crash_test", false);
@@ -257,61 +191,18 @@ void ProbeMod::loadAutoConfig() {
     mAllowInputInject = config.value("allow_input_inject", false);
     mAllowVersionMismatch = config.value("allow_version_mismatch", false);
     setAllowVersionMismatch(mAllowVersionMismatch.load());
-    mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
+    mWorld.setSignInWaitMs(std::clamp(config.value("signin_wait_ms", 15000), 0, 120000));
     if (config.contains("options") && config["options"].is_object()) {
         for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
             std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
-            mAutoEnterOptions += it.key() + ":" + value + "\n";
+            autoOptions += it.key() + ":" + value + "\n";
         }
     }
-    if (mAutoEnterWorld.empty() && mAutoEnterOptions.empty()) {
+    if (autoWorld.empty() && autoOptions.empty()) {
         return;
     }
-    bootLog("config: auto_enter=" + mAutoEnterWorld + " delay=" + std::to_string(mAutoEnterDelayMs));
-    mAutoThread = std::thread([this] { autoEnterLoop(); });
-}
-
-void ProbeMod::autoEnterLoop() {
-    while (mRunning.load(std::memory_order_relaxed)) {
-        auto client = ll::service::getClientInstance();
-        if (!client) {
-            Sleep(200);
-            continue;
-        }
-        // The client exists during loading too; a populated level list means the
-        // main menu is ready and startLocalServerAsync has its context.
-        std::vector<LevelSummary> worlds;
-        client->getMinecraftGame().getLevelListCache().getLevelList(worlds, true, false, false, false);
-        if (worlds.empty()) {
-            Sleep(500);
-            continue;
-        }
-        // Do not enter a world while the game is in the background: in-world
-        // mouse capture without focus is the "cursor stuck / background look"
-        // failure mode. Wait until the player brings the window forward.
-        if (!detail::isGameForeground()) {
-            Sleep(500);
-            continue;
-        }
-
-        int remaining = mAutoEnterDelayMs;
-        while (remaining > 0 && mRunning.load(std::memory_order_relaxed)) {
-            int const step = std::min(remaining, 100);
-            Sleep(static_cast<DWORD>(step));
-            remaining -= step;
-        }
-        if (!mRunning.load(std::memory_order_relaxed)) {
-            return;
-        }
-        if (!mAutoEnterOptions.empty()) {
-            setOptions(mAutoEnterOptions);
-        }
-        if (!mAutoEnterWorld.empty() && !mInWorld.load(std::memory_order_relaxed)) {
-            bootLog("auto: entering " + mAutoEnterWorld);
-            enterWorld(mAutoEnterWorld, "", 0, false);
-        }
-        return;
-    }
+    bootLog("config: auto_enter=" + autoWorld + " delay=" + std::to_string(autoDelayMs));
+    mWorld.autoEnter(autoWorld, autoOptions, autoDelayMs);
 }
 
 void ProbeMod::onPlayerTick(LocalPlayer& player) {
@@ -334,10 +225,10 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     mJumpEdgeThisTick = false;
     auto client       = ll::service::getClientInstance();
     if (!client || client->getLocalPlayer() != &player) {
-        mInWorld = false;
+        mWorld.observePlayer(false);
         return;
     }
-    mInWorld    = true;
+    mWorld.observePlayer(true);
     mLastTickMs = GetTickCount64();
 
     {

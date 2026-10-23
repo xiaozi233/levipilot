@@ -16,7 +16,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             );
             return true;
         }
-        if (!mInWorld.load(std::memory_order_relaxed)) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -26,7 +26,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"input_inject_disabled"})");
             return true;
         }
-        if (!mInWorld.load(std::memory_order_relaxed)) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -49,7 +49,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             nlohmann::json{
                 {"event",    "screen"      },
                 {"name",     name          },
-                {"in_world", mInWorld.load()},
+                {"in_world", mWorld.inWorld()},
             }
                 .dump()
         );
@@ -290,7 +290,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "click") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }

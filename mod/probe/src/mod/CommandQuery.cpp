@@ -11,7 +11,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
     }
     if (cmd == "state") {
         auto const now = GetTickCount64();
-        if (!mInWorld.load() || (mLastTickMs.load() != 0 && now - mLastTickMs.load() > 1000)) {
+        if (!mWorld.inWorld() || (mLastTickMs.load() != 0 && now - mLastTickMs.load() > 1000)) {
             enqueue(R"({"event":"state","in_world":false})");
         } else {
             mStateRequested = true;
@@ -19,7 +19,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "entities") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -32,7 +32,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "blocks") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -63,7 +63,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "scan") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -109,7 +109,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "inventory") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
         } else {
             mInventoryRequested = true;
@@ -150,7 +150,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "ecs_entity" || cmd == "ecs_components" || cmd == "ecs_component" || cmd == "ecs_context") {
-        if (!mInWorld.load()) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }

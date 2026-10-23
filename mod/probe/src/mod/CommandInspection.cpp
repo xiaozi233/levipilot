@@ -183,7 +183,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
                 sample,
                 dryRun,
                 mAllowHookVa.load(std::memory_order_relaxed),
-                mInWorld.load(std::memory_order_relaxed),
+                mWorld.inWorld(),
                 j.value("inject_fail", false)
                     && mAllowHookVa.load(std::memory_order_relaxed)
             )

@@ -7,6 +7,7 @@
 #include <memory>
 #include <new>
 #include <thread>
+#include <vector>
 
 std::atomic<int> allocations{0};
 void* operator new(std::size_t size) {
@@ -25,7 +26,77 @@ void operator delete(void* p, std::size_t) noexcept {
 using namespace probe;
 using namespace probe::detail;
 
+void stressLifecycle() {
+    constexpr std::size_t cycles = 2500;
+    auto owner = std::make_unique<TaskController>();
+    auto& tasks = *owner;
+    std::atomic_bool produced{false}, stopConsumer{false};
+    std::vector<TaskEvent> events;
+    std::array<unsigned, cycles + 1> effects{};
+    std::thread consumer([&] {
+        TaskEvent event;
+        for (;;) {
+            if (tasks.pop(event)) events.push_back(event);
+            else if (stopConsumer.load()) break;
+            else std::this_thread::yield();
+        }
+    });
+    std::thread ticker([&] {
+        while (!produced.load()) {
+            tasks.tick([](TaskState& state, std::uint64_t) {
+                TaskStep step;
+                if (auto* use = std::get_if<UseTask>(&state)) {
+                    if (!use->dispatched) {
+                        use->dispatched = true;
+                        step.useReady = true;
+                    }
+                } else {
+                    step.finished = true;
+                }
+                return step;
+            });
+            auto const id = tasks.snapshot().id;
+            if (id) {
+                tasks.completeUse(id, [&] {
+                    ++effects[id];
+                    return TaskOutcome{};
+                });
+                if (id > 1) tasks.completeUse(id - 1, [] {
+                    assert(false && "stale server callback executed");
+                    return TaskOutcome{};
+                });
+            }
+        }
+    });
+    TaskState const types[] = {NavigateTask{}, JumpTask{}, RouteTask{}, MineTask{}, PlaceTask{}, UseTask{}};
+    for (std::size_t i = 1; i <= cycles; ++i) {
+        std::uint64_t id = 0;
+        while (!(id = tasks.start(types[i % 6]))) std::this_thread::yield();
+        assert(id == i);
+        if (i % 7 == 0) tasks.cancel("world_left");
+        else if (i % 11 == 0) tasks.cancel("stopped");
+    }
+    produced.store(true);
+    ticker.join();
+    tasks.cancel("world_left");
+    stopConsumer.store(true);
+    consumer.join();
+    std::array<unsigned, cycles + 1> terminals{};
+    for (auto const& event : events) {
+        assert(event.id > 0 && event.id <= cycles);
+        if (event.kind == TaskEvent::Kind::Completed || event.kind == TaskEvent::Kind::Cancelled) {
+            assert(++terminals[event.id] == 1);
+            if (effects[event.id]) assert(event.kind == TaskEvent::Kind::Completed);
+        }
+    }
+    for (std::size_t id = 1; id <= cycles; ++id) {
+        assert(terminals[id] == 1 && effects[id] <= 1);
+    }
+    assert(tasks.snapshot().id == 0);
+}
+
 int main() {
+    stressLifecycle();
     {
         FixedText<5> text;
         text.assign("\xE4\xB8\xAD\xE6\x96\x87");
@@ -121,6 +192,12 @@ int main() {
         bool prepared = false;
         assert(tasks.start(PlaceTask{}, [&] { prepared = true; }) == 0);
         assert(!prepared && tasks.snapshot().id == active);
+        bool advanced = false;
+        assert(tasks.tick([&](TaskState&, std::uint64_t) {
+            advanced = true;
+            return TaskStep{};
+        }));
+        assert(!advanced); // Backpressure pauses tick side effects too.
         tasks.cancel("stopped"); // Reserved capacity guarantees its terminal event.
         TaskEvent event;
         std::size_t events = 0;

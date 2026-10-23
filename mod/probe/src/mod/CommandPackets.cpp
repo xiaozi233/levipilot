@@ -77,7 +77,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             );
             return true;
         }
-        if (!mInWorld.load(std::memory_order_relaxed)) {
+        if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
@@ -100,7 +100,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return true;
         }
-        if (enable && !mInWorld.load(std::memory_order_relaxed)) {
+        if (enable && !mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/TaskModel.h"
+#include "mod/WorldSession.h"
 
 #include "ll/api/event/Listener.h"
 #include "ll/api/mod/NativeMod.h"
@@ -267,6 +268,7 @@ public:
     void afterPlayerTick(LocalPlayer& player);
 
 private:
+    friend class WorldSession;
     void serverLoop();
     void handleLine(std::string const& line);
     bool dispatchWithSeh(std::string const& line);
@@ -325,12 +327,10 @@ private:
     void leaveWorld();
     void listWorlds();
     void reportSignInState();
-    bool waitForSignIn(int timeoutMs);
     void setOptions(std::string const& text);
     void saveOptions();
     void resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch);
     void loadAutoConfig();
-    void autoEnterLoop();
     void applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
     void updateFocusState();
 
@@ -373,26 +373,16 @@ private:
     static bool saveMacroFile(std::filesystem::path const& path, Macro const& macro, std::string& error);
 
     ll::mod::NativeMod& mSelf;
+    WorldSession mWorld{*this};
+    void queueClientTask(std::function<void()> task);
 
     ll::event::ListenerPtr mMouseListener;
-    ll::event::ListenerPtr mStartJoinLevelListener;
-    ll::event::ListenerPtr mJoinLevelListener;
-    ll::event::ListenerPtr mExitLevelListener;
-    ll::event::ListenerPtr mCancelJoinLevelListener;
     std::thread            mServerThread;
     // F10: duplicated handle for CancelSynchronousIo so disable() is not stuck
     // behind a WriteFile to a client that stopped reading.
     std::atomic<HANDLE> mServerThreadHandle{nullptr};
-    std::thread         mAutoThread;
-    std::string         mAutoEnterWorld;
-    std::string         mAutoEnterOptions;
-    int                 mAutoEnterDelayMs = 2000;
 
     std::atomic_bool mRunning{false};
-    std::atomic_bool mInWorld{false};
-    // True between startLocalServerAsync and join/cancel/exit; used to emit a
-    // single enter_world_settled for the entry a client just requested.
-    std::atomic_bool           mJoinPending{false};
     std::atomic<std::uint64_t> mLastTickMs{0};
     // QPC timestamps for the T9 overhead metric (tick thread only).
     std::uint64_t              mTickStartQpc     = 0;
@@ -643,7 +633,6 @@ private:
     std::atomic_bool           mAllowSelftestStress{false};
     std::atomic_bool           mAllowWatch{true};
     std::atomic_bool           mAllowVersionMismatch{false};
-    std::atomic<int>           mSignInWaitMs{15000};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};
 };

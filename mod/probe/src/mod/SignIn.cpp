@@ -39,7 +39,7 @@ bool queryXblSignedIn(bool& signedIn) {
 
 namespace probe {
 
-void ProbeMod::reportSignInState() {
+void WorldSession::signInOnClient() {
     bool signedIn = false;
     bool const known = detail::queryXblSignedIn(signedIn);
     nlohmann::json out{
@@ -49,7 +49,7 @@ void ProbeMod::reportSignInState() {
     if (known) {
         out["signed_in"] = signedIn;
     }
-    enqueue(out.dump());
+    mOwner.enqueue(out.dump());
 }
 
 } // namespace probe

@@ -49,6 +49,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     signature_check.add_argument("--name", required=True)
     signature_check.add_argument("--expected-hex", required=True)
     sub.add_parser("state")
+    chat_history = sub.add_parser("chat-history", help="read retained client chat messages")
+    chat_history.add_argument("--limit", type=int, default=32)
 
     command = sub.add_parser("command", help="run a server command (fill/tp/...)")
     command.add_argument("text")

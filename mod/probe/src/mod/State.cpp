@@ -104,7 +104,11 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
 
     // Active effects matter for parkour verification (speed/jump boost).
     j["effects"] = nlohmann::json::array();
+    auto const emptyEffectId = static_cast<uint>(MobEffectInstance::NO_EFFECT().mId);
     for (auto const& effect : player.getAllEffects()) {
+        // getAllEffects retains NO_EFFECT slots after clear/expiry. These are
+        // storage tombstones, not active effects. Keep infinite durations intact.
+        if (static_cast<uint>(effect.mId) == emptyEffectId) continue;
         j["effects"].push_back({
             {"id",        static_cast<int>(effect.mId)          },
             {"duration",  static_cast<int>(effect.mDuration->mValue)},

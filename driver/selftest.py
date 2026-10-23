@@ -239,6 +239,7 @@ def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
         ("inspection", ["mem-read", "0x10"], '"reason": "bad_addr"'),
         ("packets", ["packet-stats"], '"event": "packet_stats"'),
         ("query", ["state"], '"event": "state"'),
+        ("chat_history", ["chat-history", "--limit", "1"], '"event": "chat_history"'),
         ("world", ["worlds"], '"event": "worlds"'),
         ("tasks", ["task-status"], '"event": "task_status"'),
         ("recording", ["record-dump", "--limit", "1"], "entries="),
@@ -284,6 +285,267 @@ def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
         client.connect()
 
 
+def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
+    """Replacing jump/route with place/use must not leave a hidden task."""
+    original = client.state()
+    pose = [float(original[f"feet_{axis}"]) for axis in "xyz"]
+    source_tasks = (
+        (
+            "jump_when",
+            {
+                "cmd": "jump_when",
+                "mode": "tick",
+                "after_ticks": 2000,
+                "max_ticks": 5000,
+                "forward": 0,
+            },
+        ),
+        (
+            "route",
+            {
+                "cmd": "route",
+                "waypoints": [
+                    {"x": pose[0] + 20, "z": pose[2], "jump": "never", "max_ticks": 2000}
+                ],
+            },
+        ),
+    )
+    try:
+        for source, payload in source_tasks:
+            for target in ("place", "use"):
+                client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+                wait_ticks(client, 5)
+                first = client.request(payload, f"{source}_started")
+                if target == "place":
+                    # Occupied support is a safe, deterministic terminal result.
+                    command = {
+                        "cmd": "place",
+                        "x": math.floor(pose[0]),
+                        "y": math.floor(pose[1]) - 1,
+                        "z": math.floor(pose[2]),
+                    }
+                else:
+                    command = {"cmd": "use", "ticks": 2000}
+                second = client.request(command, f"{target}_started")
+                first_id, second_id = int(first["task_id"]), int(second["task_id"])
+                cancelled = client.wait_event(
+                    "task_cancelled",
+                    3,
+                    predicate=lambda row, task_id=first_id: row.get("task_id") == task_id,
+                )
+                checks.check(
+                    f"task_{source}_to_{target}_cancel",
+                    second_id > first_id and cancelled.get("reason") == "replaced",
+                )
+                if target == "place":
+                    result = client.wait_event(
+                        "block_placed",
+                        3,
+                        predicate=lambda row, task_id=second_id: row.get("task_id") == task_id,
+                    )
+                    checks.check(
+                        f"task_{source}_to_place_terminal", result.get("reason") == "occupied"
+                    )
+                else:
+                    status = client.task_status()
+                    checks.check(
+                        f"task_{source}_to_use_owner",
+                        status.get("active") == "use" and status.get("task_id") == second_id,
+                    )
+                    # Invalid requests must leave the current owner intact.
+                    for bad, reason in (
+                        ({"cmd": "jump_when", "mode": "typo"}, "invalid_jump_mode"),
+                        ({"cmd": "route", "waypoints": [{}] * 65}, "too_many_waypoints"),
+                        ({"cmd": "route", "waypoints": [None]}, "invalid_waypoint"),
+                        ({"cmd": "place", "expected": "x" * 256}, "expected_too_long"),
+                    ):
+                        rejected = client.request(bad, "error")
+                        checks.check(
+                            f"task_validation_{source}_{reason}",
+                            rejected.get("reason") == reason
+                            and client.task_status().get("task_id") == second_id,
+                        )
+                    client.task_stop()
+                    stopped = client.wait_event(
+                        "task_cancelled",
+                        3,
+                        predicate=lambda row, task_id=second_id: row.get("task_id") == task_id,
+                    )
+                    checks.check(
+                        f"task_{source}_to_use_stopped", stopped.get("reason") == "stopped"
+                    )
+                wait_ticks(client, 3)
+                checks.check(
+                    f"task_{source}_to_{target}_idle", client.task_status().get("active") is None
+                )
+
+        inventory = client.inventory()
+        empty = next(
+            (
+                row["slot"]
+                for row in inventory.get("slots", [])
+                if int(row["slot"]) < 9 and not row.get("item")
+            ),
+            None,
+        )
+        if empty is not None:
+            client.select_slot(int(empty))
+            wait_ticks(client, 3)
+            result = client.use_item(ticks=1)
+            checks.check(
+                "task_use_server_terminal",
+                result.get("reason") == "empty_hand"
+                and int(result.get("task_id", 0)) > 0
+                and client.task_status().get("active") is None,
+            )
+        else:
+            checks.note("task_use_server_terminal", "skipped: no empty hotbar slot")
+    finally:
+        client.task_stop()
+        client.select_slot(int(original["selected_slot"]))
+        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+        wait_ticks(client, 5)
+
+    for attempt in range(3):
+        old_session = client._session
+        client.reconnect()
+        checks.check(
+            f"connection_session_{attempt}",
+            client._session is not old_session
+            and old_session.stopped.is_set()
+            and client.ping().get("event") == "pong",
+        )
+
+    fault = client.request({"cmd": "selftest_task_fault"}, ("task_fault_started", "error"))
+    if fault.get("event") == "error":
+        checks.check("task_fault_gate", fault.get("reason") == "selftest_stress_disabled")
+        checks.note("task_fault_isolation", "skipped: allow_selftest_stress is disabled")
+    else:
+        fault_id = int(fault["task_id"])
+        result = client.wait_event(
+            "item_used", 3, predicate=lambda row: row.get("task_id") == fault_id
+        )
+        start = int(client.status().get("tick", 0))
+        wait_ticks(client, 3)
+        checks.check(
+            "task_fault_isolation",
+            result.get("reason") == "task_fault"
+            and not result.get("ok")
+            and client.task_status().get("active") is None
+            and int(client.status().get("tick", 0)) > start,
+        )
+
+
+def check_task_operations(client: ModClient, checks: Checks) -> None:
+    """Verify real navigation and place/mine effects on a temporary air cell."""
+    original = client.state()
+    pose = [float(original[f"feet_{axis}"]) for axis in "xyz"]
+    snapshot = client.inventory()
+    slot = next(
+        (
+            int(row["slot"])
+            for row in snapshot.get("slots", [])
+            if 0 <= int(row["slot"]) < 9 and not row.get("item")
+        ),
+        None,
+    )
+    x, y, z = math.floor(pose[0]), math.floor(pose[1]), math.floor(pose[2])
+    target = None
+    for dx, dz in ((2, 0), (-2, 0), (0, 2), (0, -2)):
+        cell = [x + dx, y, z + dz]
+        rows = client.blocks([cell, [cell[0], y - 1, cell[2]]])["blocks"]
+        if rows[0].get("name") == "minecraft:air" and rows[1].get("name") in {
+            "minecraft:stone",
+            "minecraft:dirt",
+            "minecraft:grass_block",
+            "minecraft:bedrock",
+        }:
+            target = cell
+            break
+    if target is None or slot is None:
+        checks.note(
+            "task_operations",
+            "skipped: needs an empty hotbar slot and nearby air above solid support",
+        )
+        return
+    try:
+        # Creative avoids item drops and restores exactly the air cell we own.
+        client.command("gamemode creative @s")
+        wait_ticks(client, 5)
+        checks.check("task_operations_setup", int(client.state().get("gamemode", -1)) == 1)
+        client.set_item(slot, "minecraft:dirt", count=2)
+        client.select_slot(slot)
+        wait_ticks(client, 5)
+        # Regress the deterministic orbit at -53.17 degrees, also checking
+        # a full turn and aligned starts through both movement entry points.
+        for task in ("navigate", "route"):
+            for yaw in (-53.17, 0.0, 90.0, 180.0):
+                client.reset(*pose, yaw=yaw, pitch=float(original["pitch"]))
+                wait_ticks(client, 8)
+                if task == "navigate":
+                    result = client.navigate(
+                        pose[0], pose[2] - 0.7, tolerance=0.15, jump="never", max_ticks=80
+                    )
+                else:
+                    result = client.route(
+                        [
+                            {
+                                "x": pose[0],
+                                "z": pose[2] - 0.7,
+                                "tolerance": 0.15,
+                                "jump": "never",
+                                "max_ticks": 80,
+                            }
+                        ]
+                    )
+                state = client.state()
+                checks.check(
+                    f"task_{task}_readback_{yaw:g}",
+                    bool(result.get("ok"))
+                    and math.hypot(
+                        float(state["feet_x"]) - pose[0], float(state["feet_z"]) - (pose[2] - 0.7)
+                    )
+                    < 0.25,
+                    str(result),
+                )
+        placed = client.place_block(*target, slot=slot, expected="dirt")
+        wait_ticks(client, 5)
+        checks.check(
+            "task_place_readback",
+            bool(placed.get("ok"))
+            and client.blocks([target])["blocks"][0].get("name") == "minecraft:dirt",
+            str(placed),
+        )
+        mined = client.mine_block(*target, max_ticks=80)
+        wait_ticks(client, 5)
+        checks.check(
+            "task_mine_readback",
+            bool(mined.get("ok"))
+            and client.blocks([target])["blocks"][0].get("name") == "minecraft:air",
+            str(mined),
+        )
+        ids = [int(row["task_id"]) for row in (result, placed, mined)]
+        checks.check("task_operations_ids", ids[0] < ids[1] < ids[2])
+    finally:
+        client.task_stop()
+        # A successful mine already left air; do not issue a redundant command
+        # that reports failure when its target already contains air.
+        if client.blocks([target])["blocks"][0].get("name") != "minecraft:air":
+            client.command(f"setblock {' '.join(map(str, target))} air")
+            wait_ticks(client, 5)
+        client.clear_item(slot)
+        client.select_slot(int(original["selected_slot"]))
+        client.command(f"gamemode {int(original['gamemode'])} @s")
+        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+        wait_ticks(client, 8)
+        checks.check(
+            "task_operations_restored",
+            int(client.state().get("gamemode", -1)) == int(original["gamemode"])
+            and slot_item(client.inventory(), slot) is None
+            and client.blocks([target])["blocks"][0].get("name") == "minecraft:air",
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
@@ -301,7 +563,23 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         checks.check("ping", client.ping().get("event") == "pong")
+        client.command('tellraw @s {"rawtext":[{"text":"LeviPilot chat snapshot selftest"}]}')
+        wait_ticks(client, 3)
+        chat = client.chat_history(limit=4)
+        checks.check(
+            "chat_history_snapshot",
+            chat.get("ok")
+            and len(chat.get("messages", [])) <= 4
+            and all(isinstance(row.get("text"), str) for row in chat.get("messages", []))
+            and any(
+                "LeviPilot chat snapshot selftest" in row["text"]
+                for row in chat.get("messages", [])
+            ),
+            str(chat),
+        )
         check_dispatch_compatibility(client, checks)
+        check_task_lifecycle(client, checks)
+        check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 
         # -- F1: a client that never sends '\n' cannot grow the buffer ------
@@ -756,16 +1034,46 @@ def main(argv: list[str] | None = None) -> int:
                     f"rows={len(template_rows)}",
                 )
                 position = client.state()
-                tx = int(position["feet_x"]) + 3
-                ty = int(position["feet_y"]) - 1
-                tz = int(position["feet_z"]) + 3
-                before_sent = int(client.status().get("chat_sent", 0))
-                client.chat_send(f"/setblock {tx} {ty} {tz} minecraft:gold_block")
-                wait_ticks(client, 8)
-                placed = client.blocks([[tx, ty, tz]])["blocks"][0].get("name")
-                checks.check(
-                    "packet_inject_setblock", placed == "minecraft:gold_block", str(placed)
+                # A previous run left this test's gold block behind, so checking
+                # only its final type could pass even when /setblock failed.
+                tx = math.floor(float(position["feet_x"]))
+                ty = math.floor(float(position["feet_y"]))
+                tz = math.floor(float(position["feet_z"]))
+                candidates = [
+                    [tx + dx, ty, tz + dz] for dx, dz in ((3, 3), (-3, 3), (3, -3), (-3, -3))
+                ]
+                blocks = client.blocks(candidates)["blocks"]
+                target = next(
+                    (
+                        cell
+                        for cell, block in zip(candidates, blocks, strict=True)
+                        if block.get("name") == "minecraft:air"
+                    ),
+                    None,
                 )
+                checks.check(
+                    "packet_inject_setblock_precondition",
+                    target is not None,
+                    "requires air so an unchanged block cannot pass",
+                )
+                before_sent = int(client.status().get("chat_sent", 0))
+                if target is not None:
+                    tx, ty, tz = target
+                    try:
+                        client.chat_send(f"/setblock {tx} {ty} {tz} minecraft:gold_block")
+                        wait_ticks(client, 8)
+                        placed = client.blocks([target])["blocks"][0].get("name")
+                        checks.check(
+                            "packet_inject_setblock", placed == "minecraft:gold_block", str(placed)
+                        )
+                    finally:
+                        if client.blocks([target])["blocks"][0].get("name") != "minecraft:air":
+                            client.command(f"setblock {tx} {ty} {tz} air")
+                            wait_ticks(client, 5)
+                        checks.check(
+                            "packet_inject_setblock_restored",
+                            client.blocks([target])["blocks"][0].get("name") == "minecraft:air",
+                        )
                 x0 = float(client.state()["feet_x"])
                 client.chat_send("/tp @s ~1 ~ ~")
                 wait_ticks(client, 8)
@@ -1236,8 +1544,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         client.command("effect @s clear")
         wait_ticks(client, 3)
+        checks.check("effects_clear_no_tombstones", client.state().get("effects") == [])
         client.reset(feet[0], feet[1], feet[2], yaw=0.0, pitch=0.0)
         wait_ticks(client, 12)
+        checks.check("effects_reset_no_tombstones", client.state().get("effects") == [])
         saved = client.checkpoint_save("selftest_cp")
         checks.check("checkpoint_save", saved.get("event") == "checkpoint_saved", str(saved))
         listed = client.checkpoint_list().get("checkpoints", [])
@@ -1483,6 +1793,9 @@ def main(argv: list[str] | None = None) -> int:
 
             def run_macro(event_level: bool) -> tuple[tuple[float, float], int, float]:
                 client.reset(0.5, -49.0, 0.5, yaw=0.0, pitch=0.0)
+                # reset_done accepts the request before the server/client
+                # teleport is settled; do not mistake the old still pose for it.
+                wait_ticks(client, 10)
                 wait_still(client)
                 client.mouse_clear()
                 yaw0 = float(client.state()["yaw"])

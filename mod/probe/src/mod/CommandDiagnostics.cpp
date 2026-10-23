@@ -66,7 +66,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             watchesRemoved = watchesOk ? watchesBefore : 0;
         }
         if (tasksLevel) {
-            cancelTasks();
+            cancelTasks("panic");
             beginTask();
         }
         // F4: panic is usually called before an incident, so make sure the

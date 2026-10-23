@@ -5,7 +5,7 @@ Minecraft Bedrock **1.26.51.01** 的客户端实验 harness：一个 LeviLamina 
 
 ## 能做什么
 
-- **读**：玩家位置/速度/朝向/生命/饥饿/经验/手持物/输入状态、完整背包/盔甲/副手、附近实体、任意方块
+- **读**：玩家位置/速度/朝向/生命/饥饿/经验/手持物/输入状态、完整背包/盔甲/副手、附近实体、任意方块、客户端保留的聊天文字
 - **控制**：移动、疾跑、潜行、跳跃、飞行、绝对/相对视角、左右键、快捷栏、服务端权威传送；
   按 `runtime_id` 查询/转向/攻击/交互实体
 - **执行**：任意服务端命令（`fill`/`tp`/`setblock`…），保留 `@s`/`~` 语义
@@ -44,6 +44,7 @@ py -3.11 driver/dev.py run --write-config --world "超平坦测试"
 # 常用操作
 py -3.11 driver/transport_mod.py ping
 py -3.11 driver/transport_mod.py state
+py -3.11 driver/transport_mod.py chat-history --limit 32
 py -3.11 driver/transport_mod.py worlds
 py -3.11 driver/transport_mod.py enter-world --name "超平坦测试" --wait
 py -3.11 driver/transport_mod.py leave-world
@@ -118,7 +119,7 @@ py -3.11 -m unittest discover -s tests -v   # 不需要游戏
 py -3.11 driver/selftest.py                 # 需要游戏已进入存档
 ```
 
-GitHub Actions 运行 `tests.yml`（单元测试）。mod 构建依赖本机的 LLVM22/xmake 补丁，
+GitHub Actions 运行 `tests.yml`（Python 单元测试及独立 C++ 任务模型）。mod 构建依赖本机的 LLVM22/xmake 补丁，
 是本地步骤，见 [`docs/mod-build-environment.md`](docs/mod-build-environment.md)。
 
 ## License

@@ -71,9 +71,12 @@ py -3.11 driver/selftest.py
 `cli_parser.py` 加参数、`cli_commands/<领域>.py` 加执行分支 → `tests/` 加无游戏单测（需要游戏的检查加到 `driver/selftest.py`）。
 新增领域时才在 `Commands.cpp::dispatchLine` 接入；它统一负责 JSON 解析、未知命令与请求级异常隔离。
 
-**加一个闭环任务**：`ProbeMod.h` 定义 `XxxTask` 与 `std::optional<XxxTask>` → `CommandTasks.cpp` 解析参数、
-`beginTask()`、回 `xxx_started` → `Tasks.cpp` 实现 `tickXxx` 并在 `tickTask()` 分派、结束时发 `xxx_done` →
-`commands`/`facade.Harness`/CLI 加阻塞封装 → 用 `blocks` / `state` **回读验证**，不要只看返回值。
+**加一个闭环任务**：`TaskModel.h` 定义定长 `XxxTask` 并加入 `TaskState` →
+`CommandTasks.cpp` 完整验证参数后 `startTask()`、回带 `task_id` 的 `xxx_started` →
+`Tasks.cpp` 实现 `tickXxx`，只填 `TaskStep` → `TaskEvents.cpp` 格式化状态/结果 →
+`commands._task_request`/`facade.Harness`/CLI 加阻塞封装 → 扩展 native 模型与 live selftest，
+用 `blocks` / `state` **回读验证**。禁止新增独立 optional 任务槽、手写 reset 列表，或在 tick 内格式化任务 JSON。
+`TaskController` 锁内回调不得重入控制器或同步等待需要任务锁的线程。
 
 ## 已知坑（别重复踩）
 

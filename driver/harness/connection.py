@@ -13,11 +13,26 @@ import msvcrt
 import queue
 import threading
 import time
+from collections import deque
+from collections.abc import Callable, Iterator
 from ctypes import wintypes
+from dataclasses import dataclass, field
 from typing import Any, Self
 
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder, kernel32
+
+
+@dataclass
+class _PipeSession:
+    """All reader-visible state belongs to one connection generation."""
+
+    handle: Any = None
+    lines: queue.Queue[dict[str, Any]] = field(default_factory=lambda: queue.Queue(maxsize=8192))
+    stopped: threading.Event = field(default_factory=threading.Event)
+    reader: threading.Thread | None = None
+    pending: deque[dict[str, Any]] = field(default_factory=deque)
+    failure: str = "pipe 已关闭（游戏退出或 mod 被卸载）"
 
 
 class PipeConnection:
@@ -34,13 +49,28 @@ class PipeConnection:
         self.timeout = timeout
         self.protocol = 0
         self.hello: dict[str, Any] = {}
-        self._file: Any = None
-        self._reader: threading.Thread | None = None
-        self._lines: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._closed = threading.Event()
+        self._session = _PipeSession()
+        self._exchange_lock = threading.RLock()
+
+    @property
+    def connected(self) -> bool:
+        session = self._session
+        return session.handle is not None and not session.stopped.is_set()
+
+    @contextlib.contextmanager
+    def exchange(self) -> Iterator[None]:
+        """One consumer owns a complete command/workflow on protocol 4."""
+        with self._exchange_lock:
+            yield
 
     def connect(self) -> Self:
+        with self.exchange():
+            return self._connect()
+
+    def _connect(self) -> Self:
         self.close()
+        self.protocol = 0
+        self.hello = {}
         deadline = time.monotonic() + self.connect_timeout
         last_error: OSError | None = None
         while time.monotonic() < deadline:
@@ -54,16 +84,15 @@ class PipeConnection:
                 time.sleep(0.2)
                 continue
 
-            self._file = handle
-            self._lines = queue.Queue()
-            self._closed.clear()
-            self._reader = threading.Thread(
+            session = _PipeSession(handle=handle)
+            self._session = session
+            session.reader = threading.Thread(
                 target=self._read_loop,
-                args=(handle,),
+                args=(session,),
                 name="mod-pipe-reader",
                 daemon=True,
             )
-            self._reader.start()
+            session.reader.start()
             try:
                 hello = self._next_line(self.connect_timeout)
             except ModPipeError:
@@ -82,11 +111,12 @@ class PipeConnection:
         return self.connect()
 
     def ensure_connected(self) -> Self:
-        if self._file is None:
+        if not self.connected:
             return self.connect()
         return self
 
-    def _read_loop(self, handle: Any) -> None:
+    @staticmethod
+    def _read_loop(session: _PipeSession) -> None:
         """Poll for data instead of blocking in ``read``.
 
         Windows serialises I/O on a synchronous pipe handle: a ``ReadFile``
@@ -95,9 +125,12 @@ class PipeConnection:
         request can always be written while the reader is idle.
         """
         decoder = LineDecoder()
-        os_handle = msvcrt.get_osfhandle(handle.fileno())
         try:
-            while not self._closed.is_set():
+            handle = session.handle
+            if handle is None:
+                return
+            os_handle = msvcrt.get_osfhandle(handle.fileno())
+            while not session.stopped.is_set():
                 available = wintypes.DWORD(0)
                 ok = kernel32.PeekNamedPipe(
                     os_handle,
@@ -110,7 +143,7 @@ class PipeConnection:
                 if not ok:
                     break
                 if available.value == 0:
-                    time.sleep(0.005)
+                    session.stopped.wait(0.005)
                     continue
                 chunk = handle.read(available.value)
                 if not chunk:
@@ -121,37 +154,49 @@ class PipeConnection:
                     except json.JSONDecodeError:
                         continue
                     if isinstance(message, dict):
-                        self._lines.put(message)
+                        session.lines.put_nowait(message)
+        except queue.Full:
+            session.failure = "pipe 接收队列溢出；连接已终止"
         except (OSError, ValueError):
             pass
         finally:
-            self._lines.put({"event": "__closed__"})
+            session.stopped.set()
+            with contextlib.suppress(queue.Full):
+                session.lines.put_nowait({"event": "__closed__"})
 
     def _next_line(self, timeout: float | None = None) -> dict[str, Any]:
         wait = self.timeout if timeout is None else timeout
+        session = self._session
+        if session.stopped.is_set() and session.lines.empty():
+            raise ModDisconnected(session.failure)
         try:
-            message = self._lines.get(timeout=max(0.0, wait))
+            message = session.lines.get(timeout=max(0.0, wait))
         except queue.Empty as exc:
             raise ModTimeout(f"等待 mod 响应超时（{wait:.1f}s）") from exc
         if message.get("event") == "__closed__":
-            self._file = None
-            raise ModDisconnected("pipe 已关闭（游戏退出或 mod 被卸载）")
+            self._disconnect(session)
+            raise ModDisconnected(session.failure)
         return message
 
     def close(self) -> None:
-        self._closed.set()
-        handle = self._file
-        self._file = None
+        """Also safe from another thread to interrupt an outstanding read."""
+        self._disconnect(self._session)
+
+    @staticmethod
+    def _disconnect(session: _PipeSession) -> None:
+        session.stopped.set()
+        with contextlib.suppress(queue.Full):
+            session.lines.put_nowait({"event": "__closed__"})
+        handle, session.handle = session.handle, None
         if handle is not None:
             with contextlib.suppress(OSError):
                 handle.close()
-        reader = self._reader
-        self._reader = None
+        reader, session.reader = session.reader, None
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=1.0)
 
     def send(self, message: dict[str, Any]) -> None:
-        if self._file is None:
+        if not self.connected:
             raise ModDisconnected("尚未连接")
         raw = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
         self._write(raw)
@@ -162,48 +207,94 @@ class PipeConnection:
 
     def _write(self, payload: bytes) -> None:
         """Finish short writes and translate all pipe I/O failures consistently."""
-        if self._file is None:
-            raise ModDisconnected("尚未连接")
-        view = memoryview(payload)
-        try:
-            while view:
-                written = self._file.write(view)
-                if not written:
-                    raise OSError("pipe write returned 0")
-                view = view[written:]
-            self._file.flush()
-        except (OSError, ValueError) as exc:
+        with self.exchange():
+            session = self._session
+            handle = session.handle
+            if handle is None or session.stopped.is_set():
+                raise ModDisconnected("尚未连接")
+            view = memoryview(payload)
+            try:
+                while view:
+                    written = handle.write(view)
+                    if not written:
+                        raise OSError("pipe write returned 0")
+                    view = view[written:]
+                handle.flush()
+            except (OSError, ValueError) as exc:
+                self._disconnect(session)
+                raise ModDisconnected(f"pipe 写入失败：{exc}") from exc
+
+    def _defer(self, message: dict[str, Any]) -> None:
+        if len(self._session.pending) >= 4096:
             self.close()
-            raise ModDisconnected(f"pipe 写入失败：{exc}") from exc
+            raise ModProtocolError("未消费事件超过 4096 条；请通过 readline 消费或停止录制")
+        self._session.pending.append(message)
 
     def readline(self, timeout: float | None = None) -> dict[str, Any]:
-        return self._next_line(timeout)
+        """Read deferred notifications first, then the live stream."""
+        with self.exchange():
+            if self._session.pending:
+                return self._session.pending.popleft()
+            return self._next_line(timeout)
+
+    def wait_event(
+        self,
+        events: str | tuple[str, ...],
+        timeout: float | None = None,
+        *,
+        predicate: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Wait without discarding unrelated events, including buffered ones."""
+        names = (events,) if isinstance(events, str) else events
+
+        def matches(row: dict[str, Any]) -> bool:
+            return row.get("event") in names and (predicate is None or predicate(row))
+
+        with self.exchange():
+            for index, row in enumerate(self._session.pending):
+                if matches(row):
+                    del self._session.pending[index]
+                    return row
+            deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ModTimeout(f"等待 {names} 超时")
+                row = self._next_line(remaining)
+                if row.get("event") == "error" and "error" not in names:
+                    raise ModProtocolError(str(row.get("reason", row)))
+                if matches(row):
+                    return row
+                self._defer(row)
 
     def request(
         self,
         message: dict[str, Any],
-        expect: str | None = None,
+        expect: str | tuple[str, ...] | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        wait = self.timeout if timeout is None else timeout
-        self.send(message)
-        deadline = time.monotonic() + wait
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.close()
-                raise ModTimeout(f"{message.get('cmd')} 等待 {expect or '响应'} 超时")
-            try:
-                reply = self._next_line(remaining)
-            except ModTimeout:
-                # A half-consumed stream is worse than no connection.
-                self.close()
-                raise
-            event = reply.get("event")
-            if event == "error" and expect != "error":
-                raise ModProtocolError(f"{message.get('cmd')}: {reply.get('reason', reply)}")
-            if expect is None or event == expect:
-                return reply
+        with self.exchange():
+            wait = self.timeout if timeout is None else timeout
+            self.send(message)
+            deadline = time.monotonic() + wait
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise ModTimeout(f"{message.get('cmd')} 等待 {expect or '响应'} 超时")
+                try:
+                    reply = self._next_line(remaining)
+                except ModTimeout:
+                    # A half-consumed stream is worse than no connection.
+                    self.close()
+                    raise
+                event = reply.get("event")
+                names = (expect,) if isinstance(expect, str) else expect
+                if event == "error" and (names is None or "error" not in names):
+                    raise ModProtocolError(f"{message.get('cmd')}: {reply.get('reason', reply)}")
+                if names is None or event in names:
+                    return reply
+                self._defer(reply)
 
     def __enter__(self) -> Self:
         return self.connect()

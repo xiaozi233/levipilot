@@ -531,3 +531,23 @@
   挂起的 `ReadFile` 和 `WriteFile` 串行化，阻塞读会让同一条连接上的发送永远等下去。
   每次请求都有超时（`ModTimeout`），连接关闭抛 `ModDisconnected`，协议错误抛
   `ModProtocolError`；`reconnect()` / `wait_ready()` 用于游戏重启后恢复。
+
+
+## 单活动任务与会话所有权
+
+任务类型、控制器与固定事件队列在 `TaskModel.h`，游戏计算在 `Tasks.cpp`，JSON 与 use
+服务器调度在 `TaskEvents.cpp`。控制器统一拥有活动状态；替换/取消/tick/服务器副作用
+共用同步边界。消费任务事件复用 spool 线程，tick 内不再分配任务 JSON/字符串。
+终结事件带 task_id，取消后旧服务器回调直接跳过。任务 AV 在锁内被 SEH 转成失败，
+`selftest_task_fault` 只在 allow_selftest_stress 开启时可用。
+
+Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列。`request` 将非目标事件
+保留给 `readline/wait_event`，任务等待按 ID 关联。详细限制与迁移见 `architecture.md`
+和 `refactoring.md` 的“行为重设计”。
+
+`Chat.cpp` 将 `GuiData` 的聊天缓存作为只读快照开放。管道只提交一次客户端 executor
+工作，客户端线程复制定长文字，spool 线程格式化 JSON。单槽 mailbox 的
+Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时明确拒绝，
+不增加 tick 锁或在 tick 格式化聊天 JSON。消息优先使用过滤后的文字，返回最近最多 64 条，
+每条 2047 UTF-8 字节并带 truncated；不返回账号标识。此接口读取游戏保留的缓存，
+不保证永久历史，也不把 `command_done` 的即时结果当作 deferred 命令最终效果。

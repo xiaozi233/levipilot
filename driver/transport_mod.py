@@ -32,6 +32,7 @@ from driver.harness import (
     ModDisconnected,
     ModPipeError,
     ModProtocolError,
+    ModTaskCancelled,
     ModTimeout,
 )
 from driver.harness.cli import main
@@ -45,6 +46,7 @@ __all__ = [
     "ModDisconnected",
     "ModPipeError",
     "ModProtocolError",
+    "ModTaskCancelled",
     "ModTimeout",
     "main",
 ]

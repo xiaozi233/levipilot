@@ -22,12 +22,15 @@ scenario DSL / LLM / shell
 
 | 文件 | 职责 |
 | --- | --- |
-| `ProbeMod.h` | `ProbeMod` 的公开/私有接口、任务结构、所有成员状态 |
+| `ProbeMod.h` | `ProbeMod` 的生命周期接口与领域组件；任务状态由 `TaskController` 封装 |
 | `ProbeMod.cpp` | 生命周期（load/enable/disable）、tick 前后编排、钩子注册、错误上报 |
 | `Internal.h` / `Internal.cpp` | 共享工具：数学、JSON 解析、物品/方块辅助、输入快照 |
 | `Input.cpp` | 移动/视角注入、按键事件、左右键动作、macro 的单 tick 应用 |
 | `InputEvents.cpp` | HID/键鼠事件注入队列与事件计数 |
-| `Tasks.cpp` | `navigate` / `mine` / `place` / `use` 状态机与 `task_status` |
+| `TaskModel.h` | 独立于游戏 SDK 的任务类型、单活动任务控制器、固定事件队列 |
+| `Tasks.cpp` | 六种任务的逐 tick 计算，只写定长结果，不格式化 JSON |
+| `TaskEvents.cpp` | 任务状态/事件 JSON、服务端物品使用调度与 SEH 隔离 |
+| `Chat.cpp` | 客户端线程聊天快照、定长 mailbox 与后台 JSON 格式化 |
 | `State.cpp` | `state`、`buttons`、`blocks` 快照 |
 | `Inventory.cpp` | 背包快照与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
@@ -73,6 +76,7 @@ scenario DSL / LLM / shell
   所有回调由 `queueServerTask` 包装，异常不会穿过游戏服务端 tick。
 - **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
   `spool-<pid>.jsonl`；`world_left` / `panic` / `stop` / `disable` 会强制刷盘。
+  该线程也消费任务定长事件、格式化响应并调度 `use` 的服务端工作。
   启动时同 PID 的旧文件会改名为 `spool-<pid>-<n>.jsonl`，单文件超过 64 MiB 也会轮转；
   swap 与写文件由 `mSpoolWriteMutex` 串行化。它只碰文件和缓冲区，不碰任何游戏对象。
 - **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
@@ -80,21 +84,31 @@ scenario DSL / LLM / shell
 
 输入、视角、传送合并在 `RequestBlock`：写端串行更新，tick 用 seqlock 快照读取；
 其他跨线程状态使用互斥量（任务、背包等请求）或原子量（各种 `*Requested`、`mRunning`）。
-任务还有一个 `mTaskEpoch`：管道线程取消/替换任务时递增，tick 线程只在 epoch 未变时写回，
-避免“已取消的任务复活”。
+任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
+安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
+重入控制器；游戏调用不得同步等待另一个需要任务锁的线程。
 
 ## 任务生命周期
 
-任务只在客户端 tick 内推进，管道往返不进入反馈环。以 `navigate` 为例：
+1. `CommandTasks` 完整验证参数后调用 `startTask`。新任务替换任何旧任务；旧任务生成
+   `task_cancelled(reason=replaced)`，新任务返回带 `task_id` 的 `*_started`。
+2. 游戏 tick 推进唯一活动任务。接管时释放前任输入；宏按键释放在游戏线程执行。
+3. 完成、失败、取消写入预分配事件队列。spool 线程的 `drainTaskEvents` 格式化并发送，
+   因此事件可能晚一个 25 ms 消费周期到达；按 ID 关联，不能依赖与命令回复的相邻顺序。
+4. `use` 达到 tick 数后进入 `server_pending`，仍占有活动槽。消费线程调度服务端回调；
+   回调在任务锁内核对 ID，取消/替换后的旧回调不会操作物品。使用失败、异常也产生终结事件。
+5. `task_stop`、panic、reset、world_left、disable 统一取消；正常终结与取消互斥。
 
-1. 命令写入 `mNavigateTask`，清空手动输入和 macro，返回 `navigate_started`。
-2. 每个 pre-tick 计算距离/方位角，限幅转向、给前进量、卡住时跳一次。
-3. 到达/超时/取消时清空任务，发一次 `navigated`，再由调用方决定下一步。
+任务文字使用 256 字节固定缓冲，`expected` 最长 255 UTF-8 字节，报告中的方块/物品名称
+最多保存 255 字节；路线最多 64 点。非法模式、非对象 waypoint、超长路线/expected
+明确报错且不替换当前任务。
 
-`mine` 用 `startDestroyBlock` + `continueDestroyBlock`，`place` 用真实 `traceRay` +
-`useItemOn` 并在两 tick 后回读方块，`use` 在服务端玩家上执行 `Item::use`
-（食物再走 `useTimeDepleted` + `Player::useItem`），完成后 `sendInventory(true)`。
-这些选择都是为了让结果在服务端落库，而不是只改客户端预测。
+128 槽事件队列为活动任务预留取消空间。消费不及时会暂缓推进并拒绝新任务
+（`error/task_backpressure`），不会覆盖终结事件。进程崩溃和下游 20000 行传输队列溢出
+仍受整体取证/传输限制；这不是跨进程的可靠消息协议。
+
+`mine` / `place` 保留原游戏 API 及回读验证；物品使用仍在服务端落库并同步背包。
+新增任务只扩展封闭的类型集合和领域计算，不需要增加一组可选状态及全域 reset 列表。
 
 ## 管道协议
 
@@ -115,7 +129,7 @@ driver/harness/
   errors.py     # ModPipeError / ModTimeout / ModDisconnected / ModProtocolError
   protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定
   client.py     # 兼容导出 ModClient / Harness
-  connection.py # PipeConnection：连接、轮询读取、超时、重连与完整写入
+  connection.py # PipeConnection：独立会话、轮询读取、事件缓冲、请求串行化、超时与重连
   commands.py   # ModClient：命令 payload、响应事件与工作流
   facade.py     # Harness：脚本便捷方法、集合解包与组合操作
   hooks.py      # hook 命中解码、float bits
@@ -132,11 +146,22 @@ driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 ```
 
-`ModClient` 用独立轮询线程读管道：Windows 同步句柄上挂起的 `ReadFile` 会阻塞同一个句柄的
-`WriteFile`，所以不能用一个阻塞读线程。请求带超时；超时会关闭连接，避免流错位。
-`ModClient` 继承连接实现，`Harness` 通过组合使用 `ModClient`；依赖保持单向。
-包根、`harness.client` 和 `transport_mod` 导出的两个类是同一对象，旧代码无需更改导入。
-场景适配器直接依赖 `driver.harness`，不再经过包含 CLI 的历史入口。
+`ModClient` 用独立轮询线程读取同步管道，避免挂起的 `ReadFile` 阻塞写入。
+每次连接建立 `_PipeSession`，独占句柄、停止信号、读队列和延后事件；读取线程只持有
+自己的 session，重连不会重用停止信号或消息队列。`close()` 可唤醒阻塞消费者。
+
+`exchange()` 使用可重入锁串行化一个完整请求/任务工作流，protocol 4 没有通用请求 ID，
+不支持同一连接多路并发响应。低层 `send` + `readline` 多步调用应放在同一个 exchange 中；
+另一个线程的 `close()` 可中断等待，不能用另一个阻塞式请求抢占任务。
+
+`request` 只从新流中取本次响应，其他事件进入 pending；`readline` 按顺序消费 pending，
+`wait_event` 可匹配其中的指定事件并保留其余事件。pending 上限 4096，原始接收队列
+上限 8192，超限明确终止连接。长时间录制必须及时消费，避免无限占用内存。
+任务封装先等待 `*_started`，再按 ID 等待终结；取消抛 `ModTaskCancelled(task_id, reason)`。
+请求超时关闭连接，独立事件等待超时不关闭连接。
+
+`ModClient` 继承连接实现，`Harness` 通过组合使用 `ModClient`，保持单向依赖。
+包根、`harness.client` 和 `transport_mod` 的公开导出保持一致。
 
 ## 世界与设置
 
@@ -186,6 +211,12 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 
 ## 如何扩展
 
+聊天快照使用 `ModClient.chat_history(limit=32)` 或
+`py -3.11 driver/transport_mod.py chat-history --limit 32`。
+`Chat.cpp` 在客户端 executor 复制游戏保留的最近消息，spool 线程将定长快照格式化返回；
+管道线程不直接读取 UI 对象。最多 64 条、每条 2047 UTF-8 字节，返回截断标记；
+历史由游戏管理，不保证重启后保留。`hello.capabilities` 提供 `chat_history` 能力标识。
+
 ### 加一个管道命令
 
 1. 在对应的 `Command<领域>.cpp` 加分支，处理后返回 `true`；只有新增领域才需修改
@@ -198,11 +229,11 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 
 ### 加一个闭环任务
 
-1. 在 `ProbeMod.h` 定义 `XxxTask` 和 `std::optional<XxxTask> mXxxTask`。
-2. 在 `CommandTasks.cpp` 里解析参数、设置任务、`beginTask()`、回 `xxx_started`。
-3. 在 `Tasks.cpp` 实现 `tickXxx(...)`，在 `tickTask()` 里分派，结束时发 `xxx_done`。
-4. 在 `commands.py` / `facade.py` / CLI 加阻塞式封装。
-5. 游戏内用 `blocks` / `state` 回读验证，不要只看返回值。
+1. 在 `TaskModel.h` 定义定长、可平凡复制的 `XxxTask`，加入 `TaskState`。
+2. `CommandTasks.cpp` 验证完整参数，再调用 `startTask`，返回含 ID 的 `xxx_started`。
+3. `Tasks.cpp` 实现 `tickXxx`，只填 `TaskStep`；在 `TaskEvents.cpp` 增加状态及结果格式化。
+4. Python 通过 `_task_request` 绑定任务 ID，CLI/facade 按需包装。
+5. 扩展独立 C++ 模型检查及 live selftest，用 `blocks/state` 回读验证游戏效果。
 
 ## 构建与检查
 
@@ -222,4 +253,4 @@ py -3.11 driver/selftest.py
 ```
 
 C++ 风格由仓库根目录的 `.clang-format` 约束；Python 由 `pyproject.toml` 里的 ruff/mypy 配置约束。
-CI 只跑 Python 检查；mod 构建仍在本机完成。
+CI 的 unittest 也编译并运行独立 C++ 任务模型；完整 mod 构建仍在本机完成。

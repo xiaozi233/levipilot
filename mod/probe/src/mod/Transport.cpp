@@ -21,8 +21,12 @@ void ProbeMod::enqueue(std::string line) {
 void ProbeMod::spoolThreadLoop() {
     while (mRunning.load(std::memory_order_relaxed)) {
         Sleep(25);
+        drainTaskEvents();
+        drainChatHistory();
         flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
     }
+    drainTaskEvents();
+    drainChatHistory();
     flushSpool(true);
 }
 
@@ -31,11 +35,11 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
     // flushes cannot reorder rows. enqueue() only takes mQueueMutex and is
     // never blocked by file IO.
     std::lock_guard serial(mSpoolWriteMutex);
-    std::string data;
+    std::string     data;
     {
-        std::lock_guard lock(mQueueMutex);
+        std::lock_guard     lock(mQueueMutex);
         std::uint64_t const now = GetTickCount64();
-        bool const due = force || mSpoolBuffer.size() >= (64u << 10) || now - mLastFlushMs >= 100;
+        bool const          due = force || mSpoolBuffer.size() >= (64u << 10) || now - mLastFlushMs >= 100;
         if (!due) {
             return 0;
         }
@@ -46,11 +50,12 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
         std::uint64_t const dropped = mQueueDropped.load(std::memory_order_relaxed);
         if (dropped != mSpoolDroppedMarked) {
             mSpoolDroppedMarked = dropped;
-            data += nlohmann::json{
-                {"event", "queue_dropped"       },
-                {"count", dropped               },
+            data +=
+                nlohmann::json{
+                    {"event", "queue_dropped"},
+                    {"count", dropped        },
             }
-                        .dump();
+                    .dump();
             data += '\n';
         }
         if (data.empty()) {
@@ -70,8 +75,8 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
     }
     mSpoolFile.write(data.data(), static_cast<std::streamsize>(data.size()));
     mSpoolFile.flush();
-    mSpoolFileBytes += data.size();
-    std::uint64_t rows = 0;
+    mSpoolFileBytes    += data.size();
+    std::uint64_t rows  = 0;
     for (char ch : data) {
         if (ch == '\n') {
             ++rows;
@@ -85,11 +90,10 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
     if (mSpoolFileBytes >= kSpoolRotateBytes) {
         mSpoolFile.close();
         std::error_code ec;
-        auto const      pid = std::to_string(GetCurrentProcessId());
+        auto const      pid     = std::to_string(GetCurrentProcessId());
         bool            rotated = false;
         for (int n = ++mSpoolRotation; n < mSpoolRotation + 1000 && !rotated; ++n) {
-            auto candidate = mSpoolPath.parent_path()
-                           / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
+            auto candidate = mSpoolPath.parent_path() / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
             if (!std::filesystem::exists(candidate, ec)) {
                 std::filesystem::rename(mSpoolPath, candidate, ec);
                 rotated = !ec;
@@ -205,22 +209,30 @@ void ProbeMod::serverLoop() {
                 }
                 flushSpool(true);
                 nlohmann::json helloJson{
-                    {"event", "hello"                },
-                    {"protocol", 4                   },
-                    {"spool", mSpoolPath.string()    },
-                    {"replay_rows", replay           },
+                    {"event",         "hello"             },
+                    {"protocol",      4                   },
+                    {"spool",         mSpoolPath.string() },
+                    {"replay_rows",   replay              },
                     {"queue_dropped", mQueueDropped.load()},
                 };
                 helloJson["capabilities"] = nlohmann::json::array(
-                    {"tick_json", "bin_record", "mem", "watch", "signin", "hook", "ecs"}
+                    {"tick_json",
+                     "bin_record",
+                     "mem",
+                     "watch",
+                     "signin",
+                     "hook",
+                     "ecs",
+                     "task_lifecycle",
+                     "chat_history"}
                 );
-                helloJson["build_id"]   = buildId();
-                helloJson["version_ok"] = versionOk();
+                helloJson["build_id"]      = buildId();
+                helloJson["version_ok"]    = versionOk();
                 helloJson["hooks_allowed"] = hooksAllowed();
                 helloJson["compat"]        = allowVersionMismatch();
                 helloJson["profile"]       = profileJson();
-                auto const hello   = helloJson.dump() + "\n";
-                DWORD      written = 0;
+                auto const hello           = helloJson.dump() + "\n";
+                DWORD      written         = 0;
                 BOOL const helloOk = WriteFile(pipe, hello.data(), static_cast<DWORD>(hello.size()), &written, nullptr);
                 bootLog(
                     "pipe: hello written=" + std::to_string(helloOk ? written : 0)
@@ -288,7 +300,7 @@ void ProbeMod::serverLoop() {
                     mDiscardPartial = true;
                     enqueue(
                         nlohmann::json{
-                            {"event",  "error"       },
+                            {"event",  "error"        },
                             {"reason", "line_too_long"},
                             {"bytes",  bytes          },
                     }

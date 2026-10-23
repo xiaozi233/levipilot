@@ -8,7 +8,7 @@ The stable surface is :class:`ModClient` (raw protocol), :class:`Harness`
 from __future__ import annotations
 
 from .client import Harness, ModClient
-from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
+from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTaskCancelled, ModTimeout
 from .hooks import HookHit, decode_hook_hits, float_from_bits
 from .memory import fnv1_64, fnv1a_64, format_address, parse_hex_bytes, to_hex
 from .packets import PACKET_NAMES, decode_packet, decode_row
@@ -29,6 +29,7 @@ __all__ = [
     "ModDisconnected",
     "ModPipeError",
     "ModProtocolError",
+    "ModTaskCancelled",
     "ModTimeout",
     "RecordEntry",
     "SpoolReader",

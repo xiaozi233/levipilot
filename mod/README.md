@@ -7,7 +7,7 @@ Python 客户端是 [`../driver/transport_mod.py`](../driver/transport_mod.py)�
 
 需要 VS Build Tools 2022、Windows SDK、LLVM 22 和 xmake 3.1.2。本机完整路径和两个必须保留的
 工具链补丁见 [`../docs/mod-build-environment.md`](../docs/mod-build-environment.md)。
-GitHub Actions 只运行 Python 单元测试；mod 构建依赖本机 LLVM22/xmake 补丁，是本地步骤。
+GitHub Actions 运行 Python 检查和无 SDK 的 native 任务模型测试；完整 mod 构建依赖本机工具链。
 
 ```bash
 cd mod/probe
@@ -39,6 +39,7 @@ xmake -j4 -y
 | 命令 | 说明 |
 |---|---|
 | `ping` / `status` / `state` | 心跳、状态、玩家快照 |
+| `chat_history` | `limit`（1–64，默认 32）；客户端保留的聊天快照，含文字、类型、截断标记 |
 | `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
 | `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
 | `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程）；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
@@ -93,6 +94,15 @@ xmake -j4 -y
 | `place` | `x,y,z,against?,face?,expected?,slot?,max_ticks`；瞄准、放置并回读验证 |
 | `use` | `ticks`；等待后在服务端玩家上走 `Item::use`（+ 食物的 `useTimeDepleted`），消耗、效果和背包同步都是权威的 |
 | `task_status` / `task_stop` | 查询或取消当前闭环任务 |
+
+任务生命周期：所有六种任务共用单一活动槽；任何新任务都会替换旧任务。
+`*_started`、完成事件、`task_status` 均带 `task_id`；取消发
+`task_cancelled {task_id,task,ok:false,reason}`，reason 包括 `replaced/stopped/panic/reset/world_left/disabled/internal_error`。
+新 Python 任务方法要求配套更新 mod，通过 ID 等待结果，取消抛 `ModTaskCancelled`。
+`use` 等待服务端完成期间仍为 active，`phase=server_pending`；已取消的回调不消费物品。
+模式拼写错误、路线超过 64 点、非对象 waypoint、expected 超过 255 UTF-8 字节均明确拒绝，
+不会改动当前任务。事件队列拥塞报 `task_backpressure`，消费端每 25 ms 处理定长任务记录。
+
 | `worlds` | 列出缓存世界：`id` / `name` / `last_saved` / `game_type` |
 | `enter_world` | `name`/`id`，可选 `intent`/`force`；先等 Xbox Live 登录，成功后发 `enter_world_settled` |
 | `signin` | 主菜单的 Xbox Live 登录态：`known`、`signed_in` |
@@ -127,7 +137,7 @@ xmake -j4 -y
 按下沿）、`block_below` / `block_feet` / `block_head`（按脚部坐标取方块）。
 
 握手 `hello` 现在带 `protocol:4`、`capabilities`（`tick_json`/`bin_record`/`mem`/`watch`/
-`signin`/`hook`/`ecs`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
+`signin`/`hook`/`ecs`/`task_lifecycle`/`chat_history`）、`spool`（本进程 spool 文件绝对路径）、`replay_rows`（没有客户端时积压、
 本次连接会补发的行数）和 `queue_dropped`。`status` 额外带 `spool_rows`、
 `spool_flushes`、`allow_write`、`tick_thread_id`、`tick_probe_addr`、`watch_count`、
 `watch_hits`、`watch_dropped`、`record_active`、`record_rows`、`record_head`、
@@ -172,6 +182,21 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 不需要时删除该文件即可。
 
 ## 实测（1.26.51.01 创作存档）
+
+- 任务重设计：单活动槽、ID 关联、统一取消、旧 use 回调抑制、定长结果后台格式化；
+  自检入口 `check_task_lifecycle`，受控故障入口 `selftest_task_fault` 需要 `allow_selftest_stress`。
+- Python 会话重设计：旧线程与新会话隔离；请求保留异步事件，缓冲有界并显式报溢出。
+- `chat_history` / CLI `chat-history --limit 32` 读取客户端保留的聊天文字；只在客户端线程
+  做定长快照，后台格式化，最多 64 条、每条 2047 UTF-8 字节，截断显式标记。
+  它不是永久日志，重启或游戏清理的历史无法追回；`command_done` 仍只有执行标志和代码。
+- `navigate/route` 共用转向与接近减速，修复小容差下边转向边满速前进造成的绕圈。
+  `check_task_operations` 覆盖两种入口、四种朝向、真实放置/挖掘回读；清理先检查是否已为空气。
+- 聊天接口已捕获中文 `§c该方块无法放置`：向已经为空气的单元重复 setblock 可复现。
+  H2 封包自检改为先确认空气、放金块、回读并恢复空气，防止重复运行因残留金块产生
+  报错而仍被旧的最终类型检查误判为通过。
+- `state.effects` 仅报告实际效果，过滤游戏清除后留下的 NO_EFFECT 空槽；speed 正向及
+  clear/reset 后空列表检查在 live selftest 中，跳跃轨迹断言保持不变。
+
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
   12.04 格、接地 100%
@@ -310,6 +335,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 2026-10-23 CLI 续轮：参数定义、8 个领域执行与入口编排分离，236 组旧行为对照一致；
   Python 单测 **155/155**、真实 CLI 管道检查 **9/9**、完整 live selftest **163/163**，
   受鼠标干扰的宏确定性另行复测 **2/2** 通过，现有导入路径、参数、输出和退出码保持兼容。
+- 2026-10-23 行为重设计：单活动任务/任务 ID、Python session 所有权与事件保留、聊天快照；
+  修复导航绕圈、空效果槽与封包自检假阳性。Python **165/165**、live selftest **209/209**，
+  宏严格复测 **2/2**（视角漂移 0°、落点差 0）；C++ 构建、ruff/mypy/profile 检查通过。
+  新客户端任务方法需要配套新 mod；迁移和验证限制见 [`refactoring.md`](../docs/refactoring.md)。
 
 ## 限制
 

@@ -156,3 +156,152 @@ tick / hook / VEH → 定长记录环 → 管道格式化 / spool → Python 解
 已完成所定范围内的重构与验收。`ProbeMod` 状态进一步封装、live selftest 按能力拆分，以及
 `place/use` 与 jump/route 的任务替换语义仍是独立的后续设计议题；当前重构保留现有行为，
 没有把需要先定义行为的任务清理策略顺便改掉。
+
+
+## 行为重设计：任务与连接的所有权
+
+本轮用户明确允许破坏性改动。基线为 `f74a1cf`，工作区干净、155 项无游戏测试通过。
+前三轮解决了入口耦合，本轮按状态不变量重设计两个核心组件，保留已经分域的命令与 CLI。
+
+| 问题 | 实际后果 | 优先级与实施顺序 |
+| --- | --- | --- |
+| 六个 optional + 六份 reset 清单 | `place/use` 漏清 jump/route，隐藏任务可继续运行 | P0：先建立单活动任务模型 |
+| epoch 仅防写回，终结事件在校验后无条件发送 | 已替换任务仍可能发完成事件；旧 use 服务端回调仍能消费物品 | P0：副作用、状态变换、结果提交使用同一同步边界 |
+| 读线程持有 self 上会被重连替换的队列/停止信号 | 迟到的旧线程能向新连接投递数据或关闭通知 | P0：每次连接独占 session |
+| 请求循环丢弃所有其他事件 | 录制、世界事件、任务结果会被其他请求吃掉 | P1：响应等待与延后事件消费分开 |
+| task tick 构造 JSON/复制字符串 | 热路径分配，任务状态与传输格式耦合 | P1：定长类型和事件，后台格式化 |
+| 非法模式回退、路线静默截断/跳过坏行 | 调用成功却执行了另一种任务 | P1：先完整验证，再改变活动任务 |
+
+### 实施设计
+
+- `TaskModel.h` 是不依赖 SDK 的领域模型。`TaskState` 是封闭的 variant，`TaskController`
+  封装活动槽、ID、同步和固定容量事件队列。它替代原任务锁和 epoch，没有新增第二把任务锁。
+- `Tasks.cpp` 只计算一个 tick 并写 `TaskStep`；不构造任务 JSON、字符串或服务端闭包，
+  不复制整条 route 再写回。固定文字缓冲按 UTF-8 字符边界截断。
+- `TaskEvents.cpp` 在已有 spool 线程消费记录，负责 wire 格式和服务器使用物品的调度。
+  use 从 waiting 转到 server_pending 后仍占有任务，服务器回调核对 ID 后才能产生副作用。
+- tick 与取消串行化，完成/取消只能提交一次；请求解析失败、背压拒绝不会取消当前任务。
+  128 槽事件队列为取消预留空间；背压时暂缓任务并释放脚本移动输入，排空后再推进。
+- 任务接管清理输入，宏的按键释放从管道线程移回游戏线程。退出世界/reset/panic/disable
+  统一调用取消入口。已完成的游戏副作用不做事务回滚，取消作用于之后的推进/回调。
+- 游戏调用的 AV 由锁内 SEH 边界转成任务失败，避免 `/EHsc` 下 AV 把任务锁永久占住。
+  服务器使用也有独立 SEH 边界；C++ 异常走正常栈展开及错误结果。
+- `_PipeSession` 独占句柄、读线程、停止信号及两个消息缓冲。连接对象负责串行工作流和
+  会话切换，读线程只写自己的 session。关闭连接可唤醒消费者。
+- `request` 等待新的响应并保存其他事件；`wait_event` 可按谓词取出缓冲事件；`readline`
+  按顺序消费剩余消息。接收队列 8192 行、pending 4096 行，超限明确断线而不无限增长。
+  `exchange` 串行化整个工作流，协议 4 仍为单路请求，并未伪装成多路并发 RPC。
+
+### 有意改变的行为与迁移
+
+1. 任意新任务替换旧任务，包括 `place/use` 对 jump/route；没有任务队列或隐式恢复。
+   正常结果事件保留，新加 `task_cancelled`；通过其 reason 区分 replaced、stopped、panic 等。
+2. 所有 started、terminal、status 带 `task_id`；ID 在当前 mod 生命周期递增，空闲 status 为 0。
+   事件转换异步，可能与其他命令回复交错，调用者必须按 ID 匹配。
+3. Python 阻塞任务方法先等 started 再按 ID 等终结；取消抛 `ModTaskCancelled`，包含
+   `task_id/reason`。新客户端的任务方法需要同步更新 mod；旧 mod 缺少 ID 时明确报错。
+   普通命令、旧包入口与 CLI 参数继续可用，协议号保持 4，hello 新增 `task_lifecycle` capability。
+4. 非法 jump mode、超过 64 点的 route、非对象 waypoint、超过 255 UTF-8 字节的 expected
+   现在报错，不再容错为另一个任务。超长路线请由调用者明确拆成多次 route。
+5. 等待请求不再吞掉异步事件。因此 `readline` 可能读到过去被丢掉的 tick/世界通知，
+   调用者要按 event 筛选；持续录制要及时消费，或用二进制记录环/落盘接口。
+6. 同一连接的阻塞工作流串行执行。低层多步 send/readline 使用 `with client.exchange()`；
+   `close()` 可从另一个线程中断等待。若需要后台启动任务，使用 request 等 started，
+   之后可顺序调用 task_stop，再 wait_event 读取对应 ID 的取消通知。
+
+```python
+from driver.harness import ModClient, ModTaskCancelled
+
+with ModClient() as client:
+    started = client.request({"cmd": "use", "ticks": 2000}, "use_started")
+    client.task_stop()
+    event = client.wait_event(
+        "task_cancelled", predicate=lambda row: row.get("task_id") == started["task_id"]
+    )
+    assert event["reason"] == "stopped"
+```
+
+领域状态仍逐个封装：本轮没有把内存、封包、世界模块全部塞进一个通用框架，也没有改动
+版本 profile、低层观察点/钩子权限或 CLI 固定基线。`ProbeMod` 保留生命周期编排和其余领域
+组件；需要继续拆分的模块应先定义自己的线程/所有权不变量。
+
+### 可复现验证
+
+- `py -3.11 -m unittest discover -s tests -v`：包含生产 C++ 模型的独立编译/运行，
+  验证 36 组替换、唯一终结、服务器旧回调无副作用、异常终结、取消与完成竞态、背压恢复、
+  UTF-8 截断，以及 1000 轮控制器操作零 C++ 堆分配。CI 要求 clang++，本地缺失时明确 skipped。
+- Python 定向检查覆盖迟到旧线程、关闭唤醒、异步事件保留及顺序、缓冲溢出、旧结果 ID 隔离、
+  typed cancellation 和缺 ID 的旧 mod。CLI 的 236 组固定行为检查仍保留。
+- `driver/selftest.py::check_task_lifecycle` 验证 jump/route 到 place/use、非法请求保留当前任务、
+  服务端空手结果及连续三次重连。`selftest_task_fault` 在 `allow_selftest_stress` 下制造一次
+  任务锁内 AV，检查失败结果、任务空闲与 tick 继续；开关关闭时只检查拒绝并注明跳过。
+- 运行 lint、format、mypy、profile 生成检查，构建并安装 DLL 后执行完整 live selftest。
+
+最终验收数据见下方，运行日志保存在忽略的 `out/redesign-*` 中。
+
+
+### 验收中发现的状态输出缺陷
+
+第二轮连续完整自检中 `jump_motion_ready` 失败。回读发现 effects 里是七个
+`id=0,duration=0` 的空槽；`Actor::getAllEffects()` 在 clear/重置后保留了 NO_EFFECT
+占位。这不是活跃状态，却让调用者误以为仍有药水效果。
+`State.cpp` 现在通过游戏提供的 `MobEffectInstance::NO_EFFECT()` 标识过滤空槽，
+没有修改实际效果、持续时间或跳跃算法。speed 的正向检查保留，并新增 clear/reset
+后 effects 为空的两条回归；无限效果不通过 duration 数值判断，避免误删。
+
+正常操作另有 `check_task_operations`：在先回读为空的临时单元上真实放置、挖掘，
+并验证导航落点、任务 ID 和 block 回读；最终恢复单元、空槽、模式、位置与选中槽。
+
+### 验收中的导航与诊断修正
+
+初始朝向 -53.17°、目标向北 0.7 格、容差 0.15 格时，旧导航稳定绕圈并在 80 tick
+超时，终点误差约 0.2965 格；相同位置从 180° 出发能成功，方块回读排除了障碍。
+原因是限制转角为每 tick 35°，却一直满速前进。`navigate/route` 现在共用转向策略：
+尚未对准时不前进，接近目标逐渐减速，低速区关闭 sprint，原地转向不累计卡住起跳。
+自检从四种初始朝向分别验证两种入口；未降低容差或跳过失败项。
+
+用户看到“该方块无法放置”的提示时，日志中的放置与挖掘均已成功，随后冗余的
+`setblock ... air` 返回 false。清理现在先回读，仅当方块仍存在时执行，并保留最终验证。
+原接口未记录聊天文字，因此新增 `chat_history` / `chat-history --limit 32`：客户端线程
+读取游戏保留的缓存并复制到定长 mailbox，spool 线程格式化；不使用内存偏移或新 hook。
+最多 64 条、每条 2047 UTF-8 字节，保留原语言并标记截断；这不是永久日志，也不能恢复
+游戏已经清除的历史。live selftest 用仅自己可见的 tellraw 标记验证实际文字读取及 CLI。
+CLI 固定基线未重采集；对帮助/错误输出只排除这一条有意增加的命令，再对照原样本，
+并单独检查新命令的调用及帮助。
+
+新接口实际读到了中文测试消息，并通过封包通道向本来就是空气的单元再次 setblock air，
+复现并捕获了 `§c该方块无法放置`。普通 `command` 使用 suppressOutput，故不能凭它的
+false 结果断言原聊天提示一定来自清理。进一步检查发现旧 H2 封包自检反复在固定位置
+放置金块且不恢复：后续运行可能因目标本来就是金块而报错，最终类型检查却仍通过。
+H2 现在选择预先回读为空气的单元，验证空气 → 金块，再在 finally 清理并验证恢复空气；
+不会删除旧测试或用户已有的金块。`packet_inject_setblock_precondition/restored` 保证这项
+检查必须发生实际状态变化，排除了原来的重复运行假阳性。
+
+宏回放自检在 reset 后显式等 10 tick，再等静止。`reset_done` 只表示请求已接受，
+服务端传送和客户端同步尚未落定；旧位置静止不能当作新起点就绪。
+独立严格复测保留了视角漂移 < 0.1°、两次落点差 < 0.0001 格的断言。
+
+### 本轮最终验收
+
+- Python 单测 **165/165**，包含生产任务控制器的 native 编译/运行与 236 组 CLI 固定基线。
+  ruff lint / format、mypy（25 个文件）、profile 生成一致性和 Git whitespace 检查通过。
+- `xmake -j4 -y` 全量构建成功；已备份旧 mod，保存退出后安装并重启进入“超平坦测试”。
+  构建和安装的 DLL SHA256 一致：
+  `62f1960f37c6fc119f12f286aaff41a70e00824f14a8fe7f022bd9e5aa4e970f`。
+- 导航/路线的四种朝向及真实放置/挖掘定向检查 **13/13**；聊天接口实际捕获了中文
+  tellraw 与重复 setblock 的错误提示，CLI 可读取同样的客户端缓存。
+- 完整 live selftest **209/209**。HID 连跳 4 次、脚本连跳 4 次和单次 jump_when 的完整弧线
+  比较通过，误差 < 0.0001 格，没有重新引入此前的起跳补位移。
+- 一轮完整自检的宏确定性断言按原规则因外部视角变化跳过；独立严格复测 **2/2**，
+  两次视角漂移均为 0°、落点误差 0.000000 格。未放宽精度断言。
+  加入 reset 后等待后再次完整复跑 **209/209**，宏精度断言未跳过，落点误差仍为 0。
+- 运行结束恢复原位置、朝向和选中槽位，停止任务/移动/宏/录制，确认 HUD、观察点清空。
+  备份与日志保存在忽略的 `out/redesign-*`；验证针对本机 1.26.51.01 单人测试世界，
+  不据此宣称其他版本或所有并发场景都已覆盖。
+
+CI 复用现有工作流；native 测试自行从 PATH、Windows 标准 LLVM 安装目录或本机工具目录
+寻找 clang++，CI 找不到编译器时失败，不默默跳过。
+
+最终日志：`out/redesign-unittest-accepted.log`、`out/redesign-chat-build.log`、
+`out/redesign-selftest-accepted.log`、`out/redesign-macro-verified.log`、
+`out/redesign-chat-error-repro.log`；安装备份为 `out/redesign-backup-32084/`。

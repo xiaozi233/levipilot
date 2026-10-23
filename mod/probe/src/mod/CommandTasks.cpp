@@ -5,18 +5,47 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_task_fault") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        if (!mInWorld.load()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        UseTask task;
+        task.ticks    = 2000;
+        auto const id = startTask(task);
+        if (id == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
+        }
+        mTaskFaultId.store(id);
+        enqueue(
+            nlohmann::json{
+                {"event",   "task_fault_started"},
+                {"task_id", id                  }
+        }.dump()
+        );
+        return true;
+    }
     if (cmd == "navigate") {
         if (!mInWorld.load()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
         NavigateTask task;
-        task.x         = j.value("x", 0.0f);
-        task.z         = j.value("z", 0.0f);
-        task.tolerance = std::max(0.05f, j.value("tolerance", 0.35f));
-        task.sprint    = j.value("sprint", false);
-        task.maxTicks  = std::clamp(j.value("max_ticks", 600), 1, 200000);
+        task.x                 = j.value("x", 0.0f);
+        task.z                 = j.value("z", 0.0f);
+        task.tolerance         = std::max(0.05f, j.value("tolerance", 0.35f));
+        task.sprint            = j.value("sprint", false);
+        task.maxTicks          = std::clamp(j.value("max_ticks", 600), 1, 200000);
         std::string const jump = j.value("jump", std::string{"auto"});
+        if (jump != "auto" && jump != "distance" && jump != "edge" && jump != "never") {
+            enqueue(R"({"event":"error","reason":"invalid_jump_mode"})");
+            return true;
+        }
         if (jump == "distance") {
             task.jumpMode = JumpMode::Distance;
         } else if (jump == "edge") {
@@ -26,26 +55,21 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         }
         task.jumpDistance  = std::clamp(j.value("jump_distance", 1.0f), 0.1f, 8.0f);
         task.edgeLookahead = std::clamp(j.value("edge_lookahead", 0.55f), 0.2f, 1.5f);
-        {
-            std::lock_guard lock(mTaskMutex);
-            ++mTaskEpoch;
-            mNavigateTask = task;
-            mMineTask.reset();
-            mPlaceTask.reset();
-            mUseTask.reset();
-            mJumpTask.reset();
-            mRouteTask.reset();
+        auto const taskId  = startTask(task);
+        if (taskId == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
         }
-        beginTask();
         enqueue(
             nlohmann::json{
-                {"event",     "navigate_started"},
-                {"x",         task.x            },
-                {"z",         task.z            },
-                {"tolerance", task.tolerance    },
-                {"max_ticks", task.maxTicks     },
-                {"jump",      jump              },
-                {"jump_distance", task.jumpDistance},
+                {"event",         "navigate_started"},
+                {"task_id",       taskId            },
+                {"x",             task.x            },
+                {"z",             task.z            },
+                {"tolerance",     task.tolerance    },
+                {"max_ticks",     task.maxTicks     },
+                {"jump",          jump              },
+                {"jump_distance", task.jumpDistance },
         }
                 .dump()
         );
@@ -56,8 +80,12 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
-        JumpTask task;
+        JumpTask          task;
         std::string const mode = j.value("mode", std::string{"now"});
+        if (mode != "now" && mode != "tick" && mode != "distance" && mode != "edge") {
+            enqueue(R"({"event":"error","reason":"invalid_jump_mode"})");
+            return true;
+        }
         if (mode == "distance") {
             task.mode = JumpMode::Distance;
         } else if (mode == "edge") {
@@ -77,28 +105,23 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         task.afterTicks    = std::clamp(j.value("after_ticks", 1), 1, 2000);
         task.maxTicks      = std::clamp(j.value("max_ticks", 60), 1, 5000);
         task.edgeLookahead = std::clamp(j.value("edge_lookahead", 0.55f), 0.2f, 1.5f);
-        {
-            std::lock_guard lock(mTaskMutex);
-            ++mTaskEpoch;
-            mJumpTask = task;
-            mNavigateTask.reset();
-            mRouteTask.reset();
-            mMineTask.reset();
-            mPlaceTask.reset();
-            mUseTask.reset();
+        auto const taskId  = startTask(task);
+        if (taskId == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
         }
-        beginTask();
         enqueue(
             nlohmann::json{
                 {"event",       "jump_when_started"},
-                {"mode",        mode              },
-                {"x",           task.x            },
-                {"z",           task.z            },
-                {"distance",    task.distance     },
-                {"forward",     task.forward      },
-                {"sprint",      task.sprint       },
-                {"after_ticks", task.afterTicks   },
-                {"max_ticks",   task.maxTicks     },
+                {"task_id",     taskId             },
+                {"mode",        mode               },
+                {"x",           task.x             },
+                {"z",           task.z             },
+                {"distance",    task.distance      },
+                {"forward",     task.forward       },
+                {"sprint",      task.sprint        },
+                {"after_ticks", task.afterTicks    },
+                {"max_ticks",   task.maxTicks      },
         }
                 .dump()
         );
@@ -113,18 +136,27 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"missing_waypoints"})");
             return true;
         }
+        if (j["waypoints"].size() > RouteTask::MaxWaypoints) {
+            enqueue(R"({"event":"error","reason":"too_many_waypoints"})");
+            return true;
+        }
         RouteTask task;
         task.sprint = j.value("sprint", false);
         for (auto const& row : j["waypoints"]) {
             if (!row.is_object()) {
-                continue;
+                enqueue(R"({"event":"error","reason":"invalid_waypoint"})");
+                return true;
             }
             RouteWaypoint point;
-            point.x         = row.value("x", 0.0f);
-            point.z         = row.value("z", 0.0f);
-            point.tolerance = std::clamp(row.value("tolerance", 0.35f), 0.05f, 2.0f);
-            point.maxTicks  = std::clamp(row.value("max_ticks", 600), 1, 200000);
+            point.x                = row.value("x", 0.0f);
+            point.z                = row.value("z", 0.0f);
+            point.tolerance        = std::clamp(row.value("tolerance", 0.35f), 0.05f, 2.0f);
+            point.maxTicks         = std::clamp(row.value("max_ticks", 600), 1, 200000);
             std::string const jump = row.value("jump", std::string{"auto"});
+            if (jump != "auto" && jump != "distance" && jump != "edge" && jump != "never") {
+                enqueue(R"({"event":"error","reason":"invalid_jump_mode"})");
+                return true;
+            }
             if (jump == "distance") {
                 point.jumpMode = JumpMode::Distance;
             } else if (jump == "edge") {
@@ -132,32 +164,24 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             } else if (jump == "never") {
                 point.jumpMode = JumpMode::Never;
             }
-            point.jumpDistance = std::clamp(row.value("jump_distance", 1.0f), 0.1f, 8.0f);
+            point.jumpDistance        = std::clamp(row.value("jump_distance", 1.0f), 0.1f, 8.0f);
             task.points[task.count++] = point;
-            if (task.count >= RouteTask::MaxWaypoints) {
-                break;
-            }
         }
         if (task.count == 0) {
             enqueue(R"({"event":"error","reason":"missing_waypoints"})");
             return true;
         }
-        {
-            std::lock_guard lock(mTaskMutex);
-            ++mTaskEpoch;
-            mRouteTask = task;
-            mNavigateTask.reset();
-            mJumpTask.reset();
-            mMineTask.reset();
-            mPlaceTask.reset();
-            mUseTask.reset();
+        auto const taskId = startTask(task);
+        if (taskId == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
         }
-        beginTask();
         enqueue(
             nlohmann::json{
-                {"event",     "route_started"    },
-                {"waypoints", task.count         },
-                {"sprint",    task.sprint        },
+                {"event",     "route_started"},
+                {"task_id",   taskId         },
+                {"waypoints", task.count     },
+                {"sprint",    task.sprint    },
         }
                 .dump()
         );
@@ -169,24 +193,19 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         MineTask task;
-        task.x        = j.value("x", 0);
-        task.y        = j.value("y", 0);
-        task.z        = j.value("z", 0);
-        task.maxTicks = std::clamp(j.value("max_ticks", 400), 1, 200000);
-        {
-            std::lock_guard lock(mTaskMutex);
-            ++mTaskEpoch;
-            mMineTask = task;
-            mNavigateTask.reset();
-            mPlaceTask.reset();
-            mUseTask.reset();
-            mJumpTask.reset();
-            mRouteTask.reset();
+        task.x            = j.value("x", 0);
+        task.y            = j.value("y", 0);
+        task.z            = j.value("z", 0);
+        task.maxTicks     = std::clamp(j.value("max_ticks", 400), 1, 200000);
+        auto const taskId = startTask(task);
+        if (taskId == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
         }
-        beginTask();
         enqueue(
             nlohmann::json{
                 {"event",     "mine_started"},
+                {"task_id",   taskId        },
                 {"x",         task.x        },
                 {"y",         task.y        },
                 {"z",         task.z        },
@@ -202,12 +221,17 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         PlaceTask task;
-        task.x        = j.value("x", 0);
-        task.y        = j.value("y", 0);
-        task.z        = j.value("z", 0);
-        task.maxTicks = std::clamp(j.value("max_ticks", 30), 2, 200);
-        task.expected = j.value("expected", std::string{});
-        task.slot     = j.value("slot", -1);
+        task.x              = j.value("x", 0);
+        task.y              = j.value("y", 0);
+        task.z              = j.value("z", 0);
+        task.maxTicks       = std::clamp(j.value("max_ticks", 30), 2, 200);
+        auto const expected = j.value("expected", std::string{});
+        if (expected.size() >= task.expected.bytes.size()) {
+            enqueue(R"({"event":"error","reason":"expected_too_long"})");
+            return true;
+        }
+        task.expected.assign(expected);
+        task.slot = j.value("slot", -1);
         if (task.slot < -1 || task.slot > 8) {
             task.slot = -1;
         }
@@ -226,18 +250,15 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
                 );
             }
         }
-        {
-            std::lock_guard lock(mTaskMutex);
-            ++mTaskEpoch;
-            mPlaceTask = task;
-            mNavigateTask.reset();
-            mMineTask.reset();
-            mUseTask.reset();
+        auto const taskId = startTask(task);
+        if (taskId == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
         }
-        beginTask();
         enqueue(
             nlohmann::json{
                 {"event",     "place_started"},
+                {"task_id",   taskId         },
                 {"x",         task.x         },
                 {"y",         task.y         },
                 {"z",         task.z         },
@@ -254,20 +275,17 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         UseTask task;
-        task.ticks = std::clamp(j.value("ticks", 32), 1, 2000);
-        {
-            std::lock_guard lock(mTaskMutex);
-            ++mTaskEpoch;
-            mUseTask = task;
-            mNavigateTask.reset();
-            mMineTask.reset();
-            mPlaceTask.reset();
+        task.ticks        = std::clamp(j.value("ticks", 32), 1, 2000);
+        auto const taskId = startTask(task);
+        if (taskId == 0) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
         }
-        beginTask();
         enqueue(
             nlohmann::json{
-                {"event", "use_started"},
-                {"ticks", task.ticks   }
+                {"event",   "use_started"},
+                {"task_id", taskId       },
+                {"ticks",   task.ticks   }
         }.dump()
         );
         return true;
@@ -277,7 +295,7 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "task_stop") {
-        cancelTasks();
+        cancelTasks("stopped");
         beginTask();
         enqueue(R"({"event":"task_stopped"})");
         return true;

@@ -128,6 +128,8 @@ bool ProbeMod::enable() {
     });
     mExitLevelListener       = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
         mInWorld = false;
+        cancelTasks("world_left");
+        beginTask();
         bool const wasJoining = mJoinPending.exchange(false);
         enqueue(R"({"event":"world_left"})");
         if (wasJoining) {
@@ -156,6 +158,7 @@ bool ProbeMod::disable() {
         return true;
     }
 
+    cancelTasks("disabled");
     mMacroRecording = false;
     mMacroPlaying   = false;
     packetCaptureStop();
@@ -384,6 +387,8 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     if (int click = mClickRequest.exchange(-1); click >= 0) {
         performClick(player, click);
     }
+
+    if (mMacroStopRequested.exchange(false)) releaseMacroInputs();
 
     // Closed-loop tasks own the tick while they run.
     if (tickTask(*client, player)) {
@@ -923,7 +928,7 @@ void ProbeMod::reportInternalError(char const* phase, std::string const& message
         request.jumpCancel = true;
         ++request.jumpSeq;
     });
-    cancelTasks();
+    cancelTasks("internal_error");
 
     std::uint64_t const now  = GetTickCount64();
     std::uint64_t const last = mLastInternalErrorMs.load(std::memory_order_relaxed);

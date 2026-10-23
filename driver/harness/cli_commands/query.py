@@ -9,6 +9,9 @@ from ..commands import ModClient
 
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
+    if args.command == "chat-history":
+        print(json.dumps(client.chat_history(args.limit), ensure_ascii=False, indent=2))
+        return True
     if args.command == "state":
         print(json.dumps(client.state(), ensure_ascii=False, indent=2))
         return True

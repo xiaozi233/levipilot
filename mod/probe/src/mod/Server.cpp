@@ -54,7 +54,7 @@ void ProbeMod::requestServerTeleport(LocalPlayer& player, TeleportRequest const&
 
 
 void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch) {
-    cancelTasks();
+    cancelTasks("reset");
     beginTask();
     mClickRequest.store(-1);
     mSlotRequest.store(-1);

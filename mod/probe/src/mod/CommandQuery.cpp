@@ -5,6 +5,10 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "chat_history") {
+        requestChatHistory(std::clamp(j.value("limit", 32), 1, 64));
+        return true;
+    }
     if (cmd == "state") {
         auto const now = GetTickCount64();
         if (!mInWorld.load() || (mLastTickMs.load() != 0 && now - mLastTickMs.load() > 1000)) {

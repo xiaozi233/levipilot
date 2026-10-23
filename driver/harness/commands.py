@@ -1,7 +1,7 @@
 """Game command payloads and workflows on top of the pipe connection.
 
-ModClient remains the public client type; all methods retain their wire payloads,
-response events and individual timeout policies.
+ModClient builds command payloads and coordinates workflows. Task completion
+is bound to the accepted task ID; transport owns sessions and event buffering.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from .connection import PipeConnection
-from .errors import ModPipeError, ModProtocolError, ModTimeout
+from .errors import ModPipeError, ModProtocolError, ModTaskCancelled, ModTimeout
 from .memory import parse_hex_bytes, to_hex
 from .record import RecordEntry, decode_dump
 
@@ -265,19 +265,7 @@ class ModClient(PipeConnection):
             message["symbol"] = symbol
         else:
             message["va"] = va
-        self.send(message)
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.close()
-                raise ModTimeout(f"hook_install 等待结果超时（{timeout:.1f}s）")
-            reply = self._next_line(remaining)
-            event = reply.get("event")
-            if event in {"hook_installed", "hook_dry_run"}:
-                return reply
-            if event == "error":
-                raise ModProtocolError(f"hook_install: {reply.get('reason', reply)}")
+        return self.request(message, ("hook_installed", "hook_dry_run"), timeout)
 
     def hook_rm(self, hook_id: int) -> dict[str, Any]:
         return self.request({"cmd": "hook_rm", "id": int(hook_id)}, "hook_removed")
@@ -314,15 +302,7 @@ class ModClient(PipeConnection):
 
         This is the isolation check from T1: the game must keep ticking.
         """
-        self.send({"cmd": "selftest_av"})
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise ModTimeout("selftest_av 等待错误回复超时")
-            message = self._next_line(remaining)
-            if message.get("event") in {"error", "selftest_fault_done"}:
-                return message
+        return self.request({"cmd": "selftest_av"}, ("error", "selftest_fault_done"), timeout)
 
     # -- T3: hardware watchpoints ---------------------------------------------
     def watch_set(
@@ -371,6 +351,14 @@ class ModClient(PipeConnection):
 
     def state(self) -> dict[str, Any]:
         return self.request({"cmd": "state"}, "state")
+
+    def chat_history(self, limit: int = 32) -> dict[str, Any]:
+        """Read the client's retained chat messages, oldest first (at most 64).
+
+        This is a snapshot, not a durable log. Each text is capped at 2047 UTF-8
+        bytes and reports truncation; the game controls history retention.
+        """
+        return self.request({"cmd": "chat_history", "limit": int(limit)}, "chat_history")
 
     def start(self, max_ticks: int = 0) -> dict[str, Any]:
         return self.request({"cmd": "start", "max_ticks": int(max_ticks)}, "started")
@@ -651,6 +639,31 @@ class ModClient(PipeConnection):
             {"cmd": "click", "button": button, "reach": float(reach)}, "click_result"
         )
 
+    def _task_request(
+        self, message: dict[str, Any], started: str, terminal: str | tuple[str, ...], timeout: float
+    ) -> dict[str, Any]:
+        """Bind completion to the task accepted by this command, not its type."""
+        events = (terminal,) if isinstance(terminal, str) else terminal
+        with self.exchange():
+            deadline = time.monotonic() + timeout
+            accepted = self.request(message, started, timeout=timeout)
+            task_id = accepted.get("task_id")
+            if not isinstance(task_id, int) or task_id <= 0:
+                self.close()
+                raise ModProtocolError("任务响应缺少 task_id；请更新 probe mod")
+            try:
+                result = self.wait_event(
+                    (*events, "task_cancelled"),
+                    max(0.0, deadline - time.monotonic()),
+                    predicate=lambda row: row.get("task_id") == task_id,
+                )
+            except ModTimeout:
+                self.close()
+                raise
+            if result["event"] == "task_cancelled":
+                raise ModTaskCancelled(task_id, str(result.get("reason", "cancelled")))
+            return result
+
     def navigate(
         self,
         x: float,
@@ -672,7 +685,7 @@ class ModClient(PipeConnection):
         """
         if timeout is None:
             timeout = max_ticks / 20.0 + 15.0
-        return self.request(
+        return self._task_request(
             {
                 "cmd": "navigate",
                 "x": float(x),
@@ -684,6 +697,7 @@ class ModClient(PipeConnection):
                 "jump_distance": float(jump_distance),
                 "edge_lookahead": float(edge_lookahead),
             },
+            "navigate_started",
             "navigated",
             timeout=timeout,
         )
@@ -728,7 +742,7 @@ class ModClient(PipeConnection):
             message["yaw"] = float(yaw)
         if timeout is None:
             timeout = max_ticks / 20.0 + 10.0
-        return self.request(message, "jumped", timeout=timeout)
+        return self._task_request(message, "jump_when_started", "jumped", timeout=timeout)
 
     def route(
         self,
@@ -748,19 +762,12 @@ class ModClient(PipeConnection):
         total_ticks = sum(int(point.get("max_ticks", 600)) for point in points)
         if timeout is None:
             timeout = total_ticks / 20.0 + 20.0
-        self.send({"cmd": "route", "waypoints": points, "sprint": bool(sprint)})
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self.close()
-                raise ModTimeout(f"route 等待完成超时（{timeout:.1f}s）")
-            message = self._next_line(remaining)
-            event = message.get("event")
-            if event in {"route_done", "route_failed"}:
-                return message
-            if event == "error":
-                raise ModProtocolError(f"route: {message.get('reason', message)}")
+        return self._task_request(
+            {"cmd": "route", "waypoints": points, "sprint": bool(sprint)},
+            "route_started",
+            ("route_done", "route_failed"),
+            timeout,
+        )
 
     def mine_block(
         self,
@@ -774,8 +781,9 @@ class ModClient(PipeConnection):
         """Break one block; the mod drives start/continueDestroyBlock per tick."""
         if timeout is None:
             timeout = max_ticks / 20.0 + 15.0
-        return self.request(
+        return self._task_request(
             {"cmd": "mine", "x": int(x), "y": int(y), "z": int(z), "max_ticks": int(max_ticks)},
+            "mine_started",
             "block_mined",
             timeout=timeout,
         )
@@ -815,13 +823,15 @@ class ModClient(PipeConnection):
             message["expected"] = expected
         if slot is not None:
             message["slot"] = int(slot)
-        return self.request(message, "block_placed", timeout=timeout)
+        return self._task_request(message, "place_started", "block_placed", timeout=timeout)
 
     def use_item(self, ticks: int = 32, *, timeout: float | None = None) -> dict[str, Any]:
         """Hold the main-hand item for ``ticks`` and then release it (eat/bow)."""
         if timeout is None:
             timeout = ticks / 20.0 + 10.0
-        return self.request({"cmd": "use", "ticks": int(ticks)}, "item_used", timeout=timeout)
+        return self._task_request(
+            {"cmd": "use", "ticks": int(ticks)}, "use_started", "item_used", timeout=timeout
+        )
 
     def task_status(self) -> dict[str, Any]:
         return self.request({"cmd": "task_status"}, "task_status")
@@ -869,14 +879,7 @@ class ModClient(PipeConnection):
 
     def wait_enter_settled(self, timeout: float = 45.0) -> dict[str, Any]:
         """Wait for the join outcome of the most recent ``enter_world``."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise ModTimeout(f"等待 enter_world_settled 超时（{timeout:.0f}s）")
-            message = self._next_line(remaining)
-            if message.get("event") == "enter_world_settled":
-                return message
+        return self.wait_event("enter_world_settled", timeout)
 
     def enter_world_ready(
         self,

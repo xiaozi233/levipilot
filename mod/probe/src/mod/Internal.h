@@ -19,12 +19,15 @@
 #include "mc/client/game/IGameServerShutdown.h"
 #include "mc/client/game/IGameServerStartup.h"
 #include "mc/client/game/IMinecraftGame.h"
+#include "mc/client/gui/GuiData.h"
 #include "mc/client/options/IOptionRegistry.h"
 
 #include "mc/client/game/StartIntent.h"
 #include "mc/client/input/ClientMoveInputHandler.h"
 #include "mc/client/input/MinecraftInputHandler.h"
 #include "mc/client/player/LocalPlayer.h"
+#include "mc/deps/application/AppPlatform.h"
+#include "mc/deps/application/gamecore/Platform_GameCore.h"
 #include "mc/deps/core/math/Vec2.h"
 #include "mc/deps/core/math/Vec3.h"
 #include "mc/deps/core/utility/BinaryStream.h"
@@ -35,40 +38,36 @@
 #include "mc/deps/input/KeyboardAction.h"
 #include "mc/deps/input/Mouse.h"
 #include "mc/deps/input/MouseDevice.h"
-#include "mc/deps/input/win/HIDControllerGameCoreDesktop.h"
-#include "mc/deps/application/AppPlatform.h"
-#include "mc/deps/application/gamecore/Platform_GameCore.h"
 #include "mc/deps/input/enums/ButtonState.h"
 #include "mc/deps/input/enums/FocusImpact.h"
+#include "mc/deps/input/win/HIDControllerGameCoreDesktop.h"
 #include "mc/deps/shared_types/legacy/actor/ArmorSlot.h"
 #include "mc/entity/components/MoveInputComponent.h"
 #include "mc/entity/components/PlayerActionComponent.h"
 #include "mc/input/MoveInputState.h"
 #include "mc/legacy/ActorRuntimeID.h"
-#include "mc/platform/UUID.h"
-#include "mc/platform/brstd/bitset.h"
 #include "mc/network/BatchedNetworkPeer.h"
 #include "mc/network/LocalNetworkPeer.h"
 #include "mc/network/LoopbackPacketSender.h"
-#include "mc/network/NetworkConnection.h"
 #include "mc/network/MinecraftPacketIds.h"
+#include "mc/network/NetworkConnection.h"
 #include "mc/network/Packet.h"
+#include "mc/network/packet/CommandRequestPacket.h"
+#include "mc/network/packet/CommandRequestPacketPayload.h"
+#include "mc/platform/UUID.h"
+#include "mc/platform/brstd/bitset.h"
 #include "mc/server/ServerInstance.h"
 #include "mc/server/ServerLevel.h"
 #include "mc/server/commands/CommandContext.h"
-#include "mc/server/commands/CommandPermissionLevel.h"
 #include "mc/server/commands/CommandOriginData.h"
 #include "mc/server/commands/CommandOriginType.h"
-#include "mc/server/commands/CurrentCmdVersion.h"
-#include "mc/network/packet/CommandRequestPacket.h"
-#include "mc/network/packet/CommandRequestPacketPayload.h"
+#include "mc/server/commands/CommandPermissionLevel.h"
 #include "mc/server/commands/CurrentCmdVersion.h"
 #include "mc/server/commands/MinecraftCommands.h"
 #include "mc/server/commands/PlayerCommandOrigin.h"
 #include "mc/server/commands/ServerCommandOrigin.h"
 #include "mc/world/ContainerID.h"
 #include "mc/world/Minecraft.h"
-#include "mc/world/level/storage/LevelData.h"
 #include "mc/world/actor/Actor.h"
 #include "mc/world/actor/player/AbilitiesIndex.h"
 #include "mc/world/actor/player/Inventory.h"
@@ -77,6 +76,7 @@
 #include "mc/world/actor/provider/MobJump.h"
 #include "mc/world/attribute/AttributeInstance.h"
 #include "mc/world/attribute/AttributeInstanceConstRef.h"
+#include "mc/world/effect/MobEffectInstance.h"
 #include "mc/world/gamemode/GameMode.h"
 #include "mc/world/gamemode/InteractionResult.h"
 #include "mc/world/item/Item.h"
@@ -87,10 +87,10 @@
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/LevelSettings.h"
-#include "mc/world/effect/MobEffectInstance.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/dimension/DimensionType.h"
 #include "mc/world/level/storage/ILevelListCache.h"
+#include "mc/world/level/storage/LevelData.h"
 #include "mc/world/level/storage/LevelSummary.h"
 #include "mc/world/phys/HitResult.h"
 #include "mc/world/phys/HitResultType.h"
@@ -253,13 +253,8 @@ extern std::atomic<std::uint32_t> gServerThreadId;
 
 void watchInit();
 void watchShutdown();
-nlohmann::json watchInstall(
-    std::uint64_t      addr,
-    std::uint32_t      size,
-    bool               readWrite,
-    std::string const& thread,
-    std::string const& tag
-);
+nlohmann::json
+watchInstall(std::uint64_t addr, std::uint32_t size, bool readWrite, std::string const& thread, std::string const& tag);
 nlohmann::json watchRemove(int id);
 bool           watchRemoveAll();
 nlohmann::json watchListJson();
@@ -299,30 +294,30 @@ struct RecordEntry {
 static_assert(sizeof(RecordEntry) == RecordSize, "record entry must stay 64 bytes");
 
 // Flag bits stored in RecordEntry::flags.
-constexpr std::uint32_t RecordFlagOnGround    = 1u << 0;
-constexpr std::uint32_t RecordFlagInAir       = 1u << 1;
-constexpr std::uint32_t RecordFlagJumpEdge    = 1u << 2;
-constexpr std::uint32_t RecordFlagSprint      = 1u << 3;
-constexpr std::uint32_t RecordFlagSneak       = 1u << 4;
+constexpr std::uint32_t RecordFlagOnGround     = 1u << 0;
+constexpr std::uint32_t RecordFlagInAir        = 1u << 1;
+constexpr std::uint32_t RecordFlagJumpEdge     = 1u << 2;
+constexpr std::uint32_t RecordFlagSprint       = 1u << 3;
+constexpr std::uint32_t RecordFlagSneak        = 1u << 4;
 constexpr std::uint32_t RecordFlagActionSprint = 1u << 5;
-constexpr std::uint32_t RecordFlagInputW      = 1u << 6;
-constexpr std::uint32_t RecordFlagInputA      = 1u << 7;
-constexpr std::uint32_t RecordFlagInputS      = 1u << 8;
-constexpr std::uint32_t RecordFlagInputD      = 1u << 9;
-constexpr std::uint32_t RecordFlagInputJump   = 1u << 10;
+constexpr std::uint32_t RecordFlagInputW       = 1u << 6;
+constexpr std::uint32_t RecordFlagInputA       = 1u << 7;
+constexpr std::uint32_t RecordFlagInputS       = 1u << 8;
+constexpr std::uint32_t RecordFlagInputD       = 1u << 9;
+constexpr std::uint32_t RecordFlagInputJump    = 1u << 10;
 // Sample position was outside the recorded world height, so no block read was
 // attempted (the three block fields are 0 for that sample).
-constexpr std::uint32_t RecordFlagBlockOob    = 1u << 11;
+constexpr std::uint32_t RecordFlagBlockOob = 1u << 11;
 
 std::uint32_t blockNameHash(std::string const& name);
 
-bool           recordStart(std::uint32_t period, std::string& error);
-void           recordStop();
-bool           recordActive();
-std::uint64_t  recordHead();
-std::uint64_t  recordRows();
-std::uint32_t  recordPeriod();
-void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
+bool          recordStart(std::uint32_t period, std::string& error);
+void          recordStop();
+bool          recordActive();
+std::uint64_t recordHead();
+std::uint64_t recordRows();
+std::uint32_t recordPeriod();
+void          recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
 
 // format: "jsonl" (decoded rows) or "hex" ("bin" is accepted as an alias).
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary);
@@ -369,14 +364,14 @@ std::uint64_t  qpcElapsedUs(std::uint64_t start, std::uint64_t end);
 // Per-path call rates so an unexpected callback storm is visible before it
 // shows up as a crash or a dropped tick.
 enum class PathCounter { Record, Watch, Hook };
-void pathCount(PathCounter path);
+void           pathCount(PathCounter path);
 nlohmann::json pathRatesJson();
 
 // ---------------------------------------------------------------------------
 // T7: executable version fingerprint and symbol-anchor signatures.
 // ---------------------------------------------------------------------------
-void           resolveInit(std::filesystem::path const& modDir);
-bool           versionOk();
+void resolveInit(std::filesystem::path const& modDir);
+bool versionOk();
 // Porting: hooks run when the build has a matching profile, or when the user
 // explicitly opts into compat mode (allow_version_mismatch).
 bool           hooksAllowed();

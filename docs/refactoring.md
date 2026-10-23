@@ -389,3 +389,38 @@ screen 栈，约 10 秒后（tick 147–192）在 UI 回调里空指针崩溃。
 
 修复后 run **39987591253**（`bf642f1`）的 unit 与 mod-build 均成功；artifact
 `probe-client-bf642f1…` 包含 `probe.dll`、`probe.pdb`、`manifest.json`。
+
+## 继续拆分：PacketTap（封包 tap）
+
+世界生命周期拆完之后，下一个选的是封包 tap：它有真实的跨线程状态（send/recv 钩子在
+客户端/服务端线程，start/stop/drain 在管道线程），同时和命令包注入有清晰的缝。
+
+### 设计
+
+- `PacketTap.h/.cpp` 独占 H1 的全部状态：身份环、字节环、ids/serialize_ids/sample、
+  9 个 send/recv 钩子、逐锚点命中数、drain/status 的 wire 格式。
+- `ProbeMod` 只保留：
+  - `onPacketSent` / `onPacketReceived` / `packetPeerTick` / `packetCaptureStop` 四个薄转发，
+    文件作用域的 LL 钩子不需要改；
+  - 命令包模板捕获（`captureCommandTemplate`）和 `chat_send` 注入。
+- 线程与热路径规则不变：钩子体仍只做 `getId`、原子计数、定长环写入；start/stop 与
+  drain 仍在管道线程；反序列化白名单仍只在 capture 开启时调用 `Packet::write`。
+- `allow_packet_capture` 的权限门移到 `CommandPackets.cpp`，返回同样的
+  `packet_capture_disabled`；`PacketTap` 不再知道配置开关。
+- 公开协议不变：`packet_capture` / `packet_drain` / `packet_bytes` / `packet_stats`
+  的字段、错误和默认值完全一致。
+
+### 规模与验证
+
+- `Packets.cpp` 从 768 行降到 91 行；新增 `PacketTap.cpp` 689 行、`PacketTap.h` 116 行；
+  `ProbeMod.h` 从 660 行降到 581 行（减少 79 行成员/声明）。
+- 构建：`xmake -j4 -y` 成功，构建/安装 DLL SHA256 一致。
+- 直接接口检查：`packet_capture {directions:["send","recv"]}` 回
+  `send_hooked=true / recv_hooked=true`；2 秒内 77 条身份记录（send 41、recv 38），
+  `recv_records=37`、`dropped=0`，`loopback_sendToClient` 命中 289，
+  接收字节含 `MoveDeltaActor(111)`；关闭后 `active=false`。
+- 完整 live selftest **209/209** 通过（包含 H1-A 身份/序列化、H1-C 接收侧、H2 注入）。
+- 离线：单测 **167/167**、ruff lint/format、mypy（25 文件）、`gen_profiles --check` 通过。
+- 一次自检在关闭背包时按 Esc 后世界进入暂停菜单，排队命令 20 s 超时；这是已知的
+  “暂停菜单不响应注入按键”限制，重启并聚焦后同一 DLL 复跑 **209/209**。该失败与
+  本次拆分无关（封包相关检查在失败前已全部通过），未通过放宽断言规避。

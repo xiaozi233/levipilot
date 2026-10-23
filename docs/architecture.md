@@ -57,7 +57,8 @@ scenario DSL / LLM / shell
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
 | `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环 |
 | `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
-| `Packets.cpp` | send/recv 身份 tap、序列化白名单与命令包模板复用 |
+| `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 9 个 send/recv 钩子、逐锚点统计、身份/字节环与 drain |
+| `Packets.cpp` | 命令包模板捕获与 `chat_send` 注入；对 tap 钩子的薄转发 |
 | `Overhead.cpp` | tick/hook 开销采样与分位数、自检忙等 |
 | `Resolve.cpp` | exe 版本指纹、符号锚点 + 24 字节签名、offsets.json 覆盖 |
 

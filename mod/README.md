@@ -345,6 +345,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   现在进入串行化（第二次回 `already_starting`），并且只在主菜单 screen
   （`start_screen` / `ui://…`）启动。30 cycles（第 9/19/29 真实退出并立即重进）**123/123**，
   完整 live selftest + stress **332/332**，单测 **167/167**；日志见 `refactoring.md`。
+- 2026-10-24 PacketTap 拆分：封包 tap 的状态与 9 个 send/recv 钩子移入 `PacketTap`，
+  `Packets.cpp` 只保留命令包模板注入和转发，协议/字段不变。直接 send+recv 检查
+  （77 条记录、37 条 recv、`loopback_sendToClient` 289 命中）和完整 selftest
+  **209/209**、单测 **167/167** 通过。
 
 ## 限制
 

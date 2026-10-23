@@ -445,6 +445,9 @@
 
 ## 封包身份 tap（H1 阶段 A）
 
+- 状态（身份环、字节环、配置、统计）和 send/recv 共 9 个钩子都在
+  `PacketTap`（`PacketTap.h/.cpp`）；`ProbeMod` 只保留 `onPacketSent` /
+  `onPacketReceived` 转发，以及命令包模板注入。
 - 锚点：`LoopbackPacketSender::$sendToServer(Packet&)`（LL 符号 hook，见
   `docs/offsets/1.26.51.01.json` 的 `packets.sendToServer`；24 B 签名待补）。
 - 钩子体只做四件事：`packet.getId()`（虚函数，返回 `MinecraftPacketIds`，无分配）、

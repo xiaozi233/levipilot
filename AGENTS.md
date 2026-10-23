@@ -35,7 +35,7 @@ py -3.11 driver/selftest.py
 
 | 路径 | 内容 |
 | --- | --- |
-| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
+| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`WorldSession`（世界生命周期）、`ClientDispatch`（主线程投递/SEH）、`PacketTap`（封包 tap）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
 | `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands`（ModClient）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`；CLI 为 `cli`（入口）/`cli_parser`（参数）/`cli_commands`（领域执行），以及解码辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |

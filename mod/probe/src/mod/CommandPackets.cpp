@@ -104,23 +104,29 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
-        enqueue(packetCaptureStart(enable, j).dump());
+        if (enable && !mAllowPacketCapture.load(std::memory_order_relaxed)) {
+            enqueue(
+                R"({"event":"error","reason":"packet_capture_disabled","hint":"set allow_packet_capture=true"})"
+            );
+            return true;
+        }
+        enqueue(mPackets.start(enable, j).dump());
         return true;
     }
     if (cmd == "packet_drain") {
         std::uint64_t const since = j.value("since", std::uint64_t{0});
         std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 1024), 1, 8192);
-        enqueue(packetDrain(since, limit).dump());
+        enqueue(mPackets.drain(since, limit).dump());
         return true;
     }
     if (cmd == "packet_bytes") {
         std::uint64_t const since = j.value("since", std::uint64_t{0});
         std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 256), 1, 4096);
-        enqueue(packetBytesDrain(since, limit).dump());
+        enqueue(mPackets.bytesDrain(since, limit).dump());
         return true;
     }
     if (cmd == "packet_stats") {
-        enqueue(packetCaptureStatus().dump());
+        enqueue(mPackets.status().dump());
         return true;
     }
     return false;

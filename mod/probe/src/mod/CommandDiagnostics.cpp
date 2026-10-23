@@ -161,11 +161,11 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["allow_write"]     = mAllowMemoryWrite.load();
         out["tick_thread_id"]  = mTickThreadId.load();
         out["server_thread_id"] = gServerThreadId.load();
-        out["packet_capture"]   = mPacketCapture.load();
-        out["packet_records"]   = mPacketHead.load();
-        out["packet_recv_records"] = mPacketRecvRecords.load();
-        out["packet_recv_hooked"]  = mPacketRecvEnabled.load();
-        out["packet_peer_sends"] = mPacketPeerCount.load();
+        out["packet_capture"]   = mPackets.capturing();
+        out["packet_records"]   = mPackets.records();
+        out["packet_recv_records"] = mPackets.recvRecords();
+        out["packet_recv_hooked"]  = mPackets.recvEnabled();
+        out["packet_peer_sends"] = mPackets.peerSends();
         out["packet_inject"]     = mAllowPacketInject.load();
         out["chat_sent"]         = mChatSent.load();
         out["tick_probe_addr"] =

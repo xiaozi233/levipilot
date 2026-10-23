@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/TaskModel.h"
+#include "mod/PacketTap.h"
 #include "mod/WorldSession.h"
 
 #include "ll/api/event/Listener.h"
@@ -159,75 +160,14 @@ public:
     void                                         tickInputInjection();
     bool                                         hidKeyEvent(int code, bool down, bool hardware, std::string& error);
 
-    // H1 stage A: packet identity tap. Only id/tick/seq/tid, no bytes.
-    // dir: 0 = client -> server, 1 = server -> client (in-process loopback).
-    static constexpr std::uint8_t kPacketSend = 0;
-    static constexpr std::uint8_t kPacketRecv = 1;
-    // Recv-side anchors, in installation order. The first block is the
-    // server-side send helper family; the last two are the loopback delivery
-    // thunks. Both layers can fire for one packet, so counts are per anchor.
-    enum RecvAnchor : std::size_t {
-        kRecvToPlayer = 0,
-        kRecvToActor,
-        kRecvToBlockPos,
-        kRecvToClientId,
-        kRecvToClientWithSubId,
-        kRecvToClients,
-        kRecvToClientsExcept,
-        kRecvLoopbackClient,
-        kRecvLoopbackClientUser,
-        kRecvAnchorCount,
-    };
-    struct PacketRecord {
-        std::atomic<std::uint64_t> seq{0};
-        std::uint64_t              order    = 0;
-        std::uint64_t              tick     = 0;
-        std::int32_t               id       = 0;
-        std::uint32_t              tid      = 0;
-        std::uint8_t               dir      = kPacketSend;
-        std::uint8_t               injected = 0;
-        std::uint8_t               pad[2]{};
-    };
-    struct PacketBytes {
-        std::atomic<std::uint64_t> seq{0};
-        std::uint64_t              order = 0;
-        std::uint32_t              id    = 0;
-        std::uint32_t              size  = 0;
-        std::uint32_t              tid   = 0;
-        std::uint8_t               dir   = kPacketSend;
-        std::uint8_t               data[128]{};
-    };
-    static constexpr std::size_t                             kPacketRing     = 1u << 14;
-    static constexpr std::size_t                             kPacketByteRing = 1u << 12;
-    std::unique_ptr<PacketBytes[]>                           mPacketByteRing;
-    std::atomic<std::uint64_t>                               mPacketByteHead{0};
-    std::array<std::int32_t, 4>                              mPacketSerializeIds{};
-    std::size_t                                              mPacketSerializeCount = 0;
-    std::unique_ptr<PacketRecord[]>                          mPacketRing;
-    std::atomic<std::uint64_t>                               mPacketHead{0};
-    std::atomic<std::uint64_t>                               mPacketSeq{0};
-    std::atomic<std::uint64_t>                               mPacketPeerCount{0};
-    std::atomic<std::uint64_t>                               mPacketDenied{0};
-    std::atomic_bool                                         mPacketCapture{false};
-    std::atomic_bool                                         mPacketSendHooked{false};
-    std::atomic_bool                                         mPacketPeerHooked{false};
-    std::atomic_bool                                         mPacketSendEnabled{false};
-    std::atomic_bool                                         mPacketRecvEnabled{false};
-    std::array<std::atomic_bool, kRecvAnchorCount>           mPacketRecvHooked{};
-    std::array<std::atomic<std::uint64_t>, kRecvAnchorCount> mPacketRecvHits{};
-    std::atomic<std::uint64_t>                               mPacketRecvRecords{0};
-    std::array<std::int32_t, 64>                             mPacketIds{};
-    std::size_t                                              mPacketIdCount = 0;
-    std::atomic<std::uint32_t>                               mPacketSample{1};
-    void                                                     onPacketSent(Packet& packet);
-    void                                                     onPacketReceived(Packet const& packet, std::size_t anchor);
-    void                                                     recordPacket(Packet const& packet, std::uint8_t dir);
-    void                                                     packetPeerTick();
-    nlohmann::json packetCaptureStart(bool enable, nlohmann::json const& args);
-    void           packetCaptureStop();
-    nlohmann::json packetCaptureStatus();
-    nlohmann::json packetDrain(std::uint64_t since, std::size_t limit);
-    nlohmann::json packetBytesDrain(std::uint64_t since, std::size_t limit);
+    // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
+    // own owner; these forwarders keep the file-scope LL hooks unchanged.
+    PacketTap&       packets() { return mPackets; }
+    PacketTap const& packets() const { return mPackets; }
+    void             onPacketSent(Packet& packet);
+    void             onPacketReceived(Packet const& packet, std::size_t anchor);
+    void             packetPeerTick();
+    void             packetCaptureStop();
 
     std::atomic_bool                           mAllowPacketCapture{false};
     std::atomic_bool                           mAllowPacketInject{false};
@@ -374,6 +314,7 @@ private:
 
     ll::mod::NativeMod& mSelf;
     WorldSession mWorld{*this};
+    PacketTap    mPackets;
     void queueClientTask(std::function<void()> task);
 
     ll::event::ListenerPtr mMouseListener;

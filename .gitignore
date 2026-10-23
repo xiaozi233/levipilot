@@ -2,6 +2,7 @@
 out/
 logs/
 *.jsonl
+!tests/fixtures/cli-baseline.jsonl
 *.log
 
 # Python

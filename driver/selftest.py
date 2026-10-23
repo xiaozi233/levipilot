@@ -18,6 +18,7 @@ import argparse
 import itertools
 import json
 import math
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -230,6 +231,59 @@ def check_dispatch_compatibility(client: ModClient, checks: Checks) -> None:
     checks.check("dispatch_error_recovery", client.ping().get("event") == "pong")
 
 
+def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
+    """Exercise each CLI domain over the actual pipe, without changing the world."""
+    commands = (
+        ("diagnostics", ["ping"], '"event": "pong"'),
+        ("input", ["mouse"], '"event": "mouse"'),
+        ("inspection", ["mem-read", "0x10"], '"reason": "bad_addr"'),
+        ("packets", ["packet-stats"], '"event": "packet_stats"'),
+        ("query", ["state"], '"event": "state"'),
+        ("world", ["worlds"], '"event": "worlds"'),
+        ("tasks", ["task-status"], '"event": "task_status"'),
+        ("recording", ["record-dump", "--limit", "1"], "entries="),
+    )
+    # The server accepts one client at a time. Release this connection before
+    # starting subprocesses, then reconnect even if a subprocess fails.
+    client.close()
+    try:
+        for domain, argv, expected in commands:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "driver" / "transport_mod.py"),
+                    "--pipe",
+                    client.pipe_name,
+                    *argv,
+                ],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            checks.check(
+                f"cli_{domain}",
+                result.returncode == 0 and expected in result.stdout,
+                f"exit={result.returncode}"
+                + (f" stderr={result.stderr.strip()}" if result.stderr else ""),
+            )
+        result = subprocess.run(
+            [sys.executable, "-m", "driver.transport_mod", "--pipe", client.pipe_name, "ping"],
+            cwd=ROOT,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        checks.check(
+            "cli_module_entry", result.returncode == 0 and '"event": "pong"' in result.stdout
+        )
+    finally:
+        client.connect()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
@@ -248,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         checks.check("ping", client.ping().get("event") == "pong")
         check_dispatch_compatibility(client, checks)
+        check_cli_compatibility(client, checks)
 
         # -- F1: a client that never sends '\n' cannot grow the buffer ------
         client.send_raw(b"A" * (2 << 20) + b"\n")

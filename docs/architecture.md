@@ -7,7 +7,8 @@
 scenario DSL / LLM / shell
           │
    driver/harness (Python)
-   CLI / facade → commands → connection → protocol
+   CLI 入口 → 参数 / 领域处理器 → commands → connection → protocol
+   facade ────────────────────↗
           │  \\.\pipe\mcbe-harness  (UTF-8 JSON lines, protocol 4)
    mod/probe (LeviLamina client mod)
    Transport → Commands → Command<领域> → 请求 / Tasks / State / ...
@@ -123,7 +124,9 @@ driver/harness/
   record.py     # 64 字节记录解码、flags、方块名哈希
   spool.py      # 增量、可容忍轮转/半行的 spool 读取器
   watch.py      # watch 命中解码与可续读游标
-  cli.py        # argparse 入口
+  cli.py        # 稳定入口：离线命令、连接生命周期、错误与退出码
+  cli_parser.py # argparse 定义；保留参数默认值、命令和帮助顺序
+  cli_commands/ # diagnostics/input/inspection/packets/query/world/tasks/recording
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
@@ -189,7 +192,8 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
    `Commands.cpp` 的 `dispatchLine`。需要修改游戏状态时继续设置请求或通过 `queueServerTask`。
 2. 在 `ProbeMod.h` 增加必要的请求字段/方法，在对应模块实现。
 3. 在 `driver/harness/commands.py` 加 `ModClient` 方法（`request(..., "expected_event")`）。
-4. 在 `facade.py` 的 `Harness` 加便捷封装，在 `cli.py` 加子命令。
+4. 在 `facade.py` 的 `Harness` 加便捷封装，在 `cli_parser.py` 加参数定义、对应
+   `cli_commands/<领域>.py` 加执行分支（已处理返回 true，未识别返回 false）。
 5. 在 `tests/test_transport.py` 加协议/转发测试；需要游戏时在 `driver/selftest.py` 加检查。
 
 ### 加一个闭环任务

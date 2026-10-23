@@ -40,6 +40,27 @@ bool ProbeMod::hidKeyEvent(int code, bool down, bool hardware, std::string& erro
     return true;
 }
 
+bool ProbeMod::hidTextInput(std::string const& text, std::string& error) {
+    auto platform = ll::service::getAppPlatform();
+    if (!platform) {
+        error = "no_platform";
+        return false;
+    }
+    auto* shim = platform->getPlatformShim();
+    if (shim == nullptr) {
+        error = "no_platform_shim";
+        return false;
+    }
+    auto* gamecore = static_cast<Bedrock::Platform_GameCore*>(shim);
+    std::shared_ptr<HIDControllerGameCoreDesktop>& hid = gamecore->mHIDController;
+    if (!hid) {
+        error = "no_hid_controller";
+        return false;
+    }
+    hid->onTextInput(text);
+    return true;
+}
+
 bool ProbeMod::queueInputInjection(InputInjection const& item) {
     std::uint32_t const head = mInjectHead.load(std::memory_order_relaxed);
     std::uint32_t const tail = mInjectTail.load(std::memory_order_acquire);
@@ -52,6 +73,18 @@ bool ProbeMod::queueInputInjection(InputInjection const& item) {
 }
 
 void ProbeMod::tickInputInjection() {
+    std::string text;
+    {
+        std::lock_guard lock(mTextMutex);
+        text.swap(mTextPending);
+    }
+    if (!text.empty()) {
+        std::string error;
+        mInjectingInput.store(true, std::memory_order_release);
+        hidTextInput(text, error);
+        mInjectingInput.store(false, std::memory_order_release);
+    }
+
     std::uint32_t tail = mInjectTail.load(std::memory_order_acquire);
     std::uint32_t head = mInjectHead.load(std::memory_order_acquire);
     if (tail == head) {

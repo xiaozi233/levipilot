@@ -418,6 +418,112 @@ void ProbeMod::dispatchLine(std::string const& line) {
         enqueue(symbolResolve(j.value("name", std::string{})).dump());
         return;
     }
+    if (cmd == "text_input") {
+        if (!mAllowInputInject.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"input_inject_disabled"})");
+            return;
+        }
+        if (!mInWorld.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        std::string text = j.value("text", std::string{});
+        if (text.empty() || text.size() > 512) {
+            enqueue(R"({"event":"error","reason":"bad_text"})");
+            return;
+        }
+        {
+            std::lock_guard lock(mTextMutex);
+            mTextPending = std::move(text);
+        }
+        enqueue(R"({"event":"text_input_queued"})");
+        return;
+    }
+    if (cmd == "op_self") {
+        if (!mAllowPacketInject.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"packet_inject_disabled"})");
+            return;
+        }
+        int const level = std::clamp(j.value("level", 4), 0, 4);
+        std::string name;
+        {
+            std::lock_guard lock(mPlayerNameMutex);
+            name = mLocalPlayerName;
+        }
+        queueServerTask([this, name, level] {
+            auto minecraft = ll::service::bedrock::getMinecraft();
+            Level* lvl     = minecraft ? minecraft->getLevel() : nullptr;
+            Player* target = (lvl != nullptr && !name.empty()) ? lvl->getPlayer(name) : nullptr;
+            if (target == nullptr) {
+                enqueue(R"({"event":"error","reason":"player_not_found"})");
+                return;
+            }
+            target->setCommandPermissions(static_cast<CommandPermissionLevel>(level));
+            enqueue(
+                nlohmann::json{
+                    {"event", "op_self"},
+                    {"ok",    true    },
+                    {"level", level   },
+                    {"name",  name    },
+                }
+                    .dump()
+            );
+        });
+        return;
+    }
+    if (cmd == "commands_enabled") {
+        bool const set   = j.contains("value");
+        bool const value = j.value("value", false);
+        queueServerTask([this, set, value] {
+            auto level = ll::service::bedrock::getLevel();
+            if (!level) {
+                enqueue(R"({"event":"error","reason":"no_level"})");
+                return;
+            }
+            auto& data = level->getLevelData();
+            if (set) {
+                data.setCommandsEnabled(value);
+            }
+            bool const enabled = static_cast<bool>(data.mCommandsEnabled);
+            enqueue(
+                nlohmann::json{
+                    {"event",   "commands_enabled"},
+                    {"enabled", enabled           },
+                    {"changed", set               },
+                }
+                    .dump()
+            );
+        });
+        return;
+    }
+    if (cmd == "chat_send") {
+        if (!versionOk()) {
+            enqueue(R"({"event":"error","reason":"version_mismatch"})");
+            return;
+        }
+        if (!mAllowPacketInject.load(std::memory_order_relaxed)) {
+            enqueue(
+                R"({"event":"error","reason":"packet_inject_disabled","hint":"set allow_packet_inject=true"})"
+            );
+            return;
+        }
+        if (!mInWorld.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return;
+        }
+        std::string text = j.value("text", std::string{});
+        if (text.empty() || text.size() > 512) {
+            enqueue(R"({"event":"error","reason":"bad_text"})");
+            return;
+        }
+        {
+            std::lock_guard lock(mChatMutex);
+            mChatPending = std::move(text);
+        }
+        bootLog("input: chat_send queued");
+        enqueue(R"({"event":"chat_send_queued"})");
+        return;
+    }
     if (cmd == "packet_capture") {
         bool const enable = j.value("on", j.value("enable", true));
         if (!versionOk()) {
@@ -1616,6 +1722,8 @@ void ProbeMod::dispatchLine(std::string const& line) {
         out["packet_capture"]   = mPacketCapture.load();
         out["packet_records"]   = mPacketHead.load();
         out["packet_peer_sends"] = mPacketPeerCount.load();
+        out["packet_inject"]     = mAllowPacketInject.load();
+        out["chat_sent"]         = mChatSent.load();
         out["tick_probe_addr"] =
             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
         out["watch_count"]   = watchCount();

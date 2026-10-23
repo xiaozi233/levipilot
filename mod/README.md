@@ -64,6 +64,10 @@ xmake -y
 | `key_event` | `code,down,repeat,repeat_ms,via=hid/queue/hardware`；走 HID `onKeyDown`（默认）或 `Keyboard::_inputs()`；需 `allow_input_inject=true` |
 | `key_state` | `code`；游戏侧 `Keyboard::_states`、LL KeyInputEvent 计数、注入计数 |
 | `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
+| `text_input` | `text`；通过 HID `onTextInput` 往当前输入框送字符（需 `allow_input_inject`） |
+| `chat_send` | `text`；复制捕获的 `CommandRequestPacket` 模板并发往服务端（需 `allow_packet_inject`） |
+| `op_self` | `level`（0–4）；在服务端玩家上设置命令权限（H2 自检用，需 `allow_packet_inject`） |
+| `commands_enabled` | 读/写世界的 `mCommandsEnabled`（`value` 可选） |
 | `packet_capture` | `on,ids?,sample?`；只记录 `(tick,seq,id,tid)`，需 `allow_packet_capture=true`；denylist 硬挡 |
 | `packet_drain` | `since,limit`；身份记录（无字节），`seq` 单调、`injected` 预留 |
 | `packet_bytes` | `since,limit`；B3 白名单序列化的 `{seq,id,size,hex}`（最多前 128 B） |
@@ -147,6 +151,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "allow_watch": true,
   "allow_input_inject": false,
   "allow_packet_capture": false,
+  "allow_packet_inject": false,
   "signin_wait_ms": 15000
 }
 ```
@@ -160,6 +165,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 `allow_watch`（默认 true）关闭后 `watch_set` 回 `watch_disabled`；
 `allow_input_inject` 才能用 `key_event`/`mouse_event`（默认关闭，命令会写 boot log）；
 `allow_packet_capture` 才能开 H1 的封包身份 tap（默认关闭）；
+`allow_packet_inject` 才能用 `chat_send`/`op_self`（默认关闭）；
 `signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
 不需要时删除该文件即可。
 
@@ -270,7 +276,12 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - H1-B B3：`packet_capture {serialize_ids:[144]}` 后 `packet_bytes` 拿到
   `PlayerAuthInput` 的 91–93 字节，`seq` 与身份记录一一对应（32/32 匹配）；tick 19.7–20.0，
   `dropped=0`。序列化只在白名单 id 上发生，关闭 capture 时零调用。
-- `driver/selftest.py` 115/115 通过
+- H2：`chat_send` 复制捕获到的 `CommandRequestPacket(77)` 模板，只替换命令字符串后
+  走 `Packet::sendToServer()`。实测 `/setblock` 回读为 `gold_block`、`/tp @s ~1 ~ ~`
+  位移正好 1.000 格、`/fill`/`/give` 生效；注入前后 tick p99 不变（19.8 Hz）。
+  捕获模板需要先用 `/` + `text_input` + Enter 发一条真实命令；客户端命令还要求
+  `op_self`（世界 commands 已开启时仍可能是 Member 权限）。
+- `driver/selftest.py` 120/120 通过
 
 ## 限制
 
@@ -292,7 +303,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - H1 的身份 tap 始终可用；字节只对 `serialize_ids` 白名单生效（默认无），且只在 capture
   开启时调用 `Packet::write`（首次会分配一次线程局部缓冲）。`peer_sends` 恒为 0 是实测结果：
   单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。
-- 注入路径（H2）还没做。
+- H2 只能注入 `CommandRequestPacket(77)`，而且必须先有一条真实的 77 包做模板；
+  `op_self` 会修改世界里的玩家权限（测试世界用，别在日常存档里开）。
+  `chat_send` 的 ok=true 只代表包已发出，命令是否执行要用 `blocks`/位置回读验证。
 - 暂停菜单不响应注入按键（Esc/Enter 都无效）；退出暂停仍需桌面点击 Resume。背包（E）
   和聊天（`/`）可以开，背包用 Esc 能回到 hud。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。

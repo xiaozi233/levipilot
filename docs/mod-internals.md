@@ -334,6 +334,26 @@
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
 - `docs/offsets/1.26.45.01.json` 只作历史数据，不参与当前构建。
 
+## 命令包注入（H2）
+
+- `CommandRequestPacketPayload` 的默认构造没有导出，所以不自己拼 payload；
+  走模板复用：
+  1. 用 `/`（key 191）+ `text_input`（HID `onTextInput`）+ Enter 发一条真实命令；
+  2. `sendToServer` 钩子在 id==77 时把 payload 拷贝进 `mCommandTemplate`
+     （`CommandRequestPacket` 公开继承 payload，copy 后 origin/UUID 都是真实值）；
+  3. `chat_send {text}` 在 tick 线程复制模板，只替换 `mCommand`，设置
+     `mVersion=Latest`/`mInternalSource=false`，构造 `CommandRequestPacket` 并调
+     `Packet::sendToServer()`。
+- 门禁：`allow_packet_inject`（默认 false），只允许这一个 id；`chat_send` 只入队，
+  真正发送和结果通过 `chat_sent {ok,text}` 事件回报。
+- `op_self {level}` 在服务端玩家上 `setCommandPermissions`（测试世界用）；
+  `commands_enabled` 读写 `LevelData::mCommandsEnabled`。客户端命令包仍受玩家权限约束，
+  `commands_enabled=true` 不代表玩家是 Operator。
+- 实测（1.26.51.01）：`/setblock` 回读 `gold_block`；`/tp @s ~1 ~ ~` 位移 1.000；
+  `/fill`、`/give` 生效；注入前后 tick p99 不变，`chat_sent` 计数正确。
+- 注意：`chat_sent ok=true` 只表示包已发出；命令是否执行必须用 `blocks`/位置回读。
+  模板在每次真实 77 包发出时刷新，进程重启后需要重新发一条命令。
+
 ## 封包字节与层选择（H1-B）
 
 - 运行时符号解析：`symbol_resolve {name}` 先查编译期锚点（`&BatchedNetworkPeer::$sendPacket`、

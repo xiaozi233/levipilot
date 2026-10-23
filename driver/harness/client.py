@@ -343,6 +343,21 @@ class ModClient:
     def packet_stats(self) -> dict[str, Any]:
         return self.request({"cmd": "packet_stats"}, "packet_stats")
 
+    def op_self(self, level: int = 4) -> dict[str, Any]:
+        return self.request({"cmd": "op_self", "level": int(level)}, "op_self", timeout=20.0)
+
+    def commands_enabled(self, value: bool | None = None) -> dict[str, Any]:
+        message: dict[str, Any] = {"cmd": "commands_enabled"}
+        if value is not None:
+            message["value"] = bool(value)
+        return self.request(message, "commands_enabled", timeout=20.0)
+
+    def text_input(self, text: str) -> dict[str, Any]:
+        return self.request({"cmd": "text_input", "text": text}, "text_input_queued")
+
+    def chat_send(self, text: str) -> dict[str, Any]:
+        return self.request({"cmd": "chat_send", "text": text}, "chat_send_queued", timeout=20.0)
+
     def symbol_resolve(self, name: str) -> dict[str, Any]:
         return self.request({"cmd": "symbol_resolve", "name": name}, "symbol_resolve")
 

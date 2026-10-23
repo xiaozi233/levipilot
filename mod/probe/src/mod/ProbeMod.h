@@ -20,6 +20,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "mc/network/packet/CommandRequestPacketPayload.h"
+
 #include <windows.h>
 
 class ClientInstance;
@@ -307,6 +309,19 @@ public:
     nlohmann::json                  packetBytesDrain(std::uint64_t since, std::size_t limit);
 
     std::atomic_bool           mAllowPacketCapture{false};
+    std::atomic_bool           mAllowPacketInject{false};
+    std::mutex                 mChatMutex;
+    std::string                mChatPending;
+    std::mutex                 mTextMutex;
+    std::string                mTextPending;
+    std::mutex                 mCommandTemplateMutex;
+    std::optional<CommandRequestPacketPayload> mCommandTemplate;
+    std::atomic<std::uint64_t> mChatSent{0};
+    std::atomic<std::int32_t>  mChatLastResult{0};
+    void                       tickPacketInject(LocalPlayer& player);
+    bool                       sendCommandPacket(LocalPlayer& player, std::string const& text, std::string& error);
+    bool                       hidTextInput(std::string const& text, std::string& error);
+    void                       captureCommandTemplate(Packet& packet);
     std::atomic_bool           mAllowInputInject{false};
     std::atomic_bool           mInjectingInput{false};
     // Tick until which a game-side turn is allowed because we injected a mouse

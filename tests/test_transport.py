@@ -248,6 +248,14 @@ class HarnessForwardingTests(unittest.TestCase):
                 self.calls.append(("drain", since, limit))
                 return {"event": "packet_drain"}
 
+            def text_input(self, text):
+                self.calls.append(("text", text))
+                return {"event": "text_input_queued"}
+
+            def chat_send(self, text):
+                self.calls.append(("chat", text))
+                return {"event": "chat_send_queued"}
+
             def packet_bytes(self, since=0, limit=256):
                 self.calls.append(("bytes", since, limit))
                 return {"event": "packet_bytes"}
@@ -261,6 +269,8 @@ class HarnessForwardingTests(unittest.TestCase):
         harness.packet_capture(True, ids=[144], serialize_ids=[144], sample=2)
         harness.packet_drain(5, 100)
         harness.packet_bytes(7, 8)
+        harness.client.text_input("say hi")
+        harness.client.chat_send("/say hi")
         harness.packet_stats()
         self.assertEqual(
             harness.client.calls,
@@ -268,6 +278,8 @@ class HarnessForwardingTests(unittest.TestCase):
                 ("capture", True, {"ids": [144], "serialize_ids": [144], "sample": 2}),
                 ("drain", 5, 100),
                 ("bytes", 7, 8),
+                ("text", "say hi"),
+                ("chat", "/say hi"),
                 ("stats",),
             ],
         )

@@ -466,6 +466,59 @@ def main(argv: list[str] | None = None) -> int:
                 f"matched={sum(1 for row in byte_rows if identity.get(int(row['seq'])) == int(row['id']))}",
             )
 
+            # H2: command packet injection uses a captured 77 payload template.
+            inject_enabled = True
+            try:
+                client.op_self()
+                checks.check("packet_inject_gate", True, "op_self ok")
+            except ModProtocolError as exc:
+                inject_enabled = False
+                checks.check(
+                    "packet_inject_gate",
+                    "packet_inject_disabled" in str(exc),
+                    str(exc),
+                )
+            if inject_enabled:
+                client.packet_capture(True, serialize_ids=[77], sample=1)
+                client.key_event(191)
+                client.key_event(191, False)
+                wait_ticks(client, 3)
+                client.text_input("say harness_template")
+                wait_ticks(client, 2)
+                client.key_event(13)
+                client.key_event(13, False)
+                wait_ticks(client, 5)
+                template_rows = [
+                    row for row in client.packet_bytes(0, limit=64)["hits"] if int(row["id"]) == 77
+                ]
+                checks.check(
+                    "packet_template",
+                    bool(template_rows) and int(template_rows[-1]["size"]) > 0,
+                    f"rows={len(template_rows)}",
+                )
+                position = client.state()
+                tx = int(position["feet_x"]) + 3
+                ty = int(position["feet_y"]) - 1
+                tz = int(position["feet_z"]) + 3
+                before_sent = int(client.status().get("chat_sent", 0))
+                client.chat_send(f"/setblock {tx} {ty} {tz} minecraft:gold_block")
+                wait_ticks(client, 8)
+                placed = client.blocks([[tx, ty, tz]])["blocks"][0].get("name")
+                checks.check(
+                    "packet_inject_setblock", placed == "minecraft:gold_block", str(placed)
+                )
+                x0 = float(client.state()["feet_x"])
+                client.chat_send("/tp @s ~1 ~ ~")
+                wait_ticks(client, 8)
+                dx = float(client.state()["feet_x"]) - x0
+                checks.check("packet_inject_relative", abs(dx - 1.0) < 0.05, f"dx={dx:.3f}")
+                checks.check(
+                    "packet_inject_count",
+                    int(client.status().get("chat_sent", 0)) - before_sent >= 2,
+                    str(client.status().get("chat_sent")),
+                )
+                client.packet_capture(False)
+
             client.packet_capture(False)
             quiet = int(client.packet_stats().get("records", 0))
             client.set_input(forward=1.0, ticks=20)

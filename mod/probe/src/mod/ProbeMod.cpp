@@ -250,6 +250,7 @@ void ProbeMod::loadAutoConfig() {
     mAllowSelftestStress = config.value("allow_selftest_stress", false);
     mAllowWatch      = config.value("allow_watch", true);
     mAllowPacketCapture = config.value("allow_packet_capture", false);
+    mAllowPacketInject  = config.value("allow_packet_inject", false);
     mAllowInputInject = config.value("allow_input_inject", false);
     mSignInWaitMs     = std::clamp(config.value("signin_wait_ms", 15000), 0, 120000);
     if (config.contains("options") && config["options"].is_object()) {
@@ -346,6 +347,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     // G1/G2: drain queued event-level input into the game's own queues before
     // anything else in this tick touches movement.
     tickInputInjection();
+    tickPacketInject(player);
 
     // T9: one lock-free snapshot of movement/look/teleport requests per tick.
     RequestBlock const requests = readRequests();

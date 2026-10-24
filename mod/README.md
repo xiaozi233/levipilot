@@ -183,193 +183,32 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **190/190**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 169/169。
+当前基线：live selftest **190/190**（`harness.json` 开 `allow_input_inject`/
+`allow_selftest_stress`）、离线单测 169/169。常用实测数字：
 
-### 行为契约与加固
-
-- 任务生命周期：单活动槽、ID 关联、统一取消；`TaskModel.h` 定长状态、tick 只填
-  `TaskStep`、spool 线程格式化事件。自检入口 `check_task_lifecycle`；受控故障入口
-  `selftest_task_fault` 需要 `allow_selftest_stress`。
-- Python 会话：旧读线程与新会话隔离；请求保留异步事件，缓冲有界并显式报溢出。
-- `chat_history`：客户端线程定长快照（最多 64 条、每条 2047 UTF-8 字节、截断显式
-  标记），后台格式化。不是永久日志，重启或游戏清理的历史无法追回。
-- `navigate`/`route` 共用 `walkToward` 驱动（转向/接近减速/卡住检测/跳跃冷却），route
-  的边沿前瞻可按 waypoint 配 `edge_lookahead`；小容差下不再绕圈。
-- `state.effects` 仅报告实际效果，过滤游戏清除后留下的 NO_EFFECT 空槽。
-- 数值入参统一有限性 + 范围校验：`look`/`teleport`/`reset`/`click`/`move`/`set` 越界回
-  `bad_param`，`blocks`/`scan`/`place` 的坐标超界回 `bad_coord` 或跳过该条；
-  `wrapDegrees` 另有非有限兜底。
-- `ecs_context` 对外部指针先 `readableRange` 预检、访问链整体 SEH；坏地址回 `bad_addr`
-  而不是崩游戏。
-- 宏安全：回放中 `macro_load` 先停回放（回执带 `stopped`）并按当前宏尺寸校验循环
-  重启点；`macro_stop` 同时清掉 pending start。
-- Watch：VEH 无锁读 armed 线程表；挂起窗口内不做任何分配；`thread="all"` 回
-  `thread_all_unsupported`；`rw` 观察点不要求目标页可写。
-- spool 打开/写失败回灌重试并计数；spool 线程整体异常隔离；`hook_va` 安装留 bootLog
-  审计；seqlock 读侧有重试上限（写者卡死时降级为旧快照）。
-- 实体链路：查找/快照/攻击全部在服务端线程执行（攻击用服务端玩家的 GameMode），
-  客户端 tick 线程不遍历 `getRuntimeActorList()`。
-
-### 移动、跳跃与输入
-- 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
-  12.04 格、接地 100%
-- 跳跃：起跳沿调 `LocalPlayer::jumpFromGround`，逐 tick 位移 0.4200、0.3332、0.2481、
-  0.1648…，顶点 1.252 格、滞空 11 tick；按住且接地时补调 `jumpFromGround`，连续 4 跳
-  与 HID 空格绑定的逐 tick 轨迹误差 < 0.0001 格（不补调会出现前 3 tick 不动、
-  第 4 tick 一次性 ~0.99 格的“卡回弹”）。
-- 潜行：20 tick 前进 4.316 格，潜行时 1.295 格（约 0.30x）
-- `fly` 同时写服务端，传送后不会自己恢复飞行
-- `click left` 破坏、`click right` 放置；`select_slot` 3→空手、0→草方块
-- 服务端传送 2 秒后位置仍是目标值，`yaw/pitch` 生效
-- `command` 的 `fill`/`setblock` 生效，`blocks` 能读回
-- macro 播放/录制；真实鼠标左右键录进 macro（左键 4 tick、右键 3 tick 为 true）
-- `driver/run_mod.py` 跑通 `setup-platform.json` 和 `example.json`
-
-### 闭环任务、世界与场景
-
-- `navigate`：约 5.2 格直线，27 tick 到达，误差 0.26 格
-- `mine`：`setblock` 放石头后 1 tick 挖掉（创造模式），`blocks` 读回空气
-- `place`：放回同一格，3 tick 完成，回读为石头
-- `use`：末影珍珠服务端层数 2→1、客户端背包同步为 1，并触发约 10 格传送
-- `worlds` 返回存档列表；`enter_world` 从主菜单直接进"超平坦测试"（intent 0），
-  `leave_world` 回到主菜单
-- `harness.json` 的 `auto_enter` 在直接启动 exe 后自动进世界
-- `options_set` 修改 `gfx_gamma` 实时生效（画面亮度变化），并写回 `options.txt`
-- `driver/dev.py run --world ... --build` 一条命令完成编译、重启、进世界
-- tick 事件带 `jump_edge` / `in_air` / `block_below`；`reset` 清零速度并让两次重试落点
-  误差 < 1e-4 格
-- 后台鼠标守卫：游戏不在前台时 `yaw/pitch` 不被鼠标改变，光标保持可见；mod 自己的
-  `look` 仍生效
-- `driver/parkour.py`：跳跃分段、checkpoint、两次运行对比、`attempts` 2/2 成功
-- spool：录制中 `taskkill /F` 掉游戏，spool 里仍有崩溃前最后一条 tick 记录（读取端
-  最后收到 57 tick，spool 写到 62，未丢 tick）
-- 崩溃取证：`selftest_crash`（需 `allow_crash_test`）生成 `crash-<pid>-<tick>.dmp` 和
-  `crash-<pid>.txt`，后者含异常码/地址/线程/最后命令/tick/位置/spool 路径
-- 请求隔离：`selftest_av` 回 `internal_error`，随后 tick 继续增长
-- 二进制记录环：连续 **10 分钟**写入 **12,082** 条，`record_dump` 的 JSONL 与 hex 解码数
-  都等于 `head`（`lost=0`），`queue_dropped=0`；环固定 32 MB，RSS 在系统 trim 后由
-  316 MB 回填到 369 MB（游戏自身内存，环不增长）
-
-### 观察点、hook、ECS 与版本 profile
-
-- `hook_install` 按符号 `MobJump::setJumpPendingScale` 装钩成功；`hook_call` 触发后
-  `hook_drain` 读到 `args[0]=EntityContext*`、`b_float=1.0`、返回地址和 4 帧栈；
-  `hook_rm` 后 `hook_list` 为空。VA dry_run 对同一地址返回 `executable=true`，
-  对 `0x10` 返回 `false`
-- `diagnose`：4 个锚点（normalTick/_applyTurnDelta/getHealth/isOnGround）24 字节全部匹配，
-  `build_id=1.26.51.1`、`version_ok=true`
-- 版本 profile（移植）：`GeneratedProfiles.h` 由 `docs/offsets/*.json` 生成，C++ 里不再有
-  版本号、签名、结构偏移和组件 id。实测 `profile.match=exact`、`anchors_matched=4/4`、
-  `struct_fields=12`、`components=1`；`profile_probe 1.26.51.7` 选中同一 profile（`prefix`），
-  `9.9.9.9` 回 `none`。`profile_dump` 导出的 `profile` 可直接保存为新的 offsets JSON。
-  `allow_version_mismatch=true` 时 `hooks_allowed=true`（`compat=true`），默认关闭。
-- 负路径：把其中一个内置签名字节改掉后重启 → `version_ok=false`，
-  `version_failures=["LocalPlayer::normalTick"]`，`hook_install`/`record_start`/`watch_set`
-  全部回 `version_mismatch`，游戏仍存活；改回后 4 个锚点恢复匹配
-- `overhead`（空闲，1024 样本）：`hook_p50=10 µs`、`hook_p99=38 µs`、`tick_p50=50.006 ms`、
-  `tick_p99=50.970 ms`、20.0 Hz；同一场景改前 `tick_p99=54.596 ms`、`hook_p99=30 µs`
-  （tick p99 未劣化）。注入 1 ms busy ×20 tick 后 `hook_p99=1013 µs`、`hook_max=1040 µs`
-- 请求块合并成 seqlock 后，tick 读路径不再取 `mInput/mLook/mTeleport` 三个 mutex；
-  管道线程仍是单写者（`mRequestSeq` 奇偶校验）
-- `line_too_long`：发 2 MiB 无换行 → 收到 `error/line_too_long`（1 次），补一个换行后
-  `ping` 仍正常，进程不增长
-- `panic all`：先装 1 个 hook + 1 个 watch，`panic` 后两者列表都为空、任务空闲、
-  tick 继续增长
-- `ecs_entity`/`ecs_components`：猪实体读到 **113** 个组件（77 个能推断 stride），其中一个
-  `stride=36`（StateVector 大小），`ecs_component` 按 36 字节读出 hex；客户端 registry
-  有 512 个组件 storage
-- `state.effects`：`/effect @s speed 10 2` 后读到 `id=1, amplifier=2`
-- 存档点：`checkpoint_save` → 传送走 → `checkpoint_load` 落点误差 **0.000** 格
-- `scan` 3×3×4 区域返回 6 个非空气方块
-- `player_landed`：抬升 5 格后落地，`fall_distance=4.92`，血量 20→18（摔落伤害）
-- `probe kind=block/legacy` 对同一坐标返回的名字与 `blocks` 一致；`legacy.hash` 等于
-  名字的 FNV-1-64
-- `watch_set` 观察 tick 计数（size=8, mode=w, thread=tick）：20 tick 捕获 20 次，
-  命中 tid 等于 tick 线程；`watch_drain` 每行带 `code_hex`（32 位 hex），`rip` 是下一条指令
-- offsets 表（F5）：`diagnose.structs` 列出 6 个字段/1 个组件；把 `offsets.json` 里
-  `BlockLegacy.BlockId` 改成 `0x17C` 后 `probe legacy.block_id` 从 1 变成 0，改回即恢复；
-  设成 `null` 后 `probe legacy` 回 `error/no_offset`，`probe block` 不受影响
-- spool（F6）：每次启动使用 `spool-<pid>.jsonl`；若同 PID 的旧文件非空则改名为
-  `spool-<pid>-<n>.jsonl`，单文件超过 64 MiB 也会轮转；swap+write 由同一把锁串行化
-- 记录环（F8）：方块采样走数字 id + 256 项哈希缓存，稳态零 `std::string` 分配；
-  y 超出 [-64,319] 时不读方块、三个 block 字段为 0 并置 `flags & 0x800`
-- `overhead`（F9）：新增 `tick_interval_p50/p99/max_us`（与旧 `tick_*` 同值）、
-  `window_samples=1024`、`qpc_resolution_ns=100`、`consistent=true`
-
-### 输入注入对照（G1–G4）
-
-- G1：`key_event(2)` 走 HID `onKeyDown(Virtual)` → `selected_slot` 1→2，LL `KeyInputEvent` +1；
-  100 次注入事件计数恰好 +100、按下状态可读回；E → `inventory_screen`，Esc → `hud_screen`
-- G2：左键 down+up → `mouse.counts[1]` +2、`last_action=1`；`move dx=200` → yaw +25.99°；
-  左键没有触发世界攻击（攻击绑定不在此层）
-- G3：`driver/sprint_compare.py` 三组对照 B=0.2875、C=0.2806 格/tick（基线 0.2805），
-  结论：事件层注入能复现疾跑，1.3x 差异不在输入事件层，G5 不启动
-- G4：`macro_run event_level=true` 三次回放落点误差 **0.0000**；左右键事件各 +2；
-  旧路径（`event_level=false`）仍走 GameMode，MouseInputEvent 计数为 0
-
-### 封包层（H0–H4）
-
-- H0.1：对 StateVector.vy（offsets 表 `VelY=0x1C`）设写观察点，原地单跳后采样 25 tick；
-  唯一写者是**集成服务端线程**（`thread="both"`），`code_hex` 反汇编为
-  `mov qword ptr [rbx + 0x18], rax`（覆盖 0x1C）
-- H0.2：同一坐标 `blocks` / `probe block` / `probe legacy` 名字与 FNV-1-64 一致；
-  51 版方块 id：air=0、grass_block=2、water=9
-- H0.3：hook 捕获的 `EntityContext*` == `state.context`；`ecs_context` 从两个来源解析到
-  同一个 StateVector 地址、count=2、size=36
-- H0.4：`driver/spool_forensics.py panic|taskkill|verify`；panic 与 taskkill 都单调连续
-  （taskkill 丢失 0 tick）；leave_world 需桌面点击，脚本明确返回不支持
-- H1 阶段 A：开启后 3.5 秒抓到 **122** 条客户端→服务端包，`seq` 0..121 无丢失，
-  tid 固定 11684；主序列 `PlayerAuthInput(144)` + `SubChunkRequest(175)`，
-  另有 Interact(33)、InventoryTransaction(30)、PlayerSkin(93) 等。`denied` 计数 >0，
-  `packet_capture(ids=[1])` 回 `denied_id`
-- H1 阶段 A 的字节层结论：`LocalNetworkPeer::$sendPacket` 在本构建里是 dllimport-only，
-  链接不到导出 thunk ⇒ 不能按符号在 NetworkPeer 层拿序列化字节（`peer_hooked=false`）；
-  字节若要拿，只能走服务端接收侧（B2）或白名单序列化（B3）
-- H3 预演：B（`set_input` sprint）与 C（ctrl+W 事件）各 3 秒的 id 序列几乎相同
-  （B: 144×65/175×3，C: 144×66/175×5）⇒ 身份层没有差异；结合 G3 的速度结论，不需要 packet tap 定案
-- H1-B 地址解析：`BatchedNetworkPeer::$sendPacket` = `Minecraft.Windows.exe+0x46EB60`
-  （无 thunk）；`LoopbackPacketSender::$sendToServer` 锚点 `+0xD809E0`，跟随 3 跳落到
-  `dmf.dll+0x8AC10`（说明已被 dmf/LL 链式 hook）。`LocalNetworkPeer` 仍只有导入声明。
-- H1-B 决策表（走/跳/命令）：`sendToServer` 有流量；`BatchedNetworkPeer::sendPacket`
-  与 `NetworkConnection::receivePacket` 均为 **0** ⇒ 单机回环绕过字节层，走 B3。
-- H1-B B3：`packet_capture {serialize_ids:[144]}` 后 `packet_bytes` 拿到
-  `PlayerAuthInput` 的 91–93 字节，`seq` 与身份记录一一对应（32/32 匹配）；tick 19.7–20.0，
-  `dropped=0`。序列化只在白名单 id 上发生，关闭 capture 时零调用。
-- H2：`chat_send` 复制捕获到的 `CommandRequestPacket(77)` 模板，只替换命令字符串后
-  走 `Packet::sendToServer()`。实测 `/setblock` 回读为 `gold_block`、`/tp @s ~1 ~ ~`
-  位移正好 1.000 格、`/fill`/`/give` 生效；注入前后 tick p99 不变（19.8 Hz）。
-  捕获模板需要先用 `/` + `text_input` + Enter 发一条真实命令；客户端命令还要求
-  `op_self`（世界 commands 已开启时仍可能是 Member 权限）。
-- H1-C 接收侧 tap：`directions:["send","recv"]` 时额外装 9 个钩子。单机里流量全部来自
-  `LoopbackPacketSender::$sendToClient`（3.5 秒 66 hit）和 `...sendToClient(user)`（4 hit），
-  `Packet::sendTo*` 辅助层实测 **0**。接收侧主序列 `MoveDeltaActor(111)`、`AddActor(13)`、
-  `LegacyTelemetryEvent(65)`；`/say`/`/tp` 的 `Text(9)` payload 里能直接读到 JSON 原文。
-  同一 tick 内同一 `Packet` 对象的重复投递会去重，per-anchor 计数仍保留原始次数。
-- H4：`driver/harness/packets.py` 提供 `decode_packet(id, hex)` / `decode_row(row)`；
-  id→名字表由 `MinecraftPacketIds.h` 全量生成（256 项，1.26.51.01），已实现 77/36/19
-  三种布局，未知 id 保留 hex 不报错；CLI `packet-decode --id 77 <hex>`。
-  77 的布局用真实抓包验证，36/19 用合成样例单测。
-  `driver/packet_dump.py --seconds 5 --walk [--directions send,recv]` 导出
-  `out/packets-<ts>.jsonl`（实测 105 行 send、54 行 recv）。
+- 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
+- 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），
+  连续跳与原版轨迹误差 < 0.0001 格；起跳沿必须走 `LocalPlayer::jumpFromGround`。
+- `navigate` 约 5.2 格 27 tick 到达（误差 0.26 格）；`mine` 创造模式 1 tick、`place`
+  3 tick 回读验证；存档点 `checkpoint_load` 落点误差 0.000 格。
+- 事件级宏回放三次落点误差 **0.0000**；疾跑三组对照 B≈C≈0.2805 格/tick。
+- 封包：身份 tap 3.5 秒 122 条 send 无丢失；`chat_send` 注入的 `/tp` 位移正好 1.000 格；
+  接收侧流量全部走 `LoopbackPacketSender::$sendToClient`。
+- 版本 profile：4 锚点全匹配、`struct_fields=12`；改坏任一签名即 `version_ok=false`
+  并全线降级（不崩溃），改回即恢复。
+- 逐项实测数字与复现要点（移动/输入、任务/世界、观察点/hook/ECS/profile、G/H 封包层）
+  见 [`../docs/mod-internals.md`](../docs/mod-internals.md) 的「实测数字速查」。
 
 ## 限制
 
-- 组合压力验证：无游戏测试使用真实 Windows 管道完成 32 次连接、512 个双线程竞争请求，
-  native 控制器执行 2500 次并发任务替换/取消/完成；
-  `py -3.11 driver/selftest.py --stress-cycles 30 --stress-world "超平坦测试"`
-  可复现任务替换、重连、退出/重进世界的组合验证。超长未结束命令的丢弃状态在新连接重置。
-- 世界生命周期由 `WorldSession` 管理，进退世界、世界列表与登录查询均投递到游戏平台主线程；
-  自动进入和登录重试使用可取消的延迟回调，退出/重进世界由上述压力自检覆盖。
+- 组合压力验证可用 `py -3.11 driver/selftest.py --stress-cycles 30 --stress-world "超平坦测试"`
+  复现（任务替换、重连、退出/重进世界）；超长未结束命令的丢弃状态在新连接重置。
+  世界生命周期的内部设计见 `docs/mod-internals.md`「世界与设置」。
 - 进入世界只在主菜单 screen（`start_screen` 或 HBUI 的 `ui://…`）发生；任何
   `*progress_screen`（saving/loading）都会继续等待，超过 `signin_wait_ms` 回 `world_busy`。
   换版本后如果菜单 screen 改名，先看启动日志的 `enter_world: start|blocked screen=…`。
-- `auto_enter` 与显式 `enter_world` 不会并发：显式进入会取消待执行的自动进入；已有一个
-  进入在飞时，第二次请求回 `enter_world_result {ok:true, reason:"already_starting"}`，
-  由 join 事件收尾。
-- CI 在运行无 SDK 的 native 任务模型测试前显式检查 LLVM 并配置 PATH。
-  游戏内任务行为仍需用 `driver/selftest.py` 的 `check_task_lifecycle` 等检查验证。
+- `auto_enter` 与显式 `enter_world` 不会并发：显式进入取消待执行的自动进入；已有进入
+  在飞时第二次回 `already_starting`，由 join 事件收尾。
 - 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
 - HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
   本 mod 只提供脚本/LLM 使用的 API。
@@ -433,11 +272,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   符号钩只实现了 `MobJump::setJumpPendingScale`。
 - VA 只校验“已提交且可执行”的页，不校验指令边界；地址必须由 IDA 侧确认。
 - `allow_hook_va` 默认关闭；`hook_install` 的 `sample` 用于降采样，命中环固定 4096 条。
-- 版本校验：`build_id` 选中 profile，且 profile 里配置的 4 个符号锚点 24 字节入口签名全部
-  匹配时 `version_ok=true`。不匹配时 tick 注入/观察、装钩、观察点、二进制记录回
-  `version_mismatch`；管道、`diagnose`、`profile_dump`、`mem_read`/`probe` 仍可用。
-  `allow_version_mismatch=true` 时改看 `hooks_allowed`，钩子照常运行（移植用）。
-  锚点先跟随 `jmp [rip+0]` 导入 thunk，再取真实函数。
+- 版本校验：`build_id` 选中 profile 且 4 个锚点签名全匹配才 `version_ok=true`；不匹配时
+  钩子/观察/记录回 `version_mismatch`，管道、`diagnose`、`profile_dump`、`mem_read`/`probe`
+  仍可用（`allow_version_mismatch` 只改看 `hooks_allowed`，移植用）。锚点先跟随
+  `jmp [rip+0]` 导入 thunk 再取真实函数。
 - `mods/probe/offsets.json` 可以在运行时覆盖签名/结构偏移/组件 id，不用重编译；
   它只会改当前进程里已选中的 profile。
 - ECS 组件 id 是**运行时** EnTT id，跨进程/跨版本不稳定；`ecs_components` 只报 id、地址、

@@ -86,7 +86,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 
 ## 文档
 
-- Mod 构建、API、协议、实测结果与限制：[`mod/README.md`](mod/README.md)
+- Mod 构建、API、协议与使用限制：[`mod/README.md`](mod/README.md)；实现细节与逐项实测数字：
+  [`docs/mod-internals.md`](docs/mod-internals.md)（含「实测数字速查」）
 - 架构与扩展指南：[`docs/architecture.md`](docs/architecture.md)
 - 跑酷记录、跳跃分析与重复尝试：[`docs/parkour.md`](docs/parkour.md)
 - dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)

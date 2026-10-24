@@ -140,7 +140,7 @@ py -3.11 driver/selftest.py
 ## 当前状态
 
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮）
-全部完成；各轮的验收结论都在 `mod/README.md` 的「实测 / 限制」和 `docs/mod-internals.md`，
+全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
 执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **190/190**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 169/169、
 ruff/mypy（driver+tests）全绿。
@@ -158,8 +158,9 @@ ruff/mypy（driver+tests）全绿。
 - UseTask 服务端回调超时、chat_history Requested 状态超时自愈、`mEntryInFlight` 看门狗
 - `mButtonStates/mHandlerStates` 数组的跨线程写（并入 RequestBlock 或走 client 任务）
 
-> 任务提示词不随仓库分发；验收标准与结论写进 `mod/README.md` 的「实测 / 限制」
-> 和 `docs/mod-internals.md`，以后看这两处即可。
+> 任务提示词不随仓库分发；验收标准与结论：使用限制与基线数字在 `mod/README.md`，
+> 实现细节与逐项实测数字在 `docs/mod-internals.md`（含「实测数字速查」），以后看这两处。
 
-改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查，并在 `mod/README.md` 的
-「实测 / 限制」里补一行 —— 这个仓库的文档是活的，别让它和代码脱节。
+改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查；使用限制/基线变化补进
+`mod/README.md` 的「实测 / 限制」，逐项实测数字补进 `docs/mod-internals.md` 的对应
+小节或「实测数字速查」—— 这个仓库的文档是活的，别让它和代码脱节。

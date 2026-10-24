@@ -248,33 +248,10 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     // T9: one lock-free snapshot of movement/look/teleport requests per tick.
     RequestBlock const requests = readRequests();
 
-    // Queued teleport goes through the integrated server so the position is
-    // authoritative; a client-only _setPos is corrected back on the next tick.
-    if (requests.teleportSeq != mSeenTeleportSeq) {
-        mSeenTeleportSeq = requests.teleportSeq;
-        requestServerTeleport(player, requests.teleport);
-    }
+    consumeTeleportRequest(player, requests);
 
-    if (int fly = mFlyRequest.exchange(-1); fly >= 0) {
-        bool const enabled = fly != 0;
-        player.setAbility(AbilitiesIndex::MayFly, enabled);
-        player.setAbility(AbilitiesIndex::Flying, enabled);
-        // The client ability write alone is overwritten the next time the
-        // server syncs abilities (for example after a /tp). Mirror it on the
-        // server-side player so "fly off" actually sticks.
-        if (auto server = ll::service::bedrock::getServerInstance()) {
-            std::string name = player.getRealName();
-            queueServerTask([name, enabled] {
-                auto    minecraft    = ll::service::bedrock::getMinecraft();
-                Level*  level        = minecraft ? minecraft->getLevel() : nullptr;
-                Player* serverPlayer = (level != nullptr && !name.empty()) ? level->getPlayer(name) : nullptr;
-                if (serverPlayer != nullptr) {
-                    serverPlayer->setAbility(AbilitiesIndex::MayFly, enabled);
-                    serverPlayer->setAbility(AbilitiesIndex::Flying, enabled);
-                }
-            });
-        }
-    }
+    applyFlyRequest(player);
+
     if (int click = mClickRequest.exchange(-1); click >= 0) {
         performClick(player, click);
     }
@@ -287,58 +264,105 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     }
 
     if (mMacroStartRequested.exchange(false)) {
-        {
-            std::lock_guard lock(mMacroMutex);
-            if (mMacro) {
-                mMacroPlaying = true;
-            }
-        }
-        if (mMacroPlaying) {
-            mPrevSprint   = false;
-            mPrevSneak    = false;
-            mPrevMacroRmb = false;
-            mPrevMacroLmb = false;
-            mInjected     = false;
-            getSelf().getLogger().info(
-                "harness: macro started at tick {}, range [{}, {})",
-                mMacroIndex.load(),
-                mMacroStart.load(),
-                mMacroEnd.load()
-            );
-        } else {
-            enqueue(R"({"event":"error","reason":"macro_not_loaded"})");
-        }
+        startMacroIfRequested();
     }
 
     if (mMacroPlaying.load(std::memory_order_relaxed)) {
-        std::shared_ptr<Macro> macro;
-        {
-            std::lock_guard lock(mMacroMutex);
-            macro = mMacro;
-        }
-        int index = mMacroIndex.load(std::memory_order_relaxed);
-        int end   = mMacroEnd.load(std::memory_order_relaxed);
-        if (!macro || index < 0 || index >= static_cast<int>(macro->size()) || index >= end) {
-            // macro_load can swap in a shorter macro while looping, so the
-            // restart point must be re-validated against the *current* size
-            // before the row access below; otherwise it reads out of bounds.
-            int const restart = mMacroStart.load(std::memory_order_relaxed);
-            if (macro && mMacroLoop.load() && !macro->empty() && restart >= 0
-                && restart < static_cast<int>(macro->size()) && restart < end) {
-                index = restart;
-                mMacroIndex.store(index, std::memory_order_relaxed);
-            } else {
-                finishMacro("end");
-            }
-        }
-        if (mMacroPlaying.load(std::memory_order_relaxed)) {
-            auto const& row = (*macro)[static_cast<size_t>(index)];
-            applyMacroTick(*client, player, row);
-            mMacroIndex.store(index + 1);
-        }
+        tickMacroPlayback(*client, player);
         return;
     }
 
+    consumeMovementRequests(*client, player, requests);
+    consumeLookRequests(player, requests);
+}
+
+void ProbeMod::consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests) {
+    // Queued teleport goes through the integrated server so the position is
+    // authoritative; a client-only _setPos is corrected back on the next tick.
+    if (requests.teleportSeq != mSeenTeleportSeq) {
+        mSeenTeleportSeq = requests.teleportSeq;
+        requestServerTeleport(player, requests.teleport);
+    }
+}
+
+void ProbeMod::applyFlyRequest(LocalPlayer& player) {
+    int const fly = mFlyRequest.exchange(-1);
+    if (fly < 0) {
+        return;
+    }
+    bool const enabled = fly != 0;
+    player.setAbility(AbilitiesIndex::MayFly, enabled);
+    player.setAbility(AbilitiesIndex::Flying, enabled);
+    // The client ability write alone is overwritten the next time the
+    // server syncs abilities (for example after a /tp). Mirror it on the
+    // server-side player so "fly off" actually sticks.
+    if (auto server = ll::service::bedrock::getServerInstance()) {
+        std::string name = player.getRealName();
+        queueServerTask([name, enabled] {
+            auto    minecraft    = ll::service::bedrock::getMinecraft();
+            Level*  level        = minecraft ? minecraft->getLevel() : nullptr;
+            Player* serverPlayer = (level != nullptr && !name.empty()) ? level->getPlayer(name) : nullptr;
+            if (serverPlayer != nullptr) {
+                serverPlayer->setAbility(AbilitiesIndex::MayFly, enabled);
+                serverPlayer->setAbility(AbilitiesIndex::Flying, enabled);
+            }
+        });
+    }
+}
+
+void ProbeMod::startMacroIfRequested() {
+    {
+        std::lock_guard lock(mMacroMutex);
+        if (mMacro) {
+            mMacroPlaying = true;
+        }
+    }
+    if (mMacroPlaying) {
+        mPrevSprint   = false;
+        mPrevSneak    = false;
+        mPrevMacroRmb = false;
+        mPrevMacroLmb = false;
+        mInjected     = false;
+        getSelf().getLogger().info(
+            "harness: macro started at tick {}, range [{}, {})",
+            mMacroIndex.load(),
+            mMacroStart.load(),
+            mMacroEnd.load()
+        );
+    } else {
+        enqueue(R"({"event":"error","reason":"macro_not_loaded"})");
+    }
+}
+
+void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
+    std::shared_ptr<Macro> macro;
+    {
+        std::lock_guard lock(mMacroMutex);
+        macro = mMacro;
+    }
+    int index = mMacroIndex.load(std::memory_order_relaxed);
+    int end   = mMacroEnd.load(std::memory_order_relaxed);
+    if (!macro || index < 0 || index >= static_cast<int>(macro->size()) || index >= end) {
+        // macro_load can swap in a shorter macro while looping, so the
+        // restart point must be re-validated against the *current* size
+        // before the row access below; otherwise it reads out of bounds.
+        int const restart = mMacroStart.load(std::memory_order_relaxed);
+        if (macro && mMacroLoop.load() && !macro->empty() && restart >= 0
+            && restart < static_cast<int>(macro->size()) && restart < end) {
+            index = restart;
+            mMacroIndex.store(index, std::memory_order_relaxed);
+        } else {
+            finishMacro("end");
+        }
+    }
+    if (mMacroPlaying.load(std::memory_order_relaxed)) {
+        auto const& row = (*macro)[static_cast<size_t>(index)];
+        applyMacroTick(client, player, row);
+        mMacroIndex.store(index + 1);
+    }
+}
+
+void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests) {
     ControlState state;
     bool         apply = false;
     if (requests.inputSeq != mSeenInputSeq) {
@@ -367,11 +391,13 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         apply               = true;
     }
     if (apply) {
-        applyControls(*client, player, state);
+        applyControls(client, player, state);
     } else {
-        applyControls(*client, player, ControlState{});
+        applyControls(client, player, ControlState{});
     }
+}
 
+void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requests) {
     // Absolute look targets are applied after movement so the rotation matches the current tick.
     if (requests.lookSeq != mSeenLookSeq) {
         mSeenLookSeq        = requests.lookSeq;
@@ -434,20 +460,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     auto tickIndex = mTick.fetch_add(1, std::memory_order_relaxed) + 1;
     gWatchTick.store(tickIndex, std::memory_order_relaxed);
     recordTick(player, *client, tickIndex, mJumpEdgeThisTick);
-    {
-        auto const& pos  = player.getPosition();
-        auto const  feet = player.getFeetPos();
-        auto const  rot  = player.getRotation();
-        mLastX.store(finiteOrZero(static_cast<float>(pos.x)), std::memory_order_relaxed);
-        mLastY.store(finiteOrZero(static_cast<float>(pos.y)), std::memory_order_relaxed);
-        mLastZ.store(finiteOrZero(static_cast<float>(pos.z)), std::memory_order_relaxed);
-        mLastYaw.store(finiteOrZero(rot.y), std::memory_order_relaxed);
-        mLastPitch.store(finiteOrZero(rot.x), std::memory_order_relaxed);
-        mLastFeetX.store(finiteOrZero(static_cast<float>(feet.x)), std::memory_order_relaxed);
-        mLastFeetY.store(finiteOrZero(static_cast<float>(feet.y)), std::memory_order_relaxed);
-        mLastFeetZ.store(finiteOrZero(static_cast<float>(feet.z)), std::memory_order_relaxed);
-        mPoseValid.store(true, std::memory_order_relaxed);
-    }
+    recordTickPose(player);
 
     latchActionClicks(player);
 
@@ -457,11 +470,47 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         applySlotRequest(player, slot);
     }
 
+    runCaptureRequests(*client, player);
+
+    {
+        nlohmann::json hookResult;
+        if (detail::hookTick(player, hookResult)) {
+            enqueue(hookResult.dump());
+        }
+    }
+
+    if (mMacroRecording.load(std::memory_order_relaxed)) {
+        recordMacroTick(*client, player);
+    }
+
+    // Parkour events: landing (with fall distance), damage and death. These
+    // run on every tick, independent of JSON/binary recording.
+    tickParkourEvents(player);
+
+    emitLegacyTickJson(*client, player, tickIndex);
+}
+
+void ProbeMod::recordTickPose(LocalPlayer& player) {
+    auto const& pos  = player.getPosition();
+    auto const  feet = player.getFeetPos();
+    auto const  rot  = player.getRotation();
+    mLastX.store(finiteOrZero(static_cast<float>(pos.x)), std::memory_order_relaxed);
+    mLastY.store(finiteOrZero(static_cast<float>(pos.y)), std::memory_order_relaxed);
+    mLastZ.store(finiteOrZero(static_cast<float>(pos.z)), std::memory_order_relaxed);
+    mLastYaw.store(finiteOrZero(rot.y), std::memory_order_relaxed);
+    mLastPitch.store(finiteOrZero(rot.x), std::memory_order_relaxed);
+    mLastFeetX.store(finiteOrZero(static_cast<float>(feet.x)), std::memory_order_relaxed);
+    mLastFeetY.store(finiteOrZero(static_cast<float>(feet.y)), std::memory_order_relaxed);
+    mLastFeetZ.store(finiteOrZero(static_cast<float>(feet.z)), std::memory_order_relaxed);
+    mPoseValid.store(true, std::memory_order_relaxed);
+}
+
+void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
     if (mStateRequested.exchange(false)) {
-        captureState(*client, player);
+        captureState(client, player);
     }
     if (mButtonsRequested.exchange(false)) {
-        captureButtons(*client);
+        captureButtons(client);
     }
     if (mInventoryRequested.exchange(false)) {
         captureInventory(player);
@@ -526,70 +575,60 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
             captureScan(player, request);
         }
     }
+}
 
-    {
-        nlohmann::json hookResult;
-        if (detail::hookTick(player, hookResult)) {
-            enqueue(hookResult.dump());
+void ProbeMod::tickParkourEvents(LocalPlayer& player) {
+    float const health   = player.getHealth();
+    auto const  pose     = player.getFeetPos();
+    bool const  onGround = player.isOnGround();
+    if (!onGround) {
+        if (!mWasAirborne) {
+            mWasAirborne = true;
+            mAirStartY   = static_cast<float>(pose.y);
         }
-    }
-
-    if (mMacroRecording.load(std::memory_order_relaxed)) {
-        recordMacroTick(*client, player);
-    }
-
-    // Parkour events: landing (with fall distance), damage and death. These
-    // run on every tick, independent of JSON/binary recording.
-    {
-        float const health   = player.getHealth();
-        auto const  pose     = player.getFeetPos();
-        bool const  onGround = player.isOnGround();
-        if (!onGround) {
-            if (!mWasAirborne) {
-                mWasAirborne = true;
-                mAirStartY   = static_cast<float>(pose.y);
-            }
-        } else if (mWasAirborne) {
-            mWasAirborne = false;
-            float const fall = mAirStartY - static_cast<float>(pose.y);
-            if (fall >= 0.75f) {
-                enqueue(
-                    nlohmann::json{
-                        {"event",         "player_landed"                       },
-                        {"fall_distance", finiteOrZero(fall)                    },
-                        {"x",             finiteOrZero(static_cast<float>(pose.x))},
-                        {"y",             finiteOrZero(static_cast<float>(pose.y))},
-                        {"z",             finiteOrZero(static_cast<float>(pose.z))},
-                        {"health",        finiteOrZero(health)                  },
-                }
-                        .dump()
-                );
-            }
-        }
-        if (health < mLastHealth - 0.01f) {
+    } else if (mWasAirborne) {
+        mWasAirborne = false;
+        float const fall = mAirStartY - static_cast<float>(pose.y);
+        if (fall >= 0.75f) {
             enqueue(
                 nlohmann::json{
-                    {"event",  "player_hurt"                       },
-                    {"health", finiteOrZero(health)                },
-                    {"damage", finiteOrZero(mLastHealth - health)  },
+                    {"event",         "player_landed"                       },
+                    {"fall_distance", finiteOrZero(fall)                    },
+                    {"x",             finiteOrZero(static_cast<float>(pose.x))},
+                    {"y",             finiteOrZero(static_cast<float>(pose.y))},
+                    {"z",             finiteOrZero(static_cast<float>(pose.z))},
+                    {"health",        finiteOrZero(health)                  },
             }
                     .dump()
             );
         }
-        if (health <= 0.0f && mLastHealth > 0.0f) {
-            enqueue(
-                nlohmann::json{
-                    {"event", "player_died"                                  },
-                    {"x",     finiteOrZero(static_cast<float>(pose.x))       },
-                    {"y",     finiteOrZero(static_cast<float>(pose.y))       },
-                    {"z",     finiteOrZero(static_cast<float>(pose.z))       },
-            }
-                    .dump()
-            );
-        }
-        mLastHealth = health;
     }
+    if (health < mLastHealth - 0.01f) {
+        enqueue(
+            nlohmann::json{
+                {"event",  "player_hurt"                       },
+                {"health", finiteOrZero(health)                },
+                {"damage", finiteOrZero(mLastHealth - health)  },
+        }
+                .dump()
+        );
+    }
+    if (health <= 0.0f && mLastHealth > 0.0f) {
+        enqueue(
+            nlohmann::json{
+                {"event", "player_died"                                  },
+                {"x",     finiteOrZero(static_cast<float>(pose.x))       },
+                {"y",     finiteOrZero(static_cast<float>(pose.y))       },
+                {"z",     finiteOrZero(static_cast<float>(pose.z))       },
+        }
+                .dump()
+        );
+    }
+    mLastHealth = health;
+}
 
+void ProbeMod::emitLegacyTickJson(ClientInstance& client, LocalPlayer& player, std::uint64_t tickIndex) {
+    // Compatibility JSON recording; the binary ring is the zero-alloc path.
     if (!mRecording.load(std::memory_order_relaxed)) {
         return;
     }
@@ -597,7 +636,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     auto const& pos = player.getPosition();
     auto        vel = player.getVelocity();
     auto const  rot = player.getRotation();
-    auto        in  = readInput(*client);
+    auto        in  = readInput(client);
 
     bool actionSprint = false;
     if (auto action = player.getEntityContext().tryGetComponent<PlayerActionComponent>()) {

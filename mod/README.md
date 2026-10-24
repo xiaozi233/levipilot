@@ -223,6 +223,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   - 本轮 live selftest 实测 **190/190**（gate 全开），`guard_*` 4 条全过；一次
     `attack_entity` 客户端任务 SEH 促成了攻击路径改走服务端玩家 GameMode（与传送
     同范式），`selftest_busy` 的 gate 关闭分支也修为显式双事件等待。
+  - 结构轮（2026-10-24 第二批）：`safeTickPre/safeTickPost` 拆为阶段方法
+    （consumeTeleportRequest/applyFlyRequest/tickMacroPlayback/runCaptureRequests/
+    tickParkourEvents/emitLegacyTickJson 等，严格保序），聊天捕获字段聚合为
+    `ChatCapture` 嵌套子系统（线程归属注释随字段走）；live selftest 复验 190/190。
 
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移

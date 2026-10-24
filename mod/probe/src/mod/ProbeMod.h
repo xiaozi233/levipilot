@@ -410,6 +410,19 @@ private:
     alignas(64) std::atomic<std::uint32_t> mRequestSeq{0};
     RequestBlock mRequestBlock;
     std::mutex   mRequestWriteMutex;
+
+    // safeTickPre/Post stage helpers; each keeps the exact ordering the
+    // monolithic functions had (ProbeMod.cpp).
+    void consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests);
+    void applyFlyRequest(LocalPlayer& player);
+    void startMacroIfRequested();
+    void tickMacroPlayback(ClientInstance& client, LocalPlayer& player);
+    void consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests);
+    void consumeLookRequests(LocalPlayer& player, RequestBlock const& requests);
+    void recordTickPose(LocalPlayer& player);
+    void runCaptureRequests(ClientInstance& client, LocalPlayer& player);
+    void tickParkourEvents(LocalPlayer& player);
+    void emitLegacyTickJson(ClientInstance& client, LocalPlayer& player, std::uint64_t tickIndex);
     // Tick-thread consumption state for the block above.
     std::uint32_t mSeenInputSeq = 0;
     ControlState  mActiveInput;
@@ -467,18 +480,23 @@ private:
     // Look requests live in RequestBlock above (mLookMutex removed in T9).
 
     std::atomic_bool mStateRequested{false};
-    struct ChatLine {
-        detail::FixedText<2048> text;
-        int                     type      = 0;
-        bool                    truncated = false;
-    };
-    // One outstanding request. Client executor owns Requested -> Ready;
-    // spool owns Ready -> Idle. Neither game objects nor strings cross threads.
-    enum class ChatPhase { Idle, Requested, Ready };
-    std::atomic<ChatPhase>      mChatPhase{ChatPhase::Idle};
-    std::array<ChatLine, 64>    mChatLines{};
-    std::size_t                 mChatCount = 0, mChatTotal = 0;
-    char const*                 mChatError = nullptr;
+    // Chat history capture subsystem (Chat.cpp): a bounded, allocation-free
+    // snapshot taken on the client thread and formatted by the spool thread.
+    // One outstanding request; the client executor owns Requested -> Ready,
+    // the spool thread owns Ready -> Idle. Neither game objects nor strings
+    // cross threads.
+    struct ChatCapture {
+        struct Line {
+            detail::FixedText<2048> text;
+            int                     type      = 0;
+            bool                    truncated = false;
+        };
+        enum class Phase { Idle, Requested, Ready };
+        std::atomic<Phase>  phase{Phase::Idle};
+        std::array<Line, 64> lines{};
+        std::size_t          count = 0, total = 0;
+        char const*          error = nullptr;
+    } mChatCapture;
     std::atomic_bool            mInventoryRequested{false};
     std::mutex                  mEntityActionMutex;
     std::optional<EntityAction> mEntityAction;

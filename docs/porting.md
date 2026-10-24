@@ -1,7 +1,9 @@
 # 移植到新的游戏版本
 
-目标：换一个 Minecraft Bedrock / LeviLamina 版本时，**尽量只改数据、不改逻辑**。本仓库把
-版本相关的东西分成三类，分别有不同的移植成本：
+本文说明换一个 Minecraft Bedrock / LeviLamina 版本时怎样**只改数据、不改逻辑**。
+先按下面的三类判断成本，再走「快速流程」；每一步都有可验证的输出，不要跳步。
+
+本仓库把版本相关的内容分成三类，移植成本依次递增：
 
 | 类别 | 例子 | 移植方式 |
 | --- | --- | --- |
@@ -41,7 +43,7 @@ py -3.11 -m driver.harness.cli status
 }
 ```
 
-`profile_found=false` 是正常的：新版本还没有 profile。这时管道、`status`、`diagnose`、
+`profile_found=false` 是正常的：新版本还没有 profile（版本数据文件）。这时管道、`status`、`diagnose`、
 `profile_dump`、`mem_read`/`probe` 仍然可用。
 
 ### 3. 打开兼容模式试跑钩子
@@ -139,3 +141,10 @@ py -3.11 -m unittest discover -s tests
 - 不要把 `allow_version_mismatch` 留在日常配置里；它是移植开关，不是兼容层。
 - 不要跳过 `driver/gen_profiles.py`；手改 `GeneratedProfiles.h` 会被 CI 的
   `tests/test_profiles.py` 抓到。
+
+## 另见
+
+- 版本 profile 的实际内容与生成规则：[`../docs/offsets/`](offsets/) 与
+  [`../driver/gen_profiles.py`](../driver/gen_profiles.py)（生成 `GeneratedProfiles.h`）。
+- 签名/锚点的运行机制：[`mod-internals.md`](mod-internals.md) 的「版本指纹与锚点」。
+- 构建环境与工具链补丁：[`mod-build-environment.md`](mod-build-environment.md)。

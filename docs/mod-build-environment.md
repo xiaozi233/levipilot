@@ -1,6 +1,8 @@
-# Mod 构建环境（本机参考）
+# Mod 构建环境（本机与 CI）
 
-`mod/probe` 在下面这套工具链上验证通过。路径是本机布局，换机器时只需要保证版本一致。
+`mod/probe` 在下面这套工具链上验证通过。表格中的路径是本机布局，换机器时只需要保证
+**版本一致**，路径通过环境变量或 `--cc/--cxx` 传入即可。首次搭建或升级工具链时按本文
+操作；日常构建直接看 [`../mod/README.md`](../mod/README.md) 的「构建」一节。
 
 | 组件 | 版本 | 本机路径 |
 | --- | --- | --- |
@@ -41,7 +43,7 @@ $env:XMAKE_PKG_INSTALLDIR = 'D:\Tools\xmake-packages'
 工具安装脚本见 `.github/scripts/setup-native.ps1`。如需升级工具链，版本、下载地址和
 校验值应一起更新，并重新执行一次无缓存构建。
 
-## SDK 头文件修正
+## SDK 头文件补丁（必须保留）
 
 ### LL 26.51.7 源码的完整类型/循环包含补丁
 
@@ -68,3 +70,17 @@ add_repositories("local-repo local-repo")
 
 这个本地仓库会覆盖上游 `levimc-repo` 里的同名 `levilamina` 包，所以补丁是可复现的；
 上游包源码被 xmake `git reset` 也不会丢。
+
+## 常见问题
+
+- **xmake 卡在交互式 `please input: y`**：缺少 `XMAKE_GLOBALDIR` / `XMAKE_PKG_INSTALLDIR`，
+  xmake 试图在项目内重新下载依赖。按上面的环境变量设置后重试。
+- **复制 `probe.dll` 报 `Device or resource busy`**：游戏仍在运行，先
+  `taskkill /F /IM Minecraft.Windows.exe`。
+- **构建吃满 CPU 导致桌面卡顿**：始终使用 `xmake -j4`，不要用默认并发。
+
+## 另见
+
+- 构建产物与安装步骤：[`../mod/README.md`](../mod/README.md)。
+- CI 工作流：[`../.github/workflows/tests.yml`](../.github/workflows/tests.yml) 与
+  [`../.github/scripts/`](../.github/scripts/)。

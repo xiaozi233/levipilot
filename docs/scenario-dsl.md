@@ -1,12 +1,15 @@
-# Scenario DSL
+# 场景 DSL（scenarios/*.json）
 
-`scenarios/*.json` 是逐 tick 实验的描述文件。当前入口是 **`driver/run_mod.py`**（LeviLamina
-mod 传输层）；旧的 `driver/run.py` 在 `legacy/frida` 分支，见
-[`legacy-frida-1.26.45.md`](legacy-frida-1.26.45.md)。
+场景文件描述一次可复现的逐 tick 实验：**setup 搭场地 → steps 执行 → verify/teardown 收尾**，
+结果写成 JSONL 与 summary。入口是 `driver/run_mod.py`（LeviLamina mod 传输层）。
 
 ```bash
-py -3.11 driver/run_mod.py --scenario scenarios/example.json
+py -3.11 driver/run_mod.py --scenario scenarios/setup-platform.json   # 先铺 65×65 测试平台
+py -3.11 driver/run_mod.py --scenario scenarios/example.json          # 再跑实验
 ```
+
+旧 frida 路线的 `driver/run.py` 在 `legacy/frida` 分支，见
+[`legacy-frida-1.26.45.md`](legacy-frida-1.26.45.md)。
 
 ## 示例
 
@@ -74,3 +77,9 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json --out-dir out/mod
 
 速度按相邻 tick 的位置差计算（`speed_basis: "pos_delta"`）；`vel` 是摩擦前速度，
 只作参考，不能直接当速度用。
+
+## 另见
+
+- 命令与 `state` 字段：[`../mod/README.md`](../mod/README.md)。
+- runner 的输出与采样实现：[`../driver/runner.py`](../driver/runner.py)、
+  [`../driver/output.py`](../driver/output.py)。

@@ -146,7 +146,7 @@ xmake -j4 -y
 调试命令（`diag` / `mouse` / `buttons` / `input_cfg`）和注入/传送/macro 的实现细节见
 [`../docs/mod-internals.md`](../docs/mod-internals.md)。
 
-### 自动进入世界
+## 配置（harness.json）
 
 mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合直接启动 exe 的开发循环）：
 

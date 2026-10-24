@@ -274,20 +274,10 @@
 
 ### 5.2 harness 的玩家控制方式
 
-| 能力 | 实现 |
-|---|---|
-| 连续移动 | `ClientMoveInputHandler::_updateClientMoveVector(strafe, forward, Neutral, client)` |
-| 疾跑 | `InputEventQueue::enqueueButton` + `MoveInputComponent` 标志 + 按钮 handler 回调；也可切到 `_toggleClientSprint` 模式 |
-| 潜行 | `LocalPlayer::setSneaking(bool)` + `MoveInputComponent` 标志 |
-| 跳跃 | `MoveInputState::JumpDown` / `JumpInputWasPressed` / `JumpInputCurrentlyDown` + 按钮队列/handler；`MobJump::setJumpPendingScale` 作为辅助 |
-| 视角 | `LocalPlayer::_applyTurnDelta(Vec2{pitchDelta, yawDelta})` |
-| 绝对朝向 | 读取当前 `ActorRotation`，计算最短角度差后调用 `_applyTurnDelta` |
-| 传送 | `ServerInstance::queueForServerThread` + 服务端 `Player::teleport`（服务端权威；坐标=脚部） |
-| 服务端命令 | 服务器线程 + `PlayerCommandOrigin` + `MinecraftCommands::executeCommand` |
-| 快捷栏 | `PlayerInventory::selectSlot(slot, ContainerID::Inventory)`（tick 之后） |
-| 读状态 | `LocalPlayer` + `MoveInputComponent` + `PlayerActionComponent` + `BlockSource` + attributes |
-| 实体 | `Level::getRuntimeActorList()`，按半径过滤 |
-| 方块 | `BlockSource::getBlock(BlockPos)`，返回 `BlockType` 名 |
+harness 复用了 dmf 的注入位置（同一套 tick / 输入队列 / `_applyTurnDelta` 路径），
+但具体实现、能力表与实测数字已演进多轮，统一维护在
+[`../docs/mod-internals.md`](../docs/mod-internals.md)（输入、实体、世界、封包各节），
+这里不再复制一份容易过时的函数表。
 
 ### 5.3 dmf macro 兼容
 
@@ -311,177 +301,33 @@ dmf 生成的 `macros/*.json` 可以直接 `macro load --path ...` 加载。
 
 ---
 
-## 6. harness 协议
+## 6. 与 harness 的关系（现行文档索引）
 
-### 6.1 传输
+本文成文时 harness 只有十来个命令；现在的协议、命令表、`state` 字段、`harness.json`
+配置和使用限制远超那版记录，统一维护在下列位置。旧版命令表已删除，避免与现行协议混淆。
 
-- 命名管道：`\\.\pipe\mcbe-harness`
-- JSON Lines，UTF-8，一行一条
-- 客户端：`driver/transport_mod.py`
-- 事件：`hello` / `pong` / `status` / `state` / `tick` / `entities` / `blocks` / `error` / macro 事件
+| 主题 | 现行文档 |
+| --- | --- |
+| 管道协议、命令表、`state` 字段、配置开关 | [`../mod/README.md`](../mod/README.md) |
+| 各子系统实现细节（宏、输入、封包、观察点等） | [`../docs/mod-internals.md`](../docs/mod-internals.md) |
+| 构建、安装与开发循环 | [`../README.md`](../README.md)、[`../docs/mod-build-environment.md`](../docs/mod-build-environment.md) |
 
-### 6.2 命令
+与逆向结论直接相关、仍然有效的几点：
 
-| 命令 | 关键字段 | 响应 |
-|---|---|---|
-| `ping` | — | `pong` |
-| `status` | — | `status` |
-| `state` | — | `state`（下一 tick） |
-| `start` / `stop` | `max_ticks` | `started` / `stopped` |
-| `move` | `forward`, `strafe`, `ticks` | `moving` |
-| `stopmove` | — | `stopping` |
-| `set` | `forward`, `strafe`, `sprint`, `sneak`, `jump`, `ticks` | `set_ok` |
-| `jump` | — | `jump_ok` |
-| `look` | `yaw`, `pitch`, `relative`, `ticks` | `look_ok` |
-| `entities` | `radius`, `limit` | `entities` |
-| `blocks` | `positions: [[x,y,z], ...]` | `blocks` |
-| `click` | `button`, `reach` | `click_result`（射线命中/GameMode 信息；左键破坏、右键放置已实测） |
-| `fly` | `enabled` | `fly_ok` |
-| `teleport` | `x`, `y`, `z`, `yaw?`, `pitch?`（脚部坐标） | `teleported`（服务器线程应用后） |
-| `select_slot` | `slot: 0..8` | `select_slot_ok`，随后 `state.selected_slot` 更新 |
-| `command` | `command`（可带 `/`） | `command_done`（`success`, `code`；方块命令 deferred，`success=false` 不代表失败） |
-| `diag` | — | `diag`（Minecraft/ServerInstance/Level/Commands 可见性） |
-| `mouse` / `mouse_clear` | — | `mouse`（事件计数）/ `mouse_cleared` |
-| `macro_load` | `name` 或 `path` | `macro_loaded` |
-| `macro_run` | `start`, `end`, `loop` | `macro_started` |
-| `macro_stop` | — | `macro_stopped` |
-| `macro_status` | — | `macro_status` |
-| `macro_list` | — | `macro_list` |
-| `macro_rec_start` | `max_ticks` | `macro_rec_started` |
-| `macro_rec_stop` | `name` | `macro_rec_saved` |
-| `macro_save` | `name`, `ticks` | `macro_saved` |
+- 传输是命名管道 `\\.\pipe\mcbe-harness` 上的 UTF-8 JSON Lines（一行一条），协议号见 `hello`。
+- dmf 的 macro 文件（9/11 字符串、每 tick 旋转增量）可以原样 `macro_load`，录制也能导出
+  同样格式；格式与播放语义见 §3。
+- 不要 patch `dmf.dll`：闭源且依赖 hosted world 内部状态（§5.1）；伴生 mod 与 dmf 可同时加载。
+- dmf 的 macro/practice 受 hosted world 检查限制（§0.3），harness 没有复制这个限制。
+- `smoothMacro` / `frameBasedRotation` 未逐行复刻，harness 按每 tick 增量直接应用。
 
-`ticks = -1` 表示持续到 `stopmove` / 下一条 `set`。
+## 7. 复现（IDA 导出）
 
-### 6.3 `state` 字段
-
-```json
-{
-  "event": "state",
-  "tick": 123,
-  "x": 0.5, "y": -49.0, "z": 0.5,
-  "vx": 0.0, "vy": 0.0, "vz": 0.0,
-  "yaw": 90.0, "pitch": 0.0,
-  "on_ground": true,
-  "sprinting": false, "sneaking": false, "swimming": false, "flying": false,
-  "in_water": false, "alive": true,
-  "health": 20, "max_health": 20,
-  "hunger": 20.0, "saturation": 5.0, "exhaustion": 0.0,
-  "xp_level": 0.0, "xp_progress": 0.0,
-  "gamemode": 1, "dimension": 0,
-  "name": "Player", "uuid": "....",
-  "selected_slot": 0,
-  "item": {"type": "minecraft:stone", "name": "Stone", "count": 64, "aux": 0},
-  "feet_x": 0.5, "feet_y": -49.0, "feet_z": 0.5,
-  "head_x": 0.5, "head_y": -47.38, "head_z": 0.5,
-  "block_feet": "minecraft:air",
-  "block_below": "minecraft:stone",
-  "block_head": "minecraft:air",
-  "block_above": "minecraft:air",
-  "input": {
-    "w": false, "a": false, "s": false, "d": false,
-    "sprint": false, "sneak": false, "jump": false,
-    "move_x": 0.0, "move_y": 0.0,
-    "action_sprint": false
-  }
-}
-```
-
-### 6.4 示例
+构建与安装见 `docs/mod-build-environment.md` 与 `mod/README.md`；本目录只负责逆向导出：
 
 ```bash
-# 读状态
-py -3.11 driver/transport_mod.py state
-
-# 前进 40 tick，疾跑
-py -3.11 driver/transport_mod.py set --forward 1 --sprint --ticks 40
-
-# 绝对朝向 90/0
-py -3.11 driver/transport_mod.py look --yaw 90 --pitch 0 --absolute
-
-# 附近实体
-py -3.11 driver/transport_mod.py entities --radius 16
-
-# 方块
-py -3.11 driver/transport_mod.py blocks 0 -50 0 0 -49 0
-
-# 加载并播放 dmf macro
-py -3.11 driver/transport_mod.py macro load --name default
-py -3.11 driver/transport_mod.py macro run
-
-# 录制 5 秒，导出 dmf 兼容 macro
-py -3.11 driver/transport_mod.py macro rec-start
-py -3.11 driver/transport_mod.py macro rec-stop --name my_run
-```
-
-Python 里：
-
-```python
-from driver.transport_mod import Harness
-
-with Harness() as h:
-    print(h.state()["x"], h.state()["z"])
-    h.walk(forward=1.0, ticks=40, sprint=True)
-    print(h.state()["x"], h.state()["z"])
-    h.look_at(90, 0)
-    h.jump()
-```
-
----
-
-## 7. 限制与注意事项
-
-1. **hosted world**：dmf 的 macro/practice 只在自己托管的世界可用；harness 的 macro 播放没有复制这个限制，但客户端侧 macro 在远程服务器上可能被服务端校正/拒绝，实际用途仍建议本地测试世界。
-2. **RMB/LMB**：macro 解析/保存保留这两个字段；播放时会尝试通过输入队列和按钮 handler 注入。
-   如果服务端或界面状态不接受，仍可能无效。
-3. **smoothMacro / frameBasedRotation**：dmf 的这两种旋转平滑模式没有逐行复刻；harness 按“每 tick 增量”直接应用。对逐 tick 宏来说行为一致。
-4. **绝对朝向**：`look --absolute` 每次 tick 重新计算最短角差；`ticks=1` 是“转过去一次”，`ticks=-1` 是“持续跟踪目标”。
-5. **跳跃**：需要头顶有足够空间；`block_head`/`block_above` 可以直接检查。站在树叶/天花板下方时，
-   跳跃会在 0.2–0.5 格内被挡下，这不是接口失败。
-6. **teleport**：已改为服务端权威（`queueForServerThread` + 服务端 `Player::teleport`），
-   坐标是脚部坐标；不要再发 `MovePlayerPacket(Teleport)`（会导致“主机连接已断开”）。
-   通用命令走 `command`，用 `PlayerCommandOrigin`，`@s`/`~` 语义与聊天一致。
-7. **手动输入**：harness 只在自身控制活跃时写 `MoveInputComponent` 标志；空闲时不覆盖真实键鼠，
-   否则会出现手动跳跃/飞行回弹。早期版本有这个问题，现已修复。
-8. **飞行**：`fly` 通过 `Player::setAbility(MayFly/Flying)` 实现；仅在创造/允许飞行的世界生效。
-   服务端 abilities 包可能在 teleport 后重新同步，必要时再发一次 `fly --off`。
-9. **飞行状态一致性**：`fly` 现在同时写客户端和服务端玩家。只写客户端时，服务端 abilities
-   会在 teleport 后把 `flying` 同步回来，导致走路出现 ±1 格校正、平均速度偏高；修复后
-   步行峰值回到 0.2159 格/tick。
-10. **鼠标录制**：`MouseInputEvent` 的 action 是 `MouseAction`：左=1、右=2（不是 0/1）；
-    后台合成点击只产生 `ActionMove`，必须让游戏窗口在前台再用 raw 注入。
-11. **快捷栏**：`select_slot` 在 tick 之后调用 `PlayerInventory::selectSlot`，不要在
-    `onPlayerTick` 里改（会被原 tick 覆盖）。
-12. **输入竞争**：如果玩家同时用真实键鼠，harness 的 `_updateClientMoveVector` 会覆盖移动向量；宏播放期间建议不要手动操作。
-13. **版本**：所有组件/偏移对应 1.26.51.01；升级游戏后需要重新构建，不能直接复用 1.26.45 的偏移。
-14. **二进制 patch**：不建议改 `dmf.dll`。伴生 mod 与 dmf 可以共存，升级 dmf 不影响 harness。
-
----
-
-## 8. 复现
-
-```bash
-# 1. 导出 IDA（已有 .i64 时）
 cd ./reverse
-IDA_EXPORT_DIR=... IDA_DECOMPILE_ALL=1 \
-  "C:/Program Files/IDA Professional 9.4/idat.exe" -A \
-  -S"./reverse/ida_export.py" \
-  -L"./reverse/idat.log" \
-  "./reverse/dmf.dll.i64"
-
-# 2. 构建 harness
-cd ./mod/probe
-export PATH="/d/Tools/LLVM22/bin:/d/Tools/xmake:$PATH"
-export XMAKE_GLOBALDIR='D:\Tools\xmake-home'
-export XMAKE_PKG_INSTALLDIR='D:\Tools\xmake-packages'
-xmake -y
-
-# 3. 安装（游戏目录）
-cp -r bin/probe "%APPDATA%/levilauncher.exe/versions/1.26.51.01/mods/probe"
-
-# 4. 进存档后
-py -3.11 driver/transport_mod.py ping
-py -3.11 driver/transport_mod.py state
+IDA_EXPORT_DIR=... IDA_DECOMPILE_ALL=1   "C:/Program Files/IDA Professional 9.4/idat.exe" -A   -S"./reverse/ida_export.py"   -L"./reverse/idat.log"   "./reverse/dmf.dll.i64"
 ```
 
-> 第 3 步会写游戏实例目录；本仓库的构建流程不会自动执行它。
+IDA MCP 连接问题见 [`../docs/ida-mcp-troubleshooting.md`](../docs/ida-mcp-troubleshooting.md)。

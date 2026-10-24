@@ -1,6 +1,8 @@
 # 旧路线：frida RPC（Minecraft 1.26.45.01）
 
-> 历史资料。当前主路径是 LeviLamina 客户端 mod，见仓库根目录的 README。
+> **历史资料，不是现行实现。** 当前主路径是 LeviLamina 客户端 mod：
+> 入口 [`../README.md`](../README.md)，协议与限制 [`../mod/README.md`](../mod/README.md)，
+> 实现细节 [`mod-internals.md`](mod-internals.md)。
 > 旧代码（`agent/`、`driver/run.py`、`driver/session.py`、`driver/postmsg.py` 等）
 > 已从 `main` 移除，完整保留在 **`legacy/frida`** 分支；主分支只保留本文档。
 > 这份文档记录旧路线的约束、运行时结论和标定结果，对理解游戏内部机制仍然有用。
@@ -171,3 +173,9 @@ Python 侧用 `snake_case` 调用（frida-python 自动转 JS `camelCase`）：
   但文本输入走 `WM_CHAR`，直接投递窗口消息可以在不聚焦时打字。
 - 可靠路径是窗口消息投递或 ZCode 原生 CUA helper 的键盘注入；传送、输入、朝向最终都
   不需要 UI，走 RPC / 服务端命令。
+
+## 另见
+
+- 现行路线的架构与线程模型：[`architecture.md`](architecture.md)。
+- 旧版本偏移/组件写回记录：[`offsets-1.26.45.01.md`](offsets-1.26.45.01.md)。
+- 现行版本的实测数字（可对照旧结论）：[`mod-internals.md`](mod-internals.md) 的「实测数字速查」。

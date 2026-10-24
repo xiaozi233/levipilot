@@ -220,11 +220,18 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 
 ## 如何扩展
 
-聊天快照使用 `ModClient.chat_history(limit=32)` 或
-`py -3.11 driver/transport_mod.py chat-history --limit 32`。
-`Chat.cpp` 在客户端 executor 复制游戏保留的最近消息，spool 线程将定长快照格式化返回；
-管道线程不直接读取 UI 对象。最多 64 条、每条 2047 UTF-8 字节，返回截断标记；
-历史由游戏管理，不保证重启后保留。`hello.capabilities` 提供 `chat_history` 能力标识。
+新增能力时按领域落在已有的三层结构里：C++ 领域处理器 → 管道命令 → Python 命令/CLI。
+下面用两个既有能力作为参照，再给出两个标准的扩展清单。
+
+### 已经走通的一条链路：聊天快照
+
+`chat_history` 展示了「游戏对象只在游戏线程读、格式化在后台线程」的完整路径：
+
+- 客户端：`ModClient.chat_history(limit=32)`；CLI：`harness chat-history --limit 32`。
+- `Chat.cpp` 在客户端 executor 里把游戏保留的最近消息复制进定长 `ChatCapture`
+  （最多 64 条、每条 2047 UTF-8 字节，带截断标记），管道线程不直接读取 UI 对象；
+  spool 线程把快照格式化成 `chat_history` 事件。
+- 历史由游戏管理，不保证重启后保留；`hello.capabilities` 里的 `chat_history` 标示该能力可用。
 
 ### 加一个管道命令
 
@@ -265,3 +272,10 @@ py -3.11 driver/selftest.py
 
 C++ 风格由仓库根目录的 `.clang-format` 约束；Python 由 `pyproject.toml` 里的 ruff/mypy 配置约束。
 CI 的 unittest 也编译并运行独立 C++ 任务模型；完整 mod 构建仍在本机完成。
+
+## 另见
+
+- 命令表、`state` 字段与配置开关：[`../mod/README.md`](../mod/README.md)。
+- 各子系统实现细节与实测数字：[`mod-internals.md`](mod-internals.md)。
+- 换版本的移植流程：[`porting.md`](porting.md)。
+- 历史重构决策与验收记录：[`refactoring.md`](refactoring.md)。

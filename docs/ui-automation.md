@@ -1,8 +1,12 @@
 # UI 自动化（启动 / 进存档 / 退档）
 
 实验控制走 mod API；**启动游戏、主菜单、世界列表、暂停菜单、对话框**这类 UI 仍需要真正的
-桌面操作。这里记录当前机器上验证过的做法；完整流程和排查顺序见 skill
-**`mcbe-desktop-control`**（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
+桌面操作。本文只记录当前机器上验证过的坐标与流程，作为兜底参考。
+
+日常开发循环**不需要**本文：`py -3.11 driver/dev.py run --world "..."` 会直接启动 exe 并
+经 mod 进世界。只有需要操作真实界面（例如首次搭建、调试暂停菜单）时才用下面的流程。
+完整排查顺序见 skill **`mcbe-desktop-control`**
+（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
 
 ## 规则
 
@@ -48,3 +52,9 @@ await app.getScreenshot();     // 官方截图会自己显示
   node-repl 宿主没拿到 CUA 权限代理（长寿命进程，补不上）→ 重启 ZCode 后重新 bootstrap。
 - 离线兜底脚本 `driver/bringup.py` 在 `legacy/frida` 分支；日常 UI 操作不要用它。
 - CUA 的合成点击在后台只产生鼠标移动事件；录制真实按键需要窗口在前台并使用 raw 输入。
+
+## 另见
+
+- 自动进世界的非 UI 路径：[`../README.md`](../README.md) 的「快速开始」与
+  [`../mod/README.md`](../mod/README.md) 的「自动进入世界」。
+- 键鼠事件注入（世界内 UI 可用）：[`mod-internals.md`](mod-internals.md) 的「输入事件层」。

@@ -1,7 +1,11 @@
 # 跑酷记录与分析
 
-这一层不重做 dmf-mpk 的 HUD / practice / Input Checker，而是给跑酷提供**数据采集、跳跃
-拆分、两次运行对比和重复尝试统计**。数据来源是 mod 的逐 tick 录制。
+本目录不重做 dmf-mpk 的 HUD / practice / Input Checker，而是给跑酷提供**数据采集、跳跃
+拆分、两次运行对比和重复尝试统计**。数据来源是 mod 的逐 tick 录制，全部工具离线可跑，
+不需要游戏窗口。
+
+阅读顺序建议：先看「一次运行的流程」跑通一次，再看「分析模型」理解报告字段，
+最后按需用「精确起跳与路点」「区域扫描、存档点与事件」。
 
 ## 一次运行的流程
 
@@ -111,9 +115,12 @@ py -3.11 driver/transport_mod.py navigate 8.5 0.5 --jump distance --jump-distanc
 - `jump_when` 返回 `jumped`：`ok`、`mode`、触发时的 `distance`、`ticks`、`on_ground`；
   超时回 `ok=false, reason=timeout`。
 
-实测（超平坦）：`mode=now` 1 tick、`mode=tick after_ticks=5` 5 tick；距离模式在 0.88 格
-起跳；edge 模式站在 1×1 石柱上第 1 tick 触发，滞空 11 tick、顶点 1.252 格；两路点
-`route` 33 tick 完成；`navigate` 距离模式 33 tick 到达且 `jumps=1`。
+实测（超平坦）：
+
+- `mode=now` 1 tick、`mode=tick after_ticks=5` 5 tick；
+- 距离模式在 0.88 格起跳；edge 模式站在 1×1 石柱上第 1 tick 触发，滞空 11 tick、
+  顶点 1.252 格；
+- 两路点 `route` 33 tick 完成；`navigate` 距离模式 33 tick 到达且 `jumps=1`。
 
 起跳的逐 tick 位移现在是 0.4200、0.3332、0.2481、0.1648、0.0831、0.0030、-0.0754…，
 与基岩版公式 `V1=0.42`、`Vt=(Vt-1-0.08)*0.98` 一致。此前只注入输入标志时，前 3 tick
@@ -140,13 +147,16 @@ py -3.11 driver/transport_mod.py checkpoint list
 - 事件流里新增 `player_landed`（`fall_distance`、`health`）、`player_hurt`
   （`health`、`damage`）、`player_died`。落地事件只在落差 ≥0.75 格时发，避免每次小跳刷屏。
 
-实测：`checkpoint load` 落点误差 0.000 格；3×3×4 区域 `scan` 返回 6 个非空气方块；
-抬升 5 格落地得到 `fall_distance=4.92`、血量 20→18；`speed 10 2` 在 `state.effects`
-里读回 `id=1, amplifier=2`。
+实测：
+
+- `checkpoint load` 落点误差 0.000 格；
+- 3×3×4 区域 `scan` 返回 6 个非空气方块；
+- 抬升 5 格落地得到 `fall_distance=4.92`、血量 20→18；
+- `speed 10 2` 在 `state.effects` 里读回 `id=1, amplifier=2`。
 
 ## 设置与焦点
 
-- `reset` 会清空任务/输入/macro/**药水效果**，然后走服务端传送；座标是**脚部**。传送在下一
+- `reset` 会清空任务/输入/macro/**药水效果**，然后走服务端传送；坐标是**脚部**。传送在下一
   tick 生效，`attempts` 会等 4 tick 再开始。实测 speed V 在 reset 后不再影响位移。
 - 游戏在后台时，mod 默认开启 `background_guard`：释放光标裁剪、显示光标，并忽略后台鼠标
   引起的 `_applyTurnDelta`；mod 自己的 `look`/任务不受影响。配置在
@@ -158,3 +168,10 @@ py -3.11 driver/transport_mod.py checkpoint list
 
 dmf-mpk 负责 HUD、practice、Input Checker 和 macro 播放界面；本仓库负责逐 tick 数据、
 跳跃拆分、运行对比、批量尝试和脚本/LLM 接口。macro 文件格式与 dmf 兼容，可以互相导入。
+
+## 另见
+
+- 逐 tick 字段的完整定义与实测数字：[`../mod/README.md`](../mod/README.md)、
+  [`mod-internals.md`](mod-internals.md) 的「跑酷辅助」与「实测数字速查」。
+- 与 dmf-mpk 的分工：[`../README.md`](../README.md) 与
+  [`../reverse/dmf-mpk-analysis.md`](../reverse/dmf-mpk-analysis.md)。

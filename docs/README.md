@@ -11,9 +11,10 @@
 | [`porting.md`](porting.md) | 换游戏版本的移植流程：profile、生成头文件、兼容模式与排查命令 |
 | [`parkour.md`](parkour.md) | 跑酷相关的起跳/落点/记录口径与实验方法 |
 | [`scenario-dsl.md`](scenario-dsl.md) | `scenarios/*.json` 的步骤、采样字段和运行方式 |
-| [`mod-build-environment.md`](mod-build-environment.md) | 本机 xmake / LLVM / SDK 布局，构建命令（`xmake -j4`）和两个必须保留的补丁 |
+| [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 xmake / LLVM / SDK 布局、构建命令（`xmake -j4`）、必须保留的 SDK 补丁与常见问题 |
 | [`ui-automation.md`](ui-automation.md) | 主菜单/世界列表/暂停菜单的桌面 UI 操作；世界内 UI 已可由 `key_event` 完成 |
 | [`offsets/`](offsets/) | 版本 profile（`runtime:true` 的 JSON 会被编进 `GeneratedProfiles.h`） |
+| [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | IDA MCP 代理卡死等排障（逆向工具链） |
 
 ## 历史 / 参考
 
@@ -23,7 +24,6 @@
 | [`legacy-frida-1.26.45.md`](legacy-frida-1.26.45.md) | 旧 frida 路线（1.26.45.01），只保留运行时结论和采样口径 |
 | [`offsets-1.26.45.01.md`](offsets-1.26.45.01.md) | 旧版本偏移/组件写回记录，不参与当前构建 |
 | [`offsets/1.26.45.01.json`](offsets/1.26.45.01.json) | 同上，JSON 形式 |
-| [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | IDA MCP 代理卡死等排障记录 |
 
 ## 约定
 

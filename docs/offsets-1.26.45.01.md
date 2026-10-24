@@ -501,7 +501,6 @@ pause_menu_on_focus_lost:0
 - 每次世界切换都会销毁 frida script，进世界后必须重新 attach
   （`py -3.11 driver/run.py --wait 30`，看到 `local player resolved` 才算好）。
 
-
 ## 10. 命令派发（静态分析入口，2026-10-19）
 
 > IDA MCP 的 ZCode 工具子集里有 `find_regex`，但在 34 万条字符串上会超过 30 秒上限；

@@ -549,7 +549,6 @@
   每次请求都有超时（`ModTimeout`），连接关闭抛 `ModDisconnected`，协议错误抛
   `ModProtocolError`；`reconnect()` / `wait_ready()` 用于游戏重启后恢复。
 
-
 ## 单活动任务与会话所有权
 
 任务类型、控制器与固定事件队列在 `TaskModel.h`，游戏计算在 `Tasks.cpp`，JSON 与 use

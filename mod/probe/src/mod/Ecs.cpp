@@ -139,6 +139,31 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
         return;
     }
 
+    // Runtime-id kinds resolve the actor through the level's actor list,
+    // which is the SERVER side in single-player; iterating its registry from
+    // the client tick races the server thread (observed AV inside storage()).
+    // Run it on the server thread and keep a structured-exception backstop.
+    queueServerTask([this, request] {
+        if (!runEcsGuarded(request)) {
+            enqueue(
+                R"({"event":"error","reason":"internal_error","phase":"ecs","message":"structured exception"})"
+            );
+        }
+    });
+}
+
+bool ProbeMod::runEcsGuarded(EcsRequest const& request) {
+    __try {
+        applyRuntimeEcsRequest(request);
+        return true;
+    } __except (
+        isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
+    ) {
+        return false;
+    }
+}
+
+void ProbeMod::applyRuntimeEcsRequest(EcsRequest const& request) {
     Actor* actor = findActorByRuntimeId(request.runtimeId);
     if (actor == nullptr) {
         enqueue(R"({"event":"error","reason":"entity_not_found"})");

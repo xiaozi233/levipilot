@@ -75,13 +75,14 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 | 路径 | 内容 |
 | --- | --- |
 | `mod/probe/` | LeviLamina 客户端 mod（C++），命名管道 `\\.\pipe\mcbe-harness` |
-| `driver/harness/` | Python 客户端包：连接 `connection`、按领域 mixin 组成的 `commands/`、脚本门面 `facade`、兼容导出 `client` |
+| `driver/harness/` | Python 客户端包：连接 `connection`、按领域 mixin 组成的 `commands/`、脚本门面 `facade`、兼容导出 `client`、实验辅助 `lab`（回读验证建场 / 录制会话 / 逐 tick 拟合） |
 | `driver/transport_mod.py` | 兼容入口（旧导入与 `python driver/transport_mod.py ...` 仍可用） |
 | `driver/mod_agent.py`, `driver/run_mod.py` | 场景 DSL 适配器与执行入口 |
 | `driver/macro.py` | dmf-mpk macro 文件工具 |
 | `scenarios/` | 场景 JSON |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 | `docs/` | 补充文档 |
+| `skills/` | 实验手册 skill（`mcbe-harness-experiments`，ZCode 本地通过 `.zcode/skills/` 联接发现） |
 | `tests/` | 不依赖游戏的单元测试 |
 
 ## 文档
@@ -92,6 +93,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 跑酷记录、跳跃分析与重复尝试：[`docs/parkour.md`](docs/parkour.md)
 - dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
+- 流体运动机制（水/岩浆，1.26.51.01 实测复核）：[`docs/fluid-movement.md`](docs/fluid-movement.md)
+- 实验手册 skill（建场/录制/输入坑与实验闭环模板）：[`skills/mcbe-harness-experiments/`](skills/mcbe-harness-experiments/)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
 - 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
 - IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
@@ -103,6 +106,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 已在 1.26.51.01 创作存档内实测：状态读取、移动/视角/跳跃/飞行、左右键、快捷栏、
   服务端传送、服务端命令、macro 播放/录制、真实鼠标按键、场景 DSL，以及
   `navigate` / `mine` / `place` / `use` 四个 mod 内闭环任务。
+- 脚本运行可锁真实键鼠（`dev.py --lock-input` / `input-lock`），游泳/跳跃等状态用热键驱动
+  （`swim --drive` / `jump-key`）；细节见 `mod/README.md` 与实验手册 skill。
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）。
 - 闭环任务在客户端 tick 内推进，不依赖 Python 逐 tick 下发；同一时间只跑一个任务。
 - `command` 的方块类命令是 deferred，`success=false` 不代表失败，效果以 `blocks`/verify 为准。

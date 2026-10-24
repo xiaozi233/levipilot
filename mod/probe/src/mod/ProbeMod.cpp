@@ -189,6 +189,7 @@ void ProbeMod::loadAutoConfig() {
     mAllowPacketCapture = config.value("allow_packet_capture", false);
     mAllowPacketInject  = config.value("allow_packet_inject", false);
     mAllowInputInject = config.value("allow_input_inject", false);
+    mHardwareInputLocked = config.value("lock_input", false);
     mAllowVersionMismatch = config.value("allow_version_mismatch", false);
     setAllowVersionMismatch(mAllowVersionMismatch.load());
     mWorld.setSignInWaitMs(std::clamp(config.value("signin_wait_ms", 15000), 0, 120000));
@@ -698,6 +699,10 @@ bool ProbeMod::allowTurnDelta() const {
     std::uint64_t const until = mInjectTurnUntilTick.load(std::memory_order_relaxed);
     if (until != 0 && mTick.load(std::memory_order_relaxed) <= until) {
         return true;
+    }
+    // Scripts own the camera while the hardware input lock is on.
+    if (mHardwareInputLocked.load(std::memory_order_relaxed)) {
+        return false;
     }
     return detail::isGameForeground();
 }

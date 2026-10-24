@@ -301,9 +301,32 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             mPrevJump = false;
         }
         if (j.contains("jump_impulse")) {
-            mJumpImpulseMode.store(std::clamp(j.value("jump_impulse", 1), 0, 3));
+            // 0 (input pipeline only) and 2 (setJumpPendingScale only) are the
+            // measured-broken takeoff paths on 1.26.51.01: 0 stalls three
+            // ticks on the ground then snaps up ~0.99 blocks, 2 never leaves
+            // the ground. force=true opts back in to reproduce those.
+            int const impulse = std::clamp(j.value("jump_impulse", 1), 0, 3);
+            if ((impulse == 0 || impulse == 2) && !j.value("force", false)) {
+                enqueue(nlohmann::json{
+                    {"event",  "error"                                      },
+                    {"reason", impulse == 0 ? "jump_impulse_disabled"
+                                            : "jump_impulse_pending_scale_only"},
+                    {"hint",   "use 1 (jumpFromGround) or 3; force=true reproduces the broken path"},
+                }.dump());
+                return true;
+            }
+            mJumpImpulseMode.store(impulse);
         }
         enqueue(R"({"event":"input_cfg_ok"})");
+        return true;
+    }
+    if (cmd == "input_lock") {
+        // Drops real hardware keys/mouse at their entry points while scripts
+        // run; injected events keep working. Does not need allow_input_inject
+        // because it only removes input.
+        bool const on = j.value("on", true);
+        mHardwareInputLocked.store(on, std::memory_order_relaxed);
+        enqueue(nlohmann::json{{"event", "input_lock_set"}, {"on", on}}.dump());
         return true;
     }
     if (cmd == "buttons") {

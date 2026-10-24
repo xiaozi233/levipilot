@@ -6,6 +6,7 @@ import argparse
 import json
 
 from ..commands import ModClient
+from ..lab import jump_key, swim_drive, swim_stop, swimming_state
 
 COMMANDS = frozenset(
     {
@@ -16,10 +17,14 @@ COMMANDS = frozenset(
         "screen",
         "mouse-event",
         "click",
+        "input-cfg",
         "fly",
         "set",
         "look",
         "jump",
+        "jump-key",
+        "input-lock",
+        "swim",
         "stopmove",
     }
 )
@@ -75,6 +80,21 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
     if args.command == "click":
         print(json.dumps(client.click(args.button, args.reach)))
         return True
+    if args.command == "input-cfg":
+        print(
+            json.dumps(
+                client.input_cfg(
+                    source=args.source,
+                    controller=args.controller,
+                    focus=args.focus,
+                    mode=args.mode,
+                    jump_impulse=args.jump_impulse,
+                    force=args.force,
+                ),
+                ensure_ascii=False,
+            )
+        )
+        return True
     if args.command == "fly":
         print(json.dumps(client.fly(not args.off)))
         return True
@@ -108,6 +128,26 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         return True
     if args.command == "jump":
         print(json.dumps(client.jump()))
+        return True
+    if args.command == "jump-key":
+        print(json.dumps(jump_key(client)))
+        return True
+    if args.command == "input-lock":
+        print(json.dumps(client.input_lock(not args.off)))
+        return True
+    if args.command == "swim":
+        if args.stop:
+            result = swim_stop(client)
+        elif args.drive:
+            result = swim_drive(
+                client,
+                sprint=not args.no_sprint,
+                timeout=args.timeout,
+                hold=not args.release,
+            )
+        else:
+            result = {"event": "swim_status", "swimming": swimming_state(client)}
+        print(json.dumps(result, ensure_ascii=False))
         return True
     if args.command == "stopmove":
         print(json.dumps(client.stop_move()))

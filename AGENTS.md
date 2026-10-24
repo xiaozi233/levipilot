@@ -36,12 +36,15 @@ py -3.11 driver/selftest.py
 | 路径 | 内容 |
 | --- | --- |
 | `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`WorldSession`（世界生命周期）、`ClientDispatch`（主线程投递/SEH）、`PacketTap`（封包 tap）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
-| `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands/`（按领域 mixin 组成 `ModClient`）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`；CLI 为 `cli`（入口/注册表分发）/`cli_parser`（参数）/`cli_commands`（领域执行，各带 `COMMANDS` 声明），以及解码辅助模块 |
+| `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands/`（按领域 mixin 组成 `ModClient`）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`/`lab`（实验辅助：回读验证建场、录制会话、逐 tick 拟合）；CLI 为 `cli`（入口/注册表分发）/`cli_parser`（参数）/`cli_commands`（领域执行，各带 `COMMANDS` 声明），以及解码辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
 | `scenarios/` | 场景 DSL 的 JSON |
-| `docs/` | 架构、场景 DSL、跑酷、UI 自动化、mod 构建、移植流程（`porting.md`）、`offsets/` 版本 profile |
+| `skills/mcbe-harness-experiments/` | 实验手册 skill（建场/录制/输入坑与实验闭环模板），**真身、随仓库提交**；
+  本地发现路径 `.zcode/skills/` 是指向它的目录联接（.zcode 已忽略），用户级另有镜像
+  `~/.agents/skills/mcbe-harness-experiments/SKILL.md` |
+| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`）、UI 自动化、mod 构建、移植流程（`porting.md`）、`offsets/` 版本 profile |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 
 ## 硬约束（改代码前先读这段）
@@ -90,6 +93,9 @@ py -3.11 driver/selftest.py
 - `GameMode::interact` 在空物品上下文会崩 ⇒ `interact_entity` 只做转向 + 注入使用按钮（best effort）。
 - 直接写客户端位置（`StateVector`/`ActorSetPositionRequest`）会被服务端覆盖；位置是服务端权威。
 - 朝向必须走命令通道（`/tp @s ~ ~ ~ yaw pitch`）；只改组件会橡皮筋（客户端相机每帧写回）。
+- 游泳态（ADF bit57）**只能由真实按键进入**：深水中按住 HID 前进+疾跑键，4–5 tick 置位；
+  `set_input` 的合成标志不会触发，松开按键即退出。`lab.swim_drive()` / CLI `swim --drive`
+  封装了这条路径；`jump-key` 是拍空格（HID Space）触发跳跃。
 - 移动输入要同时写客户端与服务端两份，否则预测/校正互相拉扯。
 - 跳跃不能只靠输入标志/队列/handler：1.26.51.01 上前 3 tick 位置不动、第 4 tick 一次性补
   V1+V2+V3（约 0.99 格）。起跳沿必须调 `LocalPlayer::jumpFromGround()`；
@@ -104,6 +110,8 @@ py -3.11 driver/selftest.py
 - 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（旧 frida 路线实测置 0 后
   后台仍满速 tick）；raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
 - `harness.json` 的 `auto_enter` 要求游戏在**前台**（后台进世界会触发鼠标捕获）。
+- 脚本运行会锁真实输入：`input_lock {on}`（配置 `lock_input` / `dev.py --lock-input`；selftest 自动上锁）
+  丢弃硬件来源键鼠与转向，注入照常；实验脚本建议开头 `client.input_lock(True)`、结束时解锁。
 - 接收侧封包只能挂 `LoopbackPacketSender::$sendToClient`（两个重载）；`Packet::sendTo*`
   辅助层在单机里实测 0 调用，`NetworkConnection::receivePacket` 也是 0。recv 默认关闭，
   用 `packet_capture {directions:["send","recv"]}` 开；同一 tick 同对象会去重，
@@ -139,10 +147,10 @@ py -3.11 driver/selftest.py
 
 ## 当前状态
 
-主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮）
-全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **190/190**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 169/169、
+主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
+2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮）全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **204/204**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 189/189、
 ruff/mypy（driver+tests）全绿。
 
 任务提示词不在仓库内（本地维护）。

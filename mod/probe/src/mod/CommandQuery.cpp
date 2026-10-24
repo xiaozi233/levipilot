@@ -144,6 +144,10 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         queueGive(j.value("item", std::string{}), j.value("count", 1), j.value("aux", 0));
         return true;
     }
+    if (cmd == "equip") {
+        queueEquip(j.value("target", std::string{}), j.value("slot", -1));
+        return true;
+    }
     if (cmd == "clear_inventory") {
         queueClearInventory();
         return true;

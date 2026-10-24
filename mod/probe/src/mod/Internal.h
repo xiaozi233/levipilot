@@ -325,6 +325,9 @@ constexpr std::uint32_t RecordFlagInputJump    = 1u << 10;
 // Sample position was outside the recorded world height, so no block read was
 // attempted (the three block fields are 0 for that sample).
 constexpr std::uint32_t RecordFlagBlockOob = 1u << 11;
+// Coarse medium bits from the feet/head block names (flowing counts as still).
+constexpr std::uint32_t RecordFlagInWater = 1u << 12;
+constexpr std::uint32_t RecordFlagInLava  = 1u << 13;
 
 std::uint32_t blockNameHash(std::string const& name);
 

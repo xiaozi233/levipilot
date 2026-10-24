@@ -30,3 +30,6 @@ reverse/*.dll
 reverse/*.log
 reverse/dmf-mpk/
 reverse/ida_out/
+
+# 本地工具目录（skill 真身在 skills/，这里只是本地发现用的联接）
+.zcode/

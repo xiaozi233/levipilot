@@ -15,6 +15,14 @@ std::atomic<std::uint64_t>     gTickCounter{0};
 std::atomic<std::uint32_t>     gPeriod{1};
 std::mutex                     gRingMutex; // allocation/start vs. first use
 
+// Liquid name hashes for the medium flag bits. blockNameHash takes std::string
+// temporaries, so they are resolved here (command thread) instead of in the
+// tick, and read back as plain relaxed loads.
+std::atomic<std::uint32_t> gWaterHash{0};
+std::atomic<std::uint32_t> gFlowingWaterHash{0};
+std::atomic<std::uint32_t> gLavaHash{0};
+std::atomic<std::uint32_t> gFlowingLavaHash{0};
+
 nlohmann::json entryJson(RecordEntry const& entry) {
     return {
         {"tick",     entry.tick                  },
@@ -122,6 +130,10 @@ bool recordStart(std::uint32_t period, std::string& error) {
     gHead.store(0, std::memory_order_relaxed);
     gTickCounter.store(0, std::memory_order_relaxed);
     gPeriod.store(std::clamp<std::uint32_t>(period, 1, 200), std::memory_order_relaxed);
+    gWaterHash.store(blockNameHash("minecraft:water"), std::memory_order_relaxed);
+    gFlowingWaterHash.store(blockNameHash("minecraft:flowing_water"), std::memory_order_relaxed);
+    gLavaHash.store(blockNameHash("minecraft:lava"), std::memory_order_relaxed);
+    gFlowingLavaHash.store(blockNameHash("minecraft:flowing_lava"), std::memory_order_relaxed);
     // Re-resolve the block offsets per session in case the profile changed.
     gBlockOffsetsResolved = false;
     gRecording.store(true, std::memory_order_release);
@@ -225,6 +237,23 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
         entry.blockBelow = blockHashAt(source, fx, fy - 1, fz);
         entry.blockFeet  = blockHashAt(source, fx, fy, fz);
         entry.blockHead  = blockHashAt(source, fx, hy, fz);
+
+        auto const inWater = [](std::uint32_t hash) {
+            return hash != 0
+                && (hash == gWaterHash.load(std::memory_order_relaxed)
+                    || hash == gFlowingWaterHash.load(std::memory_order_relaxed));
+        };
+        auto const inLava = [](std::uint32_t hash) {
+            return hash != 0
+                && (hash == gLavaHash.load(std::memory_order_relaxed)
+                    || hash == gFlowingLavaHash.load(std::memory_order_relaxed));
+        };
+        if (inWater(entry.blockFeet) || inWater(entry.blockHead)) {
+            entry.flags |= RecordFlagInWater;
+        }
+        if (inLava(entry.blockFeet) || inLava(entry.blockHead)) {
+            entry.flags |= RecordFlagInLava;
+        }
     }
 
     float const health = player.getHealth();

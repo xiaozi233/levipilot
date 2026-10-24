@@ -100,6 +100,19 @@ class QueryCommands(PipeConnection):
             "inventory_given",
         )
 
+    def equip(self, target: str, *, slot: int = -1) -> dict[str, Any]:
+        """Move an inventory stack into a worn slot (armor/offhand).
+
+        ``target``: head/torso/legs/feet/offhand; ``slot`` defaults to the
+        selected hotbar slot. The stack is copied, so enchantments applied
+        while the item was held (``/enchant``) survive the transfer, and the
+        source slot is cleared.
+        """
+        return self.request(
+            {"cmd": "equip", "target": target, "slot": int(slot)},
+            "equip_done",
+        )
+
     def clear_item(self, slot: int, *, container: str = "inventory") -> dict[str, Any]:
         return self.request(
             {"cmd": "clear_item", "slot": int(slot), "container": container},

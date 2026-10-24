@@ -164,6 +164,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   "allow_input_inject": false,
   "allow_packet_capture": false,
   "allow_packet_inject": false,
+  "lock_input": false,
   "signin_wait_ms": 15000
 }
 ```
@@ -178,13 +179,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 `allow_input_inject` 才能用 `key_event`/`mouse_event`（默认关闭，命令会写 boot log）；
 `allow_packet_capture` 才能开 H1 的封包身份 tap（默认关闭）；
 `allow_packet_inject` 才能用 `chat_send`/`op_self`（默认关闭）；
+`lock_input` 启动即锁住真实键鼠（详见下条）；
 `signin_wait_ms` 是进世界前等 Xbox Live 登录的上限（默认 15000，设 0 表示查一次就走）。
 不需要时删除该文件即可。
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **190/190**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 169/169。常用实测数字：
+当前基线：live selftest **204/204**（`harness.json` 开 `allow_input_inject`/
+`allow_selftest_stress`）、离线单测 189/189。常用实测数字：
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），
@@ -192,6 +194,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `navigate` 约 5.2 格 27 tick 到达（误差 0.26 格）；`mine` 创造模式 1 tick、`place`
   3 tick 回读验证；存档点 `checkpoint_load` 落点误差 0.000 格。
 - 事件级宏回放三次落点误差 **0.0000**；疾跑三组对照 B≈C≈0.2805 格/tick。
+- `equip feet` 把手持/库存栈搬进穿戴槽并清空源槽（附魔随栈一起走，源槽回读为空）；
+  记录环的 `in_water`/`in_lava` 位在脚下与头部方块为液体时全部命中（实测 9/9 tick）。
 - 封包：身份 tap 3.5 秒 122 条 send 无丢失；`chat_send` 注入的 `/tp` 位移正好 1.000 格；
   接收侧流量全部走 `LoopbackPacketSender::$sendToClient`。
 - 版本 profile：4 锚点全匹配、`struct_fields=12`；改坏任一签名即 `version_ok=false`
@@ -209,7 +213,23 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   换版本后如果菜单 screen 改名，先看启动日志的 `enter_world: start|blocked screen=…`。
 - `auto_enter` 与显式 `enter_world` 不会并发：显式进入取消待执行的自动进入；已有进入
   在飞时第二次回 `already_starting`，由 join 事件收尾。
-- 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
+- **脚本运行时的真实输入锁**：`input_lock {on}`（CLI `input-lock [--off]`，配置 `lock_input`，
+  dev.py `--lock-input`）在三个入口丢弃**硬件来源**输入——`HIDController::$onKeyDown` 的
+  `InputOrigin::Hardware`、`MouseDevice::feed` 的非注入调用、以及非注入的相机转向；
+  mod 自己的注入（Virtual 键、`mInjectingInput` 内的鼠标/宏）照常工作。`driver/selftest.py`
+  启动自动上锁、结束解锁，避免真人在机器旁按键/动鼠标污染结果。注意：锁只认来源，
+  通过注入环模拟的 `via=hardware` 键也会被拦（这是刻意的）；`key_event` 的 key-up 未加钩子，
+  对游戏从未见过的按键是空操作。
+- `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
+  往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
+- 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），
+  不是效果盒几何；浅水阈值（0.4 格）要另用速度行为判断。
+- 起跳只有一条正确路径：`jump` 命令 / `set --jump`（含任务与 `jump_when`）都落到
+  `LocalPlayer::jumpFromGround`（`input_cfg jump_impulse` 默认 1）。`jump_impulse=0`
+  （只走输入管线：前 3 tick 原地、第 4 tick 补 V1+V2+V3 约 0.99 格）与 `=2`
+  （`MobJump::setJumpPendingScale` 单独用不起跳）是实测坏路径，mod 直接回
+  `jump_impulse_disabled` / `jump_impulse_pending_scale_only`；确需复现时带 `force=true`。
+  `jump` 在空中发放会被丢弃（一次性请求，需 `onGround`），要等落地请用 `set --jump --ticks N`。
 - HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
   本 mod 只提供脚本/LLM 使用的 API。
 - 同一时间只跑一个闭环任务；新任务会取消旧任务并停掉 macro。

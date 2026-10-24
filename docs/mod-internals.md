@@ -573,8 +573,52 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **190/190**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 169/169。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **204/204**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 189/189。
+
+### 实验辅助（`driver/harness/lab.py`）
+
+- `Builder.build`：命令 → 回读 → 不一致重试；`poke` 用邻块更新唤醒命令放置的液体。
+- `RecordSession`：每个 session 从 `since=0` dump（`record_start` 会重置环形头）。
+- `move_and_wait`：`set_input` 立即返回，等满输入窗口再返回。
+- 纯函数 `fit_recursion` / `recursion` / `steady` / `segments` 有离线单测（`tests/test_lab.py`）。
+
+### 起跳方式（2026-10-24 审计）
+
+- 正确路径：`jump` / `set --jump` / 任务 / 宏回放（HID Space）都落到
+  `LocalPlayer::jumpFromGround`；`jump_motion_matches_space` 逐位对比通过。
+- `input_cfg jump_impulse` 默认 1；0（输入管线，3 tick 原地后补约 0.99 格）与
+  2（`setJumpPendingScale` 单独，不起跳）被 mod 拒绝，`force=true` 才放行
+  （selftest `jump_impulse_guard_*` 四项）。
+
+### 游泳/热键驱动（2026-10-24）
+
+- `lab.swim_drive`：HID 前进+疾跑键 → 轮询 ADF bit57（`fnv1a("ActorDataFlagComponent")`，
+  30 B 内位 57）；深水离底 4–5 tick 进入，松键即退出。
+- `lab.jump_key`：拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线一致（selftest 对比）。
+- selftest `swim_drive_entered` / `swim_drive_dive`（俯冲 $v_y<-0.15$）/ `swim_stop_clears`。
+
+### 真实输入锁（input_lock，2026-10-24）
+
+- 三个拦截点：`HIDControllerGameCoreDesktop::$onKeyDown`（只拦 `InputOrigin::Hardware`；
+  注入的 Virtual 键放行）、`MouseDevice::feed`（`mInjectingInput` 之外一律丢弃）、
+  `allowTurnDelta`（锁定时非注入转向返回 false）。
+- 配置 `lock_input`（默认 false）；命令 `input_lock {on}`；selftest 自动上锁并在 finally 解锁。
+- 验证：`input_lock_on` / `input_lock_blocks_hardware`（硬件来源数字键不改槽位）/ 
+  `input_lock_allows_injection`（Virtual 键改槽位）/ `input_lock_allows_mouse_injection`。
+- （2026-10-24 已修）曾偶发在 tick 线程 `applyEcs` 枚举 registry 时崩溃，见下节「ECS 线程归属」。
+
+### ECS 线程归属（2026-10-24 修复）
+
+- 根因：`findActorByRuntimeId` 走 `bedrock::getLevel()` 的 actor 列表（单机里是服务端），
+  而 `applyEcs` 在客户端 tick（`safeTickPost`→`runCaptureRequests`）里枚举该 registry；
+  服务端线程并发增删组件/实体 ⇒ `storage()` 迭代时 AV（崩溃栈：`applyEcs+0x129C` [Ecs.cpp:182]）。
+- 修法：runtime-id 的 `Entity`/`Components`/`Component` 三类请求改由 `queueServerTask` 在服务端线程
+  执行（tick 之间 registry 静止）；`runEcsGuarded` 用无析构对象的 POD 包装 `__try/__except`
+  兜底，结构化异常回 `internal_error, phase=ecs`。
+- `Registries`/`Context` 仍走客户端 tick（客户端 context，同线程；Context 本就有 SEH）。
+- 验证：`ecs_entity`（115 组件）/`ecs_components`（115，94 有尺寸）/`ecs_component`（StateVector 36B）
+  全部通过；selftest 204/204。
 
 ### 行为契约与加固
 

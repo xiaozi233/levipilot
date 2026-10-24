@@ -10,6 +10,7 @@
 | [`mod-internals.md`](mod-internals.md) | 各模块实现细节（内存原语、watch、hook、ECS、版本 profile、开销指标、输入事件层、封包层）与「实测数字速查」 |
 | [`porting.md`](porting.md) | 换游戏版本的移植流程：profile、生成头文件、兼容模式与排查命令 |
 | [`parkour.md`](parkour.md) | 跑酷相关的起跳/落点/记录口径与实验方法 |
+| [`fluid-movement.md`](fluid-movement.md) | 水/岩浆流体运动机制（三介质递推、流推、泳姿、深海行者；1.26.51.01 实测 + 45→51 静态比对） |
 | [`scenario-dsl.md`](scenario-dsl.md) | `scenarios/*.json` 的步骤、采样字段和运行方式 |
 | [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 xmake / LLVM / SDK 布局、构建命令（`xmake -j4`）、必须保留的 SDK 补丁与常见问题 |
 | [`ui-automation.md`](ui-automation.md) | 主菜单/世界列表/暂停菜单的桌面 UI 操作；世界内 UI 已可由 `key_event` 完成 |
@@ -30,3 +31,6 @@
 - 改代码后同步更新：使用限制/基线进 `mod/README.md` 的「实测 / 限制」，逐项实测数字
   进 `mod-internals.md` 的对应小节或「实测数字速查」，并同步这里的相关文档。
 - 任务提示词不随仓库分发；验收结论直接写进 `mod-internals.md` 与 `mod/README.md`。
+- 实验操作手册（建场回读、录制语义、输入/热键坑）在仓库根目录
+  [`skills/mcbe-harness-experiments/`](../skills/mcbe-harness-experiments/)；ZCode 本地通过
+  `.zcode/skills/` 联接发现，用户级另有镜像。

@@ -17,6 +17,7 @@ COMMANDS = frozenset(
         "slot",
         "inventory",
         "give",
+        "equip",
         "set-item",
         "clear-item",
         "clear-inventory",
@@ -72,6 +73,14 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         print(
             json.dumps(
                 client.give(args.item, count=args.count, aux=args.aux),
+                ensure_ascii=False,
+            )
+        )
+        return True
+    if args.command == "equip":
+        print(
+            json.dumps(
+                client.equip(args.target, slot=args.slot),
                 ensure_ascii=False,
             )
         )

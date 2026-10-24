@@ -148,4 +148,54 @@ void ProbeMod::tickInputInjection() {
     mInjectingInput.store(false, std::memory_order_release);
 }
 
+// input_lock: while scripts own the session, real hardware keys must not reach
+// the game. Both the platform shim and our injections enter through the same
+// HID override, so filter on the origin and on our injection guard.
+LL_TYPE_INSTANCE_HOOK(
+    ProbeHardwareKeyHook,
+    ll::memory::HookPriority::Normal,
+    HIDControllerGameCoreDesktop,
+    &HIDControllerGameCoreDesktop::$onKeyDown,
+    void,
+    int keyCode,
+    Bedrock::Input::KeyboardEventProcessor::InputOrigin inputOrigin
+) {
+    auto& mod = ::probe::ProbeMod::getInstance();
+    // Origin is the whole test: our own key injection uses Virtual, so a
+    // Hardware event is hardware even when it arrives through the inject ring
+    // (which is how the selftest simulates a real key press).
+    if (mod.hardwareInputLocked()
+        && inputOrigin == Bedrock::Input::KeyboardEventProcessor::InputOrigin::Hardware) {
+        return;
+    }
+    origin(keyCode, inputOrigin);
+};
+
+static ll::memory::HookRegistrar<ProbeHardwareKeyHook> gHardwareKeyHook;
+
+// The same entry publishes real mouse buttons/motion and our injected ones;
+// injections run under mInjectingInput, so everything else is hardware.
+LL_TYPE_INSTANCE_HOOK(
+    ProbeHardwareMouseHook,
+    ll::memory::HookPriority::Normal,
+    MouseDevice,
+    &MouseDevice::feed,
+    void,
+    char  actionButtonId,
+    schar buttonData,
+    short x,
+    short y,
+    short dx,
+    short dy,
+    bool  forceMotionlessPointer
+) {
+    auto& mod = ::probe::ProbeMod::getInstance();
+    if (mod.hardwareInputLocked() && !mod.injectingInput()) {
+        return;
+    }
+    origin(actionButtonId, buttonData, x, y, dx, dy, forceMotionlessPointer);
+};
+
+static ll::memory::HookRegistrar<ProbeHardwareMouseHook> gHardwareMouseHook;
+
 } // namespace probe

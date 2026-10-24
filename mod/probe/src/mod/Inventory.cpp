@@ -139,6 +139,83 @@ void ProbeMod::queueInventoryWrite(
     });
 }
 
+void ProbeMod::queueEquip(std::string const& target, int slot) {
+    auto server = ll::service::bedrock::getServerInstance();
+    if (!server) {
+        enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
+        return;
+    }
+    std::string name;
+    {
+        std::lock_guard lock(mPlayerNameMutex);
+        name = mLocalPlayerName;
+    }
+    if (name.empty()) {
+        enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
+        return;
+    }
+
+    queueServerTask([this, name, target, slot] {
+        auto    minecraft = ll::service::bedrock::getMinecraft();
+        Level*  level     = minecraft ? minecraft->getLevel() : nullptr;
+        Player* player    = (level != nullptr) ? level->getPlayer(name) : nullptr;
+        if (player == nullptr) {
+            enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
+            return;
+        }
+
+        int const srcSlot = slot >= 0 ? slot : player->getSelectedItemSlot();
+        if (srcSlot < 0 || srcSlot >= player->getInventory().getContainerSize()) {
+            enqueue(R"({"event":"error","reason":"inventory_slot_out_of_range"})");
+            return;
+        }
+        ItemStack stack = player->getInventory().getItem(srcSlot);
+        if (stack.isNull()) {
+            enqueue(R"({"event":"error","reason":"equip_empty_slot"})");
+            return;
+        }
+
+        using SharedTypes::Legacy::ArmorSlot;
+        int armorIndex = -1;
+        if (target == "head") {
+            armorIndex = static_cast<int>(ArmorSlot::Head);
+        } else if (target == "torso") {
+            armorIndex = static_cast<int>(ArmorSlot::Torso);
+        } else if (target == "legs") {
+            armorIndex = static_cast<int>(ArmorSlot::Legs);
+        } else if (target == "feet") {
+            armorIndex = static_cast<int>(ArmorSlot::Feet);
+        } else if (target != "offhand") {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"},
+                    {"reason", "bad_equip_target"},
+            }
+                    .dump()
+            );
+            return;
+        }
+
+        if (armorIndex >= 0) {
+            player->setArmor(static_cast<ArmorSlot>(armorIndex), stack);
+        } else {
+            player->setOffhandSlot(stack);
+        }
+        player->getInventory().setItem(srcSlot, ItemStack{});
+        player->sendInventory(true);
+
+        enqueue(
+            nlohmann::json{
+                {"event",  "equip_done"     },
+                {"target", target           },
+                {"slot",   srcSlot          },
+                {"item",   itemJson(stack)  },
+        }
+                .dump()
+        );
+    });
+}
+
 void ProbeMod::queueGive(std::string const& itemName, int count, int aux) {
     auto server = ll::service::bedrock::getServerInstance();
     if (!server) {

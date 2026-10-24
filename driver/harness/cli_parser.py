@@ -203,6 +203,10 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     give.add_argument("--count", type=int, default=1)
     give.add_argument("--aux", type=int, default=0)
 
+    equip = sub.add_parser("equip", help="move a held/inventory stack into a worn slot")
+    equip.add_argument("target", choices=["head", "torso", "legs", "feet", "offhand"])
+    equip.add_argument("--slot", type=int, default=-1, help="inventory slot (-1 = selected)")
+
     set_item = sub.add_parser("set-item")
     set_item.add_argument("slot", type=int)
     set_item.add_argument("item")
@@ -345,8 +349,43 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     look.add_argument("--absolute", action="store_true", help="treat yaw/pitch as absolute")
     look.add_argument("--ticks", type=int, default=1)
 
+    input_cfg = sub.add_parser("input-cfg", help="configure synthetic input routing")
+    input_cfg.add_argument("--source", type=int)
+    input_cfg.add_argument("--controller", type=int)
+    input_cfg.add_argument("--focus", type=int)
+    input_cfg.add_argument("--mode", type=int)
+    input_cfg.add_argument(
+        "--jump-impulse",
+        type=int,
+        choices=(0, 1, 2, 3),
+        help="1 = jumpFromGround (default), 3 = +setJumpPendingScale; 0/2 are the measured-broken takeoff paths",
+    )
+    input_cfg.add_argument(
+        "--force",
+        action="store_true",
+        help="allow the measured-broken jump impulse modes 0/2",
+    )
+
     sub.add_parser("jump")
+    sub.add_parser("jump-key", help="tap the Space binding (needs allow_input_inject)")
+    input_lock = sub.add_parser("input-lock", help="drop real hardware keys/mouse")
+    input_lock.add_argument("--off", action="store_true", help="release the lock (default: on)")
     sub.add_parser("stopmove")
+
+    swim = sub.add_parser("swim", help="enter/leave SWIMMING with real key events")
+    swim_mode = swim.add_mutually_exclusive_group()
+    swim_mode.add_argument(
+        "--drive",
+        action="store_true",
+        help="hold W (+ sprint key) until ActorDataFlag bit57 (SWIMMING) is set",
+    )
+    swim_mode.add_argument("--stop", action="store_true", help="release the swim keys")
+    swim_mode.add_argument("--status", action="store_true", help="report SWIMMING (default)")
+    swim.add_argument("--no-sprint", action="store_true", help="drive without the sprint key")
+    swim.add_argument(
+        "--release", action="store_true", help="release the keys right after entering"
+    )
+    swim.add_argument("--timeout", type=float, default=2.0)
 
     record = sub.add_parser("record")
     record.add_argument("--ticks", type=int, default=40)

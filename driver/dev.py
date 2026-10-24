@@ -106,11 +106,22 @@ def install_mod(version_dir: Path) -> None:
     log(f"installed mod -> {dst}")
 
 
-def write_auto_config(mod_dir: Path, world: str | None, options: dict[str, str]) -> None:
-    """Optional hands-free config for a bare exe launch."""
+def write_auto_config(
+    mod_dir: Path,
+    world: str | None,
+    options: dict[str, str],
+    allow: dict[str, object] | None = None,
+) -> None:
+    """Optional hands-free config for a bare exe launch.
+
+    ``options`` land under the config's ``options`` object (game options);
+    ``allow`` keys are written at the top level where the mod reads its
+    capability switches (``allow_input_inject``, ``allow_selftest_stress`` …).
+    """
     mod_dir.mkdir(parents=True, exist_ok=True)
     path = mod_dir / "harness.json"
-    if not world and not options:
+    allow = allow or {}
+    if not world and not options and not allow:
         if path.exists():
             path.unlink()
         return
@@ -119,6 +130,7 @@ def write_auto_config(mod_dir: Path, world: str | None, options: dict[str, str])
         config["auto_enter"] = world
     if options:
         config["options"] = options
+    config.update(allow)
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -155,12 +167,28 @@ def run(args: argparse.Namespace) -> int:
             log(f"--options 需要 KEY=VALUE 形式，已忽略 {item!r}")
             continue
         options[key] = value
+    allow: dict[str, object] = {}
+    for item in args.allow:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            log(f"--allow 需要 KEY=VALUE 形式，已忽略 {item!r}")
+            continue
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "on"):
+            allow[key] = True
+        elif lowered in ("0", "false", "no", "off"):
+            allow[key] = False
+        else:
+            allow[key] = value
+    if args.lock_input:
+        allow["lock_input"] = True
     if args.write_config:
-        write_auto_config(version_dir / "mods" / "probe", args.world, options)
+        write_auto_config(version_dir / "mods" / "probe", args.world, options, allow)
         log("wrote harness.json; the mod will auto-enter on launch")
         return 0
-    # A stale auto_enter would race with the explicit enter_world below.
-    write_auto_config(version_dir / "mods" / "probe", None, {})
+    # A stale auto_enter would race with the explicit enter_world below; the
+    # capability switches must still be present when the mod loads its config.
+    write_auto_config(version_dir / "mods" / "probe", None, {}, allow)
 
     log(f"starting {exe}")
     process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
@@ -216,6 +244,18 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--world", help="world name to enter")
     run_parser.add_argument("--build", action="store_true", help="run xmake before installing")
     run_parser.add_argument("--options", action="append", default=[], metavar="KEY=VALUE")
+    run_parser.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="top-level harness.json switch, e.g. allow_input_inject=1 (repeatable)",
+    )
+    run_parser.add_argument(
+        "--lock-input",
+        action="store_true",
+        help="harness.json lock_input=true: ignore real hardware keys/mouse at startup",
+    )
     run_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     run_parser.add_argument("--exe", help="override the game executable path")
     run_parser.add_argument("--timeout", type=float, default=90.0)

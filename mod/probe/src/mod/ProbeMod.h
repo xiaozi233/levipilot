@@ -185,6 +185,9 @@ public:
     void             captureCommandTemplate(Packet& packet);
     std::atomic_bool mAllowInputInject{false};
     std::atomic_bool mInjectingInput{false};
+    // While scripts own the session, real hardware keys/mouse are dropped at
+    // the HID/mouse entry points; our own injections still pass.
+    std::atomic_bool mHardwareInputLocked{false};
     // Tick until which a game-side turn is allowed because we injected a mouse
     // move (the game applies it later in the frame, outside our call).
     std::atomic<std::uint64_t> mInjectTurnUntilTick{0};
@@ -198,6 +201,14 @@ public:
     // Called by the _applyTurnDelta hook: background mouse look must not move
     // the camera, but our own look/task injections must still work.
     [[nodiscard]] bool allowTurnDelta() const;
+    [[nodiscard]] bool hardwareInputLocked() const
+    {
+        return mHardwareInputLocked.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool injectingInput() const
+    {
+        return mInjectingInput.load(std::memory_order_relaxed);
+    }
 
     // Called from the vectored exception handler for genuinely fatal faults
     // (an access violation that is not part of a dispatched request).
@@ -300,7 +311,14 @@ private:
     void captureInventory(LocalPlayer& player);
     void applyEntityAction(LocalPlayer& player, EntityAction const& action);
     void applyEcs(LocalPlayer& player, EcsRequest const& request);
+    // Runtime-id ECS requests resolve server-side actors; they run on the
+    // server thread with a structured-exception backstop.
+    void applyRuntimeEcsRequest(EcsRequest const& request);
+    bool runEcsGuarded(EcsRequest const& request);
     void queueInventoryWrite(std::string const& container, int slot, std::string const& item, int count, int aux);
+    // Moves an existing inventory stack into a worn slot (armor/offhand) so
+    // enchantments applied while held (e.g. /enchant) survive the transfer.
+    void queueEquip(std::string const& target, int slot);
     void queueGive(std::string const& item, int count, int aux);
     void queueClearInventory();
     void captureEntities(LocalPlayer& player);

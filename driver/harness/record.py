@@ -26,6 +26,10 @@ FLAG_INPUT_A = 1 << 7
 FLAG_INPUT_S = 1 << 8
 FLAG_INPUT_D = 1 << 9
 FLAG_INPUT_JUMP = 1 << 10
+FLAG_BLOCK_OOB = 1 << 11
+# Feet/head block is a liquid (flowing variants included).
+FLAG_IN_WATER = 1 << 12
+FLAG_IN_LAVA = 1 << 13
 
 assert struct.calcsize(ENTRY_FORMAT) == ENTRY_SIZE
 
@@ -78,6 +82,14 @@ class RecordEntry:
     @property
     def action_sprint(self) -> bool:
         return bool(self.flags & FLAG_ACTION_SPRINT)
+
+    @property
+    def in_water(self) -> bool:
+        return bool(self.flags & FLAG_IN_WATER)
+
+    @property
+    def in_lava(self) -> bool:
+        return bool(self.flags & FLAG_IN_LAVA)
 
     @property
     def input(self) -> dict[str, bool]:

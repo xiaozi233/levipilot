@@ -15,6 +15,7 @@ is on Peaceful difficulty.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import itertools
 import json
 import math
@@ -29,6 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
+from driver.harness.lab import swim_drive, swim_stop  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
@@ -508,6 +510,21 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
                     < 0.25,
                     str(result),
                 )
+        # Aim through the command channel first: the camera is written back
+        # every frame, so a task-internal aim can be stomped by the real mouse.
+        pose_now = client.state()
+        eye = (
+            float(pose_now["feet_x"]),
+            float(pose_now["feet_y"]) + 1.62,
+            float(pose_now["feet_z"]),
+        )
+        click = (target[0] + 0.5, float(target[1]), target[2] + 0.5)
+        ddx, ddy, ddz = click[0] - eye[0], click[1] - eye[1], click[2] - eye[2]
+        client.look(
+            math.degrees(math.atan2(-ddx, ddz)) % 360.0,
+            math.degrees(math.atan2(-ddy, math.hypot(ddx, ddz))),
+        )
+        wait_ticks(client, 3)
         placed = client.place_block(*target, slot=slot, expected="dirt")
         wait_ticks(client, 5)
         checks.check(
@@ -672,6 +689,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        # Scripts own the session: drop real hardware keys/mouse so a person at
+        # the machine cannot perturb the run. Injected events still pass; use
+        # `harness input-lock --off` (or input_lock(false)) to release.
+        try:
+            auto_lock = client.input_lock(True)
+            checks.note("input_lock_auto", f"on={auto_lock.get('on')}")
+        except (ModPipeError, ModProtocolError) as exc:
+            checks.note("input_lock_auto", f"unavailable: {exc}")
         checks.check("ping", client.ping().get("event") == "pong")
         if args.stress_cycles:
             check_lifecycle_stress(client, checks, args.stress_cycles, args.stress_world)
@@ -736,6 +761,46 @@ def main(argv: list[str] | None = None) -> int:
                 int(after["events"]) - int(before) == 100 and after["down"] is False,
                 f"delta={int(after['events']) - int(before)} down={after['down']}",
             )
+
+            # -- input lock: hardware keys stop, injected events keep working --
+            slot_before = int(client.state().get("selected_slot", -1))
+            lock = client.input_lock(True)
+            checks.check("input_lock_on", bool(lock.get("on")), str(lock))
+            try:
+                client.key_event(50, True, via="hardware")  # '2'
+                client.key_event(50, False, via="hardware")
+                wait_ticks(client, 6)
+                after_hw = int(client.state().get("selected_slot", -1))
+                client.key_event(51, True, via="hid")  # '3'
+                client.key_event(51, False, via="hid")
+                wait_ticks(client, 6)
+                after_sw = int(client.state().get("selected_slot", -1))
+                checks.check(
+                    "input_lock_blocks_hardware",
+                    after_hw == slot_before,
+                    f"slot {slot_before} -> {after_hw}",
+                )
+                checks.check(
+                    "input_lock_allows_injection",
+                    after_sw != slot_before,
+                    f"slot {slot_before} -> {after_sw}",
+                )
+                injected_before = int(client.mouse()["counts"][1])
+                client.mouse_event("left", down=True)
+                client.mouse_event("left", down=False)
+                wait_ticks(client, 4)
+                injected_after = int(client.mouse()["counts"][1])
+                checks.check(
+                    "input_lock_allows_mouse_injection",
+                    injected_after > injected_before,
+                    f"{injected_before} -> {injected_after}",
+                )
+            finally:
+                # Restore the run-wide lock (the block's checks needed the
+                # toggle) and the hotbar selection.
+                client.input_lock(True)
+                client.select_slot(slot_before)
+                wait_ticks(client, 3)
             client.mouse_clear()
             client.mouse_event("left", down=True)
             client.mouse_event("left", down=False)
@@ -1572,6 +1637,35 @@ def main(argv: list[str] | None = None) -> int:
         # -- parkour jump/route primitives ---------------------------------
         check_jump_motion(client, checks, inject_enabled)
 
+        # Measured-broken takeoff modes must stay rejected (input pipeline
+        # only / setJumpPendingScale only); the mod is the authoritative guard
+        # for raw protocol sends.
+        for bad_mode, reason in (
+            (0, "jump_impulse_disabled"),
+            (2, "jump_impulse_pending_scale_only"),
+        ):
+            try:
+                client.request({"cmd": "input_cfg", "jump_impulse": bad_mode}, "input_cfg_ok")
+                checks.check(
+                    f"jump_impulse_guard_{bad_mode}", False, "broken takeoff mode accepted"
+                )
+            except ModProtocolError as exc:
+                checks.check(f"jump_impulse_guard_{bad_mode}", reason in str(exc), str(exc))
+        forced = client.request(
+            {"cmd": "input_cfg", "jump_impulse": 0, "force": True}, "input_cfg_ok"
+        )
+        checks.check(
+            "jump_impulse_guard_force",
+            forced.get("event") == "input_cfg_ok",
+            str(forced),
+        )
+        restored = client.input_cfg(jump_impulse=1)
+        checks.check(
+            "jump_impulse_guard_restore",
+            restored.get("event") == "input_cfg_ok",
+            str(restored),
+        )
+
         jump_now = client.jump_when("now")
         checks.check(
             "jump_now",
@@ -1647,6 +1741,80 @@ def main(argv: list[str] | None = None) -> int:
             bool(jsonl_entries) and any(entry.on_ground for entry in jsonl_entries),
             f"entries={len(jsonl_entries)}",
         )
+
+        # -- record medium bits: feet/head block is a liquid ----------------
+        pose_now = client.state()
+        fx = math.floor(float(pose_now["feet_x"]))
+        fy = math.floor(float(pose_now["feet_y"]))
+        fz = math.floor(float(pose_now["feet_z"]))
+        client.command(f"setblock {fx} {fy} {fz} water")
+        client.command(f"setblock {fx} {fy + 1} {fz} water")
+        wait_ticks(client, 3)
+        client.record_bin_start(period=1)
+        wait_ticks(client, 8)
+        client.record_bin_stop()
+        fluid_entries = client.record_dump_all(format="jsonl")
+        checks.check(
+            "record_in_water_flag",
+            any(entry.in_water for entry in fluid_entries),
+            f"entries={len(fluid_entries)} water={sum(1 for e in fluid_entries if e.in_water)}",
+        )
+        client.command(f"setblock {fx} {fy} {fz} air")
+        client.command(f"setblock {fx} {fy + 1} {fz} air")
+        # Command-placed water can wake and spread once the player enters it;
+        # sweep the air layers above the ground so later checks stay dry.
+        client.command(f"fill {fx - 3} {fy} {fz - 3} {fx + 3} {fy + 1} {fz + 3} air")
+        wait_ticks(client, 15)
+
+        # -- swim: SWIMMING is entered with real keys, never state writes ---
+        if not inject_enabled:
+            checks.note("swim_drive", "skipped: allow_input_inject is disabled")
+        else:
+            # Build on open ground away from the spawn structure so the pool
+            # has room and any spread can be swept without touching structures.
+            client.teleport(feet[0] + 40.0, feet[1] + 2.0, feet[2] + 40.0)
+            wait_ticks(client, 25)
+            spot = client.state()
+            sx = math.floor(float(spot["feet_x"]))
+            sy = math.floor(float(spot["feet_y"]))
+            sz = math.floor(float(spot["feet_z"]))
+            client.command(f"fill {sx - 1} {sy} {sz - 1} {sx + 1} {sy + 2} {sz + 1} water")
+            wait_ticks(client, 8)
+            client.teleport(sx + 0.5, sy + 1.0, sz + 0.5)
+            client.look(0.0, 0.0)
+            wait_ticks(client, 10)
+            entered = swim_drive(client, timeout=1.5)
+            checks.check(
+                "swim_drive_entered",
+                bool(entered.get("entered")) and bool(entered.get("swimming")),
+                str(entered),
+            )
+            client.look(0.0, 60.0)
+            client.record_bin_start(period=1)
+            wait_ticks(client, 30)
+            client.record_bin_stop()
+            dive = client.record_dump_all(format="jsonl")
+            wet_free = [entry for entry in dive if entry.in_water and not entry.on_ground]
+            checks.check(
+                "swim_drive_dive",
+                bool(wet_free) and min(entry.vy for entry in wet_free) < -0.15,
+                f"free={len(wet_free)} min_vy={min((e.vy for e in wet_free), default=0.0):.4f}",
+            )
+            stopped = swim_stop(client)
+            checks.check("swim_stop_clears", stopped.get("swimming") is False, str(stopped))
+            # Remove the pool and any spread on the surface layers.
+            client.command(f"fill {sx - 4} {sy} {sz - 4} {sx + 4} {sy + 3} {sz + 4} air")
+            wait_ticks(client, 15)
+            # The dive's ground contact enqueues a player_landed event; consume
+            # it so the later landing check does not read this one.
+            drain_deadline = time.monotonic() + 0.5
+            while time.monotonic() < drain_deadline:
+                try:
+                    client.readline(0.1)
+                except ModTimeout:
+                    break
+            client.reset(feet[0], feet[1], feet[2], yaw=0.0)
+            wait_ticks(client, 10)
 
         # -- P2: effects, checkpoints, region scan, landing event ----------
         checks.check("effects_field", isinstance(client.state().get("effects"), list))
@@ -1745,6 +1913,43 @@ def main(argv: list[str] | None = None) -> int:
         if dirt_slot not in (None, 0):
             client.clear_item(dirt_slot)
             wait_ticks(client, 10)
+
+        # -- equip: an inventory stack moves into a worn slot ---------------
+        armor_before = before.get("armor", [])
+        client.set_item(0, "minecraft:diamond_boots", count=1)
+        client.select_slot(0)
+        wait_ticks(client, 8)
+        equipped = client.equip("feet")
+        wait_ticks(client, 10)
+        armor_after = client.inventory().get("armor", [])
+        feet_item = next((entry["item"] for entry in armor_after if int(entry["slot"]) == 3), None)
+        checks.check(
+            "equip_feet",
+            equipped.get("event") == "equip_done"
+            and isinstance(feet_item, dict)
+            and feet_item.get("type") == "minecraft:diamond_boots",
+            f"feet={feet_item}",
+        )
+        checks.check("equip_cleared_source", slot_item(client.inventory(), 0) is None)
+        for armor in armor_before:
+            armor_slot = int(armor.get("slot", -1))
+            if not 0 <= armor_slot < 4:
+                continue
+            item = armor.get("item")
+            if item is None:
+                client.clear_item(armor_slot, container="armor")
+                continue
+            if item:
+                client.set_item(
+                    armor_slot,
+                    item["type"],
+                    count=int(item["count"]),
+                    aux=int(item.get("aux", 0)),
+                    container="armor",
+                )
+            else:
+                client.clear_item(armor_slot, container="armor")
+        wait_ticks(client, 5)
 
         # restore the original hotbar slot and selection
         if original_slot0:
@@ -1933,9 +2138,14 @@ def main(argv: list[str] | None = None) -> int:
             second, _, drift_b = run_macro(True)
             gap = math.hypot(first[0] - second[0], first[1] - second[1])
             external = drift_a > 0.1 or drift_b > 0.1
+            # Repeated runs reproduce exactly, but the first tick's phase
+            # occasionally shifts one input edge by a sub-tick amount
+            # (measured 0.0017 blocks); a lost edge would move >= a tick of
+            # motion (~0.1), and real input interference shows as external
+            # camera drift, so keep the guard an order of magnitude below that.
             checks.check(
                 "macro_event_deterministic",
-                gap < 1e-4 or external,
+                gap < 5e-3 or external,
                 f"gap={gap:.6f}" + (" (skipped: real mouse moved the camera)" if external else ""),
             )
             checks.check("macro_event_clicks", left_events == 2, f"left={left_events}")
@@ -1984,6 +2194,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     finally:
+        with contextlib.suppress(ModPipeError, ModProtocolError):
+            client.input_lock(False)
         client.close()
 
 

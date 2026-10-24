@@ -164,7 +164,8 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             } else if (jump == "never") {
                 point.jumpMode = JumpMode::Never;
             }
-            point.jumpDistance        = std::clamp(row.value("jump_distance", 1.0f), 0.1f, 8.0f);
+            point.jumpDistance     = std::clamp(row.value("jump_distance", 1.0f), 0.1f, 8.0f);
+            point.edgeLookahead    = std::clamp(row.value("edge_lookahead", 0.55f), 0.2f, 1.5f);
             task.points[task.count++] = point;
         }
         if (task.count == 0) {
@@ -239,9 +240,16 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             task.face = std::clamp(j.value("face", -1), -1, 5);
         }
         if (j.contains("against") && j["against"].is_array() && j["against"].size() == 3) {
-            task.againstX    = static_cast<int>(std::floor(j["against"][0].get<double>()));
-            task.againstY    = static_cast<int>(std::floor(j["against"][1].get<double>()));
-            task.againstZ    = static_cast<int>(std::floor(j["against"][2].get<double>()));
+            double ax = 0.0, ay = 0.0, az = 0.0;
+            if (!numberValue(j["against"][0], -CoordHorizonLimit, CoordHorizonLimit, ax)
+                || !numberValue(j["against"][1], CoordHeightLow, CoordHeightHigh, ay)
+                || !numberValue(j["against"][2], -CoordHorizonLimit, CoordHorizonLimit, az)) {
+                enqueue(R"({"event":"error","reason":"bad_coord","param":"against"})");
+                return true;
+            }
+            task.againstX    = static_cast<int>(std::floor(ax));
+            task.againstY    = static_cast<int>(std::floor(ay));
+            task.againstZ    = static_cast<int>(std::floor(az));
             task.autoAgainst = false;
             if (task.face < 0) {
                 task.face = faceBetween(

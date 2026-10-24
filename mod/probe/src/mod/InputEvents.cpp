@@ -4,6 +4,22 @@ using namespace probe::detail;
 
 namespace probe {
 
+namespace {
+// The Windows client uses the GameCore platform shim, whose first members
+// include the HIDController shared_ptr. A wrong layout faults here, and this
+// runs on the client tick thread where no SEH guard exists yet, so the raw
+// cast stays inside its own __try (no C++ objects in this function).
+HIDControllerGameCoreDesktop* gamecoreHid(void* shim) {
+    __try {
+        return static_cast<Bedrock::Platform_GameCore*>(shim)->mHIDController.get();
+    } __except (
+        isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
+    ) {
+        return nullptr;
+    }
+}
+} // namespace
+
 // G1/G2: push prepared input into the game's own queues instead of faking OS
 // messages. Keyboard::_inputs() is drained by the game's input pipeline (which
 // emits KeyInputEvent and runs bindings); MouseDevice::feed() is the publisher
@@ -19,12 +35,9 @@ bool ProbeMod::hidKeyEvent(int code, bool down, bool hardware, std::string& erro
         error = "no_platform_shim";
         return false;
     }
-    // The Windows client uses the GameCore platform shim, whose first members
-    // include the HIDController shared_ptr. A wrong layout would fault; the
-    // command dispatcher's SEH guard turns that into internal_error.
-    auto* gamecore = static_cast<Bedrock::Platform_GameCore*>(shim);
-    std::shared_ptr<HIDControllerGameCoreDesktop>& hid = gamecore->mHIDController;
-    if (!hid) {
+    auto* hid = gamecoreHid(shim);
+    if (hid == nullptr) {
+        // Either the shared_ptr is empty or the shim layout faulted under SEH.
         error = "no_hid_controller";
         return false;
     }
@@ -51,9 +64,8 @@ bool ProbeMod::hidTextInput(std::string const& text, std::string& error) {
         error = "no_platform_shim";
         return false;
     }
-    auto* gamecore = static_cast<Bedrock::Platform_GameCore*>(shim);
-    std::shared_ptr<HIDControllerGameCoreDesktop>& hid = gamecore->mHIDController;
-    if (!hid) {
+    auto* hid = gamecoreHid(shim);
+    if (hid == nullptr) {
         error = "no_hid_controller";
         return false;
     }

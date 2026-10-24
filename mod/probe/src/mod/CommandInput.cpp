@@ -214,9 +214,16 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "move") {
-        updateRequests([&j](RequestBlock& request) {
-            request.input.forward = j.value("forward", 0.0f);
-            request.input.strafe  = j.value("strafe", 0.0f);
+        double forward = 0.0;
+        double strafe  = 0.0;
+        if (!numberJson(j, "forward", -1e9, 1e9, 0.0, forward)
+            || !numberJson(j, "strafe", -1e9, 1e9, 0.0, strafe)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"forward|strafe"})");
+            return true;
+        }
+        updateRequests([&j, forward, strafe](RequestBlock& request) {
+            request.input.forward = std::clamp(static_cast<float>(forward), -1.0f, 1.0f);
+            request.input.strafe  = std::clamp(static_cast<float>(strafe), -1.0f, 1.0f);
             request.input.active  = true;
             request.inputTicks    = j.value("ticks", 1);
             ++request.inputSeq;
@@ -234,10 +241,17 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "set") {
-        updateRequests([&j](RequestBlock& request) {
-            request.input        = ControlState{};
-            request.input.forward = j.value("forward", 0.0f);
-            request.input.strafe  = j.value("strafe", 0.0f);
+        double forward = 0.0;
+        double strafe  = 0.0;
+        if (!numberJson(j, "forward", -1e9, 1e9, 0.0, forward)
+            || !numberJson(j, "strafe", -1e9, 1e9, 0.0, strafe)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"forward|strafe"})");
+            return true;
+        }
+        updateRequests([&j, forward, strafe](RequestBlock& request) {
+            request.input         = ControlState{};
+            request.input.forward = std::clamp(static_cast<float>(forward), -1.0f, 1.0f);
+            request.input.strafe  = std::clamp(static_cast<float>(strafe), -1.0f, 1.0f);
             request.input.sprint  = j.value("sprint", false);
             request.input.sneak   = j.value("sneak", false);
             request.input.jump    = j.value("jump", false);
@@ -259,10 +273,17 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "look") {
-        updateRequests([&j](RequestBlock& request) {
+        double yaw   = 0.0;
+        double pitch = 0.0;
+        // A non-finite yaw would spin wrapDegrees forever on the tick thread.
+        if (!numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw) || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"yaw|pitch"})");
+            return true;
+        }
+        updateRequests([&j, yaw, pitch](RequestBlock& request) {
             request.lookRelative = j.value("relative", true);
-            request.lookYaw      = j.value("yaw", 0.0f);
-            request.lookPitch    = j.value("pitch", 0.0f);
+            request.lookYaw      = static_cast<float>(yaw);
+            request.lookPitch    = static_cast<float>(pitch);
             request.lookTicks    = j.value("ticks", 1);
             ++request.lookSeq;
         });
@@ -295,7 +316,12 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         auto const button = j.value("button", std::string{"left"});
-        mClickReach.store(j.value("reach", 5.5f));
+        double     reach  = 5.5;
+        if (!numberJson(j, "reach", 0.0, 64.0, 5.5, reach)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"reach"})");
+            return true;
+        }
+        mClickReach.store(static_cast<float>(reach));
         mClickRequest.store(button == "right" ? 2 : 1);
         return true;
     }

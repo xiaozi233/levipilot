@@ -63,17 +63,36 @@ BlockHashEntry        gBlockHashCache[kBlockHashCache]; // single writer (tick)
 constexpr int kMinSampleY = -64;
 constexpr int kMaxSampleY = 319;
 
-std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
-    Block const& block = source.getBlock(BlockPos{x, y, z});
+// structOffset walks a string-keyed table and notes misses under a mutex; the
+// tick path must do neither, so the block offsets are resolved once per
+// recording session (single writer: the tick thread).
+std::uint64_t gBlockLegacyPointerOffset = 0;
+std::uint64_t gBlockLegacyIdOffset     = 0;
+bool          gBlockOffsetsResolved    = false;
+
+void resolveBlockOffsetsOnce() {
+    if (gBlockOffsetsResolved) {
+        return;
+    }
+    gBlockOffsetsResolved = true;
     std::uint64_t legacyOffset = 0;
     std::uint64_t idOffset     = 0;
     if (structOffset("Block", "LegacyPointer", legacyOffset)
         && structOffset("BlockLegacy", "BlockId", idOffset)) {
+        gBlockLegacyPointerOffset = legacyOffset;
+        gBlockLegacyIdOffset      = idOffset;
+    }
+}
+
+std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
+    Block const& block = source.getBlock(BlockPos{x, y, z});
+    resolveBlockOffsetsOnce();
+    if (gBlockLegacyPointerOffset != 0 && gBlockLegacyIdOffset != 0) {
         std::uint64_t legacy = 0;
         std::uint16_t id     = 0;
         auto const    base   = reinterpret_cast<std::uint64_t>(&block);
-        if (readMemory(base + legacyOffset, &legacy, sizeof(legacy)) && legacy != 0
-            && readMemory(legacy + idOffset, &id, sizeof(id))) {
+        if (readMemory(base + gBlockLegacyPointerOffset, &legacy, sizeof(legacy)) && legacy != 0
+            && readMemory(legacy + gBlockLegacyIdOffset, &id, sizeof(id))) {
             BlockHashEntry& entry = gBlockHashCache[id % kBlockHashCache];
             if (entry.id == id) {
                 return entry.hash;
@@ -84,7 +103,8 @@ std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
             return hash;
         }
     }
-    // Table unavailable: keep the old semantics, at the cost of an allocation.
+    // Table unavailable (compat mode): keep the old semantics, at the cost of
+    // an allocation. Documented exception to the hot-path discipline.
     return blockNameHash(block.getTypeName());
 }
 
@@ -102,6 +122,8 @@ bool recordStart(std::uint32_t period, std::string& error) {
     gHead.store(0, std::memory_order_relaxed);
     gTickCounter.store(0, std::memory_order_relaxed);
     gPeriod.store(std::clamp<std::uint32_t>(period, 1, 200), std::memory_order_relaxed);
+    // Re-resolve the block offsets per session in case the profile changed.
+    gBlockOffsetsResolved = false;
     gRecording.store(true, std::memory_order_release);
     return true;
 }
@@ -147,6 +169,8 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
     entry.feetY = finiteOrZero(static_cast<float>(feet.y));
 
     bool actionSprint = false;
+    // mPlayerActions is inline TypedStorage (never null): operator-> reaches
+    // the embedded bitset directly.
     if (auto action = player.getEntityContext().tryGetComponent<PlayerActionComponent>()) {
         actionSprint = action->mPlayerActions->test(PlayerActionStartSprinting);
     }

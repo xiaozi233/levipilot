@@ -195,10 +195,13 @@ void loadProfileFields(VersionProfile const& profile) {
     for (std::size_t slot = 0; slot < profile.fieldCount && gStructFieldCount < kMaxStructFields;
          ++slot) {
         auto const& source = profile.fields[slot];
+        if (source.offset == nullptr) {
+            continue;
+        }
         char*                end    = nullptr;
         errno                       = 0;
         unsigned long long const parsed = std::strtoull(source.offset, &end, 0);
-        if (source.offset == nullptr || end == source.offset || *end != '\0' || errno == ERANGE) {
+        if (end == source.offset || *end != '\0' || errno == ERANGE) {
             continue;
         }
         gStructFields[gStructFieldCount++] = StructField{
@@ -360,21 +363,46 @@ std::uint64_t anchorAddress(std::size_t index) {
     }
 }
 
-// LL import stubs are `jmp qword ptr [rip+0]`; follow them to the real game
-// function so signatures are not polluted by ASLR-dependent pointers.
+// Follow `jmp qword ptr [rip+disp]` import stubs and `jmp rel32` thunks to
+// the real game function; signatures must not be anchored on the stub (the
+// stub's absolute pointer moves with ASLR). Shared by anchor resolution and
+// symbolResolve so both use identical decode rules.
+std::uint64_t followThunkChain(std::uint64_t address, int maxHops, int& hopsOut) {
+    std::uint64_t real = address;
+    for (int hops = 0; hops < maxHops; ++hops) {
+        std::uint8_t bytes[6]{};
+        if (!readMemory(real, bytes, sizeof(bytes))) {
+            break;
+        }
+        std::uint64_t target = 0;
+        if (bytes[0] == 0xFF && bytes[1] == 0x25) {
+            // jmp qword ptr [rip+disp] (import stub)
+            std::int32_t disp = 0;
+            std::memcpy(&disp, bytes + 2, sizeof(disp));
+            std::uint64_t const slot = real + 6 + static_cast<std::int64_t>(disp);
+            if (!readMemory(slot, &target, sizeof(target))) {
+                break;
+            }
+        } else if (bytes[0] == 0xE9) {
+            // jmp rel32 (relative thunk, often into another module)
+            std::int32_t rel = 0;
+            std::memcpy(&rel, bytes + 1, sizeof(rel));
+            target = real + 5 + static_cast<std::int64_t>(rel);
+        } else {
+            break;
+        }
+        if (target == 0) {
+            break;
+        }
+        real = target;
+        hopsOut = hops + 1;
+    }
+    return real;
+}
+
 std::uint64_t followThunk(std::uint64_t address) {
-    std::array<std::uint8_t, 6> bytes{};
-    if (!readMemory(address, bytes.data(), bytes.size())) {
-        return address;
-    }
-    if (bytes[0] != 0xFF || bytes[1] != 0x25) {
-        return address;
-    }
-    std::uint64_t target = 0;
-    if (!readMemory(address + 6, &target, sizeof(target))) {
-        return address;
-    }
-    return target != 0 ? target : address;
+    int hops = 0;
+    return followThunkChain(address, 4, hops);
 }
 
 VersionInfo readVersion() {
@@ -772,37 +800,9 @@ nlohmann::json symbolResolve(std::string const& name) {
         out["reason"] = "symbol_not_found";
         return out;
     }
-    // Follow `jmp qword ptr [rip+disp]` import stubs to the real function.
-    std::uint64_t real = anchor;
+    // Follow import stubs / relative thunks to the real function.
     int           hops = 0;
-    while (hops < 4) {
-        std::uint8_t bytes[6]{};
-        if (!readMemory(real, bytes, sizeof(bytes))) {
-            break;
-        }
-        std::uint64_t target = 0;
-        if (bytes[0] == 0xFF && bytes[1] == 0x25) {
-            // jmp qword ptr [rip+disp] (import stub)
-            std::int32_t disp = 0;
-            std::memcpy(&disp, bytes + 2, sizeof(disp));
-            std::uint64_t const slot = real + 6 + static_cast<std::int64_t>(disp);
-            if (!readMemory(slot, &target, sizeof(target))) {
-                break;
-            }
-        } else if (bytes[0] == 0xE9) {
-            // jmp rel32 (relative thunk, often into another module)
-            std::int32_t rel = 0;
-            std::memcpy(&rel, bytes + 1, sizeof(rel));
-            target = real + 5 + static_cast<std::int64_t>(rel);
-        } else {
-            break;
-        }
-        if (target == 0) {
-            break;
-        }
-        real = target;
-        ++hops;
-    }
+    std::uint64_t real = followThunkChain(anchor, 4, hops);
     out["real"]       = real;
     out["thunk_hops"] = hops;
     out["thunked"]    = real != anchor;

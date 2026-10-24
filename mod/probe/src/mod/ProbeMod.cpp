@@ -310,8 +310,6 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         }
     }
 
-    mMacroStopRequested.exchange(false);
-
     if (mMacroPlaying.load(std::memory_order_relaxed)) {
         std::shared_ptr<Macro> macro;
         {
@@ -321,9 +319,14 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         int index = mMacroIndex.load(std::memory_order_relaxed);
         int end   = mMacroEnd.load(std::memory_order_relaxed);
         if (!macro || index < 0 || index >= static_cast<int>(macro->size()) || index >= end) {
-            if (macro && mMacroLoop.load() && !macro->empty()) {
-                index = mMacroStart.load();
-                mMacroIndex.store(index);
+            // macro_load can swap in a shorter macro while looping, so the
+            // restart point must be re-validated against the *current* size
+            // before the row access below; otherwise it reads out of bounds.
+            int const restart = mMacroStart.load(std::memory_order_relaxed);
+            if (macro && mMacroLoop.load() && !macro->empty() && restart >= 0
+                && restart < static_cast<int>(macro->size()) && restart < end) {
+                index = restart;
+                mMacroIndex.store(index, std::memory_order_relaxed);
             } else {
                 finishMacro("end");
             }

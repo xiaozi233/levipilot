@@ -231,6 +231,8 @@ private:
     void spoolThreadLoop();
     // Returns the number of rows written; 0 when nothing was due/queued.
     std::uint64_t      flushSpool(bool force);
+    // Re-append swapped-out rows after a failed spool write (bounded).
+    void               requeueSpool(std::string& data);
     void               installCrashHandler();
     static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info);
     void               writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
@@ -275,6 +277,22 @@ private:
     void updateFocusState();
 
     void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
+    // Shared walk-to-target driver for tickNavigate/tickRoute; defined in
+    // Tasks.cpp. Reads/writes the shared lastX/lastZ/haveLast/stuckTicks/
+    // jumpCooldown fields directly on the task.
+    template <typename TaskT, bool CountJumps = false>
+    void walkToward(
+        ClientInstance& client,
+        LocalPlayer&    player,
+        TaskT&          task,
+        float           targetX,
+        float           targetZ,
+        float           distance,
+        float           tolerance,
+        JumpMode        jumpMode,
+        float           jumpDistance,
+        float           edgeLookahead
+    );
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
     void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
     void applySlotRequest(LocalPlayer& player, int slot);
@@ -357,6 +375,10 @@ private:
 
     template <typename Fn>
     void updateRequests(Fn&& fn) {
+        // fn must only write POD fields of RequestBlock. A structured
+        // exception inside fn would skip the destructor of this lock_guard
+        // and leave mRequestSeq odd, which readRequests turns into a
+        // degraded "keep the last snapshot" tick instead of a hang.
         std::lock_guard     writeLock(mRequestWriteMutex);
         std::uint32_t const seq = mRequestSeq.load(std::memory_order_relaxed);
         mRequestSeq.store(seq + 1, std::memory_order_relaxed); // odd: write in progress
@@ -366,7 +388,11 @@ private:
     }
 
     [[nodiscard]] RequestBlock readRequests() const {
-        for (;;) {
+        // Bounded: a writer that faulted mid-update would leave the sequence
+        // odd forever. After the retry cap the tick keeps the last consistent
+        // snapshot instead of spinning, so the game survives a wedged writer.
+        RequestBlock last{};
+        for (int attempt = 0; attempt < 4096; ++attempt) {
             std::uint32_t const before = mRequestSeq.load(std::memory_order_acquire);
             if ((before & 1u) == 0) {
                 RequestBlock copy = mRequestBlock;
@@ -374,9 +400,11 @@ private:
                 if (mRequestSeq.load(std::memory_order_relaxed) == before) {
                     return copy;
                 }
+                last = copy;
             }
             std::this_thread::yield();
         }
+        return last;
     }
 
     alignas(64) std::atomic<std::uint32_t> mRequestSeq{0};
@@ -399,7 +427,8 @@ private:
     bool mPrevSneak   = false;
     bool mInjected    = false;
     bool mInputActive = false;
-    bool mPrevJump    = false;
+    // Set by input_cfg on the pipe thread, read/written on the tick thread.
+    std::atomic_bool mPrevJump{false};
     // Set by applyControls when a jump press edge is injected; cleared at the
     // start of each tick so the tick event can report it.
     bool             mJumpEdgeThisTick = false;
@@ -420,15 +449,18 @@ private:
     // Set while the mod itself applies a turn (look/task), so the background
     // input guard lets it through.
     std::atomic_bool mInjectingLook{false};
-    bool             mBackgroundGuard = true;
-    bool             mForeground      = true;
+    // Written by enable()/config and read on the tick thread.
+    std::atomic_bool mBackgroundGuard{true};
+    bool             mForeground     = true;
     // Parkour event tracking (tick thread only).
     float               mLastHealth      = 20.0f;
     bool                mWasAirborne     = false;
     float               mAirStartY       = 0.0f;
     int                 mCursorShowCalls = 0;
-    bool                mPrevActionLmb   = false;
-    bool                mPrevActionRmb   = false;
+    // Reset from the pipe thread (mouse_clear/macro_rec_start), read/written
+    // on the tick thread.
+    std::atomic_bool   mPrevActionLmb{false};
+    std::atomic_bool   mPrevActionRmb{false};
     std::array<bool, 9> mButtonStates{};
     std::array<bool, 9> mHandlerStates{};
 
@@ -509,9 +541,9 @@ private:
     std::atomic_bool       mMacroStartRequested{false};
     std::atomic_bool       mMacroLoop{false};
     // G4: replay through the event layer; off keeps the legacy GameMode path.
-    bool             mMacroEventLevel = false;
+    std::atomic_bool mMacroEventLevel{false};
     MacroTick        mPrevMacroTick{};
-    bool             mHavePrevMacroTick = false;
+    std::atomic_bool mHavePrevMacroTick{false};
     void             applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
     void             releaseMacroInputs();
     std::atomic<int> mMacroIndex{0};
@@ -524,7 +556,7 @@ private:
     std::atomic<std::uint64_t> mMacroRecordMax{0};
     std::mutex                 mRecordMutex;
     Macro                      mRecordedMacro;
-    bool                       mHavePrevRotation = false;
+    std::atomic_bool           mHavePrevRotation{false};
     float                      mPrevYaw          = 0.0f;
     float                      mPrevPitch        = 0.0f;
 

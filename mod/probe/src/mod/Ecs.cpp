@@ -34,6 +34,39 @@ std::uint32_t storageStride(entt::basic_registry<EntityId>::common_type const* s
     return static_cast<std::uint32_t>(a > b ? a - b : b - a);
 }
 
+// The EntityContext* comes from the pipe (a hook view), so the whole access
+// chain must stay under SEH: applyEcs runs on the game tick thread where a
+// plain C++ catch cannot intercept an access violation. Keep this function
+// free of objects that need unwinding so it can host __try.
+struct ContextProbe {
+    std::uint64_t registry = 0;
+    std::uint64_t entity   = 0;
+    std::uint64_t value    = 0;
+    std::uint64_t index    = 0;
+    std::uint64_t count    = 0;
+    bool          found    = false;
+};
+
+bool probeContext(std::uint64_t address, std::uint32_t componentId, ContextProbe& out) {
+    __try {
+        auto& context  = *reinterpret_cast<EntityContext*>(address);
+        auto& registry = context.getRegistry();
+        out.registry   = reinterpret_cast<std::uint64_t>(&registry);
+        out.entity     = static_cast<std::uint64_t>(context.mEntity.mRawId);
+        auto* storage  = registry.storage(static_cast<entt::id_type>(componentId));
+        if (storage == nullptr || !storage->contains(context.mEntity)) {
+            return true;
+        }
+        out.value = reinterpret_cast<std::uint64_t>(storage->value(context.mEntity));
+        out.index = static_cast<std::uint64_t>(storage->index(context.mEntity));
+        out.count = static_cast<std::uint64_t>(storage->size());
+        out.found = true;
+        return true;
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
 } // namespace
 
 void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
@@ -66,10 +99,18 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
     if (request.kind == EcsRequest::Kind::Context) {
         // H0.3: resolve a component from an EntityContext* captured by a hook
         // argument, so the hook view and the runtime_id view can be compared.
-        auto& context  = *reinterpret_cast<EntityContext*>(request.contextAddress);
-        auto& registry = context.getRegistry();
-        auto* storage  = registry.storage(static_cast<entt::id_type>(request.componentId));
-        if (storage == nullptr || !storage->contains(context.mEntity)) {
+        if (!readableRange(request.contextAddress, sizeof(EntityContext))) {
+            enqueue(R"({"event":"error","reason":"bad_addr","phase":"ecs_context"})");
+            return;
+        }
+        ContextProbe probe;
+        if (!probeContext(request.contextAddress, request.componentId, probe)) {
+            enqueue(
+                R"({"event":"error","reason":"internal_error","phase":"ecs_context","message":"structured exception"})"
+            );
+            return;
+        }
+        if (!probe.found) {
             enqueue(
                 nlohmann::json{
                     {"event",        "error"             },
@@ -80,18 +121,17 @@ void ProbeMod::applyEcs(LocalPlayer& player, EcsRequest const& request) {
             );
             return;
         }
-        void const* value = storage->value(context.mEntity);
         std::uint32_t size = 0;
         bool const    sized = componentSize(request.componentId, size);
         enqueue(
             nlohmann::json{
                 {"event",        "ecs_context"                              },
                 {"context",      request.contextAddress                     },
-                {"entity",       static_cast<std::uint64_t>(context.mEntity.mRawId)},
+                {"entity",       probe.entity                               },
                 {"component_id", request.componentId                        },
-                {"address",      reinterpret_cast<std::uint64_t>(value)     },
-                {"index",        static_cast<std::uint64_t>(storage->index(context.mEntity))},
-                {"count",        static_cast<std::uint64_t>(storage->size())},
+                {"address",      probe.value                                },
+                {"index",        probe.index                                },
+                {"count",        probe.count                                },
                 {"size",         sized ? nlohmann::json(size) : nlohmann::json(nullptr)},
             }
                 .dump()

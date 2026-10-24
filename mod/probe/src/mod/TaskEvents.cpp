@@ -109,6 +109,16 @@ void ProbeMod::drainTaskEvents() {
                 {"reason", result.reason        }
             });
         } else if (event.kind == TaskEvent::Kind::Waypoint) {
+            // The spool thread must not die on a mismatched variant; guard
+            // explicitly instead of trusting the producer.
+            if (!std::holds_alternative<RouteTask>(event.state)) {
+                out.update({
+                    {"event",  "error"                    },
+                    {"reason", "waypoint_variant_mismatch"}
+                });
+                enqueue(out.dump());
+                continue;
+            }
             auto const& task = std::get<RouteTask>(event.state);
             out.update({
                 {"event",     "route_waypoint"    },

@@ -68,6 +68,7 @@ struct RouteWaypoint {
     int      maxTicks     = 600;
     JumpMode jumpMode     = JumpMode::Auto;
     float    jumpDistance = 1;
+    float    edgeLookahead = 0.55f;
 };
 
 struct RouteTask {

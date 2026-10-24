@@ -319,6 +319,9 @@ nlohmann::json hookInstall(
     if (status == 0 && originRaw != nullptr && injectFail) {
         // Test-only: hook() succeeded for real, but pretend it published no
         // origin so the F3 cleanup path (unhook + release) is exercised.
+        char audit[160]{};
+        std::snprintf(audit, sizeof(audit), "hook: inject_fail test slot=%lld", static_cast<long long>(slot));
+        ProbeMod::getInstance().bootLog(audit);
         originRaw = nullptr;
     }
     if (status != 0) {
@@ -367,6 +370,24 @@ nlohmann::json hookInstall(
     // Publish last: every field captureHit reads is visible before a detour
     // stops spinning.
     watch.ready.store(true, std::memory_order_release);
+
+    // Constraint: installing a detour at an arbitrary address is a strong
+    // capability and must leave an audit trail that survives a disconnect
+    // (the event queue alone does not).
+    {
+        char audit[192]{};
+        std::snprintf(
+            audit,
+            sizeof(audit),
+            "hook: install slot=%lld va=0x%llx symbol=%s tag=%s abi=%s",
+            static_cast<long long>(slot),
+            static_cast<unsigned long long>(targetAddress),
+            useVa ? "-" : symbol.c_str(),
+            tag.c_str(),
+            useVa ? "generic4-int" : "typed"
+        );
+        ProbeMod::getInstance().bootLog(audit);
+    }
 
     nlohmann::json out{
         {"event",   "hook_installed"},

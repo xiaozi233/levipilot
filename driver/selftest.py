@@ -1540,7 +1540,11 @@ def main(argv: list[str] | None = None) -> int:
                 }
             ),
         )
-        busy = client.request({"cmd": "selftest_busy", "us": 1000, "ticks": 20})
+        # Accept both outcomes: the gate replies error/stress_disabled when
+        # allow_selftest_stress is off (dev.py deletes harness.json on run).
+        busy = client.request(
+            {"cmd": "selftest_busy", "us": 1000, "ticks": 20}, ("busy_test_started", "error")
+        )
         if busy.get("reason") == "stress_disabled":
             checks.check("selftest_busy_gated", True, "stress_disabled")
             overhead_after = overhead_before
@@ -1937,6 +1941,42 @@ def main(argv: list[str] | None = None) -> int:
             checks.check("macro_event_clicks", left_events == 2, f"left={left_events}")
             _, legacy_left, _ = run_macro(False)
             checks.check("macro_legacy_path", legacy_left == 0, f"left={legacy_left}")
+
+        # -- review hardening guards ---------------------------------------
+        # Each check pins one fix from the code-review round; see mod/README.md.
+        reply = client.request({"cmd": "look", "yaw": 1e30, "relative": False}, "error")
+        checks.check(
+            "guard_look_out_of_range_rejected",
+            reply.get("reason") == "bad_param",
+            str(reply.get("reason")),
+        )
+        try:
+            client.ecs_context(0x41410000, 1)
+            checks.check("guard_ecs_context_bad_addr", False, "no error raised")
+        except ModProtocolError as exc:
+            checks.check("guard_ecs_context_bad_addr", "bad_addr" in str(exc), str(exc))
+        context_addr = client.state().get("context")
+        if context_addr:
+            try:
+                client.watch_set(int(context_addr), size=1, mode="w", thread="all")
+                checks.check("guard_watch_thread_all_rejected", False, "no error raised")
+            except ModProtocolError as exc:
+                checks.check(
+                    "guard_watch_thread_all_rejected",
+                    "thread_all_unsupported" in str(exc),
+                    str(exc),
+                )
+        else:
+            checks.note("guard_watch_thread_all_rejected", "state has no context address")
+        if inject_enabled and macro_path.exists():
+            client.macro_run(loop=True)
+            loaded = client.macro_load("selftest_g4")
+            status = client.macro_status()
+            checks.check(
+                "guard_macro_load_stops_playback",
+                bool(loaded.get("stopped")) and not bool(status.get("playing")),
+                f"stopped={loaded.get('stopped')} playing={status.get('playing')}",
+            )
 
         checks.check("macro_status", client.macro_status().get("event") == "macro_status")
         return checks.finish()

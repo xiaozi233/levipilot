@@ -112,35 +112,59 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"empty_options"})");
             return true;
         }
-        setOptions(text);
+        // Options is a client-thread object; the harness thread only forwards
+        // the text and the file persistence happens inside the task too.
+        queueClientTask([this, text] { setOptions(text); });
         return true;
     }
     if (cmd == "options_save") {
-        saveOptions();
+        queueClientTask([this] { saveOptions(); });
         return true;
     }
     if (cmd == "teleport") {
-        updateRequests([&j](RequestBlock& request) {
-            request.teleport.x           = j.value("x", 0.0f);
-            request.teleport.y           = j.value("y", 0.0f);
-            request.teleport.z           = j.value("z", 0.0f);
+        double x = 0.0, y = 0.0, z = 0.0;
+        double yaw = 0.0, pitch = 0.0;
+        // Non-finite or out-of-world values would flow into the server /tp
+        // command and the float request block unchecked.
+        if (!numberJson(j, "x", -CoordHorizonLimit, CoordHorizonLimit, 0.0, x)
+            || !numberJson(j, "y", -CoordHorizonLimit, CoordHorizonLimit, 0.0, y)
+            || !numberJson(j, "z", -CoordHorizonLimit, CoordHorizonLimit, 0.0, z)
+            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw)
+            || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"x|y|z|yaw|pitch"})");
+            return true;
+        }
+        updateRequests([&j, x, y, z, yaw, pitch](RequestBlock& request) {
+            request.teleport.x           = static_cast<float>(x);
+            request.teleport.y           = static_cast<float>(y);
+            request.teleport.z           = static_cast<float>(z);
             request.teleport.hasRotation = j.contains("yaw") || j.contains("pitch");
-            request.teleport.yaw         = j.value("yaw", 0.0f);
-            request.teleport.pitch       = j.value("pitch", 0.0f);
+            request.teleport.yaw         = static_cast<float>(yaw);
+            request.teleport.pitch       = static_cast<float>(pitch);
             ++request.teleportSeq;
         });
         // "teleported" is emitted from the server thread once the move is applied.
         return true;
     }
     if (cmd == "reset") {
+        double x = 0.0, y = 0.0, z = 0.0;
+        double yaw = 0.0, pitch = 0.0;
+        if (!numberJson(j, "x", -CoordHorizonLimit, CoordHorizonLimit, 0.0, x)
+            || !numberJson(j, "y", -CoordHorizonLimit, CoordHorizonLimit, 0.0, y)
+            || !numberJson(j, "z", -CoordHorizonLimit, CoordHorizonLimit, 0.0, z)
+            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw)
+            || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"x|y|z|yaw|pitch"})");
+            return true;
+        }
         resetPlayer(
-            j.value("x", 0.0f),
-            j.value("y", 0.0f),
-            j.value("z", 0.0f),
+            static_cast<float>(x),
+            static_cast<float>(y),
+            static_cast<float>(z),
             j.contains("yaw"),
-            j.value("yaw", 0.0f),
+            static_cast<float>(yaw),
             j.contains("pitch"),
-            j.value("pitch", 0.0f)
+            static_cast<float>(pitch)
         );
         return true;
     }

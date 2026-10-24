@@ -1,7 +1,5 @@
 #include "mod/Internal.h"
 
-#include <tlhelp32.h>
-
 #include <new>
 
 using namespace probe::detail;
@@ -27,13 +25,43 @@ struct Watch {
     bool                       readWrite = false;
     int                        slot      = -1;
     std::string                tag;
-    std::vector<DWORD>         threads;
+
+    // Threads armed with this slot's DR. Mutated only on the pipe thread
+    // while `used` is false and published through the atomic count, so the
+    // VEH can read it without a lock — taking a mutex in the exception path
+    // could self-deadlock against an install that holds it.
+    static constexpr std::size_t kMaxArmed = 64;
+    DWORD                        armed[kMaxArmed]{};
+    std::atomic<std::uint32_t>   armedCount{0};
+
+    bool armThread(DWORD tid) {
+        std::size_t const count = armedCount.load(std::memory_order_relaxed);
+        if (count >= kMaxArmed) {
+            return false;
+        }
+        armed[count] = tid;
+        armedCount.store(static_cast<std::uint32_t>(count) + 1, std::memory_order_release);
+        return true;
+    }
+
+    void disarmAll() { armedCount.store(0, std::memory_order_release); }
+
+    std::vector<DWORD> armedList() const {
+        std::vector<DWORD>  out;
+        std::size_t const   count = armedCount.load(std::memory_order_acquire);
+        out.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            out.push_back(armed[i]);
+        }
+        return out;
+    }
 
     // Only threads we armed may be credited with a hit. A single-step on any
     // other thread comes from a stale or foreign DR setting and is not ours.
     [[nodiscard]] bool ownsThread(DWORD tid) const {
-        for (DWORD armed : threads) {
-            if (armed == tid) {
+        std::size_t const count = armedCount.load(std::memory_order_acquire);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (armed[i] == tid) {
                 return true;
             }
         }
@@ -57,7 +85,6 @@ std::unique_ptr<HitRecord[]>        gRing;
 std::atomic<std::uint64_t>          gHead{0};
 std::atomic<std::uint64_t>          gTotalHits{0};
 std::atomic<std::uint64_t>          gForeignHits{0};
-std::mutex                          gWatchThreadsMutex;
 std::atomic<std::uint32_t>          gNextId{1};
 std::atomic_bool                    gInitialized{false};
 PVOID                               gVehHandle = nullptr;
@@ -100,25 +127,6 @@ void applySlot(CONTEXT& context, int slot, std::uint64_t addr, std::uint32_t siz
         context.Dr7 |= (readWrite ? 0b11ull : 0b01ull) << shift;       // RW: rw or write
         context.Dr7 |= lengthBits(size) << (shift + 2);                // LEN
     }
-}
-
-std::vector<DWORD> processThreads() {
-    std::vector<DWORD> threads;
-    HANDLE const       snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        return threads;
-    }
-    THREADENTRY32 entry{};
-    entry.dwSize = sizeof(entry);
-    if (Thread32First(snapshot, &entry)) {
-        do {
-            if (entry.th32OwnerProcessID == GetCurrentProcessId()) {
-                threads.push_back(entry.th32ThreadID);
-            }
-        } while (Thread32Next(snapshot, &entry));
-    }
-    CloseHandle(snapshot);
-    return threads;
 }
 
 bool installOnThread(
@@ -195,6 +203,7 @@ bool clearOnThread(DWORD tid, int slot) {
     }
     bool const self = tid == GetCurrentThreadId();
     if (!self && SuspendThread(thread) == static_cast<DWORD>(-1)) {
+        // Not suspended: logging here is safe.
         ProbeMod::getInstance().bootLog(
             "watch: clear suspend failed tid=" + std::to_string(tid) + " err="
             + std::to_string(GetLastError())
@@ -202,27 +211,38 @@ bool clearOnThread(DWORD tid, int slot) {
         CloseHandle(thread);
         return false;
     }
+    // While the target is suspended nothing here may allocate: the suspended
+    // thread can hold the heap lock, and bootLog builds std::strings. Record
+    // the error codes and log them only after ResumeThread.
+    DWORD getError = 0;
+    DWORD setError = 0;
     CONTEXT context{};
     context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_CONTROL;
-    bool ok              = GetThreadContext(thread, &context) != FALSE;
+    bool ok = GetThreadContext(thread, &context) != FALSE;
     if (!ok) {
-        ProbeMod::getInstance().bootLog(
-            "watch: clear get context failed tid=" + std::to_string(tid) + " err="
-            + std::to_string(GetLastError())
-        );
+        getError = GetLastError();
     }
     if (ok) {
         applySlot(context, slot, 0, 1, false, false);
         ok = SetThreadContext(thread, &context) != FALSE;
         if (!ok) {
-            ProbeMod::getInstance().bootLog(
-                "watch: clear set context failed tid=" + std::to_string(tid) + " slot="
-                + std::to_string(slot) + " err=" + std::to_string(GetLastError())
-            );
+            setError = GetLastError();
         }
     }
     if (!self) {
         ResumeThread(thread);
+    }
+    if (getError != 0) {
+        ProbeMod::getInstance().bootLog(
+            "watch: clear get context failed tid=" + std::to_string(tid) + " err="
+            + std::to_string(getError)
+        );
+    }
+    if (setError != 0) {
+        ProbeMod::getInstance().bootLog(
+            "watch: clear set context failed tid=" + std::to_string(tid) + " slot="
+            + std::to_string(slot) + " err=" + std::to_string(setError)
+        );
     }
     CloseHandle(thread);
     return ok;
@@ -278,7 +298,9 @@ LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
         matched      = true;
         bool ours    = false;
         if (gWatches[slot] && gWatches[slot]->used.load(std::memory_order_acquire)) {
-            std::lock_guard lock(gWatchThreadsMutex);
+            // Lock-free by design: the armed list is a fixed array published
+            // through an atomic count, so this never blocks (or deadlocks)
+            // inside the exception path.
             ours = gWatches[slot]->ownsThread(tid);
         }
         if (ours) {
@@ -339,7 +361,9 @@ nlohmann::json watchInstall(
     if (size != 1 && size != 2 && size != 4 && size != 8) {
         return errorJson("bad_size");
     }
-    if (!writableRange(addr, size)) {
+    // DR watchpoints work on read-only pages too; only a write watch needs a
+    // writable target.
+    if (!(readWrite ? readableRange(addr, size) : writableRange(addr, size))) {
         return errorJson("bad_addr");
     }
     if (size > 1 && (addr % size) != 0) {
@@ -354,10 +378,9 @@ nlohmann::json watchInstall(
         }
         targets.push_back(tid);
     } else if (thread == "all") {
-        targets = processThreads();
-        if (targets.empty()) {
-            return errorJson("no_threads");
-        }
+        // Measured on 1.26.51.01: arming 100+ threads destabilizes the game
+        // (see AGENTS.md). Refuse instead of reproducing the crash.
+        return errorJson("thread_all_unsupported");
     } else if (thread == "server") {
         DWORD const tid = gServerThreadId.load(std::memory_order_relaxed);
         if (tid == 0) {
@@ -407,7 +430,7 @@ nlohmann::json watchInstall(
     watch.tag      = tag;
     watch.hits.store(0, std::memory_order_relaxed);
     watch.id.store(gNextId.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
-    watch.threads.clear();
+    watch.disarmAll();
     // Keep `used` false until installation succeeds: a pre-existing enable bit
     // on this slot must be reported as dr_busy, not treated as ours.
     watch.used.store(false, std::memory_order_release);
@@ -415,17 +438,12 @@ nlohmann::json watchInstall(
     std::string error;
     for (DWORD tid : targets) {
         if (installOnThread(tid, slot, addr, size, readWrite, error)) {
-            std::lock_guard lock(gWatchThreadsMutex);
-            watch.threads.push_back(tid);
+            watch.armThread(tid);
         } else if (thread == "tick") {
             // A watch requested for the tick thread must not silently apply to
             // zero threads.
-            std::vector<DWORD> installed;
-            {
-                std::lock_guard lock(gWatchThreadsMutex);
-                installed = watch.threads;
-                watch.threads.clear();
-            }
+            std::vector<DWORD> const installed = watch.armedList();
+            watch.disarmAll();
             for (DWORD previous : installed) {
                 clearOnThread(previous, slot);
             }
@@ -433,7 +451,7 @@ nlohmann::json watchInstall(
             return errorJson(error.empty() ? "install_failed" : error.c_str());
         }
     }
-    if (watch.threads.empty()) {
+    if (watch.armedCount.load(std::memory_order_acquire) == 0) {
         watch.tag.clear();
         return errorJson(error.empty() ? "install_failed" : error.c_str());
     }
@@ -449,11 +467,8 @@ nlohmann::json watchInstall(
     out["mode"]    = readWrite ? "rw" : "w";
     out["tag"]     = tag;
     out["threads"] = nlohmann::json::array();
-    {
-        std::lock_guard lock(gWatchThreadsMutex);
-        for (DWORD tid : watch.threads) {
-            out["threads"].push_back(tid);
-        }
+    for (DWORD tid : watch.armedList()) {
+        out["threads"].push_back(tid);
     }
     out["suspends_tick_thread"] = true;
     return out;
@@ -469,11 +484,7 @@ nlohmann::json watchRemove(int id) {
             continue;
         }
         bool cleared = true;
-        std::vector<DWORD> tids;
-        {
-            std::lock_guard lock(gWatchThreadsMutex);
-            tids = watch->threads;
-        }
+        std::vector<DWORD> const tids = watch->armedList();
         for (DWORD tid : tids) {
             cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
         }
@@ -482,10 +493,7 @@ nlohmann::json watchRemove(int id) {
             // free would make the next install fail with dr_busy forever.
             return errorJson("clear_failed");
         }
-        {
-            std::lock_guard lock(gWatchThreadsMutex);
-            watch->threads.clear();
-        }
+        watch->disarmAll();
         watch->tag.clear();
         watch->used.store(false, std::memory_order_release);
         return nlohmann::json{
@@ -505,11 +513,7 @@ bool watchRemoveAll() {
             continue;
         }
         bool cleared = true;
-        std::vector<DWORD> tids;
-        {
-            std::lock_guard lock(gWatchThreadsMutex);
-            tids = watch->threads;
-        }
+        std::vector<DWORD> const tids = watch->armedList();
         for (DWORD tid : tids) {
             cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
         }
@@ -517,10 +521,7 @@ bool watchRemoveAll() {
             allCleared = false;
             continue; // keep ownership so a later clear can retry
         }
-        {
-            std::lock_guard lock(gWatchThreadsMutex);
-            watch->threads.clear();
-        }
+        watch->disarmAll();
         watch->tag.clear();
         watch->used.store(false, std::memory_order_release);
     }
@@ -545,7 +546,7 @@ nlohmann::json watchListJson() {
         row["tag"]  = watch->tag;
         row["hits"] = watch->hits.load(std::memory_order_relaxed);
         row["threads"] = nlohmann::json::array();
-        for (DWORD tid : watch->threads) {
+        for (DWORD tid : watch->armedList()) {
             row["threads"].push_back(tid);
         }
         out["watches"].push_back(std::move(row));

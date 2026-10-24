@@ -39,15 +39,22 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         std::vector<BlockQuery> queries;
         if (j.contains("positions") && j["positions"].is_array()) {
             for (auto const& pos : j["positions"]) {
-                if (!pos.is_array() || pos.size() != 3 || !pos[0].is_number() || !pos[1].is_number()
-                    || !pos[2].is_number()) {
+                if (!pos.is_array() || pos.size() != 3) {
+                    continue;
+                }
+                double x = 0.0, y = 0.0, z = 0.0;
+                // A raw static_cast<int> on an out-of-range double is UB
+                // (MSVC yields INT_MIN), so coordinates are checked first.
+                if (!numberValue(pos[0], -CoordHorizonLimit, CoordHorizonLimit, x)
+                    || !numberValue(pos[1], CoordHeightLow, CoordHeightHigh, y)
+                    || !numberValue(pos[2], -CoordHorizonLimit, CoordHorizonLimit, z)) {
                     continue;
                 }
                 queries.push_back(
                     BlockQuery{
-                        static_cast<int>(std::floor(pos[0].get<double>())),
-                        static_cast<int>(std::floor(pos[1].get<double>())),
-                        static_cast<int>(std::floor(pos[2].get<double>())),
+                        static_cast<int>(std::floor(x)),
+                        static_cast<int>(std::floor(y)),
+                        static_cast<int>(std::floor(z)),
                     }
                 );
                 if (queries.size() >= 256) {
@@ -71,14 +78,15 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             if (!j.contains(key) || !j[key].is_array() || j[key].size() != 3) {
                 return false;
             }
-            for (auto const& value : j[key]) {
-                if (!value.is_number()) {
-                    return false;
-                }
+            double cx = 0.0, cy = 0.0, cz = 0.0;
+            if (!numberValue(j[key][0], -CoordHorizonLimit, CoordHorizonLimit, cx)
+                || !numberValue(j[key][1], CoordHeightLow, CoordHeightHigh, cy)
+                || !numberValue(j[key][2], -CoordHorizonLimit, CoordHorizonLimit, cz)) {
+                return false;
             }
-            x = static_cast<int>(std::floor(j[key][0].get<double>()));
-            y = static_cast<int>(std::floor(j[key][1].get<double>()));
-            z = static_cast<int>(std::floor(j[key][2].get<double>()));
+            x = static_cast<int>(std::floor(cx));
+            y = static_cast<int>(std::floor(cy));
+            z = static_cast<int>(std::floor(cz));
             return true;
         };
         ScanRequest request;

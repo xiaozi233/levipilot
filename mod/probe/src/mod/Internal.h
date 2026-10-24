@@ -192,6 +192,10 @@ struct InputSnapshot {
 
 float       finiteOrZero(float value);
 float       wrapDegrees(float value);
+// Shared aim math (degrees, Bedrock convention): yaw from a horizontal delta,
+// pitch from a vertical delta over horizontal distance.
+float       yawTo(double dx, double dz);
+float       pitchTo(double dy, double horiz);
 bool        parseBool(nlohmann::json const& value, bool& out);
 bool        parseFloat(std::string const& text, float& out);
 std::string formatFloat(float value);
@@ -232,6 +236,19 @@ std::string hexEncode(void const* data, std::size_t len);
 bool        parseHexBytes(std::string const& text, std::vector<std::uint8_t>& out);
 bool        parseAddress(nlohmann::json const& value, std::uint64_t& out);
 bool        parseSize(nlohmann::json const& value, std::uint32_t& out);
+
+// Numeric command parameters. nlohmann parses "1e400" into inf without an
+// error; a non-finite value would spin wrapDegrees forever or hit UB in a
+// double->int cast on the tick path, so every number that reaches a request
+// block or a block coordinate goes through these first.
+bool numberJson(nlohmann::json const& j, char const* key, double low, double high, double fallback, double& out);
+bool numberValue(nlohmann::json const& value, double low, double high, double& out);
+
+// World-space sanity bounds for block/command coordinates. A double outside
+// these is rejected as a bad coordinate instead of being cast to int.
+inline constexpr double CoordHorizonLimit = 3.0e7;
+inline constexpr double CoordHeightLow    = -4096.0;
+inline constexpr double CoordHeightHigh   = 4096.0;
 
 // kind: "raw" | "block" | "legacy".
 nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::size_t len);

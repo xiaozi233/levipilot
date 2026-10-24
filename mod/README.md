@@ -196,6 +196,33 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   报错而仍被旧的最终类型检查误判为通过。
 - `state.effects` 仅报告实际效果，过滤游戏清除后留下的 NO_EFFECT 空槽；speed 正向及
   clear/reset 后空列表检查在 live selftest 中，跳跃轨迹断言保持不变。
+- 代码审阅加固轮（2026-10-24，live selftest 的 `guard_*` 检查对应）：
+  - 数值入参统一走 `numberJson/numberValue`（有限性 + 范围），`look` 的越界 yaw 回
+    `bad_param` 而不再是 `wrapDegrees` 死循环；`teleport/reset/click/blocks/scan/place`
+    同族校验，坐标 `double→int` 前先限幅（原为 UB）。
+  - `ecs_context` 对外部指针先 `readableRange` 预检、访问链整体 SEH（tick 线程无 SEH，
+    原来一条坏地址即可崩游戏）；坏地址回 `bad_addr`。
+  - 宏循环重启按当前宏尺寸二次校验 `mMacroStart`（`macro_load` 缩短宏后不再读越界）；
+    `macro_load` 在回放中先停回放（回执带 `stopped`），`macro_stop` 同时清掉 pending
+    start，`safeTickPre` 里吞 stop 的遗留 `exchange` 已删除。
+  - Watch：VEH 内不再拿 mutex（armed 线程表改定长数组 + 原子计数发布），挂起窗口内
+    不再 bootLog（延迟到 Resume 后），`thread="all"` 显式拒绝（`thread_all_unsupported`），
+    `rw` 模式不再要求目标页可写。
+  - 线程纪律：`options_set/options_save` 改走 client 任务队列；`reset` 不再在管道线程读
+    LocalPlayer 朝向（未提供时由服务端任务补当前值）；实体查找/快照全部移到服务端线程
+    （客户端 tick 线程不再遍历服务端 actor 列表），攻击/瞄准经平台主线程队列回调。
+  - 数据链路：spool 打开/写失败回灌重试（原来静默丢行且计数虚高）；spool 线程整体
+    try/catch（原来一次异常即冻结任务系统）；`hook_va` 成功安装留 bootLog 审计；
+    seqlock 读侧加重试上限（写者卡死时降级为旧快照而不是挂死 tick）。
+  - 热路径：记录环的 Block 偏移每会话解析一次（tick 内不再查字符串表/拿 mutex）；
+    HID shim 解引用加独立 SEH；`PlayerActionComponent`/`MoveInputState` 空指针防御。
+  - 结构去重：`yawTo/pitchTo` 收拢 5 处重复角度公式；`followThunkChain` 统一锚点与
+    `symbol_resolve` 的 thunk 解码（含 disp32≠0 修正）；`tickNavigate/tickRoute` 的
+    转向/卡住检测/跳跃冷却合并为 `ProbeMod::walkToward`（Tasks.cpp），route 的
+    边沿前瞻从硬编码 0.55 变为可配 `edge_lookahead`（协议增量字段，默认不变）。
+  - 本轮 live selftest 实测 **190/190**（gate 全开），`guard_*` 4 条全过；一次
+    `attack_entity` 客户端任务 SEH 促成了攻击路径改走服务端玩家 GameMode（与传送
+    同范式），`selftest_busy` 的 gate 关闭分支也修为显式双事件等待。
 
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移

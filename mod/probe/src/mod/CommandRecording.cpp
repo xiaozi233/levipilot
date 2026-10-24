@@ -84,6 +84,15 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             );
             return true;
         }
+        // Swapping the macro under a running (or just-requested) playback
+        // would leave index/end pointing past the new, possibly much shorter
+        // buffer. Clear a pending start too: the tick consumes it after this
+        // returns and would restart playback on the new macro otherwise.
+        bool const wasPlaying = mMacroPlaying.exchange(false);
+        bool const wasPending = mMacroStartRequested.exchange(false);
+        if (wasPlaying) {
+            mMacroStopRequested = true;
+        }
         size_t count = 0;
         {
             std::lock_guard lock(mMacroMutex);
@@ -91,12 +100,13 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         }
         enqueue(
             nlohmann::json{
-                {"event", "macro_loaded"},
-                {"name",  name          },
-                {"ticks", count         },
-                {"path",  path          },
+                {"event",   "macro_loaded"},
+                {"name",    name          },
+                {"ticks",   count         },
+                {"path",    path          },
+                {"stopped", wasPlaying || wasPending},
         }
-                .dump()
+            .dump()
         );
         return true;
     }
@@ -131,15 +141,18 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
                 {"end",         end            },
                 {"ticks",       end - start    },
                 {"loop",        mMacroLoop.load()},
-                {"event_level", mMacroEventLevel},
+                {"event_level", mMacroEventLevel.load()},
         }
                 .dump()
         );
         return true;
     }
     if (cmd == "macro_stop") {
-        mMacroPlaying       = false;
-        mMacroStopRequested = true;
+        // Also drop a pending start so a stop that races macro_run cannot be
+        // overwritten by the start block re-enabling playback next tick.
+        mMacroStartRequested = false;
+        mMacroPlaying        = false;
+        mMacroStopRequested  = true;
         enqueue(R"({"event":"macro_stopped","reason":"client"})");
         return true;
     }

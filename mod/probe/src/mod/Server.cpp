@@ -58,44 +58,42 @@ void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bo
     beginTask();
     mClickRequest.store(-1);
     mSlotRequest.store(-1);
-
-    auto client = ll::service::getClientInstance();
-    if (!client) {
-        enqueue(R"({"event":"reset_done","ok":false,"reason":"no_client"})");
-        return;
-    }
-    auto* player = client->getLocalPlayer();
-    if (!player) {
-        enqueue(R"({"event":"reset_done","ok":false,"reason":"no_player"})");
+    if (!mWorld.inWorld()) {
+        enqueue(R"({"event":"reset_done","ok":false,"reason":"not_in_world"})");
         return;
     }
 
+    // The pipe thread must not read LocalPlayer (its rotation is written every
+    // frame by the tick thread). When no rotation was supplied the server task
+    // keeps the current one (requestServerTeleport), so nothing is lost.
     TeleportRequest request;
-    request.x           = x;
-    request.y           = y;
-    request.z           = z;
-    request.hasRotation = hasYaw || hasPitch;
+    request.x            = x;
+    request.y            = y;
+    request.z            = z;
+    request.hasRotation  = hasYaw || hasPitch;
     request.clearEffects = true;
-    auto const rotation = player->getRotation();
-    request.yaw         = hasYaw ? yaw : rotation.y;
-    request.pitch       = hasPitch ? pitch : rotation.x;
+    request.yaw          = yaw;
+    request.pitch        = pitch;
     updateRequests([&request](RequestBlock& block) {
         block.teleport    = request;
         ++block.teleportSeq;
     });
 
-    enqueue(
-        nlohmann::json{
-            {"event", "reset_done" },
-            {"ok",    true         },
-            {"x",     x            },
-            {"y",     y            },
-            {"z",     z            },
-            {"yaw",   request.yaw  },
-            {"pitch", request.pitch},
+    nlohmann::json out{
+        {"event", "reset_done"      },
+        {"ok",    true              },
+        {"x",     x                 },
+        {"y",     y                 },
+        {"z",     z                 },
+    };
+    if (request.hasRotation) {
+        out["yaw"]   = request.yaw;
+        out["pitch"] = request.pitch;
+    } else {
+        out["yaw"]   = nullptr;
+        out["pitch"] = nullptr;
     }
-            .dump()
-    );
+    enqueue(out.dump());
 }
 
 

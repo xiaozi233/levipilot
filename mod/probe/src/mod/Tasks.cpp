@@ -59,7 +59,7 @@ struct Steering {
 
 Steering steerToward(LocalPlayer& player, float x, float z, float distance, float tolerance) {
     auto const  pos   = player.getFeetPos();
-    float const yaw   = static_cast<float>(std::atan2(-(x - pos.x), z - pos.z) * 57.29577951308232);
+    float const yaw   = yawTo(x - pos.x, z - pos.z);
     float const error = wrapDegrees(yaw - player.getRotation().y);
     float const delta = std::clamp(error, -35.0f, 35.0f);
     float const forward =
@@ -68,6 +68,75 @@ Steering steerToward(LocalPlayer& player, float x, float z, float distance, floa
 }
 
 } // namespace
+
+// Shared walk-to-target driver for navigate and route. The two tick functions
+// previously carried byte-identical copies of this block that had drifted
+// (route's edge lookahead was hardcoded); one implementation serves both and
+// reads/writes the shared lastX/lastZ/haveLast/stuckTicks/jumpCooldown fields
+// directly on the task.
+template <typename TaskT, bool CountJumps>
+void ProbeMod::walkToward(
+    ClientInstance& client,
+    LocalPlayer&    player,
+    TaskT&          task,
+    float           targetX,
+    float           targetZ,
+    float           distance,
+    float           tolerance,
+    JumpMode        jumpMode,
+    float           jumpDistance,
+    float           edgeLookahead
+) {
+    auto const steering = steerToward(player, targetX, targetZ, distance, tolerance);
+    if (std::fabs(steering.turn) > 0.01f) {
+        applyTurnDelta(player, Vec2{0.0f, steering.turn});
+    }
+
+    Vec3 const pos = player.getFeetPos();
+    if (task.haveLast) {
+        float const mx    = static_cast<float>(pos.x) - task.lastX;
+        float const mz    = static_cast<float>(pos.z) - task.lastZ;
+        bool const  moved = std::sqrt(mx * mx + mz * mz) >= 0.02f;
+        if (!moved && player.isOnGround() && steering.forward > 0.0f) {
+            ++task.stuckTicks;
+        } else {
+            task.stuckTicks = 0;
+        }
+    }
+    task.lastX    = static_cast<float>(pos.x);
+    task.lastZ    = static_cast<float>(pos.z);
+    task.haveLast = true;
+
+    bool wantJump = false;
+    if (task.jumpCooldown > 0) {
+        --task.jumpCooldown;
+    }
+    if (player.isOnGround() && task.jumpCooldown == 0 && steering.forward > 0.0f) {
+        if (jumpMode == JumpMode::Distance) {
+            // The target is on the far side of the gap: take off just before
+            // the edge instead of when the gap is already underfoot.
+            wantJump = distance <= jumpDistance;
+        } else if (jumpMode == JumpMode::Edge) {
+            wantJump = atEdge(player, edgeLookahead);
+        } else if (jumpMode == JumpMode::Auto && task.stuckTicks >= 5) {
+            wantJump        = true;
+            task.stuckTicks = 0;
+        }
+    }
+    if (wantJump) {
+        task.jumpCooldown = 5;
+        if constexpr (CountJumps) {
+            ++task.jumps;
+        }
+    }
+
+    ControlState state;
+    state.forward = steering.forward;
+    state.sprint  = task.sprint && steering.forward == 1.0f;
+    state.active  = true;
+    state.jump    = wantJump;
+    applyControls(client, player, state);
+}
 
 void ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
     Vec3 const   eye   = player.getHeadPos();
@@ -78,8 +147,8 @@ void ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
     if (horiz < 1.0e-6 && std::fabs(dy) < 1.0e-6) {
         return;
     }
-    float const yaw   = static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
-    float const pitch = static_cast<float>(-std::atan2(dy, horiz) * 57.29577951308232);
+    float const yaw   = yawTo(dx, dz);
+    float const pitch = pitchTo(dy, horiz);
     auto const& rot   = player.getRotation();
     applyTurnDelta(player, Vec2{rot.x - pitch, wrapDegrees(yaw - rot.y)});
 }
@@ -175,52 +244,18 @@ bool ProbeMod::tickNavigate(ClientInstance& client, LocalPlayer& player, Navigat
         return finish("timeout", false);
     }
 
-    auto const steering = steerToward(player, task.x, task.z, distance, task.tolerance);
-    if (std::fabs(steering.turn) > 0.01f) {
-        applyTurnDelta(player, Vec2{0.0f, steering.turn});
-    }
-
-    if (task.haveLast) {
-        float const mx    = static_cast<float>(pos.x) - task.lastX;
-        float const mz    = static_cast<float>(pos.z) - task.lastZ;
-        bool const  moved = std::sqrt(mx * mx + mz * mz) >= 0.02f;
-        if (!moved && player.isOnGround() && steering.forward > 0.0f) {
-            ++task.stuckTicks;
-        } else {
-            task.stuckTicks = 0;
-        }
-    }
-    task.lastX    = static_cast<float>(pos.x);
-    task.lastZ    = static_cast<float>(pos.z);
-    task.haveLast = true;
-
-    bool wantJump = false;
-    if (task.jumpCooldown > 0) {
-        --task.jumpCooldown;
-    }
-    if (player.isOnGround() && task.jumpCooldown == 0 && steering.forward > 0.0f) {
-        if (task.jumpMode == JumpMode::Distance) {
-            // The target is on the far side of the gap: take off just before
-            // the edge instead of when the gap is already underfoot.
-            wantJump = distance <= task.jumpDistance;
-        } else if (task.jumpMode == JumpMode::Edge) {
-            wantJump = atEdge(player, task.edgeLookahead);
-        } else if (task.jumpMode == JumpMode::Auto && task.stuckTicks >= 5) {
-            wantJump        = true;
-            task.stuckTicks = 0;
-        }
-    }
-    if (wantJump) {
-        task.jumpCooldown = 5;
-        ++task.jumps;
-    }
-
-    ControlState state;
-    state.forward = steering.forward;
-    state.sprint  = task.sprint && steering.forward == 1.0f;
-    state.active  = true;
-    state.jump    = wantJump;
-    applyControls(client, player, state);
+    walkToward<NavigateTask, true>(
+        client,
+        player,
+        task,
+        task.x,
+        task.z,
+        distance,
+        task.tolerance,
+        task.jumpMode,
+        task.jumpDistance,
+        task.edgeLookahead
+    );
     return false;
 }
 
@@ -273,7 +308,7 @@ bool ProbeMod::tickJump(ClientInstance& client, LocalPlayer& player, JumpTask& t
         float const dx = task.x - static_cast<float>(pos.x);
         float const dz = task.z - static_cast<float>(pos.z);
         if (std::fabs(dx) + std::fabs(dz) > 1.0e-4f) {
-            float const yaw   = static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
+            float const yaw   = yawTo(dx, dz);
             float const delta = std::clamp(wrapDegrees(yaw - rot.y), -35.0f, 35.0f);
             if (std::fabs(delta) > 0.01f) {
                 applyTurnDelta(player, Vec2{0.0f, delta});
@@ -330,49 +365,18 @@ bool ProbeMod::tickRoute(ClientInstance& client, LocalPlayer& player, RouteTask&
         return true;
     }
 
-    auto const steering = steerToward(player, point.x, point.z, distance, point.tolerance);
-    if (std::fabs(steering.turn) > 0.01f) {
-        applyTurnDelta(player, Vec2{0.0f, steering.turn});
-    }
-
-    if (task.haveLast) {
-        float const mx    = static_cast<float>(pos.x) - task.lastX;
-        float const mz    = static_cast<float>(pos.z) - task.lastZ;
-        bool const  moved = std::sqrt(mx * mx + mz * mz) >= 0.02f;
-        if (!moved && player.isOnGround() && steering.forward > 0.0f) {
-            ++task.stuckTicks;
-        } else {
-            task.stuckTicks = 0;
-        }
-    }
-    task.lastX    = static_cast<float>(pos.x);
-    task.lastZ    = static_cast<float>(pos.z);
-    task.haveLast = true;
-
-    bool wantJump = false;
-    if (task.jumpCooldown > 0) {
-        --task.jumpCooldown;
-    }
-    if (player.isOnGround() && task.jumpCooldown == 0 && steering.forward > 0.0f) {
-        if (point.jumpMode == JumpMode::Distance) {
-            wantJump = distance <= point.jumpDistance;
-        } else if (point.jumpMode == JumpMode::Edge) {
-            wantJump = atEdge(player, 0.55f);
-        } else if (point.jumpMode == JumpMode::Auto && task.stuckTicks >= 5) {
-            wantJump        = true;
-            task.stuckTicks = 0;
-        }
-    }
-    if (wantJump) {
-        task.jumpCooldown = 5;
-    }
-
-    ControlState state;
-    state.forward = steering.forward;
-    state.sprint  = task.sprint && steering.forward == 1.0f;
-    state.active  = true;
-    state.jump    = wantJump;
-    applyControls(client, player, state);
+    walkToward(
+        client,
+        player,
+        task,
+        point.x,
+        point.z,
+        distance,
+        point.tolerance,
+        point.jumpMode,
+        point.jumpDistance,
+        point.edgeLookahead
+    );
     return false;
 }
 

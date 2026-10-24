@@ -19,15 +19,57 @@ void ProbeMod::enqueue(std::string line) {
 }
 
 void ProbeMod::spoolThreadLoop() {
+    // The spool thread is the only consumer of task/chat events; if one bad
+    // payload ever threw, the whole task pipeline would freeze (event ring
+    // fills, tickTask stops). Failures become error events instead.
+    bool faultReported = false;
     while (mRunning.load(std::memory_order_relaxed)) {
         Sleep(25);
+        try {
+            drainTaskEvents();
+            drainChatHistory();
+            flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
+            faultReported = false;
+        } catch (std::exception const& e) {
+            mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+            if (!faultReported) {
+                faultReported = true;
+                enqueue(
+                    nlohmann::json{
+                        {"event",   "error"          },
+                        {"reason",  "internal_error" },
+                        {"phase",   "spool_thread"   },
+                        {"message", e.what()         },
+                }
+                        .dump()
+                );
+            }
+        } catch (...) {
+            mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+            if (!faultReported) {
+                faultReported = true;
+                enqueue(R"({"event":"error","reason":"internal_error","phase":"spool_thread","message":"unknown"})");
+            }
+        }
+    }
+    try {
         drainTaskEvents();
         drainChatHistory();
-        flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
+    } catch (...) {
     }
-    drainTaskEvents();
-    drainChatHistory();
     flushSpool(true);
+}
+
+// Re-append rows that could not be written so they survive until the next
+// flush attempt. Capped so a permanently failing disk cannot grow memory.
+void ProbeMod::requeueSpool(std::string& data) {
+    std::lock_guard lock(mQueueMutex);
+    if (mSpoolBuffer.size() + data.size() > (8u << 20)) {
+        mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    data += mSpoolBuffer;
+    mSpoolBuffer.swap(data);
 }
 
 std::uint64_t ProbeMod::flushSpool(bool force) {
@@ -70,11 +112,22 @@ std::uint64_t ProbeMod::flushSpool(bool force) {
         mSpoolFile.open(mSpoolPath, std::ios::app | std::ios::binary);
         if (!mSpoolFile) {
             mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+            // The swapped-out rows must not vanish with a transient open
+            // failure (disk full, antivirus lock); retry on the next flush.
+            requeueSpool(data);
             return 0;
         }
     }
     mSpoolFile.write(data.data(), static_cast<std::streamsize>(data.size()));
     mSpoolFile.flush();
+    if (!mSpoolFile) {
+        // Same contract as the open failure: count, requeue, and force a
+        // fresh open next time instead of trusting a failed stream.
+        mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+        mSpoolFile.close();
+        requeueSpool(data);
+        return 0;
+    }
     mSpoolFileBytes    += data.size();
     std::uint64_t rows  = 0;
     for (char ch : data) {

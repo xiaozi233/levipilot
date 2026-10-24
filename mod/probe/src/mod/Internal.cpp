@@ -22,6 +22,11 @@ namespace probe::detail {
 float finiteOrZero(float value) { return std::isfinite(value) ? value : 0.0f; }
 
 float wrapDegrees(float value) {
+    // Non-finite input (e.g. 1e400 parsed by nlohmann) would never leave the
+    // loops below; callers reject it, this is the last-resort guard.
+    if (!std::isfinite(value)) {
+        return 0.0f;
+    }
     while (value > 180.0f) {
         value -= 360.0f;
     }
@@ -29,6 +34,35 @@ float wrapDegrees(float value) {
         value += 360.0f;
     }
     return value;
+}
+
+bool numberValue(nlohmann::json const& value, double low, double high, double& out) {
+    if (!value.is_number()) {
+        return false;
+    }
+    double const parsed = value.get<double>();
+    if (!std::isfinite(parsed) || parsed < low || parsed > high) {
+        return false;
+    }
+    out = parsed;
+    return true;
+}
+
+float yawTo(double dx, double dz) {
+    return static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
+}
+
+float pitchTo(double dy, double horiz) {
+    return static_cast<float>(-std::atan2(dy, horiz) * 57.29577951308232);
+}
+
+bool numberJson(nlohmann::json const& j, char const* key, double low, double high, double fallback, double& out) {
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        out = fallback;
+        return true;
+    }
+    return numberValue(*it, low, high, out);
 }
 
 bool parseBool(nlohmann::json const& value, bool& out) {
@@ -152,7 +186,9 @@ int faceBetween(BlockPos const& from, BlockPos const& to) {
 InputSnapshot readInput(ClientInstance& client) {
     InputSnapshot out;
     auto*         input = ClientMoveInputHandler::getMoveInput(client);
-    if (!input) {
+    // mInputState/mFlagValues/mMove are inline TypedStorage in the handler
+    // (never null); the only real pointer is the handler itself.
+    if (input == nullptr) {
         return out;
     }
     auto const& state = *input->mInputState->mFlagValues;

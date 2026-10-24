@@ -271,6 +271,8 @@ $$-\mathbf{0.005},\ \mathbf{0.014}$$（流推）与 $$\mathbf{0.54600006}$$（�
 ## 10. 复核方法与数据
 
 - **游戏**：1.26.51.01（LeviLamina 26.51.7），`超平坦测试` 世界（自然地表 y=−60），玩家生存模式、无药水。
+  所有流体数值均在 `gamemode=0` 下采集；岩浆水平衰减另在创造模式（`gamemode=1`、未飞行）复测，
+  结果逐位一致（$a=0.4999$），与游戏模式无关。
 - **采样**：LeviPilot mod 64 B/tick 记录环（`record_start` 每 session 重置环形游标），
   每 tick 记录 `pos/vel/yaw/pitch/feetY/onGround/sprint/输入/脚下·脚·头方块哈希`。
 - **实验脚本**：`out/fluid-verify/run_*.py`（建场、传送、注入输入、录制、导出 JSONL）；

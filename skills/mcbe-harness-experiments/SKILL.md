@@ -73,6 +73,7 @@ with ModClient() as client:
 | 合成输入触发不了 SWIMMING 意图 | 水下俯仰完全无效 | 用**真实按键**：深水里按住前进+疾跑键（`swim --drive`）；松键即退出 |
 | 放置水的池子封顶 | 玩家"浮"在石盖上 | 石壳别封住内部顶层；`fill` 到 Y=-40 会把开口也填上 |
 | 满速前进自动疾跑 | 干地"走路"基线其实是疾跑 | 检查 `record` 行的 `sprint` 位，走路基线要排除 |
+| 游戏模式/飞行状态被改动 | 崩溃的 selftest 可能留下创造模式；创造飞行会完全改变物理 | 实验前后读 `state.gamemode`（0 生存/1 创造/2 冒险/6 旁观）与 `flying` 并断言；需要时先 `gamemode survival @s` |
 | 真人在机器旁动鼠标/按键 | 结果漂移、按键计数多出来（如 `key_event_count` 多 5 次）、落点不准 | 脚本开头 `client.input_lock(True)` 锁真实输入（dev.py `--lock-input`；selftest 已自动锁），结束 `input_lock(False)` |
 | 附魔装备 | `replaceitem` 不支持组件、`/enchant` 只作用手持、右键不穿甲 | `set_item` 手持 → `/enchant` → **`equip feet`**（会连附魔一起搬到护甲槽） |
 | `key_event` 被拒 | `input_inject_disabled` | `dev.py run --allow allow_input_inject=1` 后重启 |

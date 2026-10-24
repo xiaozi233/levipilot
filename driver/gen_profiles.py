@@ -132,14 +132,20 @@ def render(profiles: list[dict[str, Any]]) -> str:
         if isinstance(anchors, dict):
             for name in sorted(anchors):
                 entry = anchors[name]
-                expected = ""
-                if isinstance(entry, dict):
-                    expected = str(entry.get("expected_hex", "") or "")
-                    kind = entry.get("kind")
-                    if kind not in (None, "symbol"):
-                        raise ProfileError(
-                            f"{profile['file']}: anchor {name} has unsupported kind {kind!r}"
-                        )
+                # A bare string here (a common hand-edit typo) must fail loudly:
+                # rendering it as an empty signature would silently weaken the
+                # mod-side version check, and --check compares render output so
+                # CI would not catch it either.
+                if not isinstance(entry, dict):
+                    raise ProfileError(
+                        f"{profile['file']}: anchor {name} must be an object with expected_hex"
+                    )
+                expected = str(entry.get("expected_hex", "") or "")
+                kind = entry.get("kind")
+                if kind not in (None, "symbol"):
+                    raise ProfileError(
+                        f"{profile['file']}: anchor {name} has unsupported kind {kind!r}"
+                    )
                 anchor_rows.append(f"    {{{_cpp_string(str(name))}, {_cpp_string(expected)}}},")
         lines.append(f"inline constexpr ProfileAnchor kProfile{index}Anchors[] = {{")
         lines.extend(anchor_rows)

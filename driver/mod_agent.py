@@ -92,13 +92,18 @@ class ModAgent:
         self.client.readline = self._readline  # type: ignore[method-assign]
 
     # -- transport plumbing -------------------------------------------------
-    def _readline(self) -> dict[str, Any]:
-        message = self._raw_readline()
+    def _readline(self, timeout: float | None = None) -> dict[str, Any]:
+        # Keep PipeConnection.readline's signature so keyword calls such as
+        # readline(timeout=5) keep working through the patch.
+        message = self._raw_readline(timeout)
         if message.get("event") == "tick" and self._recording:
             self._samples.append(_tick_row(message))
         return message
 
     def close(self) -> None:
+        if getattr(self, "_raw_readline", None) is not None:
+            self.client.readline = self._raw_readline  # type: ignore[method-assign]
+            self._raw_readline = None  # type: ignore[assignment]
         self.harness.close()
 
     def __enter__(self) -> ModAgent:

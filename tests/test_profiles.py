@@ -55,6 +55,24 @@ class GeneratedProfilesTests(unittest.TestCase):
                 ]
             )
 
+    def test_malformed_anchor_is_rejected(self) -> None:
+        with self.assertRaises(ProfileError):
+            # A bare byte string must not render as an anchor with an empty
+            # signature; that would silently disable the version check.
+            render(
+                [
+                    {
+                        "file": "x",
+                        "version": "1.0",
+                        "build_id": "1.0.0.1",
+                        "version_prefix": "",
+                        "anchors": {"LocalPlayer::normalTick": "AABBCC"},
+                        "structs": {},
+                        "components": {},
+                    }
+                ]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

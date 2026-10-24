@@ -323,6 +323,7 @@ def record_macro(
     pitch: float | None = None,
 ) -> list[Tick]:
     client = ModClient(connect_timeout=30.0).connect()
+    rows: list[dict[str, Any]] = []
     try:
         client.macro_load(macro)
         if start is not None:
@@ -334,9 +335,31 @@ def record_macro(
         with contextlib.suppress(ModPipeError):
             client.stop()
     finally:
+        # Flush whatever was collected before closing: a disconnect or a mod
+        # error mid-run must not discard the rows that already arrived.
+        _write_jsonl(out, rows)
         client.close()
-    _write_jsonl(out, rows)
     return [Tick.from_mapping(row) for row in rows]
+
+
+def _build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    successes = [result for result in results if result["success"]]
+    return {
+        "attempts": len(results),
+        "successes": len(successes),
+        "success_rate": len(successes) / len(results) if results else 0.0,
+        "avg_success_ticks": _mean([float(result["ticks"]) for result in successes]),
+        "failures": [
+            {
+                "attempt": result["attempt"],
+                "reason": result["reason"],
+                "distance": result["distance"],
+            }
+            for result in results
+            if not result["success"]
+        ],
+        "results": results,
+    }
 
 
 def run_attempts(
@@ -409,29 +432,20 @@ def run_attempts(
                     "file": str(out_path / name),
                 }
             )
+            # Rewrite the summary after every attempt: a disconnect on attempt
+            # N must not discard the conclusions of attempts 1..N-1.
+            summary = _build_summary(results)
+            (out_path / "summary.json").write_text(
+                json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
     finally:
         client.close()
 
-    successes = [result for result in results if result["success"]]
-    summary = {
-        "attempts": len(results),
-        "successes": len(successes),
-        "success_rate": len(successes) / len(results) if results else 0.0,
-        "avg_success_ticks": _mean([float(result["ticks"]) for result in successes]),
-        "failures": [
-            {
-                "attempt": result["attempt"],
-                "reason": result["reason"],
-                "distance": result["distance"],
-            }
-            for result in results
-            if not result["success"]
-        ],
-        "results": results,
-    }
-    (out_path / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    if not results:
+        summary = _build_summary(results)
+        (out_path / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return summary
 
 

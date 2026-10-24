@@ -25,6 +25,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -60,7 +61,7 @@ def _runs(ticks: list[int]) -> list[list[int]]:
     return runs
 
 
-def verify(path: Path) -> dict[str, object]:
+def verify(path: Path) -> dict[str, Any]:
     rows, stats = read_spool(path)
     ticks = [int(row["tick"]) for row in rows if row.get("event") == "tick"]
     runs = _runs(ticks)
@@ -86,7 +87,7 @@ def verify(path: Path) -> dict[str, object]:
     return result
 
 
-def run_panic(client: ModClient, ticks: int) -> dict[str, object]:
+def run_panic(client: ModClient, ticks: int) -> dict[str, Any]:
     spool = Path(str(client.hello.get("spool", "")))
     client.start(ticks)
     while True:
@@ -100,11 +101,13 @@ def run_panic(client: ModClient, ticks: int) -> dict[str, object]:
         and result["last_event"] == "panic_done"
         and int(result["last_run"] or 0) >= ticks - 2
     )
+    # The exit code must reflect the full judgement, not just contiguity.
+    result["ok"] = ok
     print("panic closure:", "ok" if ok else "FAILED")
     return result
 
 
-def run_taskkill(client: ModClient, ticks: int) -> dict[str, object]:
+def run_taskkill(client: ModClient, ticks: int) -> dict[str, Any]:
     spool = Path(str(client.hello.get("spool", "")))
     client.start(ticks)
     wait_ticks(client, ticks)
@@ -120,6 +123,7 @@ def run_taskkill(client: ModClient, ticks: int) -> dict[str, object]:
     if before["last_tick"] is not None and after["last_tick"] is not None:
         lost = int(before["last_tick"]) - int(after["last_tick"])
     ok = bool(after["contiguous"]) and lost <= 8
+    after["ok"] = ok
     print(f"taskkill closure: {'ok' if ok else 'FAILED'} (lost {lost} ticks, <=100 ms)")
     return after
 
@@ -153,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         client.close()
-    return 0 if result["contiguous"] else 1
+    return 0 if result.get("ok") else 1
 
 
 if __name__ == "__main__":

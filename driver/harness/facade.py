@@ -21,8 +21,19 @@ class Harness:
             print(h.state()["x"], h.state()["z"])
     """
 
-    def __init__(self, pipe_name: str = PIPE_NAME) -> None:
-        self.client = ModClient(pipe_name).connect()
+    def __init__(
+        self,
+        pipe_name: str = PIPE_NAME,
+        *,
+        timeout: float | None = None,
+        connect_timeout: float | None = None,
+    ) -> None:
+        client = ModClient(pipe_name)
+        if timeout is not None:
+            client.timeout = timeout
+        if connect_timeout is not None:
+            client.connect_timeout = connect_timeout
+        self.client = client.connect()
 
     def close(self) -> None:
         self.client.close()
@@ -256,7 +267,8 @@ class Harness:
     def record_dump_all(self, **kwargs: Any) -> list[RecordEntry]:
         return self.client.record_dump_all(**kwargs)
 
-    def record_macro(self, name: str, *, max_ticks: int = 0) -> dict[str, Any]:
-        self.client.macro_record_start(max_ticks)
-        input("recording... press Enter to stop")
+    def macro_record_start(self, max_ticks: int = 0) -> dict[str, Any]:
+        return self.client.macro_record_start(max_ticks)
+
+    def macro_record_stop(self, name: str = "recorded") -> dict[str, Any]:
         return self.client.macro_record_stop(name)

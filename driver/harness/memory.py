@@ -19,7 +19,11 @@ def format_address(value: int) -> str:
 
 
 def parse_address(value: int | str) -> int:
-    """Accept ``int``, ``"0x1234"`` or ``"1234"`` (hex without prefix)."""
+    """Accept ``int``, ``"0x1234"`` (hex) or ``"1234"`` (decimal).
+
+    Unprefixed strings are decimal: the wire protocol prints addresses as
+    JSON integers, so a bare digit string round-trips as decimal.
+    """
     if isinstance(value, int):
         if value < 0:
             raise ValueError(f"address must be non-negative: {value}")

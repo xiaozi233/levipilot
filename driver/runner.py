@@ -328,9 +328,19 @@ def run_scenario(
             agent.call("stop_input")
 
     # Close the measured span *before* cleanup: teardown moves the player and
-    # would otherwise show up as displacement/speed of the run.
-    end_state = agent.call("get_state")
-    recording = _ok(agent.call("stop_recording"), "stop_recording")
+    # would otherwise show up as displacement/speed of the run. When the run
+    # already failed, these calls must not raise a second exception that would
+    # mask the original one.
+    end_state: dict[str, Any] = {}
+    recording: dict[str, Any] = {}
+    if failure is None:
+        end_state = agent.call("get_state")
+        recording = _ok(agent.call("stop_recording"), "stop_recording")
+    else:
+        with contextlib.suppress(Exception):
+            end_state = agent.call("get_state")
+        with contextlib.suppress(Exception):
+            recording = _ok(agent.call("stop_recording"), "stop_recording")
     finished_at = _now()
 
     teardown = scenario.setup.get("teardown") or []

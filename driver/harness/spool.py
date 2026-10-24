@@ -34,7 +34,9 @@ class SpoolReader:
 
     path: Path
     stats: SpoolStats = field(default_factory=SpoolStats)
-    _pending: str = ""
+    # Bytes, not str: decoding per poll would split a multi-byte UTF-8
+    # character across boundaries and turn it into U+FFFD.
+    _pending: bytes = b""
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
@@ -49,21 +51,25 @@ class SpoolReader:
             # start and count the rotation for diagnostics.
             self.stats.offset = 0
             self.stats.rotations += 1
-            self._pending = ""
+            self._pending = b""
         if size == self.stats.offset:
             return []
 
+        # Bounded read so one poll after a long pause cannot balloon memory.
         with self.path.open("rb") as handle:
             handle.seek(self.stats.offset)
-            chunk = handle.read()
+            chunk = handle.read(4 << 20)
         self.stats.offset += len(chunk)
 
-        text = self._pending + chunk.decode("utf-8", errors="replace")
-        lines = text.split("\n")
-        # An empty trailing element means the chunk ended on a newline; anything
-        # else is a partial line that the writer has not finished flushing.
-        self._pending = lines.pop() if lines else ""
-        self.stats.pending = self._pending
+        # Split on bytes and decode only complete lines: a multi-byte UTF-8
+        # character split across poll boundaries stays intact for the next
+        # poll instead of becoming U+FFFD.
+        parts = (self._pending + chunk).split(b"\n")
+        partial_bytes = parts.pop()
+        self._pending = partial_bytes
+        partial = partial_bytes.decode("utf-8", errors="replace")
+        self.stats.pending = partial
+        lines = [part.decode("utf-8", errors="replace") for part in parts]
 
         rows: list[dict[str, Any]] = []
         for line in lines:

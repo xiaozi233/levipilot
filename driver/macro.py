@@ -89,7 +89,8 @@ def parse_macro(doc: Any) -> list[MacroTick]:
         buttons = [_parse_bool(row[i], index) for i in range(9)]
         yaw = _parse_angle(row[9], index, "yaw") if len(row) == 11 else 0.0
         pitch = _parse_angle(row[10], index, "pitch") if len(row) == 11 else 0.0
-        ticks.append(MacroTick(*buttons, yaw=yaw, pitch=pitch))
+        w, a, s, d, sprint, sneak, jump, rmb, lmb = buttons
+        ticks.append(MacroTick(w, a, s, d, sprint, sneak, jump, rmb, lmb, yaw=yaw, pitch=pitch))
     return ticks
 
 

@@ -148,7 +148,13 @@ def run(args: argparse.Namespace) -> int:
     time.sleep(1.0)
     install_mod(version_dir)
 
-    options = dict(item.split("=", 1) for item in args.options)
+    options: dict[str, str] = {}
+    for item in args.options:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            log(f"--options 需要 KEY=VALUE 形式，已忽略 {item!r}")
+            continue
+        options[key] = value
     if args.write_config:
         write_auto_config(version_dir / "mods" / "probe", args.world, options)
         log("wrote harness.json; the mod will auto-enter on launch")

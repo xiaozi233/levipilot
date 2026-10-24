@@ -6,6 +6,7 @@ is bound to the accepted task ID; transport owns sessions and event buffering.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -899,6 +900,15 @@ class ModClient(PipeConnection):
         """
         last: dict[str, Any] = {"ok": False, "reason": "not_attempted"}
         for attempt in range(max(1, attempts)):
+            # Drop a settled event left over from a previous attempt (for
+            # example one that arrived after wait_enter_settled timed out):
+            # request() defers it, and a later wait would match the stale row
+            # as this attempt's outcome.
+            while True:
+                try:
+                    self.wait_event("enter_world_settled", 0)
+                except ModTimeout:
+                    break
             result = self.enter_world(
                 name,
                 world_id=world_id,
@@ -909,7 +919,10 @@ class ModClient(PipeConnection):
             if not result.get("ok"):
                 last = result
             else:
-                last = self.wait_enter_settled(timeout=settled_timeout)
+                try:
+                    last = self.wait_enter_settled(timeout=settled_timeout)
+                except ModTimeout:
+                    last = {"ok": False, "reason": "settled_timeout"}
                 if last.get("ok"):
                     return last
             if attempt + 1 < attempts:
@@ -1063,17 +1076,29 @@ class ModClient(PipeConnection):
                 }
             )
         samples: list[dict[str, Any]] = []
-        while True:
-            message = self.readline()
-            event = message.get("event")
-            if event == "error":
-                raise ModPipeError(str(message.get("reason", message)))
-            if event in {"moving", "stopping"}:
-                continue
-            if event == "tick":
-                samples.append(message)
-                if on_sample is not None:
-                    on_sample(message)
-            elif event == "stopped":
-                break
+        try:
+            while True:
+                message = self.readline()
+                event = message.get("event")
+                if event == "error":
+                    raise ModPipeError(str(message.get("reason", message)))
+                if event in {"moving", "stopping"}:
+                    continue
+                if event == "tick":
+                    samples.append(message)
+                    if on_sample is not None:
+                        on_sample(message)
+                elif event == "stopped":
+                    break
+                else:
+                    # Unrelated async events (watch hits, packet taps, ...) stay
+                    # available to later readline/wait calls instead of being
+                    # silently consumed here.
+                    self._defer(message)
+        except BaseException:
+            # Leaving the mod recording (max_ticks=0 is unbounded) would poison
+            # every later experiment on this connection.
+            with contextlib.suppress(Exception):
+                self.send({"cmd": "stop"})
+            raise
         return samples

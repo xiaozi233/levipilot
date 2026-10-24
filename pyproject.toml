@@ -39,4 +39,21 @@ python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
-files = ["driver/harness", "driver/transport_mod.py"]
+files = ["driver", "tests"]
+
+# The live acceptance script and the test doubles trade strict typing for
+# brevity (fakes hang dynamic attributes off real classes); the shipped
+# client code stays fully checked.
+[[tool.mypy.overrides]]
+module = ["driver.selftest", "tests.*"]
+disable_error_code = [
+    "arg-type",
+    "assignment",
+    "attr-defined",
+    "call-overload",
+    "func-returns-value",
+    "index",
+    "misc",
+    "unused-ignore",
+    "var-annotated",
+]

@@ -135,20 +135,21 @@ scenario DSL / LLM / shell
 driver/harness/
   __init__.py   # 公开导出
   errors.py     # ModPipeError / ModTimeout / ModDisconnected / ModProtocolError
-  protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定
+  protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定、Hello/State TypedDict
   client.py     # 兼容导出 ModClient / Harness
   connection.py # PipeConnection：独立会话、轮询读取、事件缓冲、请求串行化、超时与重连
-  commands.py   # ModClient：命令 payload、响应事件与工作流
+  commands/     # ModClient = 按领域 mixin 组合（session/diag/input/memory/watch/hooks/
+                #   packets/ecs/tasks/query/world/macro/recording）；超时统一 None→连接超时
   facade.py     # Harness：脚本便捷方法、集合解包与组合操作
   hooks.py      # hook 命中解码、float bits
   memory.py     # 地址/hex 解析、FNV 辅助
   packets.py    # packet id 名称、字节布局解码
   record.py     # 64 字节记录解码、flags、方块名哈希
-  spool.py      # 增量、可容忍轮转/半行的 spool 读取器
+  spool.py      # 增量、可容忍轮转/半行的 spool 读取器（字节级缓冲）
   watch.py      # watch 命中解码与可续读游标
-  cli.py        # 稳定入口：离线命令、连接生命周期、错误与退出码
+  cli.py        # 稳定入口：离线命令、注册表分发（REGISTRY）、错误与退出码
   cli_parser.py # argparse 定义；保留参数默认值、命令和帮助顺序
-  cli_commands/ # diagnostics/input/inspection/packets/query/world/tasks/recording
+  cli_commands/ # diagnostics/input/... 八个模块；每个导出 COMMANDS frozenset 供注册表分发
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
@@ -230,9 +231,11 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 1. 在对应的 `Command<领域>.cpp` 加分支，处理后返回 `true`；只有新增领域才需修改
    `Commands.cpp` 的 `dispatchLine`。需要修改游戏状态时继续设置请求或通过 `queueServerTask`。
 2. 在 `ProbeMod.h` 增加必要的请求字段/方法，在对应模块实现。
-3. 在 `driver/harness/commands.py` 加 `ModClient` 方法（`request(..., "expected_event")`）。
+3. 在 `driver/harness/commands/<领域>.py` 加 `ModClient` 方法
+   （`request(..., "expected_event")`，超时参数用 `float | None = None`）。
 4. 在 `facade.py` 的 `Harness` 加便捷封装，在 `cli_parser.py` 加参数定义、对应
-   `cli_commands/<领域>.py` 加执行分支（已处理返回 true，未识别返回 false）。
+   `cli_commands/<领域>.py` 加执行分支（已处理返回 true，未识别返回 false），
+   并把命令名加进该模块的 `COMMANDS` frozenset（`test_cli` 会校验与 parser 一致）。
 5. 在 `tests/test_transport.py` 加协议/转发测试；需要游戏时在 `driver/selftest.py` 加检查。
 
 ### 加一个闭环任务

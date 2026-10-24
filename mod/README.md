@@ -42,7 +42,7 @@ xmake -j4 -y
 | `chat_history` | `limit`（1–64，默认 32）；客户端保留的聊天快照，含文字、类型、截断标记 |
 | `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
 | `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
-| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程）；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
+| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程，`thread=all` 被拒绝）；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
 | `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
 | `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
 | `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va` |
@@ -81,7 +81,7 @@ xmake -j4 -y
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
 | `entities` | `radius,limit`，附近 Actor |
 | `entity` | `runtime_id`；类型/名字/位置/速度/血量/距离 |
-| `attack_entity` | `runtime_id`；对指定实体执行 `GameMode::attack` |
+| `attack_entity` | `runtime_id`；在服务端线程用服务端玩家的 `GameMode::attack`（实体查找也在服务端线程） |
 | `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名和 `addr`（`Block*`，供 `probe` 使用） |
@@ -89,7 +89,7 @@ xmake -j4 -y
 | `checkpoint_save` / `checkpoint_load` / `checkpoint_list` / `checkpoint_delete` | 命名脚部坐标存档，持久化到 `mods/probe/checkpoints.json` |
 | `navigate` | `x,z,tolerance,max_ticks,sprint`；`jump=auto/distance/edge/never` + `jump_distance`，mod 内逐 tick 闭环修正朝向 |
 | `jump_when` | `mode=now/tick/distance/edge`；`distance,forward,sprint,yaw,after_ticks,max_ticks`；在 tick 内精确起跳 |
-| `route` | `waypoints:[{x,z,tolerance,max_ticks,jump,jump_distance}]`；逐段跑点，`route_waypoint` / `route_done` / `route_failed` |
+| `route` | `waypoints:[{x,z,tolerance,max_ticks,jump,jump_distance,edge_lookahead}]`；逐段跑点，`route_waypoint` / `route_done` / `route_failed` |
 | `mine` | `x,y,z,max_ticks`；`startDestroyBlock` + `continueDestroyBlock`，完成后回报方块 |
 | `place` | `x,y,z,against?,face?,expected?,slot?,max_ticks`；瞄准、放置并回读验证 |
 | `use` | `ticks`；等待后在服务端玩家上走 `Item::use`（+ 食物的 `useTimeDepleted`），消耗、效果和背包同步都是权威的 |
@@ -183,60 +183,42 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-- 任务重设计：单活动槽、ID 关联、统一取消、旧 use 回调抑制、定长结果后台格式化；
-  自检入口 `check_task_lifecycle`，受控故障入口 `selftest_task_fault` 需要 `allow_selftest_stress`。
-- Python 会话重设计：旧线程与新会话隔离；请求保留异步事件，缓冲有界并显式报溢出。
-- `chat_history` / CLI `chat-history --limit 32` 读取客户端保留的聊天文字；只在客户端线程
-  做定长快照，后台格式化，最多 64 条、每条 2047 UTF-8 字节，截断显式标记。
-  它不是永久日志，重启或游戏清理的历史无法追回；`command_done` 仍只有执行标志和代码。
-- `navigate/route` 共用转向与接近减速，修复小容差下边转向边满速前进造成的绕圈。
-  `check_task_operations` 覆盖两种入口、四种朝向、真实放置/挖掘回读；清理先检查是否已为空气。
-- 聊天接口已捕获中文 `§c该方块无法放置`：向已经为空气的单元重复 setblock 可复现。
-  H2 封包自检改为先确认空气、放金块、回读并恢复空气，防止重复运行因残留金块产生
-  报错而仍被旧的最终类型检查误判为通过。
-- `state.effects` 仅报告实际效果，过滤游戏清除后留下的 NO_EFFECT 空槽；speed 正向及
-  clear/reset 后空列表检查在 live selftest 中，跳跃轨迹断言保持不变。
-- 代码审阅加固轮（2026-10-24，live selftest 的 `guard_*` 检查对应）：
-  - 数值入参统一走 `numberJson/numberValue`（有限性 + 范围），`look` 的越界 yaw 回
-    `bad_param` 而不再是 `wrapDegrees` 死循环；`teleport/reset/click/blocks/scan/place`
-    同族校验，坐标 `double→int` 前先限幅（原为 UB）。
-  - `ecs_context` 对外部指针先 `readableRange` 预检、访问链整体 SEH（tick 线程无 SEH，
-    原来一条坏地址即可崩游戏）；坏地址回 `bad_addr`。
-  - 宏循环重启按当前宏尺寸二次校验 `mMacroStart`（`macro_load` 缩短宏后不再读越界）；
-    `macro_load` 在回放中先停回放（回执带 `stopped`），`macro_stop` 同时清掉 pending
-    start，`safeTickPre` 里吞 stop 的遗留 `exchange` 已删除。
-  - Watch：VEH 内不再拿 mutex（armed 线程表改定长数组 + 原子计数发布），挂起窗口内
-    不再 bootLog（延迟到 Resume 后），`thread="all"` 显式拒绝（`thread_all_unsupported`），
-    `rw` 模式不再要求目标页可写。
-  - 线程纪律：`options_set/options_save` 改走 client 任务队列；`reset` 不再在管道线程读
-    LocalPlayer 朝向（未提供时由服务端任务补当前值）；实体查找/快照全部移到服务端线程
-    （客户端 tick 线程不再遍历服务端 actor 列表），攻击/瞄准经平台主线程队列回调。
-  - 数据链路：spool 打开/写失败回灌重试（原来静默丢行且计数虚高）；spool 线程整体
-    try/catch（原来一次异常即冻结任务系统）；`hook_va` 成功安装留 bootLog 审计；
-    seqlock 读侧加重试上限（写者卡死时降级为旧快照而不是挂死 tick）。
-  - 热路径：记录环的 Block 偏移每会话解析一次（tick 内不再查字符串表/拿 mutex）；
-    HID shim 解引用加独立 SEH；`PlayerActionComponent`/`MoveInputState` 空指针防御。
-  - 结构去重：`yawTo/pitchTo` 收拢 5 处重复角度公式；`followThunkChain` 统一锚点与
-    `symbol_resolve` 的 thunk 解码（含 disp32≠0 修正）；`tickNavigate/tickRoute` 的
-    转向/卡住检测/跳跃冷却合并为 `ProbeMod::walkToward`（Tasks.cpp），route 的
-    边沿前瞻从硬编码 0.55 变为可配 `edge_lookahead`（协议增量字段，默认不变）。
-  - 本轮 live selftest 实测 **190/190**（gate 全开），`guard_*` 4 条全过；一次
-    `attack_entity` 客户端任务 SEH 促成了攻击路径改走服务端玩家 GameMode（与传送
-    同范式），`selftest_busy` 的 gate 关闭分支也修为显式双事件等待。
-  - 结构轮（2026-10-24 第二批）：`safeTickPre/safeTickPost` 拆为阶段方法
-    （consumeTeleportRequest/applyFlyRequest/tickMacroPlayback/runCaptureRequests/
-    tickParkourEvents/emitLegacyTickJson 等，严格保序），聊天捕获字段聚合为
-    `ChatCapture` 嵌套子系统（线程归属注释随字段走）；live selftest 复验 190/190。
+按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **190/190**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 169/169。
 
+### 行为契约与加固
 
+- 任务生命周期：单活动槽、ID 关联、统一取消；`TaskModel.h` 定长状态、tick 只填
+  `TaskStep`、spool 线程格式化事件。自检入口 `check_task_lifecycle`；受控故障入口
+  `selftest_task_fault` 需要 `allow_selftest_stress`。
+- Python 会话：旧读线程与新会话隔离；请求保留异步事件，缓冲有界并显式报溢出。
+- `chat_history`：客户端线程定长快照（最多 64 条、每条 2047 UTF-8 字节、截断显式
+  标记），后台格式化。不是永久日志，重启或游戏清理的历史无法追回。
+- `navigate`/`route` 共用 `walkToward` 驱动（转向/接近减速/卡住检测/跳跃冷却），route
+  的边沿前瞻可按 waypoint 配 `edge_lookahead`；小容差下不再绕圈。
+- `state.effects` 仅报告实际效果，过滤游戏清除后留下的 NO_EFFECT 空槽。
+- 数值入参统一有限性 + 范围校验：`look`/`teleport`/`reset`/`click`/`move`/`set` 越界回
+  `bad_param`，`blocks`/`scan`/`place` 的坐标超界回 `bad_coord` 或跳过该条；
+  `wrapDegrees` 另有非有限兜底。
+- `ecs_context` 对外部指针先 `readableRange` 预检、访问链整体 SEH；坏地址回 `bad_addr`
+  而不是崩游戏。
+- 宏安全：回放中 `macro_load` 先停回放（回执带 `stopped`）并按当前宏尺寸校验循环
+  重启点；`macro_stop` 同时清掉 pending start。
+- Watch：VEH 无锁读 armed 线程表；挂起窗口内不做任何分配；`thread="all"` 回
+  `thread_all_unsupported`；`rw` 观察点不要求目标页可写。
+- spool 打开/写失败回灌重试并计数；spool 线程整体异常隔离；`hook_va` 安装留 bootLog
+  审计；seqlock 读侧有重试上限（写者卡死时降级为旧快照）。
+- 实体链路：查找/快照/攻击全部在服务端线程执行（攻击用服务端玩家的 GameMode），
+  客户端 tick 线程不遍历 `getRuntimeActorList()`。
+
+### 移动、跳跃与输入
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
   12.04 格、接地 100%
-- 跳跃：注入时调用 `jumpFromGround`，逐 tick 位移为 0.4200、0.3332、0.2481、0.1648…，
-  顶点 1.252 格、滞空 11 tick；修复了此前前 3 tick 不动、第 4 tick 一次性 +0.99 的“卡回弹”
-- 持续跳跃修复（2026-10-23）：按住且接地时补 `jumpFromGround`，避免第二跳起又出现
-  +0.99143 格的延迟纠正。原地连续 4 跳与 HID 空格绑定的完整逐 tick 位置轨迹相符
-  （误差 < 0.0001 格），单次 `jump_when` 和松开落地也通过 `jump_motion_*` 回归检查。
-  H0 的 vy 写线程取证改为一次原地跳跃 + 25 tick 采样，删除了 30 秒前进连跳。
+- 跳跃：起跳沿调 `LocalPlayer::jumpFromGround`，逐 tick 位移 0.4200、0.3332、0.2481、
+  0.1648…，顶点 1.252 格、滞空 11 tick；按住且接地时补调 `jumpFromGround`，连续 4 跳
+  与 HID 空格绑定的逐 tick 轨迹误差 < 0.0001 格（不补调会出现前 3 tick 不动、
+  第 4 tick 一次性 ~0.99 格的“卡回弹”）。
 - 潜行：20 tick 前进 4.316 格，潜行时 1.295 格（约 0.30x）
 - `fly` 同时写服务端，传送后不会自己恢复飞行
 - `click left` 破坏、`click right` 放置；`select_slot` 3→空手、0→草方块
@@ -244,6 +226,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `command` 的 `fill`/`setblock` 生效，`blocks` 能读回
 - macro 播放/录制；真实鼠标左右键录进 macro（左键 4 tick、右键 3 tick 为 true）
 - `driver/run_mod.py` 跑通 `setup-platform.json` 和 `example.json`
+
+### 闭环任务、世界与场景
+
 - `navigate`：约 5.2 格直线，27 tick 到达，误差 0.26 格
 - `mine`：`setblock` 放石头后 1 tick 挖掉（创造模式），`blocks` 读回空气
 - `place`：放回同一格，3 tick 完成，回读为石头
@@ -266,6 +251,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 二进制记录环：连续 **10 分钟**写入 **12,082** 条，`record_dump` 的 JSONL 与 hex 解码数
   都等于 `head`（`lost=0`），`queue_dropped=0`；环固定 32 MB，RSS 在系统 trim 后由
   316 MB 回填到 369 MB（游戏自身内存，环不增长）
+
+### 观察点、hook、ECS 与版本 profile
+
 - `hook_install` 按符号 `MobJump::setJumpPendingScale` 装钩成功；`hook_call` 触发后
   `hook_drain` 读到 `args[0]=EntityContext*`、`b_float=1.0`、返回地址和 4 帧栈；
   `hook_rm` 后 `hook_list` 为空。VA dry_run 对同一地址返回 `executable=true`，
@@ -309,6 +297,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   y 超出 [-64,319] 时不读方块、三个 block 字段为 0 并置 `flags & 0x800`
 - `overhead`（F9）：新增 `tick_interval_p50/p99/max_us`（与旧 `tick_*` 同值）、
   `window_samples=1024`、`qpc_resolution_ns=100`、`consistent=true`
+
+### 输入注入对照（G1–G4）
+
 - G1：`key_event(2)` 走 HID `onKeyDown(Virtual)` → `selected_slot` 1→2，LL `KeyInputEvent` +1；
   100 次注入事件计数恰好 +100、按下状态可读回；E → `inventory_screen`，Esc → `hud_screen`
 - G2：左键 down+up → `mouse.counts[1]` +2、`last_action=1`；`move dx=200` → yaw +25.99°；
@@ -317,6 +308,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   结论：事件层注入能复现疾跑，1.3x 差异不在输入事件层，G5 不启动
 - G4：`macro_run event_level=true` 三次回放落点误差 **0.0000**；左右键事件各 +2；
   旧路径（`event_level=false`）仍走 GameMode，MouseInputEvent 计数为 0
+
+### 封包层（H0–H4）
+
 - H0.1：对 StateVector.vy（offsets 表 `VelY=0x1C`）设写观察点，原地单跳后采样 25 tick；
   唯一写者是**集成服务端线程**（`thread="both"`），`code_hex` 反汇编为
   `mov qword ptr [rbx + 0x18], rax`（覆盖 0x1C）
@@ -359,27 +353,6 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   77 的布局用真实抓包验证，36/19 用合成样例单测。
   `driver/packet_dump.py --seconds 5 --walk [--directions send,recv]` 导出
   `out/packets-<ts>.jsonl`（实测 105 行 send、54 行 recv）。
-- `driver/selftest.py` 126/126 通过
-- 2026-10-23 结构重构验收：Python 单测 **150/150**、完整 live selftest **146/146**、
-  ruff/mypy/profile 一致性检查与 C++ release 构建通过；新增 8 个领域分发、错误恢复检查。
-  同步修正自检的 +X 起跳朝向和聊天界面等待，未改游戏侧输入/任务行为。
-- 2026-10-23 CLI 续轮：参数定义、8 个领域执行与入口编排分离，236 组旧行为对照一致；
-  Python 单测 **155/155**、真实 CLI 管道检查 **9/9**、完整 live selftest **163/163**，
-  受鼠标干扰的宏确定性另行复测 **2/2** 通过，现有导入路径、参数、输出和退出码保持兼容。
-- 2026-10-23 行为重设计：单活动任务/任务 ID、Python session 所有权与事件保留、聊天快照；
-  修复导航绕圈、空效果槽与封包自检假阳性。Python **165/165**、live selftest **209/209**，
-  宏严格复测 **2/2**（视角漂移 0°、落点差 0）；C++ 构建、ruff/mypy/profile 检查通过。
-  新客户端任务方法需要配套新 mod；迁移和验证限制见 [`refactoring.md`](../docs/refactoring.md)。
-- 2026-10-23 world session 续轮：`leave_world` 后立即 `enter_world` 的崩溃已修复。
-  根因是（1）`auto_enter` 与显式进入并发启动两个本地服务端；（2）三个 leave-done 标志
-  在屏幕仍为 `world_saving_progress_screen - world_loading_progress_screen` 时就返回 true。
-  现在进入串行化（第二次回 `already_starting`），并且只在主菜单 screen
-  （`start_screen` / `ui://…`）启动。30 cycles（第 9/19/29 真实退出并立即重进）**123/123**，
-  完整 live selftest + stress **332/332**，单测 **167/167**；日志见 `refactoring.md`。
-- 2026-10-24 PacketTap 拆分：封包 tap 的状态与 9 个 send/recv 钩子移入 `PacketTap`，
-  `Packets.cpp` 只保留命令包模板注入和转发，协议/字段不变。直接 send+recv 检查
-  （77 条记录、37 条 recv、`loopback_sendToClient` 289 命中）和完整 selftest
-  **209/209**、单测 **167/167** 通过。
 
 ## 限制
 
@@ -395,12 +368,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `auto_enter` 与显式 `enter_world` 不会并发：显式进入会取消待执行的自动进入；已有一个
   进入在飞时，第二次请求回 `enter_world_result {ok:true, reason:"already_starting"}`，
   由 join 事件收尾。
-- CI 在运行无 SDK 的 native 任务模型测试前显式检查 LLVM 并配置 PATH；
-  checkout / setup-python 更新到上游稳定版本，移除 Node.js 20 弃用依赖。
+- CI 在运行无 SDK 的 native 任务模型测试前显式检查 LLVM 并配置 PATH。
   游戏内任务行为仍需用 `driver/selftest.py` 的 `check_task_lifecycle` 等检查验证。
-- 2026-10-23 结构重构：命令处理拆为 8 个 `Command<领域>.cpp`，Python 拆为连接、命令、脚本门面；
-  协议 4 和旧导入保持兼容。`selftest.py` 新增 `dispatch_*` 检查（8 个领域、未知命令、参数错误恢复）；
-  验收范围与执行结果见 [`refactoring.md`](../docs/refactoring.md)。
 - 方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / `setup.verify` 为准。
 - HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
   本 mod 只提供脚本/LLM 使用的 API。
@@ -446,7 +415,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   只有装过 DR 的线程才会被记为命中：别的线程上的 DR6 事件进 `foreign_hits`，
   不会污染命中环（曾经在旧线程遗留 DR 时误记成服务端线程写 tick 变量）。
 - 玩家的 StateVector 由**集成服务端线程**写入（不是 tick 线程）；观察它用
-  `watch_set(thread="both")`（tick + server），`thread="all"` 装 100+ 线程会把游戏搞崩。
+  `watch_set(thread="both")`（tick + server）；`thread="all"` 会被拒绝
+  （`thread_all_unsupported`，历史上装 100+ 线程会把游戏搞崩）。
 - `ecs_entity/ecs_components` 按 runtime id 解析到的是服务端 Actor；客户端玩家的 context
   从 `state.context` 取，`ecs_context` 用它做交叉验证。不要在 tick 线程枚举客户端 registry
   （会和游戏线程竞争并崩溃）。

@@ -50,13 +50,19 @@
 
 ## 实体
 
-- 按 `runtime_id` 在 `Level::getRuntimeActorList()` 里查找目标；查询/攻击/交互都在客户端 tick 中执行。
-- `attack_entity` → `GameMode::attack(actor, actor->getHeadPos())`
-- `interact_entity` → 转向实体 + 注入主手使用按钮（3 tick）。**不要**直接调用
+- `getRuntimeActorList()` 归**集成服务端线程**所有；客户端 tick 线程不遍历它。所有
+  `runtime_id` 查找与快照都在 `queueServerTask` 里执行：命令把客户端侧数据（玩家位置、
+  头部、uuid/名字）在 tick 线程读好后投递，服务端线程找到目标并快照（类型/血量/头位）。
+- `attack_entity` 全程在服务端线程执行：解析服务端玩家（uuid→name 回退，同
+  `requestServerTeleport`），用**服务端玩家的** `GameMode::attack(actor, headPos)`；
+  Actor* 不跨线程传递（一帧旧的指针曾在 client 任务里 SEH）。
+- `interact_entity` / `look_at_entity` 只需要目标的头部位置快照：服务端任务取
+  `headPos` 后，瞄准与输入注入经平台主线程队列（`queueClientTask`）回到玩家上执行，
+  转向/注入语义与之前一致（3 tick 使用按钮，best effort）。**不要**直接调用
   `Player::interact` / `GameMode::interact`：空 item 上下文会触发 `[rsi+0x1D0]`（RSI=0）
-  崩溃。输入注入是 best effort，是否产生实际交互取决于手持物和瞄准。
-- `look_at_entity` 用玩家头部到实体头部的向量算 yaw/pitch：
-  `yaw = atan2(-dx, dz)`、`pitch = -atan2(dy, horizontal)`，再走 `_applyTurnDelta`。
+  崩溃。
+- `look_at_entity` 用玩家头部到实体头部的向量算 yaw/pitch（`probe::detail::yawTo/
+  pitchTo` 共享公式），再走 `_applyTurnDelta`。
 
 ## Macro
 
@@ -179,7 +185,9 @@
   DR6 的位号才能唯一映射回 watch）。安装前 `SuspendThread` + `GetThreadContext`，
   如果 DR7 的低 8 位里有不属于我们的 enable 位，回 `dr_busy`，不抢调试器。
 - `watch_set` 默认 `thread="tick"`（`safeTickPost` 记录 `mTickThreadId`）；也接受具体
-  tid 或 `"all"`（`CreateToolhelp32Snapshot` 枚举本进程线程）。
+  tid。`thread="all"` 已被显式拒绝（`thread_all_unsupported`）——给 100+ 线程装 DR
+  实测会搞崩游戏；VEH 读取 armed 线程表是无锁的定长数组（原子计数发布），异常路径
+  不拿 mutex。挂起窗口内不做任何可能分配的操作（日志延迟到 Resume 之后）。
 - 命中由 VEH 处理：清 DR6 对应位，把 `{watchId, tid, tick, rip, 8 帧栈}` 写进预分配的
   65536 条定长环；命中路径不做 JSON/字符串/加锁。`watch_drain` 在管道线程把环序列化成
   JSON，`since`/`next` 是绝对序号，`lost` 表示已被覆盖的条数。
@@ -475,8 +483,8 @@
   `VelY` 偏移来自 offsets 表（`0x1C`）。玩家位置/速度由**集成服务端线程**写入，所以观察点
   用 `watch_set(thread="both")`（tick + server）。实测命中指令为
   `mov qword ptr [rbx + 0x18], rax`（8 字节写覆盖 0x18–0x1F，包含 vy）。
-- `thread="all"` 会给 100+ 个线程装 DR，实测导致游戏崩溃；`status.server_thread_id`
-  在第一次 `queueServerTask` 后可用，`thread=server|both` 用它。
+- `thread="all"` 会给 100+ 个线程装 DR，实测导致游戏崩溃，mod 现在直接拒绝该模式；
+  `status.server_thread_id` 在第一次 `queueServerTask` 后可用，`thread=server|both` 用它。
 - **probe × blocks**：`blocks` 给出 `Block*`，`probe block` 跟到 legacy 指针，
   `probe legacy` 的 name/hash 与 blocks 一致。51 版实测 block id：air=0、grass_block=2、water=9
   （结构布局跨版本不变的假设目前成立）。

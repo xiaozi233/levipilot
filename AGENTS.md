@@ -36,7 +36,7 @@ py -3.11 driver/selftest.py
 | 路径 | 内容 |
 | --- | --- |
 | `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`WorldSession`（世界生命周期）、`ClientDispatch`（主线程投递/SEH）、`PacketTap`（封包 tap）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
-| `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands`（ModClient）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`；CLI 为 `cli`（入口）/`cli_parser`（参数）/`cli_commands`（领域执行），以及解码辅助模块 |
+| `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands/`（按领域 mixin 组成 `ModClient`）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`；CLI 为 `cli`（入口/注册表分发）/`cli_parser`（参数）/`cli_commands`（领域执行，各带 `COMMANDS` 声明），以及解码辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
@@ -69,14 +69,16 @@ py -3.11 driver/selftest.py
 ## 加东西的标准步骤
 
 **加一个管道命令**：对应 `Command<领域>.cpp` 加分支（处理后返回 true，含拒绝/参数错误；未识别才返回 false）→
-`ProbeMod.h` 加请求字段/方法 → 对应模块实现 → `driver/harness/commands.py` 加 `request(..., expected_event)` →
-`cli_parser.py` 加参数、`cli_commands/<领域>.py` 加执行分支 → `tests/` 加无游戏单测（需要游戏的检查加到 `driver/selftest.py`）。
+`ProbeMod.h` 加请求字段/方法 → 对应模块实现 → `driver/harness/commands/<领域>.py` 加
+`request(..., expected_event)`（超时参数用 `float | None = None`）→
+`cli_parser.py` 加参数、`cli_commands/<领域>.py` 加执行分支并把命令名登入该模块的
+`COMMANDS`（`tests/test_cli.py` 会校验与 parser 一致）→ `tests/` 加无游戏单测（需要游戏的检查加到 `driver/selftest.py`）。
 新增领域时才在 `Commands.cpp::dispatchLine` 接入；它统一负责 JSON 解析、未知命令与请求级异常隔离。
 
 **加一个闭环任务**：`TaskModel.h` 定义定长 `XxxTask` 并加入 `TaskState` →
 `CommandTasks.cpp` 完整验证参数后 `startTask()`、回带 `task_id` 的 `xxx_started` →
 `Tasks.cpp` 实现 `tickXxx`，只填 `TaskStep` → `TaskEvents.cpp` 格式化状态/结果 →
-`commands._task_request`/`facade.Harness`/CLI 加阻塞封装 → 扩展 native 模型与 live selftest，
+`commands/tasks.py` 的 `_task_request`/`facade.Harness`/CLI 加阻塞封装 → 扩展 native 模型与 live selftest，
 用 `blocks` / `state` **回读验证**。禁止新增独立 optional 任务槽、手写 reset 列表，或在 tick 内格式化任务 JSON。
 `TaskController` 锁内回调不得重入控制器或同步等待需要任务锁的线程。
 
@@ -129,50 +131,34 @@ py -3.11 driver/selftest.py
 - 真实鼠标会转动相机并让宏回放落点漂移；`background_guard` 只拦后台转向，selftest 的宏
   确定性检查在检测到相机被外部移动时会标记 skipped。
 - 玩家 StateVector 在集成服务端线程上写；观察用 `watch_set(thread="both")`。
-  `thread="all"`（100+ 线程）实测会把游戏搞崩，不要再用。
+  `thread="all"` 已被 mod 显式拒绝（`thread_all_unsupported`；历史上装 100+ 线程会搞崩游戏）。
 - 按 runtime id 查 ECS 得到的是服务端 Actor；客户端 context 用 `state.context`，
   再走 `ecs_context`。不要在 tick 线程枚举客户端 registry。
 - `xmake` 默认吃满所有核心，构建用 `xmake -j4`；只改 `.cpp` 是增量，改 `Internal.h`/`ProbeMod.h`
   会全量重编（约 2–3 分钟）。
 
-## 当前优先级
+## 当前状态
 
-当前完成度见下面的清单；任务提示词不在仓库内（本地维护）。
+主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮）
+全部完成；各轮的验收结论都在 `mod/README.md` 的「实测 / 限制」和 `docs/mod-internals.md`，
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **190/190**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 169/169、
+ruff/mypy（driver+tests）全绿。
 
-- **P0（已完成）**：T1 崩溃取证 + 数据落盘 → T2 内存原语（mem_read/mem_write/probe）→ T3 硬件观察点 watch
-- **P1（已完成）**：T4 二进制记录环 → T5 运行时装钩（符号 typed detour + VA dry_run）→ T6 ECS/registry 内省；selftest 121/121
-- **跑酷 P1/P2（已完成）**：jump_when / route / 对齐公式的起跳 / 区域扫描 / 存档点 / 效果与落地事件；selftest 121/121
-- **P2（已完成）**：T7 版本指纹 + 签名/偏移解析；T8 unhook/panic
-- **P3（已完成）**：T9 tick 开销自测 + 请求块 seqlock（input/look/teleport 合成一块，tick 读路径无锁）
-- **修复轮 P1（已完成）**：F1 命令缓冲上界 + 超长行重同步 / F2 hook_va 安装窗口与挂起死锁 /
-  F3 hook_va 槽位生命周期 / F4 world_left + panic 落盘；selftest 121/121
-- **修复轮 P2（已完成）**：F5 offsets 表接线（structs/components、null 删除、no_offset）/
-  F6 spool 顺序与轮转 / F7 watch 细节（目标槽 foreign、`code_hex`、`allow_watch`）/
-  F8 记录环零分配方块采样 + 高度越界 / F9 开销语义（`tick_interval_*`、epoch 守卫）/
-  F10 防御小项；selftest 121/121
-- **H4 解码注册表（已完成）**：`driver/harness/packets.py`（77 实测、36/19 标准布局）、
-  `packet-decode` CLI；selftest 121/121
-- **H2 命令包（已完成）**：`chat_send` 模板复用 `CommandRequestPacket(77)`、`text_input`、
-  `op_self`/`commands_enabled`；回读验证 setblock/tp；selftest 121/121
-- **H1-B 字节（已完成）**：导入桩跟随（E9/FF25）、计数决策表（peer/receive=0）、
-  B3 白名单序列化 + `packet_bytes`；selftest 121/121
-- **H1 阶段 A（已完成）**：`packet_capture/drain/stats` 身份 tap（id/tick/seq/tid、denylist、
-  `allow_packet_capture`）；`LocalNetworkPeer` 符号不可用，字节层待 B2/B3；selftest 121/121
-- **H1-C 接收侧 tap（已完成）**：`directions:["send","recv"]` 装 9 个钩子；
-  `LoopbackPacketSender::$sendToClient` 两个重载有流量、`Packet::sendTo*` 层实测 0；
-  记录/字节带 `dir`，同 tick 同对象去重；selftest 126/126
-- **版本移植（已完成）**：`docs/offsets/*.json` → `driver/gen_profiles.py` →
-  `GeneratedProfiles.h`；按 `build_id`/`version_prefix` 选 profile，签名/偏移/组件 id
-  全部数据化；无 profile 时降级，`allow_version_mismatch` 可选放行钩子；
-  `profile_dump`/`profile_probe` + `capabilities`；selftest 132/132
-- **封包前验收 H0（已完成）**：StateVector.vy watch（写者=集成服务端线程）、
-  probe×blocks 方块 id、hook context×ECS 交叉、spool panic/taskkill 取证；selftest 121/121
-- **输入事件层（已完成）**：G1 `key_event` / G2 `mouse_event` / G3 sprint 三组对照 /
-  G4 macro 事件级回放 / G6 世界内 UI；G5 未做（G3 结论：C≈B≈0.2805 格/tick，
-  差异不在输入事件层，不需要 raw-input hook）
+任务提示词不在仓库内（本地维护）。
 
+可选的后续结构改善（无遗留功能缺陷，动前先想验证手段）：
 
-> 任务提示词不随仓库分发；本轮验收标准与结论已经写进 `mod/README.md` 的「实测 / 限制」
+- ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化
+  （下一个候选：宏管理器 `mMacro*`，跨 5 个 TU）
+- `captureState/captureScan`/legacy JSON 录制等「tick 内一请求式 JSON」家族迁到消费者线程
+- Transport 写阻塞看门狗（客户端存活但不读时管道线程永久阻塞）与 `disable()` 的
+  CancelSynchronousIo TOCTOU（改循环 cancel-then-wait）
+- `record_start` 打断在飞 `recordTick` 的世代竞态（可能混入上一会话的行）
+- UseTask 服务端回调超时、chat_history Requested 状态超时自愈、`mEntryInFlight` 看门狗
+- `mButtonStates/mHandlerStates` 数组的跨线程写（并入 RequestBlock 或走 client 任务）
+
+> 任务提示词不随仓库分发；验收标准与结论写进 `mod/README.md` 的「实测 / 限制」
 > 和 `docs/mod-internals.md`，以后看这两处即可。
 
 改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查，并在 `mod/README.md` 的

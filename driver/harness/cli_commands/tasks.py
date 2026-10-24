@@ -8,6 +8,19 @@ from pathlib import Path
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "navigate",
+        "jump-when",
+        "route",
+        "mine",
+        "place",
+        "use",
+        "task-status",
+        "task-stop",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "navigate":

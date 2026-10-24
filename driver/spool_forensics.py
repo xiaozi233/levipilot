@@ -35,17 +35,6 @@ from driver.harness import ModClient  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 
 
-def wait_ticks(client: ModClient, ticks: int, timeout: float = 30.0) -> int:
-    start = int(client.state().get("tick", 0))
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        current = int(client.state().get("tick", 0))
-        if current - start >= ticks:
-            return current
-        time.sleep(0.02)
-    raise TimeoutError(f"等待 {ticks} tick 超时")
-
-
 def _runs(ticks: list[int]) -> list[list[int]]:
     runs: list[list[int]] = []
     current: list[int] = []
@@ -110,7 +99,7 @@ def run_panic(client: ModClient, ticks: int) -> dict[str, Any]:
 def run_taskkill(client: ModClient, ticks: int) -> dict[str, Any]:
     spool = Path(str(client.hello.get("spool", "")))
     client.start(ticks)
-    wait_ticks(client, ticks)
+    client.wait_ticks(ticks, timeout=30.0)
     before = verify(spool)
     subprocess.run(
         ["taskkill", "/F", "/IM", "Minecraft.Windows.exe"],

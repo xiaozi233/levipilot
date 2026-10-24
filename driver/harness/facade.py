@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .commands import ModClient
-from .protocol import PIPE_NAME
+from .protocol import PIPE_NAME, StateEvent
 from .record import RecordEntry
 
 
@@ -44,7 +44,7 @@ class Harness:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    def state(self) -> dict[str, Any]:
+    def state(self) -> StateEvent:
         return self.client.state()
 
     def overhead(self) -> dict[str, Any]:
@@ -200,7 +200,7 @@ class Harness:
     def reset(self, x: float, y: float, z: float, **kwargs: Any) -> dict[str, Any]:
         return self.client.reset(x, y, z, **kwargs)
 
-    def wait_in_world(self, timeout: float = 90.0) -> dict[str, Any]:
+    def wait_in_world(self, timeout: float = 90.0) -> StateEvent:
         return self.client.wait_in_world(timeout)
 
     def set_options(self, values: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -219,7 +219,7 @@ class Harness:
         self.client.reconnect()
         return self
 
-    def wait_ready(self, timeout: float = 60.0, require_world: bool = True) -> dict[str, Any]:
+    def wait_ready(self, timeout: float = 60.0, require_world: bool = True) -> StateEvent:
         return self.client.wait_ready(timeout, require_world)
 
     def command(self, command: str) -> dict[str, Any]:

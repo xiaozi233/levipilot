@@ -19,6 +19,17 @@ def _write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
+COMMANDS = frozenset(
+    {
+        "record",
+        "record-start",
+        "record-stop",
+        "record-dump",
+        "macro",
+    }
+)
+
+
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "record":
         samples = client.record(

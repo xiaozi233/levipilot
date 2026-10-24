@@ -7,6 +7,30 @@ import json
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "chat-history",
+        "state",
+        "entities",
+        "blocks",
+        "scan",
+        "slot",
+        "inventory",
+        "give",
+        "set-item",
+        "clear-item",
+        "clear-inventory",
+        "entity",
+        "attack",
+        "interact",
+        "look-entity",
+        "ecs-registries",
+        "ecs-entity",
+        "ecs-components",
+        "ecs-component",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "chat-history":

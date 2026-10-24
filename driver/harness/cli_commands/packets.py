@@ -7,6 +7,15 @@ import json
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "packet-capture",
+        "packet-drain",
+        "packet-bytes",
+        "packet-stats",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "packet-capture":

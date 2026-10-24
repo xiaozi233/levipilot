@@ -7,6 +7,23 @@ import json
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "mouse",
+        "mouse-clear",
+        "key-event",
+        "key-state",
+        "screen",
+        "mouse-event",
+        "click",
+        "fly",
+        "set",
+        "look",
+        "jump",
+        "stopmove",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "mouse":

@@ -34,17 +34,6 @@ from driver.harness.record import decode_dump  # noqa: E402
 SCENARIO = ROOT / "scenarios" / "sprint-compare.json"
 
 
-def wait_ticks(client: ModClient, ticks: int, timeout: float = 15.0) -> int:
-    start = int(client.state().get("tick", 0))
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        tick = int(client.state().get("tick", 0))
-        if tick - start >= ticks:
-            return tick - start
-        time.sleep(0.02)
-    raise TimeoutError(f"等待 {ticks} tick 超时")
-
-
 def steady_speed(rows: list[Any], skip: int = 15) -> tuple[float, float, int]:
     distances = [
         math.hypot(rows[i].x - rows[i - 1].x, rows[i].z - rows[i - 1].z)
@@ -78,7 +67,7 @@ def run_group(
         else:
             client.key_event(17, True, via="hid")  # Control
             client.key_event(87, True, via="hid")  # W
-        wait_ticks(client, ticks)
+        client.wait_ticks(ticks, timeout=15.0)
         client.stop_move()
         if group == "C":
             client.key_event(87, False, via="hid")

@@ -7,6 +7,23 @@ import json
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "mem-read",
+        "mem-write",
+        "probe",
+        "watch-set",
+        "watch-clear",
+        "watch-list",
+        "watch-drain",
+        "hook-install",
+        "hook-rm",
+        "hook-list",
+        "hook-drain",
+        "hook-call",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "mem-read":

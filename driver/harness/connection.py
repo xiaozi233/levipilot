@@ -17,10 +17,10 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from ctypes import wintypes
 from dataclasses import dataclass, field
-from typing import Any, Self
+from typing import Any, Self, cast
 
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
-from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, LineDecoder, kernel32
+from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, HelloEvent, LineDecoder, kernel32
 
 
 @dataclass
@@ -48,7 +48,7 @@ class PipeConnection:
         self.connect_timeout = connect_timeout
         self.timeout = timeout
         self.protocol = 0
-        self.hello: dict[str, Any] = {}
+        self.hello: HelloEvent = HelloEvent(protocol=0, spool="", capabilities=[])
         self._session = _PipeSession()
         self._exchange_lock = threading.RLock()
 
@@ -70,7 +70,7 @@ class PipeConnection:
     def _connect(self) -> Self:
         self.close()
         self.protocol = 0
-        self.hello = {}
+        self.hello = HelloEvent(protocol=0, spool="", capabilities=[])
         deadline = time.monotonic() + self.connect_timeout
         last_error: OSError | None = None
         while time.monotonic() < deadline:
@@ -102,7 +102,7 @@ class PipeConnection:
                 self.close()
                 raise ModPipeError(f"握手失败：{hello!r}")
             self.protocol = int(hello.get("protocol", 0))
-            self.hello = hello
+            self.hello = cast(HelloEvent, hello)
             return self
         raise ModPipeError(f"无法连接 {self.pipe_name}: {last_error}")
 

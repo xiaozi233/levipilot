@@ -7,6 +7,21 @@ import json
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "command",
+        "checkpoint",
+        "worlds",
+        "signin",
+        "enter-world",
+        "leave-world",
+        "options-set",
+        "options-save",
+        "teleport",
+        "reset",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "command":

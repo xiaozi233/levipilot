@@ -8,6 +8,23 @@ from pathlib import Path
 
 from ..commands import ModClient
 
+COMMANDS = frozenset(
+    {
+        "ping",
+        "status",
+        "diag",
+        "diagnose",
+        "profile-dump",
+        "profile-probe",
+        "signature-check",
+        "panic",
+        "overhead",
+        "busy-test",
+        "spool-flush",
+        "selftest-av",
+    }
+)
+
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
     if args.command == "ping":

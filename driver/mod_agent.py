@@ -24,10 +24,9 @@ from __future__ import annotations
 
 import contextlib
 import math
-import time
 from typing import Any
 
-from driver.harness import Harness, ModPipeError
+from driver.harness import Harness, ModPipeError, ModTimeout
 
 MOVE_FLAGS = {"none", "sneak"}
 
@@ -114,10 +113,9 @@ class ModAgent:
 
     # -- agent interface ----------------------------------------------------
     def get_state(self) -> dict[str, Any]:
-        state = self.client.state()
+        state: dict[str, Any] = dict(self.client.state())
         if not state.get("in_world"):
             return {"ok": False, "error": "not in world", "in_world": False}
-        state = dict(state)
         state["ok"] = True
         # feet coordinates: the same convention as /tp and the tp DSL step
         state["pos"] = [state.get("feet_x"), state.get("feet_y"), state.get("feet_z")]
@@ -130,17 +128,10 @@ class ModAgent:
     def wait_ticks(self, ticks: int, *, timeout: float | None = None) -> int:
         if ticks <= 0:
             return 0
-        start = self.get_tick_count()
-        # 20 ticks per second; allow 3x plus a fixed margin for server hitches.
-        limit = timeout if timeout is not None else max(3.0, ticks / 20.0 * 3.0 + 2.0)
-        deadline = time.monotonic() + limit
-        while True:
-            current = self.get_tick_count()
-            if current - start >= ticks:
-                return current - start
-            if time.monotonic() > deadline:
-                raise AgentError(f"wait_ticks({ticks}) 超时：tick 只前进了 {current - start}")
-            time.sleep(0.01)
+        try:
+            return self.client.wait_ticks(ticks, timeout=timeout)
+        except ModTimeout as exc:
+            raise AgentError(str(exc)) from exc
 
     def start_recording(self, max_ticks: int = 0) -> dict[str, Any]:
         self._samples.clear()

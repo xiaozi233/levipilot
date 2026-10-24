@@ -6,12 +6,14 @@ it must not be regenerated to make a changed CLI pass.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import unittest
 from pathlib import Path
 
 from driver.harness import cli
+from driver.harness.cli_parser import build_parser
 from tests.cli_support import invoke_cli
 
 BASELINE = Path(__file__).parent / "fixtures" / "cli-baseline.jsonl"
@@ -46,6 +48,20 @@ class CliCompatibilityTests(unittest.TestCase):
         self.assertEqual(result["calls"][1], ["chat_history", [5], {}])
         help_result = invoke_cli(cli, ["--help"])
         self.assertIn("read retained client chat messages", help_result["stdout"])
+
+    def test_every_parser_command_has_a_handler(self) -> None:
+        # The parser definition and the dispatch registry must stay in sync;
+        # before the registry existed a missing handler exited 0 silently.
+        parser = build_parser()
+        assert parser._subparsers is not None
+        subparsers = next(
+            action
+            for action in parser._subparsers._group_actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        defined = set(subparsers.choices)
+        registered = set(cli.REGISTRY) | set(cli.DIRECT)
+        self.assertEqual(defined, registered, "parser/registry drift")
 
 
 if __name__ == "__main__":

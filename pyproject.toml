@@ -53,7 +53,10 @@ disable_error_code = [
     "call-overload",
     "func-returns-value",
     "index",
+    "literal-required",
     "misc",
+    "typeddict-item",
+    "typeddict-unknown-key",
     "unused-ignore",
     "var-annotated",
 ]

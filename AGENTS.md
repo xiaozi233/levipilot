@@ -44,7 +44,7 @@ py -3.11 driver/selftest.py
 | `skills/mcbe-harness-experiments/` | 实验手册 skill（建场/录制/输入坑与实验闭环模板），**真身、随仓库提交**；
   本地发现路径 `.zcode/skills/` 是指向它的目录联接（.zcode 已忽略），用户级另有镜像
   `~/.agents/skills/mcbe-harness-experiments/SKILL.md` |
-| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`）、UI 自动化、mod 构建、移植流程（`porting.md`）、`offsets/` 版本 profile |
+| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`；静态证据册本地维护，不随仓库分发）、UI 自动化、mod 构建、移植流程（`porting.md`）、`offsets/` 版本 profile |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 
 ## 硬约束（改代码前先读这段）

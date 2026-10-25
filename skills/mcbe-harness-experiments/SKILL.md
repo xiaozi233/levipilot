@@ -94,7 +94,8 @@ with ModClient() as client:
   sprint 切换函数（等价动作，但不是按键事件）。
 - **双击空格飞行**：`lab.double_space_fly()`。两条实测约束：只有 `InputOrigin::Hardware`
   会翻转 `flying`（`via=hid` 只起跳、不切换），每次按下必须跨至少 1 tick（同 tick down+up 被丢）。
-  能力门是 `MayFly`，先 `/togglefly`（游戏内聊天框）或管道 `togglefly` 打开；旁观模式无效。
+  能力门是 `MayFly`，先 `/togglefly`（本地世界的聊天框）或管道 `togglefly` 打开；旁观模式无效，
+  **切游戏模式会把能力重置回该模式默认值**（生存/冒险 false、创造 true），切完要重新开。
 - **药水保护**：碰岩浆/深水的实验前 `lab.ensure_protection(client)`（抗火 id 12 + 水下呼吸 id 13，
   默认 900 s），否则会把玩家烧死/淹死；它会往 `state.effects` 写两条，跑"空效果"断言的
   selftest 前后记得清理。
@@ -106,7 +107,9 @@ with ModClient() as client:
   `yaw/pitch`、`flags`、`block_below/feet/head`（方块名 FNV-1a 32）。
 - 位：`on_ground/in_air/jump_edge/sprint/sneak/action_sprint/输入 W A S D Jump/
   block_oob/in_water/in_lava`。
-- 液体里 `Δfeet_y ≈ vy`（1:1）；地面速度字段与位移也近似 1:1（不是 0.546 那套）。
+- `vx/vy/vz` 来自 `Actor::getVelocity()`，等于**下一 tick 的位移**（液体里 `Δfeet_y ≈ vy`，
+  地面也实测比值 1.0）。别把它和 `mem_read` 读到的 `StateVectorComponent+0x18` 混：后者是另一个
+  内部字段，地面约是位移的 0.546 倍（位移 0.2159 → 字段 0.1179，且站着时 vy 仍留着 −0.0784）。
 - `pitch` 正 = 低头。
 
 ## 4. 结论落地

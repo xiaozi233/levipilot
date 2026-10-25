@@ -281,7 +281,7 @@ $$-\mathbf{0.005},\ \mathbf{0.014}$$（流推）与 $$\mathbf{0.54600006}$$（�
   `e1b_deep_water_sink`（水递推逐位）、`e3b_deep_lava_sink`（岩浆递推逐位）、
   `ec_fallin_noinput`（入水减速链 + 空气递推）、`ed_flow_drift`（流推稳态 0.07001）、
   `e5_water_wade`（涉水阻力 0.802）、`e9c_lava_velocity_decay`（岩浆水平阻力 0.5，衰减拟合）、
-`ef_flow_walk`（液位阈值）。
+  `ef_flow_walk`（液位阈值）。
 - **静态基线**（1.26.45.01）：`reverse-skill/work/mc-bedrock-fluid-swim/`
   （`report_fluid_swim.md` + `FORMULAS_fluid_swim.md`），气泡柱见 `work/mc-bedrock-bubble-column/`。
 

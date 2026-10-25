@@ -228,12 +228,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   上锁时被丢弃，只用于验证锁本身）、`queue`=`Keyboard::_inputs` 直推（不发 LL 事件）。
   key-up 未加钩子，对游戏从未见过的按键是空操作。
 - **`/togglefly`（游戏内命令）**：注册进本地服务端命令表，玩家直接在聊天框输入即可开关
-  "双击空格切换飞行"的 `MayFly` 能力；任意模式可用、旁观模式回错误，`NotCheat` 所以不开
-  作弊也能用。客户端 mod 在 `enable()`（主界面阶段）还没有服务器命令表，注册必须挂在
-  `ServerCommandRegisterEvent` 上——直接写在 `enable()` 里会启动即崩（已实测）。命令表按世界
-  重建，注册用 `CommandRegistry*` 身份判重，不会重复挂 execute。管道侧等价命令 `togglefly`
-  （`{"cmd":"togglefly","on":bool}`，回 `togglefly_ok{mayfly,gamemode,flying}`；CLI
-  `togglefly [--on|--off]`）走 tick 线程并带 8 tick 重断言，抵消模式切换后迟到的能力同步。
+  "双击空格切换飞行"的 `MayFly` 能力；生存/创造/冒险实测都生效、旁观模式回错误，`NotCheat`
+  所以不开作弊也能用。**切换游戏模式会把能力重置成该模式默认值**（生存/冒险 false、创造 true），
+  模式变了要重新 `/togglefly`。客户端 mod 在 `enable()`（主界面阶段）还没有服务器命令表，
+  注册必须挂在 `ServerCommandRegisterEvent` 上——直接写在 `enable()` 里会启动即崩（已实测）。
+  命令表按世界重建（退出/重进世界后再输入仍然可用），注册用 `CommandRegistry*` 身份判重，
+  不会重复挂 execute。管道侧等价命令 `togglefly`（`{"cmd":"togglefly","on":bool}`，回
+  `togglefly_ok{mayfly,gamemode,flying}`；CLI `togglefly [--on|--off]`）走 tick 线程并带
+  8 tick 重断言，抵消模式切换后迟到的能力同步（它会在开关之后才到、把开关覆盖掉）。
 - `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），

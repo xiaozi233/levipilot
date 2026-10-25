@@ -105,7 +105,10 @@ py -3.11 driver/selftest.py
 - 运行时 hook 的通用 VA detour 只保留 rcx/rdx/r8/r9；float/xmm 参数、向量返回、超过 4 个
   参数或隐藏返回指针的目标必须写 typed detour，否则 origin 会收到错误参数。
   VA 只校验“可执行页”，指令边界由 IDA 侧确认。
-- `StateVector.vel` 是摩擦前速度，约为真实逐 tick 位移的 0.546 倍；判速度用相邻 tick 位置差。
+- `StateVectorComponent+0x18` 的**原始字段**不是 harness 报的速度：地表行走时它是
+  0.546 × 真实位移（实测位移 0.2159 格/tick，`mem_read` 读到 0.1179），站着不动时 vy 仍留着
+  −0.0784。`state`/`record` 的 `vx/vy/vz` 来自 `Actor::getVelocity()`，等于下一 tick 的位移
+  （液体里与 Δy 1:1），不要再乘 0.546；判速度仍以相邻 tick 位置差为准。
 - `pos.y` 是**脚部**；StateVector 里是眼睛（脚部 + 1.6200101）。
 - 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（旧 frida 路线实测置 0 后
   后台仍满速 tick）；raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
@@ -116,7 +119,8 @@ py -3.11 driver/selftest.py
   实验脚本建议开头 `client.input_lock(True)`、结束时解锁。
 - 双击空格飞行只认 `InputOrigin::Hardware`（`via=hid` 只起跳、不翻转 `flying`），
   且每次按下要跨至少 1 tick；用 `lab.double_space_fly()`，不要手搓零长度的 down/up。
-  能力门是 `MayFly`，脚本侧用 `togglefly` 封装（带 8 tick 重断言）。
+  能力门是 `MayFly`，脚本侧用 `togglefly` 封装（带 8 tick 重断言）；切换游戏模式会把它
+  重置回该模式默认值（生存/冒险 false、创造 true），模式变了要重新开。
 - 客户端 mod 在 `enable()` 里注册游戏内命令会 `0xC0000005`（主界面阶段还没有服务器命令表）：
   必须挂 `ServerCommandRegisterEvent`，并按 `CommandRegistry*` 身份判重（命令表按世界重建）。
   只有服务端侧注册才有意义——能力是服务端权威。

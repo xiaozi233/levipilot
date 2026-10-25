@@ -507,7 +507,10 @@
   另有对照路径 `Keyboard::_inputs().push_back(KeyboardAction)`：能改槽位/开背包，
   但**不会**发 LL 事件，所以事件计数必须以 HID 路径为准。
 - `key_event {code,down,repeat,repeat_ms,via}` 先进入 128 项的 SPSC 环（管道线程写、tick 线程读），
-  在 `safeTickPre` 的 `tickInputInjection()` 里 drain；`via=hid`（默认）/`hardware`/`queue`。
+  在 `safeTickPre` 的 `tickInputInjection()` 里 drain；`via=hid`（默认，Virtual）/
+  `hardware`（Hardware 且带 `mInjectingInput`）/`raw`（Hardware 不带注入标记，等价真人按键）/
+  `queue`（`Keyboard::_inputs` 直推）。双击空格必须走 Hardware origin（脚本用 `hardware`；
+  锁关着时 `raw` 也行，锁一开就被丢），`raw` 平时只用于验证 `input_lock`（见「真实输入锁」）。
   强能力由 `allow_input_inject` 门禁（默认 false），每次注入写 boot log。
 - **鼠标（G2）**：`MouseDevice::feed(action, data, x, y, dx, dy, force)` 是 `MouseInputEvent`
   的发布入口；`mouse_event {action,...}` 同样在 tick 里 drain。
@@ -613,8 +616,11 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 
 ### 双击空格飞行与 `/togglefly`（2026-10-25）
 
-- 能力门是 `AbilitiesIndex::MayFly`；生存/创造都能被 `/togglefly` 或管道 `togglefly` 打开，
-  旁观模式拒绝（`spectator_not_supported` / `success=false`）。
+- 能力门是 `AbilitiesIndex::MayFly`；生存/创造/冒险都能被 `/togglefly` 或管道 `togglefly`
+  打开（三模式实测），旁观模式拒绝（`spectator_not_supported` / `success=false`）。
+- 开关能长期保持（创造关掉后 200 tick 仍为 false，生存打开后 200 tick 仍为 true），但
+  **切换游戏模式会重置成该模式默认值**（生存/冒险 false、创造 true）：生存开启 →
+  切创造（仍 true）→ 切回生存（变 false）。所以模式切换后要重新开。
 - 切换只认 `InputOrigin::Hardware`：`via=hid`（Virtual）只起跳、从不翻转 `flying`；
   每次按下必须跨至少 1 tick（同 tick 内 down+up 被丢掉）。实测 hold=1/2 × gap=1/2/3 全部生效，
   hold=3 开始出现不生效样本，所以 `lab.double_space_fly` 默认 hold=1、gap=2、最多重试 3 次。

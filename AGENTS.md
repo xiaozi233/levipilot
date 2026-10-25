@@ -124,6 +124,9 @@ py -3.11 driver/selftest.py
 - 客户端 mod 在 `enable()` 里注册游戏内命令会 `0xC0000005`（主界面阶段还没有服务器命令表）：
   必须挂 `ServerCommandRegisterEvent`，并按 `CommandRegistry*` 身份判重（命令表按世界重建）。
   只有服务端侧注册才有意义——能力是服务端权威。
+- 请求块里的 `TeleportRequest.clearEffects` 是**共享字段**：`reset` 会写 true，`teleport` 必须显式写回
+  false（2026-10-25 修过一次泄漏 —— 做过一次 reset 后，之后每次 teleport 都静默清空所有药水效果，
+  表现为"刚挂的抗火/水下呼吸凭空消失"）。`checkpoint_load` 走 `resetPlayer(..., clearEffects=false)`。
 - 接收侧封包只能挂 `LoopbackPacketSender::$sendToClient`（两个重载）；`Packet::sendTo*`
   辅助层在单机里实测 0 调用，`NetworkConnection::receivePacket` 也是 0。recv 默认关闭，
   用 `packet_capture {directions:["send","recv"]}` 开；同一 tick 同对象会去重，

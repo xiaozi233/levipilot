@@ -98,7 +98,8 @@ with ModClient() as client:
   **切游戏模式会把能力重置回该模式默认值**（生存/冒险 false、创造 true），切完要重新开。
 - **药水保护**：碰岩浆/深水的实验前 `lab.ensure_protection(client)`（抗火 id 12 + 水下呼吸 id 13，
   默认 900 s），否则会把玩家烧死/淹死；它会往 `state.effects` 写两条，跑"空效果"断言的
-  selftest 前后记得清理。
+  selftest 前后记得清理。`teleport`/`checkpoint_load` **不会**清效果，只有 `reset` 会
+  （2026-10-25 修过"一次 reset 之后每个 teleport 都清效果"的 bug，见 AGENTS 已知坑）。
 - 直接写 ADF/速度只能造出正常输入不可达的状态，结论不可信；状态只用来**读**（如 bit57 判定）。
 
 ## 3. 记录字段与常用判据

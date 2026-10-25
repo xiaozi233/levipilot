@@ -105,6 +105,8 @@ with ModClient() as client:
   水里稳定延迟：从 sprint 标志置位起，接下来 2 个移动 tick 仍按走（0.8 阻力），第 3 个
   才用疾跑 0.9——ADF bit3 与客户端 sprint 标志在第 2 个移动 tick 已置位，是水 drag 读取
   sprint 位滞后约 2 tick，不是 sprint 状态晚。
+  **站着按疾跑键不会预置 sprint**（实测 client_sprint=0、ADF bit3=0）；状态从第一次前进
+  移动才开始，所以"提前按住"也消不掉水里的起步延迟。
 - **双击空格飞行**：`lab.double_space_fly()`。两条实测约束：只有 `InputOrigin::Hardware`
   会翻转 `flying`（`via=hid` 只起跳、不切换），每次按下必须跨至少 1 tick（同 tick down+up 被丢）。
   能力门是 `MayFly`，先 `/togglefly`（本地世界的聊天框）或管道 `togglefly` 打开；旁观模式无效，

@@ -101,6 +101,10 @@ with ModClient() as client:
 - **疾跑**：`set_input(sprint=True)` 现在只走 MoveInput 标志路径（队列/处理器不再重发 sprint
   按钮）。旧实现在默认模式下会让游戏起跳（0.42 弧线），已修复并用 `sprint_no_jump` 回归；
   用旧 sprint 注入得出的"疾跑触发上浮"结论一律作废。
+  平地疾跑一般无延迟；偶发 1 tick 是 sprint 标志更新与 movement 的 tick 相位竞争。
+  水里稳定延迟：从 sprint 标志置位起，接下来 2 个移动 tick 仍按走（0.8 阻力），第 3 个
+  才用疾跑 0.9——ADF bit3 与客户端 sprint 标志在第 2 个移动 tick 已置位，是水 drag 读取
+  sprint 位滞后约 2 tick，不是 sprint 状态晚。
 - **双击空格飞行**：`lab.double_space_fly()`。两条实测约束：只有 `InputOrigin::Hardware`
   会翻转 `flying`（`via=hid` 只起跳、不切换），每次按下必须跨至少 1 tick（同 tick down+up 被丢）。
   能力门是 `MayFly`，先 `/togglefly`（本地世界的聊天框）或管道 `togglefly` 打开；旁观模式无效，

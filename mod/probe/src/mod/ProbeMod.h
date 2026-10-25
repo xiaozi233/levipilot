@@ -191,6 +191,9 @@ public:
     // While scripts own the session, real hardware keys/mouse are dropped at
     // the HID/mouse entry points; our own injections still pass.
     std::atomic_bool mHardwareInputLocked{false};
+    // config lock_input: arm the lock only while a harness client is attached.
+    // Locking at startup made a manually launched game unclickable at the menu.
+    std::atomic_bool mLockInputOnConnect{false};
     // Tick until which a game-side turn is allowed because we injected a mouse
     // move (the game applies it later in the frame, outside our call).
     std::atomic<std::uint64_t> mInjectTurnUntilTick{0};

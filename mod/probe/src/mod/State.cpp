@@ -87,6 +87,7 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
         {"move_x",        finiteOrZero(in.moveX)},
         {"move_y",        finiteOrZero(in.moveY)},
         {"action_sprint", actionSprint          },
+        {"locked",        hardwareInputLocked() },
     };
 
     auto const& item = player.getSelectedItem();

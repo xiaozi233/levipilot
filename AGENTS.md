@@ -117,6 +117,9 @@ py -3.11 driver/selftest.py
   丢弃硬件来源键鼠与转向；注入照常，但 `key_event` 的 `via` 决定是否过锁——
   `hid`(Virtual) 与 `hardware`(Hardware+注入标记) 放行，`raw`(Hardware 无标记) 被丢。
   实验脚本建议开头 `client.input_lock(True)`、结束时解锁。
+  **配置里的 `lock_input` 只在客户端连着时生效**（连接时上锁、断开自动解锁）：启动即锁会让手动开的
+  游戏在主界面点不动按钮（2026-10-25 踩过，`harness.json` 残留 `lock_input:true` 就会中招）。
+  当前锁状态看 `state.input.locked`。
 - 双击空格飞行只认 `InputOrigin::Hardware`（`via=hid` 只起跳、不翻转 `flying`），
   且每次按下要跨至少 1 tick；用 `lab.double_space_fly()`，不要手搓零长度的 down/up。
   能力门是 `MayFly`，脚本侧用 `togglefly` 封装（带 8 tick 重断言）；切换游戏模式会把它

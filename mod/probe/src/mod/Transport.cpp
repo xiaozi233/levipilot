@@ -240,6 +240,14 @@ void ProbeMod::serverLoop() {
                 bootLog("pipe: instance created");
             }
 
+            // lock_input is scoped to a client session: the moment the script
+            // is gone (disconnect, crash, closed client) real input must come
+            // back, or the person at the keyboard cannot even click Resume.
+            if (!connected && mHardwareInputLocked.load(std::memory_order_relaxed)) {
+                mHardwareInputLocked.store(false, std::memory_order_relaxed);
+                bootLog("input_lock: released (no client)");
+            }
+
             if (!connected) {
                 BOOL ok = ConnectNamedPipe(pipe, nullptr);
                 if (!mRunning.load(std::memory_order_relaxed)) {
@@ -253,6 +261,10 @@ void ProbeMod::serverLoop() {
                 }
                 connected = true;
                 bootLog("pipe: client connected");
+                if (mLockInputOnConnect.load(std::memory_order_relaxed)) {
+                    mHardwareInputLocked.store(true, std::memory_order_relaxed);
+                    bootLog("input_lock: armed (client connected)");
+                }
                 // Do not drop rows accumulated while no client was attached:
                 // rotate them to the spool first, then deliver them on this
                 // connection. The client sees how many rows to expect.

@@ -765,7 +765,11 @@ def main(argv: list[str] | None = None) -> int:
             # -- input lock: hardware keys stop, injected events keep working --
             slot_before = int(client.state().get("selected_slot", -1))
             lock = client.input_lock(True)
-            checks.check("input_lock_on", bool(lock.get("on")), str(lock))
+            checks.check(
+                "input_lock_on",
+                bool(lock.get("on")) and client.state().get("input", {}).get("locked") is True,
+                f"{lock} state.locked={client.state().get('input', {}).get('locked')}",
+            )
             try:
                 # ``raw`` is a genuine Hardware key with no injection guard; it
                 # is the only way to exercise the real-press branch of the lock

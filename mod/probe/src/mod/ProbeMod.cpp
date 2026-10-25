@@ -135,6 +135,8 @@ bool ProbeMod::disable() {
     mMacroRecording = false;
     mMacroPlaying   = false;
     packetCaptureStop();
+    // Never leave the game with real input dropped after an unload.
+    mHardwareInputLocked = false;
 
     if (mMouseListener) {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
@@ -212,7 +214,11 @@ void ProbeMod::loadAutoConfig() {
     mAllowPacketCapture = config.value("allow_packet_capture", false);
     mAllowPacketInject  = config.value("allow_packet_inject", false);
     mAllowInputInject = config.value("allow_input_inject", false);
-    mHardwareInputLocked = config.value("lock_input", false);
+    // Armed by serverLoop() when a client connects, not here: a lock held from
+    // startup (previous script run, stale harness.json) makes the main menu
+    // unclickable for the person at the keyboard.
+    mLockInputOnConnect  = config.value("lock_input", false);
+    mHardwareInputLocked = false;
     mAllowVersionMismatch = config.value("allow_version_mismatch", false);
     setAllowVersionMismatch(mAllowVersionMismatch.load());
     mWorld.setSignInWaitMs(std::clamp(config.value("signin_wait_ms", 15000), 0, 120000));

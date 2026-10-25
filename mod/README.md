@@ -222,7 +222,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   dev.py `--lock-input`）在三个入口丢弃**硬件来源**输入——`HIDController::$onKeyDown` 的
   `InputOrigin::Hardware`、`MouseDevice::feed` 的非注入调用、以及非注入的相机转向；
   mod 自己的注入（Virtual 键、带 `mInjectingInput` 的硬件键/鼠标/宏）照常工作。
-  `driver/selftest.py` 启动自动上锁、结束解锁，避免真人在机器旁按键/动鼠标污染结果。
+  **配置里的 `lock_input` 只在 harness 客户端连着时生效**：连接时上锁、断开/客户端崩溃时自动解锁，
+  手动开游戏（没有人连）永远不会被锁 —— 早前是启动即锁，导致主界面按钮点不动。
+  `state.input.locked` 反映当前锁状态。`driver/selftest.py` 启动自动上锁、结束解锁。
   `key_event` 的 `via` 决定走哪条：`hid`=Virtual、`hardware`=Hardware 且标记为注入
   （上锁时仍放行，双击空格必须用这条）、`raw`=Hardware 且**不带**注入标记（等价于真人按键，
   上锁时被丢弃，只用于验证锁本身）、`queue`=`Keyboard::_inputs` 直推（不发 LL 事件）。

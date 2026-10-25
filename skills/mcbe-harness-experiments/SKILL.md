@@ -90,8 +90,9 @@ with ModClient() as client:
 - **游泳**：深水（≥2–3 格、离底）里 `set_input(forward=1, sprint=True)` 4–8 tick 置 ADF bit57；
   `swim --drive` 封装（内部就是这条输入路径，走 `_toggleClientSprint`）。关键是**sprint 状态**：
   HID 的 W+Ctrl 在浸没状态不会把 `state.sprinting` 置位（双击 W 也不行），纯按键事件进不去。
-- **上浮**：按住空格就升——水 +0.175 格/tick、岩浆 +0.04、游泳态 +0.2；**抬头不会上浮**
-  （游泳门把 vy 压成 0），贴到水面会"探出又落回"地上下浮。
+- **上浮**：按住空格就升——水 +0.175 格/tick、岩浆 +0.04、游泳态 +0.2；贴到水面会"探出又落回"地上下浮。
+  游泳态本身在深水里也会以 +0.16~0.2 缓慢上浮（与俯仰几乎无关，低头超过约 15° 才转下潜）；
+  别把"贴着水面看起来悬停"当成踩水——那是 0.4 格判定截断造成的假象。
 - **跳跃**：`jump-key` 拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线 selftest 逐位一致。
 - **疾跑**：`swim --drive` 与宏回放都走 HID 疾跑键；`set_input(sprint=True)` 调的是客户端
   sprint 切换函数（等价动作，但不是按键事件）。

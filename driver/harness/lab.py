@@ -348,7 +348,8 @@ def swimming_state(client: ModClient) -> bool | None:
 
 
 def swim_stop(client: ModClient, *, settle: int = 10) -> dict[str, Any]:
-    """Release the swim keys; SWIMMING clears within a few ticks."""
+    """Release the swim drive; SWIMMING clears within a few ticks."""
+    client.set_input()  # drops forward/sprint flags and toggles sprint back off
     for code in (KEY_W, KEY_SPRINT, KEY_SPACE):
         client.key_event(code, False)
     client.wait_ticks(settle)
@@ -363,16 +364,18 @@ def swim_drive(
     hold: bool = True,
     poll_ticks: int = 4,
 ) -> dict[str, Any]:
-    """Enter SWIMMING the way a player does: hold W (+ sprint) in deep water.
+    """Enter SWIMMING the way the sprint key does: forward + sprint state.
 
-    Real key events only. Water must be deep enough that the player is off the
-    ground; from the bottom hold Space (jump swims up) or drop in from above.
-    ``hold=False`` releases the keys right after entering (the state then
-    clears); keys are always released when the trigger does not fire.
+    ``set_input(forward=1, sprint=True)`` drives the same path a held sprint key
+    uses (``MoveInputComponentSprinting`` / ``MoveInputStateSprintDown`` plus
+    ``_toggleClientSprint``). Measured on 1.26.51.01: while submerged, HID W +
+    Ctrl (and a double-tapped W) leave ``state.sprinting`` false, so a pure
+    key-event drive never enters SWIMMING; the sprint *state* is what gates it.
+    Water must be deep enough that the player is off the ground; from the bottom
+    hold Space to swim up. ``hold=False`` stops right after entering (the state
+    then clears); the drive is always released when the trigger does not fire.
     """
-    client.key_event(KEY_W, True)
-    if sprint:
-        client.key_event(KEY_SPRINT, True)
+    client.set_input(forward=1.0, sprint=sprint, ticks=-1)
     entered = False
     elapsed = 0
     limit = max(poll_ticks, int(timeout * 20))
@@ -386,9 +389,7 @@ def swim_drive(
         held = True
     else:
         held = False
-        client.key_event(KEY_W, False)
-        if sprint:
-            client.key_event(KEY_SPRINT, False)
+        client.set_input()
     return {
         "event": "swim_drive",
         "entered": entered,

@@ -580,7 +580,7 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **213/213**
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **215/215**
 （`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 193/193。
 
 ### 实验辅助（`driver/harness/lab.py`）
@@ -649,7 +649,7 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
   兜底，结构化异常回 `internal_error, phase=ecs`。
 - `Registries`/`Context` 仍走客户端 tick（客户端 context，同线程；Context 本就有 SEH）。
 - 验证：`ecs_entity`（115 组件）/`ecs_components`（115，94 有尺寸）/`ecs_component`（StateVector 36B）
-  全部通过；selftest 213/213。
+  全部通过；selftest 215/215。
 
 ### 行为契约与加固
 

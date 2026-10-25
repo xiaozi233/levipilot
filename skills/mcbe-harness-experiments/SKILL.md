@@ -87,8 +87,11 @@ with ModClient() as client:
 
 运动状态一律用**玩家会按的键**复现，不写状态位、不直接改速度：
 
-- **游泳**：深水（≥2–3 格、离底）中按住前进 + 疾跑键 → ADF bit57 在 4–5 tick 置位；
-  `swim --drive` 封装（内部 `lab.swim_drive`）。`set_input` 的合成标志**不会**触发游泳。
+- **游泳**：深水（≥2–3 格、离底）里 `set_input(forward=1, sprint=True)` 4–8 tick 置 ADF bit57；
+  `swim --drive` 封装（内部就是这条输入路径，走 `_toggleClientSprint`）。关键是**sprint 状态**：
+  HID 的 W+Ctrl 在浸没状态不会把 `state.sprinting` 置位（双击 W 也不行），纯按键事件进不去。
+- **上浮**：按住空格就升——水 +0.175 格/tick、岩浆 +0.04、游泳态 +0.2；**抬头不会上浮**
+  （游泳门把 vy 压成 0），贴到水面会"探出又落回"地上下浮。
 - **跳跃**：`jump-key` 拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线 selftest 逐位一致。
 - **疾跑**：`swim --drive` 与宏回放都走 HID 疾跑键；`set_input(sprint=True)` 调的是客户端
   sprint 切换函数（等价动作，但不是按键事件）。
@@ -118,7 +121,7 @@ with ModClient() as client:
 - 原始数据与脚本放 `out/<case>/`（git 忽略），结论文档放 `docs/`；
   范例：`docs/fluid-movement.md`（三介质递推 + 流推 + 泳姿）。
 - 改了 mod 命令/行为：按 AGENTS 流程补 `tests/` 单测 + `driver/selftest.py` 检查 +
-  `mod/README.md` 的「实测/限制」与基线数字（当前 **213/213** live、**193** 离线）。
+  `mod/README.md` 的「实测/限制」与基线数字（当前 **215/215** live、**193** 离线）。
 - 跨版本复核静态结论用
   `reverse-skill/.../bedrock-client-re/scripts/pe_code_diff.py OLD.exe NEW.exe --values ...`。
 

@@ -218,27 +218,35 @@ class SwimDriveTests(unittest.TestCase):
         ecs_calls = [call for call in client.calls if call[0] == "ecs_context"]
         self.assertEqual(ecs_calls[-1][1][1], ACTOR_DATA_FLAG_COMPONENT)
 
-    def test_drive_holds_keys_after_entering(self) -> None:
+    def test_drive_sets_sprint_state_after_entering(self) -> None:
         client = self._client(swim_after=1)
         result = swim_drive(client, timeout=0.5)
         self.assertTrue(result["entered"])
         self.assertTrue(result["held"])
-        downs = [c for c in client.calls if c[0] == "key_event" and c[1][1] is True]
-        self.assertEqual([c[1][0] for c in downs], [KEY_W, KEY_SPRINT])
+        drives = [
+            c
+            for c in client.calls
+            if c[0] == "set_input" and c[2].get("forward") == 1.0 and c[2].get("sprint") is True
+        ]
+        self.assertEqual(len(drives), 1)
+        self.assertEqual(drives[0][2].get("ticks"), -1)
+        # A pure key-event drive cannot enter SWIMMING: it never sets sprint.
+        self.assertEqual([c for c in client.calls if c[0] == "key_event"], [])
 
     def test_drive_releases_when_never_entered(self) -> None:
         client = self._client(swim_after=10_000)
         result = swim_drive(client, timeout=0.2, poll_ticks=2)
         self.assertFalse(result["entered"])
         self.assertFalse(result["held"])
-        ups = [c for c in client.calls if c[0] == "key_event" and c[1][1] is False]
-        self.assertEqual({c[1][0] for c in ups}, {KEY_W, KEY_SPRINT})
+        releases = [c for c in client.calls if c[0] == "set_input" and not c[2]]
+        self.assertEqual(len(releases), 1)
 
     def test_stop_releases_all_swim_keys(self) -> None:
         client = self._client(swim_after=0)
         swim_stop(client, settle=1)
         released = {c[1][0] for c in client.calls if c[0] == "key_event" and c[1][1] is False}
         self.assertEqual(released, {KEY_W, KEY_SPRINT, KEY_SPACE})
+        self.assertTrue(any(c[0] == "set_input" and not c[2] for c in client.calls))
 
 
 class DoubleSpaceTests(unittest.TestCase):

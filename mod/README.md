@@ -187,7 +187,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **213/213**（`harness.json` 开 `allow_input_inject`/
+当前基线：live selftest **215/215**（`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`）、离线单测 193/193。常用实测数字：
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。

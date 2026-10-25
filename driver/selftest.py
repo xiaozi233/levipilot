@@ -30,11 +30,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
-from driver.harness.lab import double_space_fly, swim_drive, swim_stop  # noqa: E402
+from driver.harness.lab import Builder, double_space_fly, swim_drive, swim_stop  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
+
+# Fixed swim fixture: 3x3x10 water column inside a stone shell at (900, 900).
+SWIM_X, SWIM_Y, SWIM_Z = 900, -55.5, 900
 
 
 class Checks:
@@ -1778,28 +1781,53 @@ def main(argv: list[str] | None = None) -> int:
         if not inject_enabled:
             checks.note("swim_drive", "skipped: allow_input_inject is disabled")
         else:
-            # Build on open ground away from the spawn structure so the pool
-            # has room and any spread can be swept without touching structures.
-            client.teleport(feet[0] + 40.0, feet[1] + 2.0, feet[2] + 40.0)
+            # Absolute fixture: a 3x3, 10-deep water column inside a stone
+            # shell at a fixed world position. Nothing here depends on where the
+            # player happened to be, so every run starts from the same blocks.
+            # Stone shell -64..-54, water interior -63..-54 (surface top -53).
+            client.teleport(SWIM_X + 0.5, -58.0, SWIM_Z + 0.5)
             wait_ticks(client, 25)
-            spot = client.state()
-            sx = math.floor(float(spot["feet_x"]))
-            sy = math.floor(float(spot["feet_y"]))
-            sz = math.floor(float(spot["feet_z"]))
-            client.command(f"fill {sx - 1} {sy} {sz - 1} {sx + 1} {sy + 2} {sz + 1} water")
-            wait_ticks(client, 8)
-            client.teleport(sx + 0.5, sy + 1.0, sz + 0.5)
-            client.look(0.0, 0.0)
-            wait_ticks(client, 10)
+            builder = Builder(client)
+            pool = builder.build(
+                [
+                    f"fill {SWIM_X - 2} -64 {SWIM_Z - 2} {SWIM_X + 2} -54 {SWIM_Z + 2} stone",
+                    f"fill {SWIM_X - 1} -63 {SWIM_Z - 1} {SWIM_X + 1} -54 {SWIM_Z + 1} water",
+                ],
+                {
+                    (SWIM_X, -58, SWIM_Z): "minecraft:water",
+                    (SWIM_X, -63, SWIM_Z): "minecraft:water",
+                    (SWIM_X - 2, -58, SWIM_Z): "minecraft:stone",
+                },
+            )
+            if not all(check.ok for check in pool):
+                checks.note("swim_pool", f"readback mismatch: {pool}")
+
+            def reset_swim_spot() -> None:
+                """Every swim sub-check starts from the identical state.
+
+                reset() clears input/tasks/velocity/effects and drops the player
+                at the same point with yaw/pitch 0 inside the fixed pool, so the
+                entry, dive and rise cannot inherit anything from each other.
+                """
+                client.command("gamemode survival @s")
+                client.reset(SWIM_X + 0.5, SWIM_Y, SWIM_Z + 0.5, yaw=0.0, pitch=0.0)
+                wait_ticks(client, 12)
+
+            reset_swim_spot()
             entered = swim_drive(client, timeout=1.5)
             checks.check(
                 "swim_drive_entered",
                 bool(entered.get("entered")) and bool(entered.get("swimming")),
                 str(entered),
             )
+
+            # Dive from the same fixed point; 20 ticks (~5 blocks) stay clear of
+            # the floor in a 9-deep pool.
+            reset_swim_spot()
+            swim_drive(client, timeout=1.5)
             client.look(0.0, 60.0)
             client.record_bin_start(period=1)
-            wait_ticks(client, 30)
+            wait_ticks(client, 20)
             client.record_bin_stop()
             dive = client.record_dump_all(format="jsonl")
             wet_free = [entry for entry in dive if entry.in_water and not entry.on_ground]
@@ -1807,6 +1835,25 @@ def main(argv: list[str] | None = None) -> int:
                 "swim_drive_dive",
                 bool(wet_free) and min(entry.vy for entry in wet_free) < -0.15,
                 f"free={len(wet_free)} min_vy={min((e.vy for e in wet_free), default=0.0):.4f}",
+            )
+
+            # Holding Space lifts the player in water (+0.175 blocks/tick);
+            # looking up does not (the swim gate pins vy to 0). Same fixed start.
+            reset_swim_spot()
+            swim_drive(client, timeout=1.5)
+            client.look(0.0, 0.0)
+            client.record_bin_start(period=1)
+            client.key_event(32, True)
+            wait_ticks(client, 16)
+            client.record_bin_stop()
+            rise = client.record_dump_all(format="jsonl")
+            client.key_event(32, False)
+            wet_rise = [entry for entry in rise if entry.in_water]
+            rise_vy = [entry.vy for entry in wet_rise[-6:]]
+            checks.check(
+                "swim_hold_space_rises",
+                bool(rise_vy) and sum(rise_vy) / len(rise_vy) > 0.05,
+                f"water_rows={len(wet_rise)} tail_vy={[round(v, 3) for v in rise_vy]}",
             )
             stopped = swim_stop(client)
             checks.check("swim_stop_clears", stopped.get("swimming") is False, str(stopped))
@@ -1918,9 +1965,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             client.command(f"gamemode {gm_now} @s")
             wait_ticks(client, 8)
-            # Remove the pool and any spread on the surface layers.
-            client.command(f"fill {sx - 4} {sy} {sz - 4} {sx + 4} {sy + 3} {sz + 4} air")
-            wait_ticks(client, 15)
+            # The swim pool lives at the fixed off-site fixture (SWIM_X/SWIM_Z)
+            # and is intentionally left in place: keeping the same blocks makes
+            # the next run start from the identical geometry.
             # The dive's ground contact enqueues a player_landed event; consume
             # it so the later landing check does not read this one.
             drain_deadline = time.monotonic() + 0.5

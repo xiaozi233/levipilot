@@ -187,7 +187,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **212/212**（`harness.json` 开 `allow_input_inject`/
+当前基线：live selftest **213/213**（`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`）、离线单测 193/193。常用实测数字：
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
@@ -229,7 +229,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   key-up 未加钩子，对游戏从未见过的按键是空操作。
 - **`/togglefly`（游戏内命令）**：注册进本地服务端命令表，玩家直接在聊天框输入即可开关
   "双击空格切换飞行"的 `MayFly` 能力；生存/创造/冒险实测都生效、旁观模式回错误，`NotCheat`
-  所以不开作弊也能用。**切换游戏模式会把能力重置成该模式默认值**（生存/冒险 false、创造 true），
+  所以世界关掉作弊也能用（selftest `togglefly_not_cheat`）。
+  **切换游戏模式会把能力重置成该模式默认值**（生存/冒险 false、创造 true），
   模式变了要重新 `/togglefly`。客户端 mod 在 `enable()`（主界面阶段）还没有服务器命令表，
   注册必须挂在 `ServerCommandRegisterEvent` 上——直接写在 `enable()` 里会启动即崩（已实测）。
   命令表按世界重建（退出/重进世界后再输入仍然可用），注册用 `CommandRegistry*` 身份判重，

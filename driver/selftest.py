@@ -1868,6 +1868,33 @@ def main(argv: list[str] | None = None) -> int:
             )
             client.command("togglefly")  # leave the gate off for the spectator check
             wait_ticks(client, 6)
+            # NotCheat: the command is usable in a world with cheats switched off
+            # (the client still sends the request; the server allows this flag).
+            try:
+                client.commands_enabled(False)
+                wait_ticks(client, 6)
+                client.set_input()
+                client.key_event(0xBF, True, via="hid")
+                wait_ticks(client, 2)
+                client.key_event(0xBF, False, via="hid")
+                wait_ticks(client, 3)
+                client.text_input("togglefly")
+                wait_ticks(client, 3)
+                client.key_event(0x0D, True, via="hid")
+                wait_ticks(client, 2)
+                client.key_event(0x0D, False, via="hid")
+                wait_ticks(client, 8)
+                no_cheat_mayfly = client.state().get("mayfly")
+                checks.check(
+                    "togglefly_not_cheat",
+                    no_cheat_mayfly is True,
+                    f"commands_enabled=False mayfly={no_cheat_mayfly}",
+                )
+            finally:
+                client.commands_enabled(True)
+                wait_ticks(client, 6)
+            client.command("togglefly")
+            wait_ticks(client, 6)
             client.command("gamemode spectator @s")
             wait_ticks(client, 8)
             try:

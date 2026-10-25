@@ -117,7 +117,7 @@ with ModClient() as client:
 - 原始数据与脚本放 `out/<case>/`（git 忽略），结论文档放 `docs/`；
   范例：`docs/fluid-movement.md`（三介质递推 + 流推 + 泳姿）。
 - 改了 mod 命令/行为：按 AGENTS 流程补 `tests/` 单测 + `driver/selftest.py` 检查 +
-  `mod/README.md` 的「实测/限制」与基线数字（当前 **212/212** live、**193** 离线）。
+  `mod/README.md` 的「实测/限制」与基线数字（当前 **213/213** live、**193** 离线）。
 - 跨版本复核静态结论用
   `reverse-skill/.../bedrock-client-re/scripts/pe_code_diff.py OLD.exe NEW.exe --values ...`。
 

@@ -162,7 +162,7 @@ py -3.11 driver/selftest.py
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **212/212**
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **213/213**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 193/193、
 ruff/mypy（driver+tests）全绿。
 

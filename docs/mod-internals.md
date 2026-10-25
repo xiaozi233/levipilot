@@ -576,7 +576,7 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **212/212**
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **213/213**
 （`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 193/193。
 
 ### 实验辅助（`driver/harness/lab.py`）
@@ -618,6 +618,8 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 
 - 能力门是 `AbilitiesIndex::MayFly`；生存/创造/冒险都能被 `/togglefly` 或管道 `togglefly`
   打开（三模式实测），旁观模式拒绝（`spectator_not_supported` / `success=false`）。
+- `CommandFlagValue::NotCheat` 生效：把世界的 `commands_enabled` 写成 false 后，聊天框输入
+  `/togglefly` 仍然执行（`state.mayfly` 翻转，聊天回显正常），selftest `togglefly_not_cheat`。
 - 开关能长期保持（创造关掉后 200 tick 仍为 false，生存打开后 200 tick 仍为 true），但
   **切换游戏模式会重置成该模式默认值**（生存/冒险 false、创造 true）：生存开启 →
   切创造（仍 true）→ 切回生存（变 false）。所以模式切换后要重新开。
@@ -643,7 +645,7 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
   兜底，结构化异常回 `internal_error, phase=ecs`。
 - `Registries`/`Context` 仍走客户端 tick（客户端 context，同线程；Context 本就有 SEH）。
 - 验证：`ecs_entity`（115 组件）/`ecs_components`（115，94 有尺寸）/`ecs_component`（StateVector 36B）
-  全部通过；selftest 212/212。
+  全部通过；selftest 213/213。
 
 ### 行为契约与加固
 

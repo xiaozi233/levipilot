@@ -94,14 +94,20 @@ py -3.11 driver/selftest.py
 - 直接写客户端位置（`StateVector`/`ActorSetPositionRequest`）会被服务端覆盖；位置是服务端权威。
 - 朝向必须走命令通道（`/tp @s ~ ~ ~ yaw pitch`）；只改组件会橡皮筋（客户端相机每帧写回）。
 - 游泳态（ADF bit57）由**客户端 sprint 状态**门控：深水里 `set_input(forward=1, sprint=True)`
-  4–8 tick 置位（这条走 `_toggleClientSprint`，等价按住疾跑键）；只给前进不会进。
+  4–8 tick 置位（写 `MoveInputComponentSprinting` / `MoveInputStateSprintDown`，等价按住疾跑键）；只给前进不会进。
   **HID 的 W+Ctrl / 双击 W 在浸没状态不会把 `state.sprinting` 置位**，纯按键事件驱动进不去
   （2026-10-25 复核推翻旧说法）。`lab.swim_drive()` / CLI `swim --drive` 已改用输入路径；
   `jump-key` 是拍空格（HID Space）触发跳跃。
 - 移动输入要同时写客户端与服务端两份，否则预测/校正互相拉扯。
+- **`set_input(sprint=True)` 旧实现会在 queue/handler 里重发 sprint 按钮，并在 1.26.51.01
+  触发一次 0.42 跳跃**（`forward=0` 也能复现），曾污染所有 sprint 系游泳/岩浆实验。
+  已在 `Input.cpp` 里改为 mode 1 同时开启时跳过该按钮；回归检查 `sprint_no_jump`。
+  实验每一步先 `lab.settle(...)` 验证 `on_ground`/静止/`in_water`/`sprinting` 再注入，
+  不要用裸 `sleep` 当前提（`swim_start_still` 也是回归检查）。
 - 跳跃不能只靠输入标志/队列/handler：1.26.51.01 上前 3 tick 位置不动、第 4 tick 一次性补
   V1+V2+V3（约 0.99 格）。起跳沿必须调 `LocalPlayer::jumpFromGround()`；
-  `MobJump::setJumpPendingScale` 单独用不解决。
+  `MobJump::setJumpPendingScale` 单独用不解决。水中按 Space 到第一个 `+0.04` 有 2–4 tick
+  延迟（输入队列 + 水物理切换），"刚进水跳不起来"是延迟不是门。
 - 版本锚点的导入符号是 `jmp [rip+0]` thunk，且指针随 ASLR 变化；签名必须先跟 thunk 到真实
   函数，绝不能把 thunk 里的绝对地址当签名。
 - 运行时 hook 的通用 VA detour 只保留 rcx/rdx/r8/r9；float/xmm 参数、向量返回、超过 4 个
@@ -170,7 +176,7 @@ py -3.11 driver/selftest.py
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **215/215**
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **217/217**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 193/193、
 ruff/mypy（driver+tests）全绿。
 

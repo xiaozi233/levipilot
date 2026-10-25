@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -367,8 +368,8 @@ def swim_drive(
     """Enter SWIMMING the way the sprint key does: forward + sprint state.
 
     ``set_input(forward=1, sprint=True)`` drives the same path a held sprint key
-    uses (``MoveInputComponentSprinting`` / ``MoveInputStateSprintDown`` plus
-    ``_toggleClientSprint``). Measured on 1.26.51.01: while submerged, HID W +
+    uses (``MoveInputComponentSprinting`` / ``MoveInputStateSprintDown``).
+    Measured on 1.26.51.01: while submerged, HID W +
     Ctrl (and a double-tapped W) leave ``state.sprinting`` false, so a pure
     key-event drive never enters SWIMMING; the sprint *state* is what gates it.
     Water must be deep enough that the player is off the ground; from the bottom
@@ -396,4 +397,76 @@ def swim_drive(
         "swimming": swimming_state(client),
         "ticks": elapsed,
         "held": held,
+    }
+
+
+def settle(
+    client: ModClient,
+    *,
+    ticks: int = 5,
+    timeout: float = 6.0,
+    on_ground: bool | None = True,
+    still: float | None = 1e-3,
+    include_vertical: bool = True,
+    in_water: bool | None = None,
+    in_lava: bool | None = None,
+    sprinting: bool | None = None,
+    clear_input: bool = True,
+) -> dict[str, Any]:
+    """Release inputs, then require the requested state for N consecutive ticks.
+
+    Every experiment step should start from a *verified* state instead of
+    "probably still". ``still`` applies to ``vx``/``vz`` (and ``vy`` when
+    ``include_vertical``). ``in_water`` / ``in_lava`` / ``sprinting`` are read
+    from the same ``state`` reply (no extra record session), so the gate does
+    not disturb the tick it is checking.
+
+    Returns ``{"ok", "ticks", "state"}``; callers assert ``ok``.
+    A liquid precondition usually needs ``on_ground=None`` and
+    ``include_vertical=False`` (passive sink is not zero).
+    """
+    if clear_input:
+        client.set_input()
+        for code in (KEY_W, KEY_SPRINT, KEY_SPACE):
+            client.key_event(code, False)
+    deadline = time.monotonic() + timeout
+    streak = 0
+    last_tick: int | None = None
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        state = client.state()
+        last = dict(state)
+        tick = int(state.get("tick", -1))
+        if tick == last_tick:
+            time.sleep(0.01)
+            continue
+        last_tick = tick
+        ok = True
+        if on_ground is not None:
+            ok = ok and bool(state.get("on_ground")) == on_ground
+        if still is not None:
+            ok = ok and abs(float(state.get("vx", 0.0))) <= still
+            ok = ok and abs(float(state.get("vz", 0.0))) <= still
+            if include_vertical:
+                ok = ok and abs(float(state.get("vy", 0.0))) <= still
+        if in_water is not None:
+            ok = ok and bool(state.get("in_water")) == in_water
+        if in_lava is not None:
+            feet = str(state.get("block_feet", ""))
+            head = str(state.get("block_head", ""))
+            lava = feet in ("minecraft:lava", "minecraft:flowing_lava") or head in (
+                "minecraft:lava",
+                "minecraft:flowing_lava",
+            )
+            ok = ok and lava == in_lava
+        if sprinting is not None:
+            ok = ok and bool(state.get("sprinting")) == sprinting
+        streak = streak + 1 if ok else 0
+        if streak >= ticks:
+            break
+    return {
+        "event": "settle",
+        "ok": streak >= ticks,
+        "ticks": streak,
+        "state": last,
     }

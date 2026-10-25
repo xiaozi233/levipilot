@@ -88,16 +88,19 @@ with ModClient() as client:
 运动状态一律用**玩家会按的键**复现，不写状态位、不直接改速度：
 
 - **游泳**：深水（≥2–3 格、离底）里 `set_input(forward=1, sprint=True)` 4–8 tick 置 ADF bit57；
-  `swim --drive` 封装（内部就是这条输入路径，走 `_toggleClientSprint`）。关键是**sprint 状态**：
+  `swim --drive` 封装（内部就是这条输入路径，写 MoveInput 的 sprint 标志）。关键是**sprint 状态**：
   HID 的 W+Ctrl 在浸没状态不会把 `state.sprinting` 置位（双击 W 也不行），纯按键事件进不去。
-- **上浮**：按住空格就升——水 +0.175 格/tick、岩浆 +0.04；贴到水面会"探出又落回"地上下浮。
-  游泳态本身在深水里也会以 +0.16~0.2 缓慢上浮（与俯仰几乎无关，低头超过约 15° 才转下潜），
-  但这一层的代码归属还没定位（**不是** SwimAmount 的 0.2——那是梯子/藤蔓）。
-  只抬头不前进会被泳姿门置成 vy=0（踩水），"抬头上浮"要配合前进+疾跑才看得到。
-  别把"贴着水面看起来悬停"当成踩水——那是 0.4 格判定截断造成的假象。
+- **上浮**：按住空格就升——水/游泳态都是 +0.175 格/tick，岩浆 +0.04；贴到水面会"探出又落回"。
+  游泳态平视（$\tau=0$）是真正的 vy=0（踩水）；水下抬头按泳姿 $\lambda$ 上升
+  （pitch −30° ≈ +0.121）；头露出水面后抬头才会被置零。
+  旧测的"游泳态 +0.2 / 平视也 +0.16~0.2"是 sprint 注入的隐藏 jump（已修，见下）。
+- **前提检查**：每个实验步骤先 `lab.settle(...)`（连续 N tick 验证 on_ground / 静止 /
+  在水中 / 非疾跑），再注入输入；不要用裸 sleep 当前提。
+  `swim_start_still` / `sprint_no_jump` 是回归检查。
 - **跳跃**：`jump-key` 拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线 selftest 逐位一致。
-- **疾跑**：`swim --drive` 与宏回放都走 HID 疾跑键；`set_input(sprint=True)` 调的是客户端
-  sprint 切换函数（等价动作，但不是按键事件）。
+- **疾跑**：`set_input(sprint=True)` 现在只走 MoveInput 标志路径（队列/处理器不再重发 sprint
+  按钮）。旧实现在默认模式下会让游戏起跳（0.42 弧线），已修复并用 `sprint_no_jump` 回归；
+  用旧 sprint 注入得出的"疾跑触发上浮"结论一律作废。
 - **双击空格飞行**：`lab.double_space_fly()`。两条实测约束：只有 `InputOrigin::Hardware`
   会翻转 `flying`（`via=hid` 只起跳、不切换），每次按下必须跨至少 1 tick（同 tick down+up 被丢）。
   能力门是 `MayFly`，先 `/togglefly`（本地世界的聊天框）或管道 `togglefly` 打开；旁观模式无效，

@@ -119,6 +119,14 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
             bool const buttons[9] =
                 {false, false, false, false, state.sprint, state.sneak, state.jump, state.rmb, state.lmb};
             for (size_t i = 4; i < 9; ++i) {
+                // Sprint is already applied through the MoveInput flags above.
+                // Re-sending it as the sprint *button* made the game jump on flat
+                // ground (measured 2026-10-25: modes 2/4 + sprint=true + forward=0
+                // produced a 0.42 arc), which contaminated sprint experiments.
+                if (i == 4 && (mode & 1)) {
+                    mButtonStates[i] = false;
+                    continue;
+                }
                 if (buttons[i] != mButtonStates[i]) {
                     queue->enqueueButton(
                         ActionIds[i],
@@ -141,6 +149,10 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
             bool const buttons[9] =
                 {false, false, false, false, state.sprint, state.sneak, state.jump, state.rmb, state.lmb};
             for (size_t i = 4; i < 9; ++i) {
+                if (i == 4 && (mode & 1)) {
+                    mHandlerStates[i] = false;
+                    continue;
+                }
                 if (buttons[i] != mHandlerStates[i]) {
                     invokeButtonHandlers(*handler, buttons[i], ActionIds[i], client);
                     mHandlerStates[i] = buttons[i];

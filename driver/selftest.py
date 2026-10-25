@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
-from driver.harness.lab import Builder, double_space_fly, swim_drive, swim_stop  # noqa: E402
+from driver.harness.lab import Builder, double_space_fly, settle, swim_drive, swim_stop  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
@@ -1802,18 +1802,34 @@ def main(argv: list[str] | None = None) -> int:
             if not all(check.ok for check in pool):
                 checks.note("swim_pool", f"readback mismatch: {pool}")
 
-            def reset_swim_spot() -> None:
-                """Every swim sub-check starts from the identical state.
+            def reset_swim_spot() -> dict:
+                """Every swim sub-check starts from the identical, verified state.
 
                 reset() clears input/tasks/velocity/effects and drops the player
-                at the same point with yaw/pitch 0 inside the fixed pool, so the
-                entry, dive and rise cannot inherit anything from each other.
+                at the same point with yaw/pitch 0 inside the fixed pool.
+                ``settle`` then requires four consecutive ticks of "no input,
+                no horizontal motion, in water" before the step starts, so a
+                leftover velocity from the previous sub-check cannot leak in.
                 """
                 client.command("gamemode survival @s")
                 client.reset(SWIM_X + 0.5, SWIM_Y, SWIM_Z + 0.5, yaw=0.0, pitch=0.0)
-                wait_ticks(client, 12)
+                wait_ticks(client, 8)
+                return settle(
+                    client,
+                    ticks=4,
+                    on_ground=None,
+                    still=2e-3,
+                    include_vertical=False,
+                    in_water=True,
+                    sprinting=False,
+                )
 
-            reset_swim_spot()
+            swim_start = reset_swim_spot()
+            checks.check(
+                "swim_start_still",
+                bool(swim_start.get("ok")),
+                f"ticks={swim_start.get('ticks')}",
+            )
             entered = swim_drive(client, timeout=1.5)
             checks.check(
                 "swim_drive_entered",
@@ -1857,6 +1873,40 @@ def main(argv: list[str] | None = None) -> int:
             )
             stopped = swim_stop(client)
             checks.check("swim_stop_clears", stopped.get("swimming") is False, str(stopped))
+
+            # Sprint must not inject a jump. Re-sending the sprint *button*
+            # through the queue/handler modes used to produce a 0.42 jump arc
+            # on flat ground (measured 2026-10-25), which contaminated every
+            # sprint experiment; the direct MoveInput flags are enough.
+            client.reset(SWIM_X + 10.5, -60.0, SWIM_Z + 0.5, yaw=0.0, pitch=0.0)
+            wait_ticks(client, 8)
+            sprint_pre = settle(
+                client,
+                ticks=5,
+                on_ground=True,
+                still=1e-3,
+                include_vertical=True,
+                in_water=False,
+                sprinting=False,
+            )
+            client.record_bin_start(period=1)
+            client.set_input(forward=1.0, sprint=True, ticks=6)
+            wait_ticks(client, 8)
+            client.record_bin_stop()
+            client.set_input()
+            sprint_rows = client.record_dump_all(format="jsonl")
+            sprint_flag = any(entry.sprinting for entry in sprint_rows)
+            sprint_feet = [entry.feet_y for entry in sprint_rows]
+            no_jump = (
+                bool(sprint_feet)
+                and max(sprint_feet) - min(sprint_feet) < 0.02
+                and max((entry.vy for entry in sprint_rows), default=0.0) < 0.02
+            )
+            checks.check(
+                "sprint_no_jump",
+                bool(sprint_pre.get("ok")) and sprint_flag and no_jump,
+                f"pre={sprint_pre.get('ok')} sprint={sprint_flag} jump={not no_jump}",
+            )
 
             # -- togglefly: double-space flight gate in any non-spectator mode
             gm_now = int(client.state().get("gamemode", 0))

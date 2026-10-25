@@ -214,7 +214,11 @@
   体积上限 32768 格、结果上限 16384，避免拖慢 tick；默认跳过空气。
 - 存档点：tick 线程每 tick 把脚部坐标/朝向写进原子量；`checkpoint_save` 在管道线程读这些
   原子量并写 `checkpoints.json`（`.tmp` + `MoveFileExW` 原子替换），所以文件 I/O 不进 tick。
-  `checkpoint_load` 复用 `resetPlayer`，和 `reset` 一样清任务/输入/药水效果。
+  `checkpoint_load` 复用 `resetPlayer`，和 `reset` 一样清任务/输入，但**不清药水效果**
+  （`resetPlayer` 现在带 `clearEffects` 参数：只有 `reset` 传 true）。
+  <!-- (2026-10-25) 之前 `resetPlayer` 固定 clearEffects=true，且 `teleport` 处理器不重置这个
+       共享请求字段，导致**做过一次 reset 之后，之后每次 teleport 都会清空药水效果**
+       （保护药水在做实验时"凭空消失"就是这个）；现在 teleport 显式写 false。 -->
 - `state.effects` 直接读 `Actor::getAllEffects()`；`player_landed` 用起跳/落地的脚部高度差
   计算落差，`player_hurt`/`player_died` 由每 tick 的血量变化触发。
 

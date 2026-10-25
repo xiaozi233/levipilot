@@ -86,7 +86,7 @@ xmake -j4 -y
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名和 `addr`（`Block*`，供 `probe` 使用） |
 | `scan` | `from:[x,y,z],to:[x,y,z],include_air?,limit?`；区域方块扫描（最多 32768 格） |
-| `checkpoint_save` / `checkpoint_load` / `checkpoint_list` / `checkpoint_delete` | 命名脚部坐标存档，持久化到 `mods/probe/checkpoints.json` |
+| `checkpoint_save` / `checkpoint_load` / `checkpoint_list` / `checkpoint_delete` | 命名脚部坐标存档，持久化到 `mods/probe/checkpoints.json`；`checkpoint_load` 只恢复位置+朝向，不清药水效果 |
 | `navigate` | `x,z,tolerance,max_ticks,sprint`；`jump=auto/distance/edge/never` + `jump_distance`，mod 内逐 tick 闭环修正朝向 |
 | `jump_when` | `mode=now/tick/distance/edge`；`distance,forward,sprint,yaw,after_ticks,max_ticks`；在 tick 内精确起跳 |
 | `route` | `waypoints:[{x,z,tolerance,max_ticks,jump,jump_distance,edge_lookahead}]`；逐段跑点，`route_waypoint` / `route_done` / `route_failed` |
@@ -119,8 +119,8 @@ xmake -j4 -y
 | `fly` | `enabled`；客户端 + 服务端同时设置 |
 | `togglefly` | `on`（可选，缺省=切换）；开关"双击空格切换飞行"的 `MayFly`，tick 线程写入 + 服务端镜像 + 8 tick 重断言，回 `togglefly_ok{mayfly,gamemode,flying}`；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
 | `input_lock` | `on`；锁住真实硬件键鼠与相机转向（注入照常），见「限制」 |
-| `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威 |
-| `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试 |
+| `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威；**不动药水效果** |
+| `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试（只有它会清效果） |
 | `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
 | `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存 |

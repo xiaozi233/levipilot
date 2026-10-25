@@ -53,7 +53,16 @@ void ProbeMod::requestServerTeleport(LocalPlayer& player, TeleportRequest const&
 }
 
 
-void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch) {
+void ProbeMod::resetPlayer(
+    float x,
+    float y,
+    float z,
+    bool  hasYaw,
+    float yaw,
+    bool  hasPitch,
+    float pitch,
+    bool  clearEffects
+) {
     cancelTasks("reset");
     beginTask();
     mClickRequest.store(-1);
@@ -71,7 +80,7 @@ void ProbeMod::resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bo
     request.y            = y;
     request.z            = z;
     request.hasRotation  = hasYaw || hasPitch;
-    request.clearEffects = true;
+    request.clearEffects = clearEffects;
     request.yaw          = yaw;
     request.pitch        = pitch;
     updateRequests([&request](RequestBlock& block) {

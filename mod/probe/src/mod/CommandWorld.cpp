@@ -141,6 +141,10 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             request.teleport.hasRotation = j.contains("yaw") || j.contains("pitch");
             request.teleport.yaw         = static_cast<float>(yaw);
             request.teleport.pitch       = static_cast<float>(pitch);
+            // reset() stores true here; the flag must not leak into later
+            // teleports, or one reset silently strips every potion effect for
+            // the rest of the session (observed as "protection vanished").
+            request.teleport.clearEffects = false;
             ++request.teleportSeq;
         });
         // "teleported" is emitted from the server thread once the move is applied.
@@ -157,6 +161,7 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"x|y|z|yaw|pitch"})");
             return true;
         }
+        // reset is the only command documented to drop potion effects.
         resetPlayer(
             static_cast<float>(x),
             static_cast<float>(y),
@@ -164,7 +169,8 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             j.contains("yaw"),
             static_cast<float>(yaw),
             j.contains("pitch"),
-            static_cast<float>(pitch)
+            static_cast<float>(pitch),
+            true
         );
         return true;
     }

@@ -285,7 +285,16 @@ private:
     void reportSignInState();
     void setOptions(std::string const& text);
     void saveOptions();
-    void resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch);
+    void resetPlayer(
+        float x,
+        float y,
+        float z,
+        bool  hasYaw,
+        float yaw,
+        bool  hasPitch,
+        float pitch,
+        bool  clearEffects
+    );
     void loadAutoConfig();
     void registerCommands(CommandRegistry& registry);
     void applyTurnDelta(LocalPlayer& player, Vec2 const& delta);

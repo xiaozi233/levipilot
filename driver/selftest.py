@@ -1938,6 +1938,19 @@ def main(argv: list[str] | None = None) -> int:
             any(int(e.get("id", -1)) == 1 and int(e.get("amplifier", -1)) == 2 for e in effects),
             str(effects),
         )
+        # A plain teleport must leave effects alone: reset() writes the
+        # clearEffects flag into the shared request block, and it used to leak
+        # into every later teleport (protection vanished mid-experiment).
+        client.teleport(feet[0] + 2.0, feet[1], feet[2])
+        wait_ticks(client, 8)
+        after_tp = client.state().get("effects", [])
+        checks.check(
+            "effects_survive_teleport",
+            any(int(e.get("id", -1)) == 1 for e in after_tp),
+            str(after_tp),
+        )
+        client.teleport(feet[0], feet[1], feet[2])
+        wait_ticks(client, 6)
         client.command("effect @s clear")
         wait_ticks(client, 3)
         checks.check("effects_clear_no_tombstones", client.state().get("effects") == [])

@@ -70,6 +70,7 @@
 #include "mc/world/Minecraft.h"
 #include "mc/world/actor/Actor.h"
 #include "mc/world/actor/player/AbilitiesIndex.h"
+#include "mc/world/actor/player/LayeredAbilities.h"
 #include "mc/world/actor/player/Inventory.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/actor/player/PlayerInventory.h"

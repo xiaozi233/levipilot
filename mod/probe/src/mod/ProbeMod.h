@@ -29,6 +29,7 @@
 #include <windows.h>
 
 class ClientInstance;
+class CommandRegistry;
 class Packet;
 class LocalPlayer;
 class Level;
@@ -142,7 +143,9 @@ public:
     // G1/G2: event-level input injection. The pipe thread queues; the client
     // tick drains into the game's own Keyboard/MouseDevice queues.
     struct InputInjection {
-        std::uint8_t kind   = 0; // 0=key queue, 1=mouse, 2=HID virtual, 3=HID hardware
+        // 0=key queue, 1=mouse, 2=HID virtual, 3=HID hardware (injected),
+        // 4=HID hardware without the injection guard (a real press, for tests)
+        std::uint8_t kind   = 0;
         std::uint8_t code   = 0; // key code / MouseAction
         std::int8_t  data   = 0; // key down or MouseAction data
         std::int16_t dx     = 0;
@@ -284,6 +287,7 @@ private:
     void saveOptions();
     void resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch);
     void loadAutoConfig();
+    void registerCommands(CommandRegistry& registry);
     void applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
     void updateFocusState();
 
@@ -354,6 +358,11 @@ private:
     void queueClientTask(std::function<void()> task);
 
     ll::event::ListenerPtr mMouseListener;
+    ll::event::ListenerPtr mServerCommandListener;
+    // Registry the /togglefly overload was added to. Compared by identity so a
+    // rebuilt registry (new world) gets the command again without duplicating
+    // the execute handler on the same one.
+    void const* mCommandRegistry = nullptr;
     std::thread            mServerThread;
     // F10: duplicated handle for CancelSynchronousIo so disable() is not stuck
     // behind a WriteFile to a client that stopped reading.
@@ -433,6 +442,7 @@ private:
     // monolithic functions had (ProbeMod.cpp).
     void consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests);
     void applyFlyRequest(LocalPlayer& player);
+    void applyToggleFlyRequest(LocalPlayer& player);
     void startMacroIfRequested();
     void tickMacroPlayback(ClientInstance& client, LocalPlayer& player);
     void consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests);
@@ -524,6 +534,12 @@ private:
     std::atomic<int>            mInputController{0};
     std::atomic<int>            mInputFocus{0};
     std::atomic<int>            mFlyRequest{-1};
+    // -1 none, 0 disable, 1 enable, 2 toggle the MayFly ability (double-space flight).
+    std::atomic<int>            mToggleFlyRequest{-1};
+    // A gamemode change / ability sync already in flight can overwrite the
+    // client ability right after we set it; re-assert it for a few ticks.
+    std::atomic<bool>           mToggleFlyTarget{false};
+    std::atomic<int>            mToggleFlyAssertTicks{0};
     std::atomic<int>            mClickRequest{-1};
     std::atomic<float>          mClickReach{5.5f};
     std::atomic<int>            mSlotRequest{-1};

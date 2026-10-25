@@ -65,7 +65,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         bool const repeat = j.value("repeat", false) || j.value("repeat_ms", 0) > 0;
         std::string const via = j.value("via", std::string{"hid"});
         InputInjection item{};
-        item.kind   = via == "queue" ? 0 : (via == "hardware" ? 3 : 2);
+        item.kind   = via == "queue" ? 0 : (via == "hardware" ? 3 : (via == "raw" ? 4 : 2));
         item.code   = static_cast<std::uint8_t>(code);
         item.data   = down ? 1 : 0;
         item.repeat = repeat;
@@ -351,6 +351,15 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
     if (cmd == "fly") {
         mFlyRequest.store(j.value("enabled", true) ? 1 : 0);
         enqueue(R"({"event":"fly_ok"})");
+        return true;
+    }
+    if (cmd == "togglefly") {
+        // Grants/removes the MayFly ability (the double-space toggle gate) in
+        // any non-spectator mode. With no "on" argument each call flips it.
+        int const request = j.contains("on") ? (j.value("on", true) ? 1 : 0) : 2;
+        mToggleFlyRequest.store(request);
+        // The reply is emitted from the tick (applyToggleFlyRequest) so the
+        // caller sees the resulting state and the spectator guard can fail it.
         return true;
     }
     return false;

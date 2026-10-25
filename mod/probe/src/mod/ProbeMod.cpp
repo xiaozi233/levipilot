@@ -1,5 +1,13 @@
 #include "mod/Internal.h"
 
+#include "ll/api/command/CommandHandle.h"
+#include "ll/api/command/CommandRegistrar.h"
+#include "ll/api/command/Overload.h"
+#include "ll/api/event/command/ServerCommandRegisterEvent.h"
+#include "mc/server/commands/CommandOrigin.h"
+#include "mc/server/commands/CommandOutput.h"
+#include "mc/world/level/GameType.h"
+
 #include <dbghelp.h>
 
 using namespace probe::detail;
@@ -99,6 +107,15 @@ bool ProbeMod::enable() {
 
     mWorld.start();
     loadAutoConfig();
+    // On a client the mod is enabled at the main window, long before any server
+    // (and its command registry) exists -- registering in enable() crashes.
+    // LeviLamina fires this event while the local server builds its command
+    // tree, which is the documented place for client mods to add server
+    // commands. The registry is rebuilt per world, hence the pointer guard.
+    mServerCommandListener =
+        ll::event::EventBus::getInstance().emplaceListener<ll::event::command::ServerCommandRegisterEvent>(
+            [this](auto& event) { registerCommands(event.commandRegistry()); }
+        );
     loadCheckpoints();
 
     mSpoolThread = std::thread([this] { spoolThreadLoop(); });
@@ -126,6 +143,12 @@ bool ProbeMod::disable() {
     if (mKeyListener) {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::KeyInputEvent>(mKeyListener);
         mKeyListener.reset();
+    }
+    if (mServerCommandListener) {
+        ll::event::EventBus::getInstance().removeListener<ll::event::command::ServerCommandRegisterEvent>(
+            mServerCommandListener
+        );
+        mServerCommandListener.reset();
     }
     mWorld.stop();
 
@@ -252,6 +275,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     consumeTeleportRequest(player, requests);
 
     applyFlyRequest(player);
+    applyToggleFlyRequest(player);
 
     if (int click = mClickRequest.exchange(-1); click >= 0) {
         performClick(player, click);
@@ -309,6 +333,106 @@ void ProbeMod::applyFlyRequest(LocalPlayer& player) {
             }
         });
     }
+}
+
+void ProbeMod::registerCommands(CommandRegistry& registry) {
+    // A real server command players can type in chat: /togglefly grants or
+    // removes the MayFly ability (the double-space flight gate) in any mode
+    // except spectator. NotCheat keeps it usable without enabling cheats.
+    // Server-side only: the ability is server-authoritative, and a client-side
+    // command would flip the client copy that the next sync overwrites.
+    if (mCommandRegistry == &registry) {
+        return;
+    }
+    try {
+        auto& handle = ll::command::CommandRegistrar::getServerInstance().getOrCreateCommand(
+            "togglefly",
+            "grant/remove double-space flight (non-spectator)",
+            CommandPermissionLevel::Any,
+            CommandFlagValue::NotCheat
+        );
+        handle.overload().execute(
+            [](CommandOrigin const& origin, CommandOutput& output) {
+                auto* actor = origin.getEntity();
+                if (actor == nullptr || !actor->isPlayer()) {
+                    output.error("togglefly: player origin required");
+                    return;
+                }
+                auto& player = *static_cast<Player*>(actor);
+                if (player.getPlayerGameType() == GameType::Spectator) {
+                    output.error("togglefly: 旁观模式不支持");
+                    return;
+                }
+                bool const current = player.getAbilities().getBool(AbilitiesIndex::MayFly);
+                bool const target  = !current;
+                player.setAbility(AbilitiesIndex::MayFly, target);
+                if (!target) {
+                    player.setAbility(AbilitiesIndex::Flying, false);
+                }
+                output.success(
+                    target ? "双击空格切换飞行：已开启" : "双击空格切换飞行：已关闭"
+                );
+            }
+        );
+        mCommandRegistry = &registry;
+        bootLog("command: registered togglefly");
+    } catch (...) {
+        bootLog("command: togglefly registration failed");
+    }
+}
+
+void ProbeMod::applyToggleFlyRequest(LocalPlayer& player) {
+    int const request = mToggleFlyRequest.exchange(-1);
+    if (request < 0) {
+        int left = mToggleFlyAssertTicks.load(std::memory_order_relaxed);
+        if (left > 0) {
+            bool const target = mToggleFlyTarget.load(std::memory_order_relaxed);
+            player.setAbility(AbilitiesIndex::MayFly, target);
+            if (!target) {
+                player.setAbility(AbilitiesIndex::Flying, false);
+            }
+            mToggleFlyAssertTicks.store(left - 1, std::memory_order_relaxed);
+        }
+        return;
+    }
+    if (player.getPlayerGameType() == GameType::Spectator) {
+        enqueue(R"({"event":"error","reason":"spectator_not_supported"})");
+        return;
+    }
+    bool const current = player.getAbilities().getBool(AbilitiesIndex::MayFly);
+    bool const target  = request == 2 ? !current : (request == 1);
+    player.setAbility(AbilitiesIndex::MayFly, target);
+    if (!target) {
+        // Removing the gate must also end an in-progress flight.
+        player.setAbility(AbilitiesIndex::Flying, false);
+    }
+    mToggleFlyTarget.store(target, std::memory_order_relaxed);
+    mToggleFlyAssertTicks.store(8, std::memory_order_relaxed);
+    // Mirror on the server player: the next ability sync would otherwise
+    // restore the mode default and make the toggle look ignored.
+    if (auto server = ll::service::bedrock::getServerInstance()) {
+        std::string name = player.getRealName();
+        queueServerTask([name, target] {
+            auto    minecraft    = ll::service::bedrock::getMinecraft();
+            Level*  level        = minecraft ? minecraft->getLevel() : nullptr;
+            Player* serverPlayer = (level != nullptr && !name.empty()) ? level->getPlayer(name) : nullptr;
+            if (serverPlayer != nullptr) {
+                serverPlayer->setAbility(AbilitiesIndex::MayFly, target);
+                if (!target) {
+                    serverPlayer->setAbility(AbilitiesIndex::Flying, false);
+                }
+            }
+        });
+    }
+    enqueue(
+        nlohmann::json{
+            {"event",    "togglefly_ok"                           },
+            {"mayfly",   target                                   },
+            {"gamemode", static_cast<int>(player.getPlayerGameType())},
+            {"flying",   player.isFlying()                        },
+        }
+            .dump()
+    );
 }
 
 void ProbeMod::startMacroIfRequested() {

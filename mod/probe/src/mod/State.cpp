@@ -40,6 +40,7 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
     j["sneaking"]      = player.isSneaking();
     j["swimming"]      = player.isSwimming();
     j["flying"]        = player.isFlying();
+    j["mayfly"]        = player.getAbilities().getBool(AbilitiesIndex::MayFly);
     j["in_water"]      = player.isInWater();
     j["alive"]         = player.isAlive();
     j["health"]        = player.getHealth();

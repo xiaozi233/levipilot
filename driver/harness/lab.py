@@ -272,6 +272,19 @@ KEY_SPRINT = 0x11  # default sprint binding (Ctrl)
 KEY_SPACE = 0x20
 
 
+def ensure_protection(client: ModClient, *, seconds: int = 900) -> dict[str, Any]:
+    """Fire resistance + water breathing so lava/water experiments cannot kill
+    the player.
+
+    The effects show up in ``state.effects``; keep them out of runs that assert
+    an effect-free state (the selftest does).
+    """
+    return {
+        "fire_resistance": client.command(f"effect @s fire_resistance {int(seconds)} 0 true"),
+        "water_breathing": client.command(f"effect @s water_breathing {int(seconds)} 0 true"),
+    }
+
+
 def jump_key(client: ModClient, *, hold_ticks: int = 2) -> dict[str, Any]:
     """Tap Space exactly like a player press (needs ``allow_input_inject``).
 
@@ -282,6 +295,40 @@ def jump_key(client: ModClient, *, hold_ticks: int = 2) -> dict[str, Any]:
     client.wait_ticks(hold_ticks)
     client.key_event(KEY_SPACE, False)
     return {"event": "jump_ok", "via": "hid"}
+
+
+def double_space_fly(
+    client: ModClient,
+    *,
+    hold_ticks: int = 1,
+    gap_ticks: int = 2,
+    settle: int = 6,
+    attempts: int = 3,
+) -> dict[str, Any]:
+    """Double-tap Space and report whether the flight gate engaged.
+
+    ``via="hardware"`` is mandatory: measured on 1.26.51.01, a Virtual (``hid``)
+    press jumps but never flips flight, while the Hardware origin toggles it.
+    Each press must also stay down for at least one tick -- a zero-length
+    down/up pair in the same tick is dropped (measured).
+    Pressed while input_lock is on: our injections carry ``mInjectingInput``,
+    so they still pass while the guest's own keyboard is dropped.
+    """
+    flying = False
+    mayfly = False
+    for _ in range(max(1, attempts)):
+        for _ in range(2):
+            client.key_event(KEY_SPACE, True, via="hardware")
+            client.wait_ticks(max(hold_ticks, 1))
+            client.key_event(KEY_SPACE, False, via="hardware")
+            client.wait_ticks(max(gap_ticks, 1))
+        client.wait_ticks(settle)
+        state = client.state()
+        flying = bool(state.get("flying"))
+        mayfly = bool(state.get("mayfly"))
+        if flying:
+            break
+    return {"event": "double_space", "flying": flying, "mayfly": mayfly}
 
 
 def swimming_state(client: ModClient) -> bool | None:

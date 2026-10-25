@@ -74,6 +74,8 @@ with ModClient() as client:
 | 放置水的池子封顶 | 玩家"浮"在石盖上 | 石壳别封住内部顶层；`fill` 到 Y=-40 会把开口也填上 |
 | 满速前进自动疾跑 | 干地"走路"基线其实是疾跑 | 检查 `record` 行的 `sprint` 位，走路基线要排除 |
 | 游戏模式/飞行状态被改动 | 崩溃的 selftest 可能留下创造模式；创造飞行会完全改变物理 | 实验前后读 `state.gamemode`（0 生存/1 创造/2 冒险/6 旁观）与 `flying` 并断言；需要时先 `gamemode survival @s` |
+| 岩浆/深水实验把玩家弄死 | 中途死亡、数据断档、掉落物消失 | 先 `lab.ensure_protection(client)`（抗火 + 水下呼吸）；盯 `player_died` 事件 |
+| 双击空格没反应 | 连按空格只跳不飞 | `MayFly` 没开（`/togglefly` 或管道 `togglefly`）；`via=hid` 只起跳；每次按下要跨 ≥1 tick |
 | 真人在机器旁动鼠标/按键 | 结果漂移、按键计数多出来（如 `key_event_count` 多 5 次）、落点不准 | 脚本开头 `client.input_lock(True)` 锁真实输入（dev.py `--lock-input`；selftest 已自动锁），结束 `input_lock(False)` |
 | 附魔装备 | `replaceitem` 不支持组件、`/enchant` 只作用手持、右键不穿甲 | `set_item` 手持 → `/enchant` → **`equip feet`**（会连附魔一起搬到护甲槽） |
 | `key_event` 被拒 | `input_inject_disabled` | `dev.py run --allow allow_input_inject=1` 后重启 |
@@ -90,6 +92,12 @@ with ModClient() as client:
 - **跳跃**：`jump-key` 拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线 selftest 逐位一致。
 - **疾跑**：`swim --drive` 与宏回放都走 HID 疾跑键；`set_input(sprint=True)` 调的是客户端
   sprint 切换函数（等价动作，但不是按键事件）。
+- **双击空格飞行**：`lab.double_space_fly()`。两条实测约束：只有 `InputOrigin::Hardware`
+  会翻转 `flying`（`via=hid` 只起跳、不切换），每次按下必须跨至少 1 tick（同 tick down+up 被丢）。
+  能力门是 `MayFly`，先 `/togglefly`（游戏内聊天框）或管道 `togglefly` 打开；旁观模式无效。
+- **药水保护**：碰岩浆/深水的实验前 `lab.ensure_protection(client)`（抗火 id 12 + 水下呼吸 id 13，
+  默认 900 s），否则会把玩家烧死/淹死；它会往 `state.effects` 写两条，跑"空效果"断言的
+  selftest 前后记得清理。
 - 直接写 ADF/速度只能造出正常输入不可达的状态，结论不可信；状态只用来**读**（如 bit57 判定）。
 
 ## 3. 记录字段与常用判据
@@ -106,7 +114,7 @@ with ModClient() as client:
 - 原始数据与脚本放 `out/<case>/`（git 忽略），结论文档放 `docs/`；
   范例：`docs/fluid-movement.md`（三介质递推 + 流推 + 泳姿）。
 - 改了 mod 命令/行为：按 AGENTS 流程补 `tests/` 单测 + `driver/selftest.py` 检查 +
-  `mod/README.md` 的「实测/限制」与基线数字（当前 **204/204** live、**189** 离线）。
+  `mod/README.md` 的「实测/限制」与基线数字（当前 **212/212** live、**193** 离线）。
 - 跨版本复核静态结论用
   `reverse-skill/.../bedrock-client-re/scripts/pe_code_diff.py OLD.exe NEW.exe --values ...`。
 

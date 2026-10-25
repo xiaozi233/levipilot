@@ -24,6 +24,7 @@ COMMANDS = frozenset(
         "jump",
         "jump-key",
         "input-lock",
+        "togglefly",
         "swim",
         "stopmove",
     }
@@ -134,6 +135,10 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         return True
     if args.command == "input-lock":
         print(json.dumps(client.input_lock(not args.off)))
+        return True
+    if args.command == "togglefly":
+        wanted = True if args.on else (False if args.off else None)
+        print(json.dumps(client.toggle_fly(wanted), ensure_ascii=False))
         return True
     if args.command == "swim":
         if args.stop:

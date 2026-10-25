@@ -573,8 +573,8 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **204/204**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 189/189。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **212/212**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 193/193。
 
 ### 实验辅助（`driver/harness/lab.py`）
 
@@ -600,13 +600,32 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 
 ### 真实输入锁（input_lock，2026-10-24）
 
-- 三个拦截点：`HIDControllerGameCoreDesktop::$onKeyDown`（只拦 `InputOrigin::Hardware`；
-  注入的 Virtual 键放行）、`MouseDevice::feed`（`mInjectingInput` 之外一律丢弃）、
+- 三个拦截点：`HIDControllerGameCoreDesktop::$onKeyDown`（`InputOrigin::Hardware` 且
+  **不带** `mInjectingInput` 时丢弃）、`MouseDevice::feed`（`mInjectingInput` 之外一律丢弃）、
   `allowTurnDelta`（锁定时非注入转向返回 false）。
+- `key_event` 的四条注入路径与锁的关系：`hid`=Virtual（永远放行）、`hardware`=Hardware +
+  注入标记（放行，双击空格必须用它）、`raw`=Hardware 无注入标记（被丢弃，等价真人按键，
+  只用于验证锁）、`queue`=`Keyboard::_inputs` 直推（不经过这个钩子）。
 - 配置 `lock_input`（默认 false）；命令 `input_lock {on}`；selftest 自动上锁并在 finally 解锁。
-- 验证：`input_lock_on` / `input_lock_blocks_hardware`（硬件来源数字键不改槽位）/ 
+- 验证：`input_lock_on` / `input_lock_blocks_hardware`（`via=raw` 数字键不改槽位）/
   `input_lock_allows_injection`（Virtual 键改槽位）/ `input_lock_allows_mouse_injection`。
 - （2026-10-24 已修）曾偶发在 tick 线程 `applyEcs` 枚举 registry 时崩溃，见下节「ECS 线程归属」。
+
+### 双击空格飞行与 `/togglefly`（2026-10-25）
+
+- 能力门是 `AbilitiesIndex::MayFly`；生存/创造都能被 `/togglefly` 或管道 `togglefly` 打开，
+  旁观模式拒绝（`spectator_not_supported` / `success=false`）。
+- 切换只认 `InputOrigin::Hardware`：`via=hid`（Virtual）只起跳、从不翻转 `flying`；
+  每次按下必须跨至少 1 tick（同 tick 内 down+up 被丢掉）。实测 hold=1/2 × gap=1/2/3 全部生效，
+  hold=3 开始出现不生效样本，所以 `lab.double_space_fly` 默认 hold=1、gap=2、最多重试 3 次。
+- 游戏内命令注册时机：客户端 mod 在 `enable()`（主界面阶段）时服务器命令表还不存在，
+  直接 `getOrCreateCommand` 会 `0xC0000005` 崩在启动阶段（crash dump `tick=0`）。
+  正确位置是 `ServerCommandRegisterEvent`；命令表按世界重建，用 `CommandRegistry*` 身份判重，
+  避免同一张表重复挂 execute（重复执行会互相抵消）。
+- 只注册服务端侧：能力是服务端权威，客户端侧命令会把客户端副本翻转后被同步覆盖；
+  玩家在聊天框输入的 `/togglefly` 仍然会作为 `CommandRequestPacket` 到达服务端（实测命中）。
+- 管道侧 `togglefly` 走 tick 线程写 LocalPlayer，再 `queueServerTask` 镜像服务端玩家，
+  并保留 8 tick 重断言（模式切换后迟到的能力同步会覆盖单次写入，2026-10-25 实测）。
 
 ### ECS 线程归属（2026-10-24 修复）
 
@@ -618,7 +637,7 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
   兜底，结构化异常回 `internal_error, phase=ecs`。
 - `Registries`/`Context` 仍走客户端 tick（客户端 context，同线程；Context 本就有 SEH）。
 - 验证：`ecs_entity`（115 组件）/`ecs_components`（115，94 有尺寸）/`ecs_component`（StateVector 36B）
-  全部通过；selftest 204/204。
+  全部通过；selftest 212/212。
 
 ### 行为契约与加固
 

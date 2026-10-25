@@ -153,6 +153,16 @@ class CliCompatibilityTests(unittest.TestCase):
         self.assertEqual(unlocked["code"], 0)
         self.assertEqual(unlocked["calls"][1], ["input_lock", [False], {}])
 
+    def test_togglefly_wiring(self) -> None:
+        flipped = invoke_cli(cli, ["togglefly"])
+        self.assertEqual(flipped["code"], 0)
+        self.assertEqual(flipped["calls"][1], ["toggle_fly", [None], {}])
+
+        on = invoke_cli(cli, ["togglefly", "--on"])
+        self.assertEqual(on["calls"][1], ["toggle_fly", [True], {}])
+        off = invoke_cli(cli, ["togglefly", "--off"])
+        self.assertEqual(off["calls"][1], ["toggle_fly", [False], {}])
+
     def test_equip_wiring(self) -> None:
         result = invoke_cli(cli, ["equip", "feet"])
         self.assertEqual(result["code"], 0)

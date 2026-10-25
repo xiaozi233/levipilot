@@ -7,7 +7,8 @@ Minecraft Bedrock **1.26.51.01** 的客户端实验 harness：一个 LeviLamina 
 
 - **读**：玩家位置/速度/朝向/生命/饥饿/经验/手持物/输入状态、完整背包/盔甲/副手、附近实体、任意方块、客户端保留的聊天文字
 - **控制**：移动、疾跑、潜行、跳跃、飞行、绝对/相对视角、左右键、快捷栏、服务端权威传送；
-  按 `runtime_id` 查询/转向/攻击/交互实体
+  按 `runtime_id` 查询/转向/攻击/交互实体。双击空格飞行用游戏内 `/togglefly` 开关
+  （任意非旁观模式，管道侧同名命令）
 - **执行**：任意服务端命令（`fill`/`tp`/`setblock`…），保留 `@s`/`~` 语义
 - **Macro**：dmf-mpk 兼容格式的加载、播放、录制，含真实鼠标左右键
 - **实验**：逐 tick 采样、场景 DSL（setup → steps → verify/teardown → JSONL + summary）、
@@ -106,8 +107,9 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 已在 1.26.51.01 创作存档内实测：状态读取、移动/视角/跳跃/飞行、左右键、快捷栏、
   服务端传送、服务端命令、macro 播放/录制、真实鼠标按键、场景 DSL，以及
   `navigate` / `mine` / `place` / `use` 四个 mod 内闭环任务。
-- 脚本运行可锁真实键鼠（`dev.py --lock-input` / `input-lock`），游泳/跳跃等状态用热键驱动
-  （`swim --drive` / `jump-key`）；细节见 `mod/README.md` 与实验手册 skill。
+- 脚本运行可锁真实键鼠（`dev.py --lock-input` / `input-lock`），游泳/跳跃/双击空格飞行等状态用
+  热键驱动（`swim --drive` / `jump-key` / `lab.double_space_fly`）；`/togglefly` 是游戏内命令，
+  玩家自己在聊天框输入就能开关双击空格飞行。细节见 `mod/README.md` 与实验手册 skill。
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）。
 - 闭环任务在客户端 tick 内推进，不依赖 Python 逐 tick 下发；同一时间只跑一个任务。
 - `command` 的方块类命令是 deferred，`success=false` 不代表失败，效果以 `blocks`/verify 为准。

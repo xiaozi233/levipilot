@@ -64,7 +64,7 @@ xmake -j4 -y
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
-| `key_event` | `code,down,repeat,repeat_ms,via=hid/queue/hardware`；走 HID `onKeyDown`（默认）或 `Keyboard::_inputs()`；需 `allow_input_inject=true` |
+| `key_event` | `code,down,repeat,repeat_ms,via=hid/hardware/raw/queue`；`hid`=HID `onKeyDown`（Virtual）、`hardware`=Hardware 且标记注入、`raw`=Hardware 无注入标记（等价真人按键）、`queue`=`Keyboard::_inputs()`；需 `allow_input_inject=true` |
 | `key_state` | `code`；游戏侧 `Keyboard::_states`、LL KeyInputEvent 计数、注入计数 |
 | `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
 | `text_input` | `text`；通过 HID `onTextInput` 往当前输入框送字符（需 `allow_input_inject`） |
@@ -117,6 +117,8 @@ xmake -j4 -y
 | `clear_item` | `slot,container` |
 | `clear_inventory` | 清空背包、盔甲和副手 |
 | `fly` | `enabled`；客户端 + 服务端同时设置 |
+| `togglefly` | `on`（可选，缺省=切换）；开关"双击空格切换飞行"的 `MayFly`，tick 线程写入 + 服务端镜像 + 8 tick 重断言，回 `togglefly_ok{mayfly,gamemode,flying}`；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
+| `input_lock` | `on`；锁住真实硬件键鼠与相机转向（注入照常），见「限制」 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威 |
 | `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试 |
 | `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
@@ -124,7 +126,7 @@ xmake -j4 -y
 | `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存 |
 
 `state` 关键字段：`x,y,z`（LocalPlayer 眼睛位置）、`feet_*`、`head_*`、`vx/vy/vz`、
-`yaw/pitch`、`on_ground`、`sprinting/sneaking/swimming/flying/in_water/alive`、
+`yaw/pitch`、`on_ground`、`sprinting/sneaking/swimming/flying/mayfly/in_water/alive`、
 `health/max_health`、`hunger/saturation/exhaustion`、`xp_level/xp_progress`、
 `gamemode/dimension/name/uuid/selected_slot/item`、
 `block_feet/block_below/block_head/block_above`、`effects`（`id/duration/amplifier/ambient`），
@@ -185,8 +187,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **204/204**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 189/189。常用实测数字：
+当前基线：live selftest **212/212**（`harness.json` 开 `allow_input_inject`/
+`allow_selftest_stress`）、离线单测 193/193。常用实测数字：
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），
@@ -194,6 +196,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - `navigate` 约 5.2 格 27 tick 到达（误差 0.26 格）；`mine` 创造模式 1 tick、`place`
   3 tick 回读验证；存档点 `checkpoint_load` 落点误差 0.000 格。
 - 事件级宏回放三次落点误差 **0.0000**；疾跑三组对照 B≈C≈0.2805 格/tick。
+- 双击空格飞行只在 `InputOrigin::Hardware` 上切换（Virtual 只起跳），且每次按下要跨
+  至少 1 tick；`/togglefly` 开启后生存模式实测 2 tick 间隔连按即置 `flying=true`，
+  关闭后同样连按不起飞；旁观模式命令回 `success=false`。
 - `equip feet` 把手持/库存栈搬进穿戴槽并清空源槽（附魔随栈一起走，源槽回读为空）；
   记录环的 `in_water`/`in_lava` 位在脚下与头部方块为液体时全部命中（实测 9/9 tick）。
 - 封包：身份 tap 3.5 秒 122 条 send 无丢失；`chat_send` 注入的 `/tp` 位移正好 1.000 格；
@@ -216,10 +221,19 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - **脚本运行时的真实输入锁**：`input_lock {on}`（CLI `input-lock [--off]`，配置 `lock_input`，
   dev.py `--lock-input`）在三个入口丢弃**硬件来源**输入——`HIDController::$onKeyDown` 的
   `InputOrigin::Hardware`、`MouseDevice::feed` 的非注入调用、以及非注入的相机转向；
-  mod 自己的注入（Virtual 键、`mInjectingInput` 内的鼠标/宏）照常工作。`driver/selftest.py`
-  启动自动上锁、结束解锁，避免真人在机器旁按键/动鼠标污染结果。注意：锁只认来源，
-  通过注入环模拟的 `via=hardware` 键也会被拦（这是刻意的）；`key_event` 的 key-up 未加钩子，
-  对游戏从未见过的按键是空操作。
+  mod 自己的注入（Virtual 键、带 `mInjectingInput` 的硬件键/鼠标/宏）照常工作。
+  `driver/selftest.py` 启动自动上锁、结束解锁，避免真人在机器旁按键/动鼠标污染结果。
+  `key_event` 的 `via` 决定走哪条：`hid`=Virtual、`hardware`=Hardware 且标记为注入
+  （上锁时仍放行，双击空格必须用这条）、`raw`=Hardware 且**不带**注入标记（等价于真人按键，
+  上锁时被丢弃，只用于验证锁本身）、`queue`=`Keyboard::_inputs` 直推（不发 LL 事件）。
+  key-up 未加钩子，对游戏从未见过的按键是空操作。
+- **`/togglefly`（游戏内命令）**：注册进本地服务端命令表，玩家直接在聊天框输入即可开关
+  "双击空格切换飞行"的 `MayFly` 能力；任意模式可用、旁观模式回错误，`NotCheat` 所以不开
+  作弊也能用。客户端 mod 在 `enable()`（主界面阶段）还没有服务器命令表，注册必须挂在
+  `ServerCommandRegisterEvent` 上——直接写在 `enable()` 里会启动即崩（已实测）。命令表按世界
+  重建，注册用 `CommandRegistry*` 身份判重，不会重复挂 execute。管道侧等价命令 `togglefly`
+  （`{"cmd":"togglefly","on":bool}`，回 `togglefly_ok{mayfly,gamemode,flying}`；CLI
+  `togglefly [--on|--off]`）走 tick 线程并带 8 tick 重断言，抵消模式切换后迟到的能力同步。
 - `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），

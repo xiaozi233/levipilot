@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
-from driver.harness.lab import swim_drive, swim_stop  # noqa: E402
+from driver.harness.lab import double_space_fly, swim_drive, swim_stop  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
@@ -767,8 +767,12 @@ def main(argv: list[str] | None = None) -> int:
             lock = client.input_lock(True)
             checks.check("input_lock_on", bool(lock.get("on")), str(lock))
             try:
-                client.key_event(50, True, via="hardware")  # '2'
-                client.key_event(50, False, via="hardware")
+                # ``raw`` is a genuine Hardware key with no injection guard; it
+                # is the only way to exercise the real-press branch of the lock
+                # (``hardware`` is a scripted press and passes on purpose, which
+                # is what makes double-space flight reproducible under the lock).
+                client.key_event(50, True, via="raw")  # '2'
+                client.key_event(50, False, via="raw")
                 wait_ticks(client, 6)
                 after_hw = int(client.state().get("selected_slot", -1))
                 client.key_event(51, True, via="hid")  # '3'
@@ -1802,6 +1806,87 @@ def main(argv: list[str] | None = None) -> int:
             )
             stopped = swim_stop(client)
             checks.check("swim_stop_clears", stopped.get("swimming") is False, str(stopped))
+
+            # -- togglefly: double-space flight gate in any non-spectator mode
+            gm_now = int(client.state().get("gamemode", 0))
+            client.command("gamemode survival @s")
+            wait_ticks(client, 8)
+            enabled = client.toggle_fly(True)
+            checks.check("togglefly_enable", bool(enabled.get("mayfly")), str(enabled))
+            wait_ticks(client, 4)
+            flown = double_space_fly(client)
+            checks.check(
+                "togglefly_double_space",
+                bool(flown.get("flying")),
+                f"{flown} gamemode=survival",
+            )
+            disabled = client.toggle_fly(False)
+            wait_ticks(client, 8)
+            after_fly = client.state()
+            checks.check(
+                "togglefly_disable",
+                disabled.get("mayfly") is False
+                and after_fly.get("mayfly") is False
+                and not after_fly.get("flying"),
+                str({"reply": disabled, "state": after_fly.get("mayfly")}),
+            )
+            # The in-game command players type in chat: /togglefly flips it.
+            on_reply = client.command("togglefly")
+            wait_ticks(client, 6)
+            checks.check(
+                "togglefly_command_on",
+                bool(on_reply.get("success")) and client.state().get("mayfly") is True,
+                str(on_reply),
+            )
+            off_reply = client.command("togglefly")
+            wait_ticks(client, 6)
+            checks.check(
+                "togglefly_command_off",
+                bool(off_reply.get("success")) and client.state().get("mayfly") is False,
+                str(off_reply),
+            )
+            # Typed by a player: '/' opens chat, text goes through the client's
+            # input field, Enter submits it as a command request to the server.
+            # Both keys need to span a tick; a zero-length down/up is dropped.
+            client.set_input()
+            client.key_event(0xBF, True, via="hid")
+            wait_ticks(client, 2)
+            client.key_event(0xBF, False, via="hid")
+            wait_ticks(client, 3)
+            screen = client.screen().get("name")
+            client.text_input("togglefly")
+            wait_ticks(client, 3)
+            client.key_event(0x0D, True, via="hid")
+            wait_ticks(client, 2)
+            client.key_event(0x0D, False, via="hid")
+            wait_ticks(client, 8)
+            typed_mayfly = client.state().get("mayfly")
+            checks.check(
+                "togglefly_chat_command",
+                screen in ("chat_screen", "chat") and typed_mayfly is True,
+                f"screen={screen} mayfly={typed_mayfly}",
+            )
+            client.command("togglefly")  # leave the gate off for the spectator check
+            wait_ticks(client, 6)
+            client.command("gamemode spectator @s")
+            wait_ticks(client, 8)
+            try:
+                client.toggle_fly()
+                checks.check("togglefly_spectator_guard", False, "accepted in spectator")
+            except ModProtocolError as exc:
+                checks.check(
+                    "togglefly_spectator_guard",
+                    "spectator_not_supported" in str(exc),
+                    str(exc),
+                )
+            spectator_reply = client.command("togglefly")
+            checks.check(
+                "togglefly_command_spectator_guard",
+                not bool(spectator_reply.get("success")),
+                str(spectator_reply),
+            )
+            client.command(f"gamemode {gm_now} @s")
+            wait_ticks(client, 8)
             # Remove the pool and any spread on the surface layers.
             client.command(f"fill {sx - 4} {sy} {sz - 4} {sx + 4} {sy + 3} {sz + 4} air")
             wait_ticks(client, 15)

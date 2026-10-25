@@ -61,6 +61,18 @@ class InputCommands(PipeConnection):
     def jump(self) -> dict[str, Any]:
         return self.request({"cmd": "jump"}, "jump_ok")
 
+    def toggle_fly(self, on: bool | None = None) -> dict[str, Any]:
+        """Grant/remove double-space flight (the MayFly ability).
+
+        Works in any mode except spectator; without ``on`` each call flips it.
+        The reply is emitted after the tick applies it and carries the
+        resulting ``mayfly``/``flying``/``gamemode``.
+        """
+        message: dict[str, Any] = {"cmd": "togglefly"}
+        if on is not None:
+            message["on"] = bool(on)
+        return self.request(message, "togglefly_ok")
+
     def look(
         self,
         yaw: float,
@@ -132,6 +144,15 @@ class InputCommands(PipeConnection):
         repeat_ms: int = 0,
         via: str = "hid",
     ) -> dict[str, Any]:
+        """Queue a key edge.
+
+        ``via`` selects the entry point: ``hid`` (Virtual origin, default),
+        ``hardware`` (Hardware origin carrying the injection guard — the only
+        path that flips double-space flight, and it still works while
+        ``input_lock`` is on), ``raw`` (Hardware origin with no guard, i.e. what
+        a real key looks like: dropped by ``input_lock``, for lock tests only),
+        or ``queue`` (``Keyboard::_inputs`` push — no Levilamina events).
+        """
         return self.request(
             {
                 "cmd": "key_event",

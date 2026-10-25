@@ -368,6 +368,10 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
     sub.add_parser("jump")
     sub.add_parser("jump-key", help="tap the Space binding (needs allow_input_inject)")
+    togglefly = sub.add_parser("togglefly", help="grant/remove double-space flight (non-spectator)")
+    togglefly_mode = togglefly.add_mutually_exclusive_group()
+    togglefly_mode.add_argument("--on", action="store_true")
+    togglefly_mode.add_argument("--off", action="store_true")
     input_lock = sub.add_parser("input-lock", help="drop real hardware keys/mouse")
     input_lock.add_argument("--off", action="store_true", help="release the lock (default: on)")
     sub.add_parser("stopmove")

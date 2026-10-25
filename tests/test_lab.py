@@ -13,6 +13,7 @@ from driver.harness.lab import (
     KEY_W,
     Builder,
     RecordSession,
+    double_space_fly,
     fit_recursion,
     fnv1a,
     liquid_kind,
@@ -238,3 +239,48 @@ class SwimDriveTests(unittest.TestCase):
         swim_stop(client, settle=1)
         released = {c[1][0] for c in client.calls if c[0] == "key_event" and c[1][1] is False}
         self.assertEqual(released, {KEY_W, KEY_SPRINT, KEY_SPACE})
+
+
+class DoubleSpaceTests(unittest.TestCase):
+    class Client:
+        def __init__(self, flying_after: int = 1):
+            self.calls: list[tuple] = []
+            self.flying_after = flying_after
+            self.reads = 0
+
+        def key_event(self, code: int, down: bool = True, *, via: str = "hid"):
+            self.calls.append(("key", code, down, via))
+            return {}
+
+        def wait_ticks(self, ticks: int) -> int:
+            self.calls.append(("wait", ticks))
+            return ticks
+
+        def state(self):
+            self.reads += 1
+            return {"flying": self.reads >= self.flying_after, "mayfly": True}
+
+    def test_presses_use_hardware_origin_and_hold(self) -> None:
+        client = self.Client()
+        result = double_space_fly(client)
+        self.assertTrue(result["flying"])
+        self.assertTrue(result["mayfly"])
+        keys = [call for call in client.calls if call[0] == "key"]
+        self.assertEqual([call[1] for call in keys], [KEY_SPACE] * 4)
+        self.assertEqual([call[2] for call in keys], [True, False, True, False])
+        # Only the Hardware origin flips flight, so every press must request it.
+        self.assertEqual({call[3] for call in keys}, {"hardware"})
+        # Every press has to span at least one tick, so no zero-length tap.
+        self.assertTrue(all(call[1] >= 1 for call in client.calls if call[0] == "wait"))
+
+    def test_retries_while_still_grounded(self) -> None:
+        client = self.Client(flying_after=2)
+        result = double_space_fly(client, attempts=3)
+        self.assertTrue(result["flying"])
+        self.assertEqual(len([c for c in client.calls if c[0] == "key"]), 8)
+
+    def test_stops_retrying_when_gate_never_engages(self) -> None:
+        client = self.Client(flying_after=99)
+        result = double_space_fly(client, attempts=2)
+        self.assertFalse(result["flying"])
+        self.assertEqual(len([c for c in client.calls if c[0] == "key"]), 8)

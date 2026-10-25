@@ -111,7 +111,15 @@ py -3.11 driver/selftest.py
   后台仍满速 tick）；raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
 - `harness.json` 的 `auto_enter` 要求游戏在**前台**（后台进世界会触发鼠标捕获）。
 - 脚本运行会锁真实输入：`input_lock {on}`（配置 `lock_input` / `dev.py --lock-input`；selftest 自动上锁）
-  丢弃硬件来源键鼠与转向，注入照常；实验脚本建议开头 `client.input_lock(True)`、结束时解锁。
+  丢弃硬件来源键鼠与转向；注入照常，但 `key_event` 的 `via` 决定是否过锁——
+  `hid`(Virtual) 与 `hardware`(Hardware+注入标记) 放行，`raw`(Hardware 无标记) 被丢。
+  实验脚本建议开头 `client.input_lock(True)`、结束时解锁。
+- 双击空格飞行只认 `InputOrigin::Hardware`（`via=hid` 只起跳、不翻转 `flying`），
+  且每次按下要跨至少 1 tick；用 `lab.double_space_fly()`，不要手搓零长度的 down/up。
+  能力门是 `MayFly`，脚本侧用 `togglefly` 封装（带 8 tick 重断言）。
+- 客户端 mod 在 `enable()` 里注册游戏内命令会 `0xC0000005`（主界面阶段还没有服务器命令表）：
+  必须挂 `ServerCommandRegisterEvent`，并按 `CommandRegistry*` 身份判重（命令表按世界重建）。
+  只有服务端侧注册才有意义——能力是服务端权威。
 - 接收侧封包只能挂 `LoopbackPacketSender::$sendToClient`（两个重载）；`Packet::sendTo*`
   辅助层在单机里实测 0 调用，`NetworkConnection::receivePacket` 也是 0。recv 默认关闭，
   用 `packet_capture {directions:["send","recv"]}` 开；同一 tick 同对象会去重，
@@ -148,9 +156,10 @@ py -3.11 driver/selftest.py
 ## 当前状态
 
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
-2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮）全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **204/204**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 189/189、
+2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
+全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **212/212**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 193/193、
 ruff/mypy（driver+tests）全绿。
 
 任务提示词不在仓库内（本地维护）。

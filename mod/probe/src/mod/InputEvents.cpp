@@ -121,6 +121,14 @@ void ProbeMod::tickInputInjection() {
         } else if (item.kind == 2 || item.kind == 3) {
             std::string error;
             hidKeyEvent(item.code, item.data != 0, item.kind == 3, error);
+        } else if (item.kind == 4) {
+            // A genuine OS key: Hardware origin and no injection guard, so
+            // input_lock must drop it. This is the test proxy for a real press
+            // (kind 3 is indistinguishable from one except for the guard).
+            std::string error;
+            mInjectingInput.store(false, std::memory_order_release);
+            hidKeyEvent(item.code, item.data != 0, true, error);
+            mInjectingInput.store(true, std::memory_order_release);
         } else {
             auto& device = Mouse::_instance();
             device.feed(
@@ -161,11 +169,13 @@ LL_TYPE_INSTANCE_HOOK(
     Bedrock::Input::KeyboardEventProcessor::InputOrigin inputOrigin
 ) {
     auto& mod = ::probe::ProbeMod::getInstance();
-    // Origin is the whole test: our own key injection uses Virtual, so a
-    // Hardware event is hardware even when it arrives through the inject ring
-    // (which is how the selftest simulates a real key press).
+    // Origin is the whole test: a real key press is Hardware. Scripted presses
+    // that must reproduce one (double-space flight only reacts to the Hardware
+    // path) arrive through the inject ring under mInjectingInput, so they pass
+    // while the guest's own keyboard is dropped.
     if (mod.hardwareInputLocked()
-        && inputOrigin == Bedrock::Input::KeyboardEventProcessor::InputOrigin::Hardware) {
+        && inputOrigin == Bedrock::Input::KeyboardEventProcessor::InputOrigin::Hardware
+        && !mod.injectingInput()) {
         return;
     }
     origin(keyCode, inputOrigin);

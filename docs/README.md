@@ -11,6 +11,7 @@
 | [`porting.md`](porting.md) | 换游戏版本的移植流程：profile、生成头文件、兼容模式与排查命令 |
 | [`parkour.md`](parkour.md) | 跑酷相关的起跳/落点/记录口径与实验方法 |
 | [`fluid-movement.md`](fluid-movement.md) | 水/岩浆流体运动机制（三介质递推、流推、泳姿、深海行者；1.26.51.01 实测 + 45→51 静态比对） |
+| [`fluid-wiki.md`](fluid-wiki.md) | 上者的 wiki 精简版：只保留结论、公式与实用数据，适合对外发布 |
 | [`scenario-dsl.md`](scenario-dsl.md) | `scenarios/*.json` 的步骤、采样字段和运行方式 |
 | [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 xmake / LLVM / SDK 布局、构建命令（`xmake -j4`）、必须保留的 SDK 补丁与常见问题 |
 | [`ui-automation.md`](ui-automation.md) | 主菜单/世界列表/暂停菜单的桌面 UI 操作；世界内 UI 已可由 `key_event` 完成 |

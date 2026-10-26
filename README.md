@@ -94,7 +94,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 跑酷记录、跳跃分析与重复尝试：[`docs/parkour.md`](docs/parkour.md)
 - dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
-- 流体运动机制（水/岩浆，1.26.51.01 实测复核）：[`docs/fluid-movement.md`](docs/fluid-movement.md)
+- 流体运动机制（水/岩浆，1.26.51.01 实测复核）：[`docs/fluid-movement.md`](docs/fluid-movement.md)；
+  面向 wiki 的精简版：[`docs/fluid-wiki.md`](docs/fluid-wiki.md)
 - 实验手册 skill（建场/录制/输入坑与实验闭环模板）：[`skills/mcbe-harness-experiments/`](skills/mcbe-harness-experiments/)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
 - 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)

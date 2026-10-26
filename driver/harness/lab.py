@@ -411,6 +411,7 @@ def settle(
     in_water: bool | None = None,
     in_lava: bool | None = None,
     sprinting: bool | None = None,
+    input_sprint: bool | None = None,
     clear_input: bool = True,
 ) -> dict[str, Any]:
     """Release inputs, then require the requested state for N consecutive ticks.
@@ -419,7 +420,10 @@ def settle(
     "probably still". ``still`` applies to ``vx``/``vz`` (and ``vy`` when
     ``include_vertical``). ``in_water`` / ``in_lava`` / ``sprinting`` are read
     from the same ``state`` reply (no extra record session), so the gate does
-    not disturb the tick it is checking.
+    not disturb the tick it is checking. ``input_sprint`` checks the
+    ``MoveInput`` sprint flag separately from the actor's SPRINTING bit: the
+    flag can stay latched after a previous experiment and silently turn the
+    next "walk" baseline into a sprint.
 
     Returns ``{"ok", "ticks", "state"}``; callers assert ``ok``.
     A liquid precondition usually needs ``on_ground=None`` and
@@ -461,6 +465,9 @@ def settle(
             ok = ok and lava == in_lava
         if sprinting is not None:
             ok = ok and bool(state.get("sprinting")) == sprinting
+        if input_sprint is not None:
+            inputs = state.get("input")
+            ok = ok and isinstance(inputs, dict) and bool(inputs.get("sprint")) == input_sprint
         streak = streak + 1 if ok else 0
         if streak >= ticks:
             break

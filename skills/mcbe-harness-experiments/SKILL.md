@@ -102,11 +102,19 @@ with ModClient() as client:
   按钮）。旧实现在默认模式下会让游戏起跳（0.42 弧线），已修复并用 `sprint_no_jump` 回归；
   用旧 sprint 注入得出的"疾跑触发上浮"结论一律作废。
   平地疾跑一般无延迟；偶发 1 tick 是 sprint 标志更新与 movement 的 tick 相位竞争。
-  水里稳定延迟：从 sprint 标志置位起，接下来 2 个移动 tick 仍按走（0.8 阻力），第 3 个
-  才用疾跑 0.9——ADF bit3 与客户端 sprint 标志在第 2 个移动 tick 已置位，是水 drag 读取
-  sprint 位滞后约 2 tick，不是 sprint 状态晚。
+  水里（封闭池）：`record` 的 sprint 位（客户端状态）出现后 **2 tick** 才看到 0.9。
+  正常起步：`0.01959/0.03528/0.05133`（第 3 tick 生效）；输入晚一拍：
+  `0.01959/0.03528/0.04782/0.06262`（第 4 tick）。静止时输入已锁存的 harness 变体会提前到
+  第 2 tick（`0.03723`），不是正常路径。地面加速的最终模长来自**移动速度属性**（乘数本身是实体定义字段 `DEFAULT_SPRINT_SPEED_MULTIPLIER`，数据驱动）
+  （0.1→0.13，`sub_14289A180` 把属性表 `+124` 的值拷进移动结构，`sub_14666CEE0` 写
+  `speed*(0.546/friction)^3`），不是原始输入标志；同路径的 `sub_142E11910` 直接读 ADF bit3
+  但只写 0.02/0.026 的基础加速度字段，不是最终 0.13 的来源。地面状态+1、水状态+2 是
+  速度属性与水 ADF 位的读取阶段不同。 机制：记录位不是
+  阻力读的 ADF bit3——下一 tick 才由 `Actor::setSprinting` 写位，再下一 tick 阻力才读到。
   **站着按疾跑键不会预置 sprint**（实测 client_sprint=0、ADF bit3=0）；状态从第一次前进
   移动才开始，所以"提前按住"也消不掉水里的起步延迟。
+  当前世界静止时 `state.input.sprint` 就是 true，只按 W 也会直接疾跑；做走/跑对照前必须让
+  `lab.settle(..., input_sprint=False)` 通过，否则走路基线其实是疾跑。
 - **双击空格飞行**：`lab.double_space_fly()`。两条实测约束：只有 `InputOrigin::Hardware`
   会翻转 `flying`（`via=hid` 只起跳、不切换），每次按下必须跨至少 1 tick（同 tick down+up 被丢）。
   能力门是 `MayFly`，先 `/togglefly`（本地世界的聊天框）或管道 `togglefly` 打开；旁观模式无效，

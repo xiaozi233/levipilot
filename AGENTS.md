@@ -104,6 +104,20 @@ py -3.11 driver/selftest.py
   已在 `Input.cpp` 里改为 mode 1 同时开启时跳过该按钮；回归检查 `sprint_no_jump`。
   实验每一步先 `lab.settle(...)` 验证 `on_ground`/静止/`in_water`/`sprinting` 再注入，
   不要用裸 `sleep` 当前提（`swim_start_still` 也是回归检查）。
+- **水里的疾跑延迟 = 记录位 → ADF 位 → 阻力，各一拍**：`record`/`state` 的 `sprint`
+  （`Player::isSprinting()`）不是水阻力读的位；ADF bit3 由 `Actor::setSprinting`
+  （`sub_14B17C820`）在下一 tick 写入，而同一 tick 内阻力写 `vx`（`0x142DEE7BC`）又早于
+  该写入（`0x14B17C870`，硬件观察点实测）。所以**可见的 0.9 恒在记录位出现后 2 tick**：
+  正常起步记录位在 t1（第一个移动 tick 末）→ 第 3 tick（0.01959/0.03528/0.05133）；输入
+  晚一拍 → 第 4 tick（…/0.04782/0.06262）。静止时输入已被锁存的 harness 变体会提前到 t0 →
+  第 2 tick（0.03723），不是正常路径。地面加速的最终模长来自**移动速度属性**（乘数本身是实体定义字段 `DEFAULT_SPRINT_SPEED_MULTIPLIER`，数据驱动）
+  （0.1→0.13，`sub_14289A180` 把属性表 `+124` 的值拷进移动结构；`sub_14666CEE0` 再写
+  `speed*(0.546/friction)^3`），不是原始输入标志。同路径的 `sub_142E11910` 也直接读 ADF bit3
+  （`(*adf & 8) == 0` → 表 {0.026,0.02}），但那是 0.02/0.026 的基础加速度字段，不是最终
+  0.13 的来源。地面状态+1、水状态+2 是速度属性与水 ADF 位的读取阶段不同。
+- **`state.input.sprint` 可能是静止锁存的 true**：当前世界里只按 W（HID）或
+  `set_input(forward=1, sprint=False)` 都会在第一个移动 tick 进疾跑（0.28 稳态）。
+  做走/跑对照前让 `lab.settle(..., input_sprint=False)` 通过，否则走路基线其实是疾跑。
 - 跳跃不能只靠输入标志/队列/handler：1.26.51.01 上前 3 tick 位置不动、第 4 tick 一次性补
   V1+V2+V3（约 0.99 格）。起跳沿必须调 `LocalPlayer::jumpFromGround()`；
   `MobJump::setJumpPendingScale` 单独用不解决。水中按 Space 到第一个 `+0.04` 有 2–4 tick

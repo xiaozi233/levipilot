@@ -83,7 +83,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 | `scenarios/` | 场景 JSON |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 | `docs/` | 补充文档 |
-| `skills/` | 实验手册 skill（`mcbe-harness-experiments`，ZCode 本地通过 `.zcode/skills/` 联接发现） |
+| `skills/` | 单一逆向 + 实验 skill（`bedrock-re`，ZCode 本地通过 `.zcode/skills/` 联接发现） |
 | `tests/` | 不依赖游戏的单元测试 |
 
 ## 文档
@@ -96,7 +96,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
 - 流体运动机制（水/岩浆，1.26.51.01 实测复核）：[`docs/fluid-movement.md`](docs/fluid-movement.md)；
   面向 wiki 的精简版：[`docs/fluid-wiki.md`](docs/fluid-wiki.md)
-- 实验手册 skill（建场/录制/输入坑与实验闭环模板）：[`skills/mcbe-harness-experiments/`](skills/mcbe-harness-experiments/)
+- 单一逆向 + 实验 skill（静态优先、版本角色、逐轮落盘、建场/录制/输入坑）：[`skills/bedrock-re/`](skills/bedrock-re/)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
 - 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
 - IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)

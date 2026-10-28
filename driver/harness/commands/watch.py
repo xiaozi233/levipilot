@@ -16,21 +16,25 @@ class WatchCommands(PipeConnection):
         mode: str = "w",
         thread: str | int = "tick",
         tag: str = "",
+        depth: int | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        """Install a debug-register watchpoint (``size`` 1/2/4/8, mode w|rw)."""
-        return self.request(
-            {
-                "cmd": "watch_set",
-                "addr": addr,
-                "size": int(size),
-                "mode": mode,
-                "thread": thread,
-                "tag": tag,
-            },
-            "watch_installed",
-            timeout=timeout,
-        )
+        """Install a debug-register watchpoint (``size`` 1/2/4/8, mode w|rw).
+
+        ``depth`` is the number of return addresses captured per hit
+        (1..32, default 8). Deeper stacks cost more per hit.
+        """
+        message: dict[str, Any] = {
+            "cmd": "watch_set",
+            "addr": addr,
+            "size": int(size),
+            "mode": mode,
+            "thread": thread,
+            "tag": tag,
+        }
+        if depth is not None:
+            message["depth"] = int(depth)
+        return self.request(message, "watch_installed", timeout=timeout)
 
     def watch_clear(
         self, watch_id: int | None = None, *, all: bool = False, timeout: float | None = None

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "bedrock-re role profile",
+  "type": "object",
+  "required": ["version", "roles"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "build_id": { "type": "string" },
+    "resolved_at": { "type": "string" },
+    "resolver": { "type": "string" },
+    "source_binary": { "type": "string" },
+    "offsets_ref": { "type": "string" },
+    "notes": { "type": "string" },
+    "roles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["strategy", "status", "confidence", "evidence"],
+        "properties": {
+          "strategy": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "address": {
+            "type": ["string", "null"],
+            "pattern": "^0x[0-9A-Fa-f]+$"
+          },
+          "status": { "enum": ["resolved", "unresolved"] },
+          "confidence": {
+            "enum": ["code", "code+live", "constant", "live", "inference", "none"]
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "offsets_ref": { "type": "string" },
+          "note": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "status": { "const": "resolved" } } },
+            "then": {
+              "required": ["address"],
+              "properties": { "evidence": { "minItems": 1 } }
+            }
+          },
+          {
+            "if": { "properties": { "status": { "const": "unresolved" } } },
+            "then": { "properties": { "address": { "type": "null" } } }
+          }
+        ]
+      }
+    }
+  }
+}

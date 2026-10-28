@@ -27,6 +27,9 @@ py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档
 py -3.11 driver/selftest.py
+
+# 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
+py -3.11 driver/landing.py begin --case <slug> --goal "..."
 ```
 
 `py -3.11` 是硬要求（frida 时代的教训：默认解释器可能没有依赖）。
@@ -40,11 +43,10 @@ py -3.11 driver/selftest.py
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
+| `driver/landing.py` | 每轮逆向落盘：`begin/probe/claim/end/close/abandon`；账本在 `skills/bedrock-re/findings/` |
 | `scenarios/` | 场景 DSL 的 JSON |
-| `skills/mcbe-harness-experiments/` | 实验手册 skill（建场/录制/输入坑与实验闭环模板），**真身、随仓库提交**；
-  本地发现路径 `.zcode/skills/` 是指向它的目录联接（.zcode 已忽略），用户级另有镜像
-  `~/.agents/skills/mcbe-harness-experiments/SKILL.md` |
-| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`；静态证据册本地维护，不随仓库分发）、UI 自动化、mod 构建、移植流程（`porting.md`）、`offsets/` 版本 profile |
+| `skills/bedrock-re/` | 静态优先的逆向 + 实验 skill（取代 `bedrock-client-re` / `reverse-security` / `mcbe-harness-experiments`），**真身、随仓库提交**；`.zcode/skills/bedrock-re` 与 `~/.agents/skills/bedrock-re` 是目录联接 |
+| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`；静态证据册本地维护，不随仓库分发）、UI 自动化、mod 构建、移植流程（`porting.md`）、静态优先的逆向方法与踩坑（`reverse-engineering.md`）、`offsets/` 版本 profile |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 
 ## 硬约束（改代码前先读这段）
@@ -64,7 +66,8 @@ py -3.11 driver/selftest.py
    `docs/offsets/<version>.json`（带 `"runtime": true`），再跑
    `py -3.11 driver/gen_profiles.py` 生成 `GeneratedProfiles.h`。`.cpp` 里禁止出现这些常量；
    没有 profile 时功能降级（`version_ok=false`、偏移表为空），不是崩溃。
-   移植流程见 `docs/porting.md`。
+   移植流程见 `docs/porting.md`。RE 侧的函数/全局角色写 `docs/roles/<version>.json`
+   （与 offsets 分开；`unresolved` 不填地址），由 `skills/bedrock-re/roles/resolve.py` 校验。
 7. **协议只做增量变更**：`{"event":"hello","protocol":4,"capabilities":[...]}` 是握手；
    升号时旧字段必须继续可用，未知命令仍回 `error/unknown_cmd`。
 8. **强能力默认关闭**：任意内存写、任意地址装钩这类能力必须显式开启并留审计日志。
@@ -104,17 +107,22 @@ py -3.11 driver/selftest.py
   已在 `Input.cpp` 里改为 mode 1 同时开启时跳过该按钮；回归检查 `sprint_no_jump`。
   实验每一步先 `lab.settle(...)` 验证 `on_ground`/静止/`in_water`/`sprinting` 再注入，
   不要用裸 `sleep` 当前提（`swim_start_still` 也是回归检查）。
-- **水里的疾跑延迟 = 记录位 → ADF 位 → 阻力，各一拍**：`record`/`state` 的 `sprint`
+- **水里的疾跑延迟 = 记录位 → 输入/疾跑状态 → ADF 写位，约 2 tick**：`record`/`state` 的 `sprint`
   （`Player::isSprinting()`）不是水阻力读的位；ADF bit3 由 `Actor::setSprinting`
-  （`sub_14B17C820`）在下一 tick 写入，而同一 tick 内阻力写 `vx`（`0x142DEE7BC`）又早于
-  该写入（`0x14B17C870`，硬件观察点实测）。所以**可见的 0.9 恒在记录位出现后 2 tick**：
+  （`sub_14B17C820`，写点 `0x14B17C870`）写入，但中间还有一拍状态链。同一 tick 内
+  E14 主 pass 的注册序 ActionSprintTrigger 早于水阻力系统，阻力在写位之后读到**新位**
+  （集合追加+正序；调用栈 [实测] 确认主 pass，catchup/correction 不在链上。旧“观察点显示
+  阻力写 `vx` 早于写位 ⇒ 读上一 tick”的结论已撤回）。所以**可见的 0.9 恒在记录位出现后 2 tick**：
   正常起步记录位在 t1（第一个移动 tick 末）→ 第 3 tick（0.01959/0.03528/0.05133）；输入
   晚一拍 → 第 4 tick（…/0.04782/0.06262）。静止时输入已被锁存的 harness 变体会提前到 t0 →
-  第 2 tick（0.03723），不是正常路径。地面加速的最终模长来自**移动速度属性**（乘数本身是实体定义字段 `DEFAULT_SPRINT_SPEED_MULTIPLIER`，数据驱动）
-  （0.1→0.13，`sub_14289A180` 把属性表 `+124` 的值拷进移动结构；`sub_14666CEE0` 再写
+  第 2 tick（0.03723），不是正常路径。地面加速的最终模长来自**移动速度属性**（疾跑时
+  `Actor::setSprinting` 把共享 modifier `SPRINTING_BOOST` 压进属性队列：amount 0.3f、
+  `MULTIPLY_TOTAL`，重算 `(0.3+1)×0.1=0.13`；代码里没有 1.3 常数，早前归给实体定义字段
+  `DEFAULT_SPRINT_SPEED_MULTIPLIER` 是错的——那是 AI goal 的 JSON 字段）
+  （0.1→0.13，`sub_14289A180` 把属性实例 `+124` 的值拷进移动结构；`sub_14666CEE0` 再写
   `speed*(0.546/friction)^3`），不是原始输入标志。同路径的 `sub_142E11910` 也直接读 ADF bit3
   （`(*adf & 8) == 0` → 表 {0.026,0.02}），但那是 0.02/0.026 的基础加速度字段，不是最终
-  0.13 的来源。地面状态+1、水状态+2 是速度属性与水 ADF 位的读取阶段不同。
+  0.13 的来源。地面状态 +1 来自速度属性、水状态 +2 来自 ADF 位状态链。
 - **`state.input.sprint` 可能是静止锁存的 true**：当前世界里只按 W（HID）或
   `set_input(forward=1, sprint=False)` 都会在第一个移动 tick 进疾跑（0.28 稳态）。
   做走/跑对照前让 `lab.settle(..., input_sprint=False)` 通过，否则走路基线其实是疾跑。
@@ -190,8 +198,8 @@ py -3.11 driver/selftest.py
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **217/217**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 193/193、
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **221/221**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 204/204、
 ruff/mypy（driver+tests）全绿。
 
 任务提示词不在仓库内（本地维护）。

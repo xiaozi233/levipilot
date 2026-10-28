@@ -218,30 +218,45 @@ $$
 | 正常（手动同按，实测） | $0.01959$ | $0.03528$ | $\mathbf{0.05133}$ | $0.06580$ |
 | 输入晚一拍（注入常见） | $0.01959$ | $0.03528$ | $0.04782$ | $\mathbf{0.06262}$ |
 
-前两个移动 tick 与走路完全相同，第三个才切 0.9。链条是三步、每步一拍：
+前两个移动 tick 与走路完全相同，第三个才切 0.9。链条是三步、每步一拍，但**最后两拍是
+状态链，不是阻力读滞后**（2026-10-27 静态调度复核，§9.1）：
 
 1. 输入生效后，**客户端 sprint 状态**先置位——就是 `record`/`state` 里的 `sprint` 位
    （`Player::isSprinting()`）；正常起步时它在第一个移动 tick 末置位。
-2. 下一 tick，`Actor::setSprinting`（`sub_14B17C820`）把 **ADF bit3** 写进组件。
-3. 再下一 tick，水阻力读到它：同一 tick 内阻力写 `vx`（`0x142DEE7BC`）**早于**
-   `setSprinting`（`0x14B17C870`）——硬件观察点实测，所以阻力读到的是上一 tick 的位。
+2. 记录位还要经一拍输入/疾跑状态，`Actor::setSprinting`（`sub_14B17C820`）才把 **ADF bit3**
+   写进组件（写点 `0x14B17C870`）；所以写位比记录位晚约 2 tick。
+3. 同一 tick 内，E14 主 pass 的注册顺序是 ActionSprintTrigger 早于 travel 系统，
+   水阻力在写位之后读到的是**新位**（静态：集合追加 + 正序；调用栈 [实测] 确认主 pass，
+   catchup/correction 不在链上）。
 
 因此"可见的 0.9"恒在记录 `sprint` 位出现后 **2 tick**：正常起步记录位在 t1 → 第 3 tick
-（$0.05133$）；输入晚一拍则 t2 → 第 4 tick（$0.06262$）。
+（$0.05133$）；输入晚一拍则 t2 → 第 4 tick（$0.06262$）。旧说法"阻力读上一 tick 的位"
+已撤回——它把状态链的两拍误记成了阻力的读滞后。
 
 地面加速的**最终模长**由 `sub_14666CEE0` 写成 `speed * (0.546/friction)^3`，其中 `speed` 是
 移动速度属性（走路 0.1 / 疾跑 0.13，差 1.3 倍）。运行期 applier 收到的向量：疾跑
 $(0,\ 0,\ 0.98,\ 0.13)$、走路 $(0,\ 0,\ 0.98,\ 0.1)$，$0.13\times0.98=0.1274$ 与实测逐位一致。
-这个 `speed` 由属性聚合器 `sub_14289A180` 从属性表 `+124` 的值拷进移动结构——**最终 ×1.3 来自
-移动速度属性的 modifier**，不是原始输入标志。
+这个 `speed` 由属性聚合器 `sub_14289A180` 从属性实例 `+124` 的当前值拷进移动结构——**最终 ×1.3
+来自移动速度属性的 modifier**，不是原始输入标志。
+
+**×1.3 的静态闭合（2026-10-27）**：`Actor::setSprinting`（`sub_14B17C820`）在写 ADF bit3 的
+同一处，把共享 modifier `SharedModifiers::SPRINTING_BOOST()` 作为"添加"请求压进属性组件的
+待处理列表（停机时压"移除"）。这个 modifier 的静态初始化（`1431BD020` 内的
+`qword_151DC52F0`/`qword_151DC52F8`）是：名字 `"Sprinting speed boost"`、**amount 0.3f**
+（`0x3E99999A`）、**operation 2 = `OperationMultiplyTotal`**、operand 2 = `OperandCurrent`、
+UUID `D208FC00-42AA-4AAD-9276-D5446530DE43`、不序列化。重算 `sub_142859E10` 对
+MULTIPLY_TOTAL 用 `(amount + 1.0) × 当前值` ⇒ `1.3 × 0.1 = 0.13`。所以代码里不存在 1.3
+这个常数——存的是 0.3，`+1.0` 在重算时才加（枚举定义见 LL SDK
+`world/attribute/AttributeModifierOperation.h`）。
 
 同一条路径上还有一个独立的直接读取：`sub_142E11910(a1, adf, vec)` 里
 `result = (*adf & 8) == 0; *(vec+12) = dword_14E85AF48[result]`，表值
 $(0.026,\ 0.02) = 0.02\times(1.3,\ 1)$。它读的是 ADF bit3，但写的是 **0.02/0.026 的基础加速度
 字段**，与最终 0.1/0.13（差 5 倍）不是同一个量，不能拿它当最终乘数的来源。
 
-地面与水的时间差来自两个不同量的读取阶段：速度属性在疾跑写入之后被聚合进移动结构，
-而水阻力读的 ADF 位在写入之前，所以地面状态 +1、水状态 +2。
+地面与水的时间差来自两个不同量的写入时机：地面速度属性在记录位后的下一 tick 就被聚合进
+移动结构（+1）；水阻力虽在同 tick 写位之后读到新位，但 ADF bit3 本身要经状态链晚约 2 tick
+才写入（+2）。
 
 > **harness 假象**：若疾跑输入在静止时已被锁存（`state.input.sprint` 为 true），记录位会
 > 提前到 t0，序列变成 $0.01959/\mathbf{0.03723}/0.05310$。这不是正常玩家路径，只是注入状态
@@ -264,7 +279,7 @@ $(0.026,\ 0.02) = 0.02\times(1.3,\ 1)$。它读的是 ADF bit3，但写的是 **
 sprint 状态是从**第一次前进移动**才开始的，不是从按键开始。所以"提前按住"不能预置状态：
 - 平地：第一次移动 tick 就可以是疾跑（实测 `0.0980` 且 sprint=1，第二个 `0.1809`），
   通常无延迟；偶发延迟是那次标志更新落在 movement 之后。
-- 水里：sprint 状态仍从 movement 起点开始，再叠加"ADF 位晚一拍 + 阻力读位晚一拍"，
+- 水里：sprint 状态仍从 movement 起点开始，再叠加"记录位 → 输入/疾跑状态 → ADF 写位"的两拍，
   所以从静止起步会看到 3–4 tick 的生效点。
 
 > **实验坑（本轮修复）**：旧 `set_input(sprint=True)` 在默认模式（1|2|4）下除了写
@@ -481,31 +496,43 @@ Java 26.2 对照下最值得注意的两条差异：**Java 的判定盒只内缩
 5. **$0.028$ 分支的可达性**：反编译里存在"首 tick 用 0.028"的闩锁分支，但入水/深水按住 Space
    都只测到 $+0.04$（首个水物理 tick 残余 $+0.04000$）；闩锁写者与触发路径仍未定位。
 6. **水阻力为什么比记录里的 sprint 位晚两拍（已闭合）**：记录位是 `Player::isSprinting()`
-   （客户端 sprint 状态），不是阻力读的 `ADF & 8`。ADF bit3 由 `Actor::setSprinting`
-   （`sub_14B17C820`）在下一 tick 写入；阻力在同一 tick 里又先于 `setSprinting`
-   （硬件观察点：`vx` 写 `0x142DEE7BC` < 位写 `0x14B17C870`），所以再晚一拍。
+   （客户端 sprint 状态），不是阻力读的 `ADF & 8`。记录位到 `ADF bit3` 之间还有一拍
+   输入/疾跑状态，`Actor::setSprinting`（`sub_14B17C820`）才写位（写点 `0x14B17C870`）。
+   同一 tick 内 E14 主 pass 的注册顺序是 ActionSprintTrigger 早于 travel，阻力在写位之后
+   读到**新位**（静态：集合追加 + 正序；调用栈 [实测] 确认主 pass，catchup/correction
+   不在链上）。旧说法"阻力先于写位、读上一 tick 的位"已撤回。
    实测恒有 onset = 记录位置位 tick + 2：正常起步记录位在 t1 → 第 3 tick（$0.05133$）；
    输入晚一拍 → 第 4 tick（$0.06262$）。静止时输入已被锁存的 harness 变体会提前到 t0 →
    第 2 tick（$0.03723$），不作为正常路径。
    剩余未定位的只是"sprint 输入在静止时被锁存"这一现象（见 §3.2 实验坑）。
-7. **地面疾跑 ×1.3 的最终来源（2026-10-27，来源已判定）**：加速度施加点 `sub_148B618A0`
+7. **地面疾跑 ×1.3 的最终来源（2026-10-27，已闭合）**：加速度施加点 `sub_148B618A0`
    只把"方向 + 模长"按 yaw 旋转后加到速度。最终模长由 `sub_14666CEE0` 写成
-   `speed * (0.546/friction)^3`；`speed` 经属性聚合器 `sub_14289A180` 从属性表 `+124`
+   `speed * (0.546/friction)^3`；`speed` 经属性聚合器 `sub_14289A180` 从属性实例 `+124`
    拷进移动结构（走路 0.1 / 疾跑 0.13）。运行期 applier 向量 $(0,0,0.98,0.13)$ vs
-   $(0,0,0.98,0.1)$，$0.13\times0.98=0.1274$ 逐位吻合。**所以最终 ×1.3 来自移动速度属性的
-   modifier**，不是原始输入标志。
+   $(0,0,0.98,0.1)$，$0.13\times0.98=0.1274$ 逐位吻合。
    同路径另有一个独立读取 `sub_142E11910`：`result = (*adf & 8) == 0; *(vec+12) =
    dword_14E85AF48[result]`，表值 $(0.026, 0.02) = 0.02\times(1.3, 1)$ —— 它直接读 ADF bit3，
    但写的是 0.02/0.026 的基础加速度字段，与最终 0.1/0.13 差 5 倍，**不是最终乘数的来源**。
-   地面（速度属性，写入后聚合）与水（ADF 位，写入前读取）的 +1/+2 tick 差异来自这两个量的
-   读取阶段不同。
-   **modifier 机制与来源已定位**：`sub_142859B40`（add）/ `sub_14285A7D0`（remove）/
-   `sub_1431A1BE0`（wrapper）/ `sub_14285B440`（重算，值写 `entry+124`）。疾跑倍率本身是
-   **实体定义字段** `self::DEFAULT_SPRINT_SPEED_MULTIPLIER`（字符串表 `0x14EF2D02D`，与
-   `DEFAULT_WALK_SPEED_MULTIPLIER` / `DEFAULT_SNEAK_SPEED_MULTIPLIER` 同表）——它是数据，
-   不是代码常量，所以整条代码路径不存在 0.3/0.03 指令；modifier 描述符由定义数据在运行时
-   构造，再由上面的通用 add/remove 机制应用。**仍缺**（数据侧，不是代码侧）：定义数据里
-   该字段的具体值（1.3）与加载点。
+   地面（速度属性，记录位后下一 tick 聚合）与水（ADF 位，要经状态链约 2 tick 才写入；
+   阻力在同 tick 写位之后读新位）的 +1/+2 tick 差异来自这两个量的写入时机不同。
+   **×1.3 的完整链条（静态）**：`Actor::setSprinting`（`sub_14B17C820`）写 ADF bit3 的同时，
+   把 `SharedModifiers::SPRINTING_BOOST()` 压进属性组件的待处理队列（`a5==0` 时压移除）。
+   该 modifier 的静态初始化在 `1431BD020` 内（`qword_151DC52F0` / `qword_151DC52F8`）：
+   `"Sprinting speed boost"`、**amount 0.3f**（`0x3E99999A`）、**operation 2 =
+   `OperationMultiplyTotal`**、operand 2 = `OperandCurrent`、UUID
+   `D208FC00-42AA-4AAD-9276-D5446530DE43`。`AttributeInstance::_calculateValue`
+   （`sub_142859E10`）对 MULTIPLY_TOTAL 执行 `(amount + 1.0) × 当前值` ⇒ `1.3 × 0.1 = 0.13`。
+   **所以代码里没有 1.3 这个常数，只有 0.3；+1.0 在重算时加**（枚举见 LL SDK
+   `world/attribute/AttributeModifierOperation.h` / `AttributeOperands.h`）。
+   通用 add/remove 落点：`sub_142859B40`（add）/ `sub_14285A7D0`（remove）/
+   `sub_1431A1BE0`（wrapper）/ `sub_14285B440`（重算，写 `entry+124`）。
+   **已撤回**：早前把倍率归给实体定义字段 `self::DEFAULT_SPRINT_SPEED_MULTIPLIER`
+   （`0x14EF2D02D`）是错的——它是 **AI goal 的 JSON 字段** `sprint_speed_multiplier`
+   （解析点 `sub_14CCAE920`，同函数还解析 `DEFAULT_MAX_SPRINT_RANGE`；原版数据里
+   ocelotattack 1.33、piglin 1.1、hoglin 1.0），与玩家的移动速度属性无关。
+   同名干扰项：灵魂疾行（Soul Speed，附魔 id 36）也构造一个叫 `"Sprinting speed boost"` 的
+   modifier（`sub_142080250`，amount `(1+0.35×等级)×0.03`），UUID 不同，是**另一个**
+   modifier，不要与基础疾跑混淆。
 8. 实验基建两条坑（对以后所有 harness 方块实验）：区块回滚与液体"戳醒"，见 §3.3 注。
 
 ### 已闭合 / 已撤回
@@ -523,8 +550,9 @@ Java 26.2 对照下最值得注意的两条差异：**Java 的判定盒只内缩
 | 岩浆"前进+疾跑顶浮 $+0.04$" | **撤回**：同一个隐藏 jump；修复后 26 tick 尾段恒 $-0.04$ | §6.4 |
 | $0.028$ 首 tick 上浮"已验证" | **更正**：静态存在，实测未命中；首拍就是 $+0.04$ | §1.1 |
 | 深海行者靴穿不上 | **已闭合（2026-10-24）**：新增 `equip`，III 级涉水 2.15× | 已写入 selftest |
-| 水阻力"读到 sprint 位滞后 2 tick" | **更正（2026-10-26）**：阻力读的是**上一 tick** 的位（1 tick）；第 3 tick 的可见差异 = 状态写入 1 tick + 读滞后 1 tick；旧的"第 4 个移动 tick"版本是状态写入又晚一拍 | R-F1 + `sub_14B17C820` + 观察点顺序 + 24 次复测 |
+| 水阻力"读到 sprint 位滞后 2 tick" | **更正（2026-10-27）**：2 tick 来自状态链（记录位 → 输入/疾跑状态 → ADF 写位）；同一 tick 内写位在 E14 主 pass、早于阻力，阻力读的是**新位**。"阻力读上一 tick 的位"撤回 | §9.1 + 注册顺序/集合实现 + 调用栈 [实测] |
 | Java 岩浆终速 $-0.02$、基岩快 2 倍 | **撤回**：Java 深浆也是 `0.5v-0.02` ⇒ $-0.04$；只有浅浆不同 | 26.2 字节码 `travelInLava` |
+| 疾跑 ×1.3 来自实体定义字段 `DEFAULT_SPRINT_SPEED_MULTIPLIER` | **撤回（2026-10-27）**：那是 AI goal 的 JSON 字段 `sprint_speed_multiplier`（ocelotattack 1.33 等）；玩家的 ×1.3 是 `SPRINTING_BOOST` modifier（amount 0.3f、`MULTIPLY_TOTAL`）在重算时 `(0.3+1)×0.1=0.13` | §3.2 + §8 第 7 项；LL SDK `AttributeModifierOperation.h` |
 
 ---
 
@@ -539,6 +567,32 @@ Java 26.2 对照下最值得注意的两条差异：**Java 的判定盒只内缩
 - 可作版本锚点的罕见常量是 `0.028` / `0.014` / `0.0035` / `0.54600006`（全库各 1 处）；
   **`-0.005` 不是唯一常量**，旧版把它当锚点是错的。证明"阻力在前"的依据是：
   水的代码不是 $0.8(v+g)$ 形式（那会需要不存在的 $-0.00625$），岩浆也不是 $0.5(v+g)$。
+
+### 9.1 tick 内**调度**顺序的证据等级（2026-10-28 静态定案）
+
+§1/§3.2 的“六步”是**代数顺序**（每 tick 各步读写哪些量），不是 ECS 调度器的执行顺序。
+目前的状态：
+
+- 各步的**读取对象**已是静态证据：水/岩浆阻力读 ADF bit3；地面加速度读移动速度属性；
+  `Actor::setSprinting` 写 ADF bit3 并把 `SPRINTING_BOOST` 压入属性队列。
+- **步与步的先后（静态）**：E14 主 pass 的类别 id 是 `word_151DB9E14`
+  （`sub_1463B0B00` 取它调 foreach）。集合注册方法 `sub_1425C5DD0` 在 `mode & 1` 时，
+  把系统索引追加到每个给定类别对应的 `+0x38` 向量；`foreachTickingSystem` 正序遍历
+  ⇒ **注册顺序 = tick 顺序**。
+  - ActionSprintTrigger：`0x14681FBED` 调 `sub_1466567E0(..., mode=1)` →
+    `sub_146662E90` 传 4 个类别 [E14, catchup, correction, E1C]。
+  - 水阻力：`sub_142DE0950` 构造后经回调 `0x14685D0B0` → `sub_142DEDF10(..., mode=1)` →
+    `sub_142DEE020` 传 2 个类别 [E14, E1C]。
+  - 两条链都在 `sub_146822800` 内；ActionSprint 的 setup 调用点 `0x1468230DA` 早于
+    水阻力 ctor 调用点 `0x14682658B`。因此 E14 向量里 ActionSprint 索引在前，
+    **写位先于阻力**。20 帧调用栈现在只是旁证，不再是唯一定案依据。
+  - 旧“阻力读上一 tick 的位”撤回；水面 +2 归因于状态链，阻力在同 tick 写位之后读新位。
+- **状态链的静态进度**：`ActionSprintTrigger::tick`（`0x14B1A9FE0`）→ `sub_14B1A96C0`
+  → `sub_14B190B20` → `0x14B1A9F50`；后者按 `PlayerActionComponent` 的 bit `0x200/0x400`
+  调 `Actor::setSprinting(1/0)`。`record` 的 sprint 位不是这组边沿位。
+  **仍未定位**：`PlayerActionComponent` 的写者及其在 E14 向量中的位置——这是
+  “记录位 → ADF 写位”正好 2 tick 的最后一环；在定位前不把 2 tick 写成纯静态结论。
+  调度细节与调用栈证据在**本地证据册**（`tick-order-12651.md` §8–§10），正文按代数顺序表述。
 
 ---
 
@@ -576,7 +630,7 @@ Java 26.2 对照下最值得注意的两条差异：**Java 的判定盒只内缩
   - **本轮修复的 harness bug**：`set_input(sprint=True)` 曾在默认模式下把 sprint 当按钮
     送进 queue/handler，触发 0.42 跳跃；已在 `Input.cpp` 里跳过该按钮（mode 1 同时开启时），
     并用 `sprint_no_jump` 回归。旧的 sprint 系游泳/岩浆数据已重测或撤回。
-  - live selftest 基线：**217/217**（新增 `swim_start_still`、`sprint_no_jump`）。
+  - live selftest 基线：**221/221**（新增 `swim_start_still`、`sprint_no_jump`）。
 
 > 本文档同时是 MCBE_Parkour_wiki `Water`/`Lava` 小节的素材库：§0–§7 可直接改写进 wiki
 > （英文版翻译时保留公式与证据标签即可）。

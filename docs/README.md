@@ -16,7 +16,9 @@
 | [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 xmake / LLVM / SDK 布局、构建命令（`xmake -j4`）、必须保留的 SDK 补丁与常见问题 |
 | [`ui-automation.md`](ui-automation.md) | 主菜单/世界列表/暂停菜单的桌面 UI 操作；世界内 UI 已可由 `key_event` 完成 |
 | [`offsets/`](offsets/) | 版本 profile（`runtime:true` 的 JSON 会被编进 `GeneratedProfiles.h`） |
+| [`roles/`](roles/) | RE 角色 → 静态地址与证据（与 offsets 分开；`unresolved` 不猜地址） |
 | [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | IDA MCP 代理卡死等排障（逆向工具链） |
+| [`reverse-engineering.md`](reverse-engineering.md) | **静态优先**的逆向工作流与踩坑：证据分级、无符号定位手法（注释记录/vtable/SDK）、顺序类问题的判据、磁盘与库纪律、动态取证的边界 |
 
 ## 历史 / 参考
 
@@ -32,6 +34,6 @@
 - 改代码后同步更新：使用限制/基线进 `mod/README.md` 的「实测 / 限制」，逐项实测数字
   进 `mod-internals.md` 的对应小节或「实测数字速查」，并同步这里的相关文档。
 - 任务提示词不随仓库分发；验收结论直接写进 `mod-internals.md` 与 `mod/README.md`。
-- 实验操作手册（建场回读、录制语义、输入/热键坑）在仓库根目录
-  [`skills/mcbe-harness-experiments/`](../skills/mcbe-harness-experiments/)；ZCode 本地通过
-  `.zcode/skills/` 联接发现，用户级另有镜像。
+- 静态优先的逆向 + 实验手册（建场回读、录制语义、输入/热键坑、版本角色、逐轮落盘）在仓库根目录
+  [`skills/bedrock-re/`](../skills/bedrock-re/)；ZCode 本地通过 `.zcode/skills/` 联接发现，
+  用户级通过 `~/.agents/skills/` 联接发现。

@@ -272,7 +272,14 @@ extern std::atomic<std::uint32_t> gServerThreadId;
 void watchInit();
 void watchShutdown();
 nlohmann::json
-watchInstall(std::uint64_t addr, std::uint32_t size, bool readWrite, std::string const& thread, std::string const& tag);
+watchInstall(
+    std::uint64_t      addr,
+    std::uint32_t      size,
+    bool               readWrite,
+    std::string const& thread,
+    std::string const& tag,
+    std::uint32_t      depth
+);
 nlohmann::json watchRemove(int id);
 bool           watchRemoveAll();
 nlohmann::json watchListJson();

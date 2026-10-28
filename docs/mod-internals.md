@@ -188,7 +188,7 @@
   tid。`thread="all"` 已被显式拒绝（`thread_all_unsupported`）——给 100+ 线程装 DR
   实测会搞崩游戏；VEH 读取 armed 线程表是无锁的定长数组（原子计数发布），异常路径
   不拿 mutex。挂起窗口内不做任何可能分配的操作（日志延迟到 Resume 之后）。
-- 命中由 VEH 处理：清 DR6 对应位，把 `{watchId, tid, tick, rip, 8 帧栈}` 写进预分配的
+- 命中由 VEH 处理：清 DR6 对应位，把 `{watchId, tid, tick, rip, depth 帧栈}` 写进预分配的
   65536 条定长环；命中路径不做 JSON/字符串/加锁。`watch_drain` 在管道线程把环序列化成
   JSON，`since`/`next` 是绝对序号，`lost` 表示已被覆盖的条数。
 - 清除时对每个安装过的线程恢复 DR7 并清零 DRn。
@@ -325,6 +325,11 @@
   `code_hex = rip-16..rip`（32 位 hex），顶层 `rip_semantics="next_instruction"`。
 - `allow_watch`（harness.json，默认 true）：关闭时 `watch_set` 回 `watch_disabled`；
   `watch_installed` 带 `suspends_tick_thread=true`。
+- `watch_set` 的 `depth`（1..32，默认 8）控制每次命中抓多少返回地址；记录固定 32 槽，
+  实际只填 `depth` 帧。深度越大，VEH 每次命中多一次更深回溯、环占用更大
+  （65536 条 × (48 + 8×depth) B）。越 1..32 回 `bad_depth`。
+  注意前几帧常是 VEH 处理器的栈，8 帧实际只剩 3 层真实调用者；
+  取自证 pass/调用链时用 20 左右。
 
 ## 记录环采样（F8）
 
@@ -580,8 +585,8 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **217/217**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 193/193。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **221/221**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 204/204。
 
 ### 实验辅助（`driver/harness/lab.py`）
 
@@ -649,7 +654,7 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
   兜底，结构化异常回 `internal_error, phase=ecs`。
 - `Registries`/`Context` 仍走客户端 tick（客户端 context，同线程；Context 本就有 SEH）。
 - 验证：`ecs_entity`（115 组件）/`ecs_components`（115，94 有尺寸）/`ecs_component`（StateVector 36B）
-  全部通过；selftest 217/217。
+  全部通过；selftest 221/221。
 
 ### 行为契约与加固
 

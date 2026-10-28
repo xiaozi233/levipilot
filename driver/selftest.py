@@ -1500,11 +1500,42 @@ def main(argv: list[str] | None = None) -> int:
             drained.get("rip_semantics") == "next_instruction",
             str(drained.get("rip_semantics")),
         )
+
         checks.check(
             "watch_list",
             len(client.watch_list().get("watches", [])) == 1,
             str(client.watch_list().get("watches")),
         )
+        # Per-watch stack depth: default 8, configurable up to 32. The default
+        # watch above must stay at 8; a second watch asks for 20 and must be
+        # echoed and honored.
+        checks.check(
+            "watch_depth_default",
+            bool(hits) and all(len(hit.get("stack", [])) <= 8 for hit in hits),
+            f"hits={len(hits)}",
+        )
+        deep_base = int(client.watch_list().get("head", 0))
+        deep = client.watch_set(probe_addr, size=8, mode="w", tag="deep_probe", depth=20)
+        checks.check(
+            "watch_depth_install",
+            deep.get("event") == "watch_installed" and int(deep.get("depth", 0)) == 20,
+            str(deep),
+        )
+        wait_ticks(client, 10)
+        deep_hits = client.watch_drain(deep_base).get("hits", [])
+        checks.check(
+            "watch_depth_stack",
+            bool(deep_hits)
+            and all(len(hit.get("stack", [])) <= 20 for hit in deep_hits)
+            and any(len(hit.get("stack", [])) >= 9 for hit in deep_hits),
+            f"hits={len(deep_hits)} depths={[len(h.get('stack', [])) for h in deep_hits][:8]}",
+        )
+        bad_depth = False
+        try:
+            client.watch_set(probe_addr, size=8, mode="w", tag="bad_depth", depth=33)
+        except ModProtocolError as exc:
+            bad_depth = "bad_depth" in str(exc)
+        checks.check("watch_depth_bad", bad_depth, "")
         cleared_cmd = client.watch_clear(all=True)
         checks.check("watch_clear_ok", cleared_cmd.get("ok") is True, str(cleared_cmd))
         cleared = client.watch_list()

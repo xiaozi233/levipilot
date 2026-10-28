@@ -1,0 +1,32 @@
+# claims 示例：直接复制此文件后改。
+# `driver/landing.py claim --case <case> --file claims.yaml` 接受 {claims: [...]} 或单个对象。
+# `confirmed` 必须同时有静态证据等级和 static_closure；否则 claim 会被拒绝。
+
+claims:
+  - hypothesis: "阻力系统在同 tick 的写位之后读到新 ADF 位"
+    result: confirmed
+    evidence_tier: code
+    static_closure: "E14 主 pass 注册序：ActionSprintTrigger 早于水阻力；集合追加 + 正序"
+    evidence: "[代码] 注册点顺序与集合实现；[实测] 20 帧栈只用于定位主 pass"
+    roles:
+      "@set_sprinting": "0x14B17C820"
+      "@water_drag": "0x142DEE630"
+    probe_ref: r01-001
+    published: docs/fluid-movement.md#91-tick-内调度顺序的证据等级2026-10-27
+    next: "复核 catchup pass 是否读到同一状态"
+
+# 其他结果的写法（取消注释并改成自己的 probe ref）：
+#
+#  - hypothesis: "0.028 首 tick 分支可达"
+#    result: inconclusive
+#    evidence_tier: live
+#    evidence: "[实测] 三种落速首拍都是 +0.04；未命中闩锁"
+#    probe_ref: r01-002
+#    next: "补水下悬空 + 水平流的单变量实验"
+#
+#  - hypothesis: "旧结论 X 已被新证据推翻"
+#    result: refuted
+#    evidence_tier: code
+#    static_closure: "控制流显示旧分支只在版本 Y 存在"
+#    evidence: "[代码] 当前版本分支表"
+#    erratum_of: r00-004

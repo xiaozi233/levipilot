@@ -14,7 +14,10 @@ namespace {
 
 constexpr std::size_t kSlotCount    = 4; // DR0-DR3
 constexpr std::size_t kRingCapacity = 1u << 16;
-constexpr std::size_t kMaxFrames    = 8;
+// Storage ceiling for per-hit stacks; the per-watch `depth` selects how many
+// of these slots are actually filled (default keeps the old 8).
+constexpr std::size_t kMaxFrames     = 32;
+constexpr std::size_t kDefaultFrames = 8;
 
 struct Watch {
     std::atomic_bool           used{false};
@@ -22,6 +25,7 @@ struct Watch {
     std::atomic<std::uint64_t> hits{0};
     std::uint64_t              addr      = 0;
     std::uint32_t              size      = 1;
+    std::uint32_t              depth     = static_cast<std::uint32_t>(kDefaultFrames);
     bool                       readWrite = false;
     int                        slot      = -1;
     std::string                tag;
@@ -259,8 +263,10 @@ void storeHit(int slot, CONTEXT& context) {
     record.tid                 = GetCurrentThreadId();
     record.tick                = gWatchTick.load(std::memory_order_relaxed);
     record.rip                 = context.Rip;
-    record.frameCount          = static_cast<std::uint32_t>(
-        RtlCaptureStackBackTrace(0, kMaxFrames, reinterpret_cast<PVOID*>(record.frames), nullptr)
+    std::size_t const depth =
+        gWatches[slot] ? static_cast<std::size_t>(gWatches[slot]->depth) : kDefaultFrames;
+    record.frameCount = static_cast<std::uint32_t>(
+        RtlCaptureStackBackTrace(0, depth, reinterpret_cast<PVOID*>(record.frames), nullptr)
     );
     record.seq.store(index + 1, std::memory_order_release);
     if (gWatches[slot]) {
@@ -355,11 +361,15 @@ nlohmann::json watchInstall(
     std::uint32_t      size,
     bool               readWrite,
     std::string const& thread,
-    std::string const& tag
+    std::string const& tag,
+    std::uint32_t      depth
 ) {
     watchInit();
     if (size != 1 && size != 2 && size != 4 && size != 8) {
         return errorJson("bad_size");
+    }
+    if (depth < 1 || depth > kMaxFrames) {
+        return errorJson("bad_depth");
     }
     // DR watchpoints work on read-only pages too; only a write watch needs a
     // writable target.
@@ -425,6 +435,7 @@ nlohmann::json watchInstall(
     Watch& watch   = *gWatches[slot];
     watch.addr     = addr;
     watch.size     = size;
+    watch.depth    = depth;
     watch.readWrite = readWrite;
     watch.slot     = slot;
     watch.tag      = tag;
@@ -466,6 +477,7 @@ nlohmann::json watchInstall(
     out["size"]    = size;
     out["mode"]    = readWrite ? "rw" : "w";
     out["tag"]     = tag;
+    out["depth"]   = depth;
     out["threads"] = nlohmann::json::array();
     for (DWORD tid : watch.armedList()) {
         out["threads"].push_back(tid);

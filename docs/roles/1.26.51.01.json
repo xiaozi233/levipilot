@@ -1,0 +1,470 @@
+{
+  "version": "1.26.51.01",
+  "build_id": "1.26.51.1",
+  "resolved_at": "2026-10-28T00:00:00Z",
+  "resolver": "skills/bedrock-re/roles/resolve.py",
+  "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
+  "offsets_ref": "docs/offsets/1.26.51.01.json",
+  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。",
+  "roles": {
+    "@tick_entity_systems": {
+      "strategy": [
+        "string:EntitySystemsManager::tickEntitySystems",
+        "xrefs_to:profiler_record"
+      ],
+      "address": "0x141177690",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 名字记录引用 0x1411779C5；见 docs/reverse-engineering.md §3A"
+      ]
+    },
+    "@entity_systems_main_pass": {
+      "strategy": [
+        "callgraph:from:@tick_entity_systems",
+        "dispatcher:E14"
+      ],
+      "address": "0x1463B0B00",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] tickEntitySystems 的 E14 分派器；[实测] 20 帧调用栈落到 0x1463B0C27"
+      ]
+    },
+    "@entity_systems_secondary_pass": {
+      "strategy": [
+        "callgraph:from:@tick_entity_systems",
+        "dispatcher:E1C"
+      ],
+      "address": "0x1463B1070",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] E1C 分派器；[实测] 客户端通常只跑 E14 + catchup"
+      ]
+    },
+    "@entity_systems_catchup": {
+      "strategy": [
+        "vtable:EntitySystems",
+        "category:13584"
+      ],
+      "address": "0x1463B0DF0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 集合实现与类别向量；catchup 不在主 pass 链上"
+      ]
+    },
+    "@entity_systems_correction": {
+      "strategy": [
+        "vtable:EntitySystems",
+        "category:1358C"
+      ],
+      "address": "0x1463B0F30",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] correction 类别；[实测] 本地世界未触发"
+      ]
+    },
+    "@systems_create": {
+      "strategy": [
+        "vtable:DefaultEntitySystemsCollection",
+        "ctor_writes_vtable"
+      ],
+      "address": "0x1425C25A0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] create 内写 vtable 0x14E8285E0；见 docs/reverse-engineering.md §3B"
+      ]
+    },
+    "@systems_register": {
+      "strategy": [
+        "vtable:slot",
+        "append:category_vector"
+      ],
+      "address": "0x1425C5DD0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 追加 system 到 mAllSystems，再按 mode 追加到类别向量 +0x38/+0x50"
+      ]
+    },
+    "@systems_foreach": {
+      "strategy": [
+        "vtable:slot",
+        "forward:category_vector"
+      ],
+      "address": "0x1425C6CF0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 按类别项正序遍历；tick 顺序 = 注册顺序"
+      ]
+    },
+    "@action_sprint_trigger": {
+      "strategy": [
+        "registration:0x14681FBB7",
+        "tick:0x14B1A9FE0"
+      ],
+      "address": "0x14B1A9FE0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ActionSprintTriggerSystem tick；注册点早于水阻力系统"
+      ]
+    },
+    "@sprint_input_edge": {
+      "strategy": [
+        "caller:from:@action_sprint_trigger",
+        "input_edge_bits:0x200/0x400"
+      ],
+      "address": "0x14B1AA080",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] setSprinting 的输入边沿调用者之一；另一个是 0x14B1A9F50"
+      ]
+    },
+    "@set_sprinting": {
+      "strategy": [
+        "caller:from:@action_sprint_trigger",
+        "store:ADF_bit3"
+      ],
+      "address": "0x14B17C820",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 写 ADF bit3 并压入 SPRINTING_BOOST 请求；见 docs/fluid-movement.md §3.2"
+      ]
+    },
+    "@sprint_bit_store": {
+      "strategy": [
+        "store:inside:@set_sprinting"
+      ],
+      "address": "0x14B17C870",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ADF bit3 的写入点；顺序证据见 docs/fluid-movement.md §9.1"
+      ]
+    },
+    "@sprint_boost_init": {
+      "strategy": [
+        "static_init:SharedModifiers::SPRINTING_BOOST",
+        "uuid:D208FC00-42AA-4AAD-9276-D5446530DE43"
+      ],
+      "address": "0x1431BD020",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] amount 0.3f、MULTIPLY_TOTAL、operand current；见 docs/fluid-movement.md §3.2"
+      ]
+    },
+    "@move_attr_aggregate": {
+      "strategy": [
+        "reads:AttributeInstance+124",
+        "writes:movement_struct"
+      ],
+      "address": "0x14289A180",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 把移动速度属性当前值拷进移动结构；见 docs/fluid-movement.md §3.2"
+      ]
+    },
+    "@ground_accel_apply": {
+      "strategy": [
+        "formula:speed*(0.546/friction)^3"
+      ],
+      "address": "0x14666CEE0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 写加速模长；运行期 applier 向量 0.13×0.98=0.1274 逐位吻合"
+      ]
+    },
+    "@water_drag": {
+      "strategy": [
+        "reads:ADF_bit3",
+        "vtable:0x14E85AF60"
+      ],
+      "address": "0x142DEE630",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 水阻力读 ADF bit3；见 docs/fluid-movement.md §9.1"
+      ]
+    },
+    "@water_drag_store": {
+      "strategy": [
+        "store:inside:@water_drag"
+      ],
+      "address": "0x142DEE7BC",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 阻力写 vx 的位置；早期观察点顺序曾误判，已由注册序撤回"
+      ]
+    },
+    "@levitation": {
+      "strategy": [
+        "formula:0.8*vy+0.01*(n+1)"
+      ],
+      "address": "0x142DE57E0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 悬浮（Levitation），不是游泳上浮；见 docs/fluid-movement.md §7"
+      ]
+    },
+    "@swim_vertical_branch": {
+      "strategy": [
+        "constants:0.028/0.04/0.15/0.2",
+        "branch:vertical"
+      ],
+      "address": "0x1495EA890",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 泳姿/竖直分支门；0.15/0.2 不是流体上浮"
+      ]
+    },
+    "@modifier_recompute": {
+      "strategy": [
+        "formula:(amount+1)*value",
+        "operation:MULTIPLY_TOTAL"
+      ],
+      "address": "0x142859E10",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] MULTIPLY_TOTAL 重算；见 docs/fluid-movement.md §3.2"
+      ]
+    },
+    "@swim_lambda": {
+      "strategy": [
+        "callgraph:from:@swim_vertical_branch",
+        "lambda:swim_control"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [],
+      "note": "本版本未唯一锁定，禁止猜测"
+    },
+    "@clip": {
+      "strategy": [
+        "string:clip",
+        "vtable:collision",
+        "callgraph:from:@move_runner"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [],
+      "note": "本版本未定位，禁止猜测"
+    },
+    "@gate": {
+      "strategy": [
+        "callgraph:from:@move_runner",
+        "branch:step_gate"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [],
+      "note": "本版本未定位，禁止猜测"
+    },
+    "@step_block": {
+      "strategy": [
+        "vtable:block",
+        "callgraph:from:@move_runner"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [],
+      "note": "本版本未定位，禁止猜测"
+    },
+    "@move_runner": {
+      "strategy": [
+        "callgraph:from:@tick_entity_systems",
+        "category:travel"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [],
+      "note": "仅作为调用图锚点使用；地址未定"
+    },
+    "@water_drag_ctor": {
+      "strategy": [
+        "vtable:0x14E85AF60",
+        "callback:slot2:0x14E9A3700"
+      ],
+      "address": "0x142DE0950",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 构造水阻力系统并调用注册回调 0x14685D0B0；见 docs/fluid-movement.md §9.1"
+      ]
+    },
+    "@sprint_register_wrapper": {
+      "strategy": [
+        "wrapper:ActionSprintTrigger",
+        "mode=1"
+      ],
+      "address": "0x1466567E0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 0x14681FBED 调它，r8w=1"
+      ]
+    },
+    "@sprint_register_list": {
+      "strategy": [
+        "categories:E14/catchup/correction/E1C",
+        "mode=1"
+      ],
+      "address": "0x146662E90",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 向 collection register 传 4 个类别"
+      ]
+    },
+    "@water_register_wrapper": {
+      "strategy": [
+        "wrapper:water",
+        "mode=1"
+      ],
+      "address": "0x142DEDF10",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 0x14685D0B0 调它，a3=1"
+      ]
+    },
+    "@water_register_list": {
+      "strategy": [
+        "categories:E14/E1C",
+        "mode=1"
+      ],
+      "address": "0x142DEE020",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 向 collection register 传 2 个类别"
+      ]
+    },
+    "@water_register_callback": {
+      "strategy": [
+        "vtable_slot:off_14E9A3700+0x10",
+        "calls:0x142DEDF10"
+      ],
+      "address": "0x14685D0B0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 水 ctor 的注册回调；传 mode 1"
+      ]
+    },
+    "@sprint_tick_dispatch": {
+      "strategy": [
+        "tick:0x14B1A9FE0",
+        "visits:PlayerActionComponent"
+      ],
+      "address": "0x14B1A96C0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ActionSprintTrigger tick 的实体遍历"
+      ]
+    },
+    "@sprint_edge_handler": {
+      "strategy": [
+        "bits:0x200/0x400",
+        "calls:0x14B17C820"
+      ],
+      "address": "0x14B1A9F50",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 0x200→setSprinting(1)，0x400→setSprinting(0)"
+      ]
+    },
+    "@sprint_entity_visitor": {
+      "strategy": [
+        "callgraph:from:0x14B1A96C0",
+        "calls:@sprint_edge_handler"
+      ],
+      "address": "0x14B190B20",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 每个实体调用 edge handler"
+      ]
+    },
+    "@cat_e14": {
+      "strategy": [
+        "category:E14",
+        "dispatcher:0x1463B0B00"
+      ],
+      "address": "0x151DB9E14",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] E14 主 pass 的类别 id"
+      ]
+    },
+    "@cat_catchup": {
+      "strategy": [
+        "category:catchup",
+        "dispatcher:0x1463B0DF0"
+      ],
+      "address": "0x151E13584",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] catchup 类别 id"
+      ]
+    },
+    "@cat_correction": {
+      "strategy": [
+        "category:correction",
+        "dispatcher:0x1463B0F30"
+      ],
+      "address": "0x151E1358C",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] correction 类别 id"
+      ]
+    },
+    "@cat_e1c": {
+      "strategy": [
+        "category:E1C",
+        "dispatcher:0x1463B1070"
+      ],
+      "address": "0x151DB9E1C",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] E1C pass 的类别 id"
+      ]
+    },
+    "@player_action_writer": {
+      "strategy": [
+        "write:PlayerActionComponent bits 0x200/0x400",
+        "callgraph:from:input"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [],
+      "note": "本版本未定位；这是“记录位→ADF 写位”2 tick 的最后一环"
+    }
+  }
+}

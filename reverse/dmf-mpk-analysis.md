@@ -35,7 +35,7 @@
 | 大小 | 1,144,320 bytes |
 | SHA-256 | `f63ba947387a9db2f0342c686355241d9dc606feff0b94a47dfcb84a28d53a97` |
 | 模块类型 | x64 PE DLL，client 平台 |
-| 调试路径 | `C:\Users\hiroto\Downloads\Custom-Version-Text-main\...\dmf.pdb` |
+| 调试路径 | `%USERPROFILE%\Downloads\Custom-Version-Text-main\...\dmf.pdb` |
 | 导出 | `ll_mod_load`, `ll_memory_operator_overrided`, `DllEntryPoint` |
 | 依赖 | `LeviLamina.dll`（52 个符号）+ `bedrock_runtime.dll`（94 个符号） |
 | C++ 库 | MSVC 14.x STL、nlohmann/json 3.12.0 |

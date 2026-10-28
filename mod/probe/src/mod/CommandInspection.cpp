@@ -122,7 +122,17 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             }
         }
         std::string const tag = j.value("tag", std::string{});
-        enqueue(watchInstall(addr, size, mode == "rw", thread, tag).dump());
+        std::uint32_t     depth = 8;
+        if (j.contains("depth")) {
+            if (!j["depth"].is_number_integer()) {
+                out["ok"]     = false;
+                out["reason"] = "bad_depth";
+                enqueue(out.dump());
+                return true;
+            }
+            depth = j["depth"].get<std::uint32_t>();
+        }
+        enqueue(watchInstall(addr, size, mode == "rw", thread, tag, depth).dump());
         return true;
     }
     if (cmd == "watch_clear") {

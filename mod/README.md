@@ -42,7 +42,7 @@ xmake -j4 -y
 | `chat_history` | `limit`（1–64，默认 32）；客户端保留的聊天快照，含文字、类型、截断标记 |
 | `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
 | `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
-| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程，`thread=all` 被拒绝）；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
+| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程，`thread=all` 被拒绝）；`depth` 可选 1..32（默认 8）控制每次命中抓多少返回地址，深度越大 VEH 开销与环内存越高；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
 | `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
 | `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
 | `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va` |
@@ -187,8 +187,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **217/217**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 193/193。常用实测数字：
+当前基线：live selftest **221/221**（`harness.json` 开 `allow_input_inject`/
+`allow_selftest_stress`）、离线单测 204/204。常用实测数字：
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），

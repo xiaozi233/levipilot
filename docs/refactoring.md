@@ -449,3 +449,32 @@ ruff lint/format、mypy（79 文件）、`git diff --check` 通过。
 验收日志：`out/optimization-baseline-tests.log`、`out/optimization-final-tests.log`、
 `out/optimization-client-io-bench.log`（忽略的本地产物）。没有执行逆向操作、IDA 或
 完整 live selftest，也没有安装/重启游戏。既有现场 222/222 基线未在本轮重验。
+
+## 2026-10-28 Mod 传输与录制核心优化
+
+基于 `bc4e70d` 审阅 mod 后，按问题依赖顺序处理三个范围：
+
+1. **线协议缓冲**：原读取循环反复扫描增长的尾行、逐行 substr/erase，且完整超长行可在
+   长度检查前被派发。提取有界 `CommandFramer`，统一完整/分片输入的长度验证与重同步。
+   发送复用 64 KiB 缓冲，合并小行；大行使用已有存储，避免逐行的额外完整字符串拷贝。
+2. **管道资源生命周期**：同步写入可能因客户端不读永久阻塞，卸载的一次性取消还会错过
+   后续 I/O。用单线程独占的 `PipeChannel` 管理 overlapped pipe/event，停止/超时后
+   cancel 再等待回收，覆盖 connect/read/write；hello 也经过完整写入与失败断连。
+   默认一次写入 5 s，新增状态计数，卸载不再跨线程操作管道句柄或制造唤醒客户端。
+3. **录制并发模型**：原 start 在采样中重置 head/计数/cache，旧样本可进入新会话；
+   单靠 head acquire 也无法保证环绕覆写时 payload 不撕裂。提取 `RecordBuffer`，命令侧
+   关闭准入并等待当前采样，再初始化并重新开放；tick 无等待、无 mutex，关闭时仍一次 load。
+   slot 原子 payload 配合发布序号验证快照，失效行进入 lost。采样调用有独立 SEH 边界，
+   故障转标志由 spool 格式化事件，避免异常遗留准入状态。
+
+领域头仅在所需 TU 引用；现有 `Internal.h` 公共入口、命令分发、64 B 记录布局、协议 4
+及默认真实 HID 输入保持既有契约。发布序号增加约 4 MiB 内存，换取覆写读取的并发安全。
+
+验收：三组 native 集合通过，覆盖真实命名管道的超时/取消/重连/句柄回收、分帧/批量输出、
+100,000 次并发环绕覆写、2500 次录制重启与零分配约束；完整 mod 构建、223 项离线单测、
+ruff/mypy 通过。详细微基准、复现命令与日志见 `mod-internals.md` 的“Mod 核心”。
+未执行逆向操作或使用 IDA。离线通过后，保存退出世界并备份旧 mod 与配置，安装已构建 DLL、
+重启进入“超平坦测试”，新增并运行 `--mod-core-live-only`，**33/33** 通过。
+覆盖分帧恢复、JSON/hex 录制一致性、12 次会话重启、spool 与重连；原始客户端不读响应时，
+5 s 写看门狗断开旧连接，超时计数 0→1，游戏 tick 正常且可立即重连。没有启用额外 capability，
+没有输入注入、世界编辑或逆向相关命令。默认完整 222/222 套件仍为此前现场基线，本轮未重跑。

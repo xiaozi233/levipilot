@@ -52,6 +52,9 @@ scenario DSL / LLM / shell
 | `CommandWorld.cpp` | 服务端命令、世界、选项、传送与 checkpoint 命令 |
 | `CommandTasks.cpp` | 闭环任务参数解析与安装；逐 tick 实现仍在 `Tasks.cpp` |
 | `Transport.cpp` | 命名管道服务端、写队列、`queueServerTask`、spool、诊断日志 |
+| `PipeChannel.h` | 管道线程独占的 overlapped 句柄、超时、取消与 I/O 回收；不依赖 Bedrock SDK |
+| `TransportModel.h` | 有界 JSONL 分帧与复用缓冲的批量写入；不依赖 Bedrock SDK |
+| `RecordModel.h` | 采样准入、start/stop 生命周期与原子发布的定长记录；不依赖 Bedrock SDK |
 | `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
 | `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
@@ -73,8 +76,10 @@ scenario DSL / LLM / shell
 
 - **游戏线程**：`LocalPlayer::$normalTick` 钩子。`safeTickPre` 在 origin 前注入输入/推进任务，
   `safeTickPost` 在 origin 后采样状态。
-- **管道线程**：`serverLoop` 阻塞在 `ConnectNamedPipe`/`PeekNamedPipe` 上，负责读写 JSON 行和
-  分发命令。它不直接调用游戏对象，只设置请求标志或调用 `queueServerTask`。
+- **管道线程**：`serverLoop` 独占 `PipeChannel`，用 overlapped connect/read/write 读写 JSON 行并
+  分发命令，`PeekNamedPipe` 判断是否有输入。等待每 25 ms 检查停止标志，取消后回收 pending
+  I/O 才释放缓冲；不再从 unload 线程对下一次同步写入做一次性的取消。它不直接调用游戏对象，
+  只设置请求标志或调用 `queueServerTask`。
 - **服务端线程**：通过 `ServerInstance::queueForServerThread` 执行传送、命令、背包写入和使用物品。
   所有回调由 `queueServerTask` 包装，异常不会穿过游戏服务端 tick。
 - **客户端主线程**：世界列表、进退世界、登录查询和自动进入经 `queueClientTask` 投递到
@@ -125,8 +130,11 @@ scenario DSL / LLM / shell
   "replay_rows":N,...}`；客户端验证 hello 并保存协议号。新增字段是增量的，旧客户端仍可用。
 - 请求是 `{"cmd": "...", ...}`；响应/事件用 `event` 区分。未知命令回
   `{"event":"error","reason":"unknown_cmd"}`。
-- 服务端写入按 `WriteFile` 的实际返回值循环，避免半行 JSON；队列上限 20000，溢出计数在
-  `status.queue_dropped`。
+- 服务端复用 64 KiB 缓冲合并相邻行，大行直接发送；按 `WriteFile` 返回值继续部分写入。
+  每次批量/大行写入有 5 s 总预算，超时关闭当前连接并增加 `status.pipe_write_timeouts`，
+  当前预算见 `status.pipe_write_timeout_ms`。队列上限 20000，溢出计数在 `status.queue_dropped`。
+- `CommandFramer` 只保留不完整尾行；完整行和分片行都受 1 MiB 上限约束，超限只报告一次，
+  丢弃到下一换行后继续解析。新模型头仅由所需的领域 TU 引用，未加入通用头的全局依赖链。
 - 命令/事件的完整列表见 [`../mod/README.md`](../mod/README.md)。
 
 ## Python 包

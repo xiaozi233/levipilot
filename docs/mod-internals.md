@@ -194,16 +194,22 @@
 
 - 记录是 64 字节 POD：`tick u64`、`x/y/z`、`vx/vy/vz`、`yaw/pitch`、`feet_y`、
   `flags u32`、三个方块名哈希、`health_milli`。`static_assert(sizeof == 64)`。
-- 写者在 `safeTickPost`：先检查 `gRecording`（关闭时每 tick 只有一次原子 load），
-  填完整个记录后 `gHead.store(index+1, release)`；单写者，没有锁、没有字符串/JSON/分配。
-  `period>1` 时按 tick 取模降采样。
-- 环固定 `1<<19` 条（32 MB），第一次 `record_start` 分配，`record_stop` 只停写不释放，
-  便于随后 dump。
+- 写者在 `safeTickPost`：`RecordBuffer` 关闭时一次原子 load 返回，开启时获取无等待的
+  capture 准入；`period>1` 时按 tick 取模降采样。记录填完后原子发布到 slot 再推进 head。
+  模型的采样准入/发布无 mutex、字符串、JSON 或分配；profile 偏移查询移到 start 的命令线程。
+- start/stop 在命令侧串行：关闭准入、等待已经开始的 capture 完成，再重置 head、计数和缓存。
+  旧采样不能进入新会话，stop 返回后的 head 稳定。tick 不等待命令锁，也不进行重置。
+- 环固定 `1<<19` 条，64 B payload 共 32 MiB，另加约 4 MiB 的发布序号。第一次 start 分配，
+  stop 不释放，便于 dump。slot 的 payload 使用原子 word，读前/读后检查发布序号，避免
+  环绕覆写时的数据竞争与撕裂；并发覆写导致无法复制的行计入 `lost`，`count` 为实际返回数。
 - `record_dump` 在管道线程解码：`jsonl` 直接给字段数组，`bin`/`hex` 给 64 字节记录的
   hex 块（受 JSONL 传输限制，用分块 hex 而不是裸字节帧）。`since/next/head/lost` 都是
   绝对序号；`lost` 表示已被环覆盖的条数。
 - dump 结果本身也走 `enqueue`，因此会自动进 T1 的 spool。
 - JSON `start` 的逐 tick 事件保留为兼容路径，两者可以同时开。
+- 采样的游戏 API 调用放在独立 SEH 边界内；结构化异常先转成失败，再正常退出 capture，
+  避免 `/EHs` 未展开析构导致下一次 start/stop 永久等待。tick 只设置故障标志，spool
+  线程合并发出 `internal_error(phase=record_tick)`；本轮没有在游戏中注入故障验证。
 
 ## 跑酷辅助（P2）
 
@@ -551,6 +557,11 @@
   队列超过 20000 条时丢弃最旧的并计数（`status.queue_dropped`），同时往 spool 写一条
   `queue_dropped` 标记。
 - 管道用 `PIPE_REJECT_REMOTE_CLIENTS`，只接受本机客户端。
+- `PipeChannel` 独占 pipe/event 句柄，所有 pending I/O 在返回前取消并回收；connect/read/write
+  等待每 25 ms 检查停止标志，`disable` 只需 join，不再存在一次性 CancelSynchronousIo 的窗口。
+  发送合并成最多 64 KiB 的缓冲批次，大行复用其已有字符串；hello 同样走完整写入与错误处理。
+  单次写入预算 5 s，超时断连并记录 `status.pipe_write_timeouts`；客户端可重新连接。
+  `CommandFramer` 同时限制完整/分片行，不再每次重扫旧尾行或逐行 erase 前缀。
 - 启动/管道状态写到 mod 目录下的 `harness-boot.log`（`load`、`enable`、`pipe: ...`），
   因为 LeviLauncher 的日志位置随启动方式变化。
 - Python 侧读取用 `PeekNamedPipe` 轮询而不是阻塞 `read`：Windows 的同步管道句柄会把
@@ -614,6 +625,55 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 
 本地基准脚本与日志：`out/bench-client-io.py`、`out/optimization-client-io-bench.log`
 （忽略的运行产物）；可复现的功能边界已保留在上述 selftest 入口和 tests 中。
+
+### Mod 核心（2026-10-28；离线与现场）
+
+基于 `bc4e70d` 审阅和修改现有 C++ 源码，未执行逆向操作或打开 IDA；离线验收后保存退出世界、
+备份旧 mod 与配置，安装新 DLL 并重启进入“超平坦测试”补做限定范围的现场自检。
+新增 `PipeChannel`、`TransportModel`、`RecordModel` 三个不依赖 SDK 的内部头，分别负责
+I/O 资源生命周期、线协议缓冲、录制并发模型；仅相应领域 TU 引用，`Internal.h` 保留公共入口。
+wire 协议仍为 4，记录仍为 64 B；状态仅新增管道超时计数/预算。
+
+复现入口：`py -3.11 driver/selftest.py --mod-core-only`，**3/3** native 集合：
+
+- 分帧覆盖所有分块大小、UTF-8 字节和 CRLF、空行、恰好上限/超过上限、连续丢弃、
+  同块恢复与连接重置；批量发送检查顺序、大行、空行、失败短路及复用缓冲清理。
+- Windows 真命名管道传输 256 KiB；取消未连接等待、pending read、pending write；
+  非读取客户端在 40 ms 测试预算下超时；取消/超时路径断言在 1.5 s 内返回。
+  重连后可再次读写，100 次 open/析构前后进程句柄数一致。
+- 录制检查降采样、period 边界、停止/初始化失败/异常展开、采样零分配；
+  阻塞中的 start 等待旧 capture 退出后 head=0；100,000 次写入期间并发覆写读取，
+  以及 **2500 次**会话重启均未读到撕裂字段或上一会话的数据。
+
+LLVM22 / `xmake -j4 -y` 完整 mod 编译链接通过；离线单测 **223/223**，ruff lint/format、
+mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 Windows pipe API，
+不连接 Minecraft；完整 live selftest **222/222** 仍是既有现场基线，本轮未重新验证。
+
+现场复现入口：`py -3.11 driver/selftest.py --mod-core-live-only`，**33/33** 通过：
+
+- 协议 4、加载的 5000 ms 写预算、状态查询、未知命令兼容；一批 64 个 ping、逐字节 UTF-8/CRLF，
+  完整/分片超长行均只报一次 `line_too_long`，下一行 ping 正常。
+- legacy JSON 录制 8 行；二进制 period=1/3 分别录到 19/7 行，JSON/hex 逐条相同，
+  分页导出一致，停止后 head 不再变化；连续 12 次重启无上一会话样本。
+- 74 行录制作为固定输出，原始管道客户端发送 64 次 dump 且不读响应，保持句柄打开 6.5 s；
+  写超时计数 **0→1**，旧句柄尚未关闭时已可重连，tick 继续推进、世界状态可读。
+- spool 无损坏 JSON 或 `internal_error`，另做 3 次重连均可 ping。没有调用内存/watch/hook、
+  故障注入或移动命令，也未改方块、背包或生成实体；未启用额外 capability。
+
+安装 DLL 与构建产物 SHA256 一致：
+`5124d90c8e9a6c44fb140eae11f6c242b18e91256b2cbebcf8aeea898b75ee4f`。
+备份在忽略的 `out/mod-before-live-20261028-213450/`；原 `harness.json` 保留。
+
+传输微基准（Windows / clang++22 `-O2`，9 轮中位数，与原分帧算法比较）：
+512 KiB 长行按 256 B 分片为 **8.838 → 0.537 ms（16.45x）**；
+20,000 行按 4 KiB 分片为 **1.359 → 0.329 ms（4.13x）**。
+同样 760,000 B / 20,000 行，批量写回调从 **20,000 次降至 12 次**，字节数与顺序一致。
+回调次数用于衡量批量策略，不是实际系统调用或游戏帧率测量；部分写入可能增加实际调用次数。
+
+验证日志在忽略的 `out/`：`mod-opt-native-selftest.log`、`mod-opt-tests-accepted.log`、
+`mod-opt-build-accepted.log`、`mod-opt-bench.log`；微基准源码为 `out/mod-core-bench.cpp`。
+后续现场日志为 `mod-core-live-selftest.log`，最终离线复核为 `mod-core-final-unittest.log`。
+增加约 4 MiB 发布序号是为并发覆写安全付出的固定内存成本，未改变环容量或 wire 布局。
 
 ### 实验辅助（`driver/harness/lab.py`）
 

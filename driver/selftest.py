@@ -4,6 +4,8 @@
     py -3.11 driver/selftest.py --keep          # keep the test entity
     py -3.11 driver/selftest.py --entity minecraft:cow
     py -3.11 driver/selftest.py --client-io-only  # offline; never connects to the game
+    py -3.11 driver/selftest.py --mod-core-only   # offline native mod checks
+    py -3.11 driver/selftest.py --mod-core-live-only  # pipe/recording; no RE commands
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -33,7 +35,7 @@ if str(ROOT) not in sys.path:
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
 from driver.harness.lab import Builder, double_space_fly, settle, swim_drive, swim_stop  # noqa: E402
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
-from driver.harness.record import RecordEntry  # noqa: E402
+from driver.harness.record import RecordEntry, decode_dump  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
 
@@ -669,32 +671,211 @@ def check_lifecycle_stress(
                 raise
 
 
+def check_mod_core_live(client: ModClient, checks: Checks) -> None:
+    """Exercise installed transport/recording without input, world edits or RE."""
+    status = client.status()
+    ready = (
+        status.get("in_world")
+        and not any(
+            status.get(key)
+            for key in ("recording", "record_active", "macro_playing", "macro_recording")
+        )
+        and not client.task_status().get("active")
+    )
+    if not checks.check("mod_core_idle_world", ready):
+        return
+    checks.check("mod_core_protocol", client.protocol == 4)
+    if not checks.check("mod_core_installed", status.get("pipe_write_timeout_ms") == 5000):
+        return
+    checks.check("mod_core_state", client.state().get("in_world") is True)
+    reply = client.request({"cmd": "__mod_core_unknown__"}, "error")
+    checks.check("mod_core_unknown_cmd", reply.get("reason") == "unknown_cmd")
+
+    # One write containing many commands, then CRLF/UTF-8 across writes.
+    client.send_raw(b'{"cmd":"ping"}\n' * 64)
+    checks.check(
+        "mod_core_batched_ping",
+        all(client.wait_event("pong").get("event") == "pong" for _ in range(64)),
+    )
+    payload = json.dumps({"cmd": "ping", "note": "分片"}, ensure_ascii=False).encode() + b"\r\n"
+    for byte in payload:
+        client.send_raw(bytes([byte]))
+    checks.check("mod_core_fragmented_utf8", client.wait_event("pong").get("event") == "pong")
+    for fragmented in (False, True):
+        payload = b"x" * ((1 << 20) + 1)
+        if fragmented:
+            client.send_raw(payload[: 1 << 19])
+            payload = payload[1 << 19 :]
+        client.send_raw(payload + b'\n{"cmd":"ping"}\n')
+        errors = []
+        while True:
+            reply = client.wait_event(("error", "pong"), timeout=20)
+            if reply.get("event") == "pong":
+                break
+            errors.append(reply.get("reason"))
+        checks.check(
+            f"mod_core_oversize_{'fragmented' if fragmented else 'complete'}",
+            errors == ["line_too_long"],
+            str(errors),
+        )
+
+    try:
+        samples = client.record(max_ticks=8)
+        checks.check("mod_core_json_record", len(samples) == 8, f"rows={len(samples)}")
+        checks.check("mod_core_json_stopped", client.status().get("recording") is False)
+        for period in (1, 3):
+            started = client.record_bin_start(period)
+            checks.check(
+                f"mod_core_record_layout_{period}",
+                started.get("entry_size") == 64 and started.get("capacity") == 524288,
+            )
+            wait_ticks(client, 18)
+            live = client.record_dump(limit=128)
+            checks.check(f"mod_core_record_active_{period}", live.get("active") is True)
+            stopped = client.record_bin_stop()
+            rows = decode_dump(client.record_dump(limit=128))
+            binary = decode_dump(client.record_dump(limit=128, format="hex"))
+            checks.check(f"mod_core_encodings_{period}", bool(rows) and rows == binary)
+            checks.check(
+                f"mod_core_sample_period_{period}",
+                len(rows) > 1
+                and all(b.tick - a.tick == period for a, b in itertools.pairwise(rows)),
+                f"rows={len(rows)}",
+            )
+            checks.check(
+                f"mod_core_pagination_{period}",
+                client.record_dump_all(chunk=3, format="hex") == rows,
+            )
+            wait_ticks(client, 3)
+            checks.check(
+                f"mod_core_stop_stable_{period}",
+                client.status().get("record_head") == stopped.get("head") == len(rows),
+            )
+
+        previous_tick = -1
+        isolated = True
+        for _ in range(12):
+            boundary = int(client.status().get("tick", 0))
+            client.record_bin_start()
+            wait_ticks(client, 3)
+            client.record_bin_stop()
+            rows = decode_dump(client.record_dump())
+            isolated &= bool(rows) and all(row.tick >= boundary for row in rows)
+            isolated &= all(row.tick > previous_tick for row in rows)
+            if rows:
+                previous_tick = rows[-1].tick
+        checks.check("mod_core_restart_isolation", isolated, "12 sessions")
+
+        # Enough output to fill the 64 KiB pipe without any reader thread.
+        client.record_bin_start()
+        wait_ticks(client, 72)
+        client.record_bin_stop()
+        rows = decode_dump(client.record_dump(limit=128))
+        if checks.check("mod_core_backpressure_fixture", len(rows) >= 64, f"rows={len(rows)}"):
+            check_mod_core_backpressure(client, checks)
+    finally:
+        if client.connected:
+            client.stop()
+            client.record_bin_stop()
+
+    client.request({"cmd": "spool_flush"}, "spool_flushed")
+    events, stats = read_spool(client.hello["spool"])
+    checks.check("mod_core_spool_json", stats.bad_lines == 0 and bool(events))
+    checks.check(
+        "mod_core_no_internal_error",
+        not any(row.get("reason") == "internal_error" for row in events),
+    )
+    for _ in range(3):
+        client.reconnect()
+        checks.check("mod_core_reconnect", client.ping().get("event") == "pong")
+
+
+def check_mod_core_backpressure(client: ModClient, checks: Checks) -> None:
+    """Hold a client open without consuming hello or dump replies."""
+    before = client.status()
+    client.close()
+    # Named-pipe paths are not filesystem paths. A plain unbuffered handle is
+    # intentional here: ModClient's polling reader would prevent backpressure.
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            raw = open(client.pipe_name, "r+b", buffering=0)  # noqa: PTH123, SIM115
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+    with raw:
+        command = b'{"cmd":"record_dump","limit":8192,"format":"hex"}\n' * 64
+        remaining = memoryview(command)
+        while remaining:
+            written = raw.write(remaining)
+            if not written:
+                raise ModPipeError("nonreading fixture could not send commands")
+            remaining = remaining[written:]
+        # The budget starts when the server begins writing; allow scheduling
+        # slack, while keeping this deliberate wait bounded and under 10 s.
+        time.sleep(6.5)
+        previous_timeout = client.connect_timeout
+        try:
+            client.connect_timeout = 5.0
+            client.connect()
+        finally:
+            client.connect_timeout = previous_timeout
+        after = client.status()
+        checks.check(
+            "mod_core_nonreader_timeout",
+            int(after.get("pipe_write_timeouts", 0))
+            == int(before.get("pipe_write_timeouts", 0)) + 1,
+        )
+        checks.check("mod_core_ticks_survive_timeout", after.get("tick", 0) > before.get("tick", 0))
+        checks.check("mod_core_world_survives_timeout", client.state().get("in_world") is True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
     parser.add_argument("--keep", action="store_true", help="do not remove the test entity")
     parser.add_argument("--radius", type=float, default=10.0)
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--client-io-only",
         action="store_true",
         help="run offline decoder/recording/spool regressions without connecting to the game",
+    )
+    modes.add_argument(
+        "--mod-core-only",
+        action="store_true",
+        help="compile/run native mod transport/recording checks without connecting to the game",
+    )
+    modes.add_argument(
+        "--mod-core-live-only",
+        action="store_true",
+        help="check installed pipe/recording only; no RE, input injection or world edits",
     )
     parser.add_argument("--stress-cycles", type=int, default=0, help="opt-in lifecycle soak cycles")
     parser.add_argument(
         "--stress-world", help="leave/re-enter this test world every 10 soak cycles"
     )
     args = parser.parse_args(argv)
-    if args.client_io_only:
+    if args.client_io_only or args.mod_core_only:
         # Reuse the bounded regression fixtures; no game commands, input or
         # live diagnostics are needed to verify these client-side workflows.
+        suites = (
+            ["tests.test_mod_models"]
+            if args.mod_core_only
+            else [
+                "tests.test_transport.LineDecoderTests",
+                "tests.test_recording_commands",
+                "tests.test_spool",
+            ]
+        )
         return subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "unittest",
-                "tests.test_transport.LineDecoderTests",
-                "tests.test_recording_commands",
-                "tests.test_spool",
+                *suites,
                 "-v",
             ],
             cwd=ROOT,
@@ -712,6 +893,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
+
+    if args.mod_core_live_only:
+        try:
+            check_mod_core_live(client, checks)
+        except (ModPipeError, OSError, ValueError) as exc:
+            checks.check("mod_core_live_error", False, str(exc))
+        finally:
+            client.close()
+        return checks.finish()
 
     try:
         # Scripts own the session: drop real hardware keys/mouse so a person at

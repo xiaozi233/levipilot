@@ -297,7 +297,7 @@ std::uint64_t  watchDroppedHits();
 // formatting, allocation or locking. Dumping/decoding happens on the pipe
 // thread. JSON `start` recording remains available as the compatibility path.
 // ---------------------------------------------------------------------------
-constexpr std::size_t RecordCapacity = 1 << 19; // 32 MiB, ~7 hours at 20 TPS
+constexpr std::size_t RecordCapacity = 1 << 19; // 32 MiB payload + 4 MiB stamps, ~7 hours at 20 TPS
 constexpr std::size_t RecordSize     = 64;
 
 struct RecordEntry {
@@ -347,6 +347,7 @@ bool          recordActive();
 std::uint64_t recordHead();
 std::uint64_t recordRows();
 std::uint32_t recordPeriod();
+bool          recordTakeFault(); // Consumed/formatted by the spool thread.
 void          recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
 
 // format: "jsonl" (decoded rows) or "hex" ("bin" is accepted as an alias).

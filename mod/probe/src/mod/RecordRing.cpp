@@ -1,4 +1,5 @@
 #include "mod/Internal.h"
+#include "mod/RecordModel.h"
 
 #include <new>
 
@@ -8,12 +9,9 @@ namespace probe::detail {
 
 namespace {
 
-std::unique_ptr<RecordEntry[]> gRing;
-std::atomic_bool               gRecording{false};
-std::atomic<std::uint64_t>     gHead{0};
-std::atomic<std::uint64_t>     gTickCounter{0};
-std::atomic<std::uint32_t>     gPeriod{1};
-std::mutex                     gRingMutex; // allocation/start vs. first use
+RecordBuffer<RecordEntry, RecordCapacity> gRecords;
+std::mutex gRingMutex; // Command-side lifecycle and dumps; never taken by tick.
+std::atomic_bool gSampleFault{false};
 
 // Liquid name hashes for the medium flag bits. blockNameHash takes std::string
 // temporaries, so they are resolved here (command thread) instead of in the
@@ -64,7 +62,7 @@ struct BlockHashEntry {
     std::uint32_t hash = 0;
 };
 constexpr std::size_t kBlockHashCache = 256;
-BlockHashEntry        gBlockHashCache[kBlockHashCache]; // single writer (tick)
+BlockHashEntry        gBlockHashCache[kBlockHashCache]; // Tick writer; reset while captures are stopped.
 
 // Union of the vanilla overworld/nether/end build ranges. Sampling outside it
 // would ask BlockSource for a chunk section that does not exist.
@@ -73,16 +71,12 @@ constexpr int kMaxSampleY = 319;
 
 // structOffset walks a string-keyed table and notes misses under a mutex; the
 // tick path must do neither, so the block offsets are resolved once per
-// recording session (single writer: the tick thread).
+// recording session on the command thread, before captures are admitted.
 std::uint64_t gBlockLegacyPointerOffset = 0;
 std::uint64_t gBlockLegacyIdOffset     = 0;
-bool          gBlockOffsetsResolved    = false;
 
-void resolveBlockOffsetsOnce() {
-    if (gBlockOffsetsResolved) {
-        return;
-    }
-    gBlockOffsetsResolved = true;
+void resolveBlockOffsets() {
+    gBlockLegacyPointerOffset = gBlockLegacyIdOffset = 0;
     std::uint64_t legacyOffset = 0;
     std::uint64_t idOffset     = 0;
     if (structOffset("Block", "LegacyPointer", legacyOffset)
@@ -94,7 +88,6 @@ void resolveBlockOffsetsOnce() {
 
 std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
     Block const& block = source.getBlock(BlockPos{x, y, z});
-    resolveBlockOffsetsOnce();
     if (gBlockLegacyPointerOffset != 0 && gBlockLegacyIdOffset != 0) {
         std::uint64_t legacy = 0;
         std::uint16_t id     = 0;
@@ -120,48 +113,42 @@ std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
 
 bool recordStart(std::uint32_t period, std::string& error) {
     std::lock_guard lock(gRingMutex);
-    if (!gRing) {
-        gRing = std::unique_ptr<RecordEntry[]>(new (std::nothrow) RecordEntry[RecordCapacity]());
-    }
-    if (!gRing) {
+    if (!gRecords.start(period, [] {
+            gWaterHash.store(blockNameHash("minecraft:water"), std::memory_order_relaxed);
+            gFlowingWaterHash.store(blockNameHash("minecraft:flowing_water"), std::memory_order_relaxed);
+            gLavaHash.store(blockNameHash("minecraft:lava"), std::memory_order_relaxed);
+            gFlowingLavaHash.store(blockNameHash("minecraft:flowing_lava"), std::memory_order_relaxed);
+            // Resolve profile data on the command thread, before admitting
+            // captures. No string-keyed lookup or reset can race a sample.
+            resolveBlockOffsets();
+            std::fill(std::begin(gBlockHashCache), std::end(gBlockHashCache), BlockHashEntry{});
+        })) {
         error = "alloc_failed";
         return false;
     }
-    gHead.store(0, std::memory_order_relaxed);
-    gTickCounter.store(0, std::memory_order_relaxed);
-    gPeriod.store(std::clamp<std::uint32_t>(period, 1, 200), std::memory_order_relaxed);
-    gWaterHash.store(blockNameHash("minecraft:water"), std::memory_order_relaxed);
-    gFlowingWaterHash.store(blockNameHash("minecraft:flowing_water"), std::memory_order_relaxed);
-    gLavaHash.store(blockNameHash("minecraft:lava"), std::memory_order_relaxed);
-    gFlowingLavaHash.store(blockNameHash("minecraft:flowing_lava"), std::memory_order_relaxed);
-    // Re-resolve the block offsets per session in case the profile changed.
-    gBlockOffsetsResolved = false;
-    gRecording.store(true, std::memory_order_release);
     return true;
 }
 
-void recordStop() { gRecording.store(false, std::memory_order_release); }
+void recordStop() {
+    std::lock_guard lock(gRingMutex);
+    gRecords.stop();
+}
 
-bool recordActive() { return gRecording.load(std::memory_order_acquire); }
+bool recordActive() { return gRecords.active(); }
 
-std::uint64_t recordHead() { return gHead.load(std::memory_order_acquire); }
+std::uint64_t recordHead() { return gRecords.head(); }
 
 std::uint64_t recordRows() { return recordHead(); }
 
-std::uint32_t recordPeriod() { return gPeriod.load(std::memory_order_relaxed); }
+std::uint32_t recordPeriod() { return gRecords.period(); }
 
-void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge) {
-    if (!gRecording.load(std::memory_order_acquire) || !gRing) {
-        return;
-    }
-    pathCount(PathCounter::Record);
-    std::uint64_t const counter = gTickCounter.fetch_add(1, std::memory_order_relaxed);
-    std::uint32_t const period  = gPeriod.load(std::memory_order_relaxed);
-    if (period > 1 && (counter % period) != 0) {
-        return;
-    }
+bool recordTakeFault() { return gSampleFault.exchange(false, std::memory_order_acq_rel); }
 
-    RecordEntry entry;
+namespace {
+
+void captureTickEntry(
+    LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge, RecordEntry& entry
+) {
     entry.tick = tick;
 
     auto const& pos = player.getPosition();
@@ -258,16 +245,51 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
 
     float const health = player.getHealth();
     entry.healthMilli  = health > 0.0f ? static_cast<std::uint32_t>(health * 1000.0f) : 0u;
+}
 
-    // Single writer (the client tick), so a plain store after the full record
-    // is enough; readers acquire head before touching entries below it.
-    std::uint64_t const index = gHead.load(std::memory_order_relaxed);
-    gRing[index % RecordCapacity] = entry;
-    gHead.store(index + 1, std::memory_order_release);
+// Keep SEH in a frame with no C++ objects. /EHs does not unwind a Capture for
+// an access violation; converting it here lets the owner always release its
+// admission lease and prevents a later record_start/stop from waiting forever.
+__declspec(noinline) bool captureEntryWithSeh(
+    LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge, RecordEntry& entry
+) {
+#if defined(_MSC_VER)
+    __try {
+        captureTickEntry(player, client, tick, jumpEdge, entry);
+        return true;
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+#else
+    captureTickEntry(player, client, tick, jumpEdge, entry);
+    return true;
+#endif
+}
+
+} // namespace
+
+void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge) {
+    auto capture = gRecords.capture();
+    if (!capture) return;
+    pathCount(PathCounter::Record);
+    if (!capture.sampleDue()) return;
+
+    struct CaptureSehFlag {
+        bool previous = gDispatchSehActive;
+        CaptureSehFlag() { gDispatchSehActive = true; }
+        ~CaptureSehFlag() { gDispatchSehActive = previous; }
+    } captureFlag;
+    RecordEntry entry;
+    if (!captureEntryWithSeh(player, client, tick, jumpEdge, entry)) {
+        gSampleFault.store(true, std::memory_order_release);
+        return;
+    }
+    capture.publish(entry);
 }
 
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary) {
-    std::uint64_t const head   = gHead.load(std::memory_order_acquire);
+    std::lock_guard lock(gRingMutex);
+    std::uint64_t const head   = gRecords.head();
     std::uint64_t const oldest = head > RecordCapacity ? head - RecordCapacity : 0;
     std::uint64_t       start  = since;
     std::uint64_t       lost   = 0;
@@ -299,8 +321,15 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
         static constexpr char Digits[] = "0123456789abcdef";
         std::string           hex;
         hex.reserve(static_cast<std::size_t>(end - start) * RecordSize * 2);
+        std::uint64_t count = 0;
         for (std::uint64_t index = start; index < end; ++index) {
-            auto const* bytes = reinterpret_cast<unsigned char const*>(&gRing[index % RecordCapacity]);
+            RecordEntry entry;
+            if (!gRecords.read(index, entry)) {
+                ++lost;
+                continue;
+            }
+            ++count;
+            auto const* bytes = reinterpret_cast<unsigned char const*>(&entry);
             for (std::size_t byte = 0; byte < RecordSize; ++byte) {
                 hex.push_back(Digits[bytes[byte] >> 4]);
                 hex.push_back(Digits[bytes[byte] & 0x0F]);
@@ -308,13 +337,22 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
         }
         out["encoding"] = "hex";
         out["data"]     = std::move(hex);
+        out["count"]    = count;
+        out["lost"]     = lost;
         return out;
     }
 
     out["rows"] = nlohmann::json::array();
     for (std::uint64_t index = start; index < end; ++index) {
-        out["rows"].push_back(entryJson(gRing[index % RecordCapacity]));
+        RecordEntry entry;
+        if (gRecords.read(index, entry)) {
+            out["rows"].push_back(entryJson(entry));
+        } else {
+            ++lost;
+        }
     }
+    out["count"] = out["rows"].size();
+    out["lost"] = lost;
     return out;
 }
 

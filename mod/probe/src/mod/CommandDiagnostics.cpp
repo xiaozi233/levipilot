@@ -1,4 +1,5 @@
 #include "mod/Internal.h"
+#include "mod/PipeChannel.h"
 
 using namespace probe::detail;
 
@@ -155,6 +156,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["macro_index"]     = mMacroIndex.load();
         out["macro_recording"] = mMacroRecording.load();
         out["queue_dropped"]   = mQueueDropped.load();
+        out["pipe_write_timeouts"] = mPipeWriteTimeouts.load();
+        out["pipe_write_timeout_ms"] = PipeChannel::DefaultTimeoutMs;
         out["spool"]           = mSpoolPath.string();
         out["spool_rows"]      = mSpoolRows.load();
         out["spool_flushes"]   = mSpoolFlushes.load();

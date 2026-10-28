@@ -384,9 +384,6 @@ private:
     // the execute handler on the same one.
     void const* mCommandRegistry = nullptr;
     std::thread            mServerThread;
-    // F10: duplicated handle for CancelSynchronousIo so disable() is not stuck
-    // behind a WriteFile to a client that stopped reading.
-    std::atomic<HANDLE> mServerThreadHandle{nullptr};
 
     std::atomic_bool mRunning{false};
     std::atomic<std::uint64_t> mLastTickMs{0};
@@ -656,10 +653,8 @@ private:
 
     std::mutex              mQueueMutex;
     std::deque<std::string> mQueue;
-    std::string             mCommandBuffer;
-    // Pipe thread only: true after a line_too_long until the next newline.
-    bool                       mDiscardPartial = false;
     std::atomic<std::uint64_t> mQueueDropped{0};
+    std::atomic<std::uint64_t> mPipeWriteTimeouts{0};
     std::atomic<std::uint64_t> mLastInternalErrorMs{0};
 
     // T1 spool. mSpoolBuffer/mSpoolDroppedMarked/mLastFlushMs are protected by

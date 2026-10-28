@@ -154,22 +154,12 @@ bool ProbeMod::disable() {
     }
     mWorld.stop();
 
-    // Wake a server thread blocked in ConnectNamedPipe, then let it exit.
-    HANDLE wake = CreateFileW(PipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (wake != INVALID_HANDLE_VALUE) {
-        CloseHandle(wake);
-    }
-    // F10: a client that connected but stopped reading would otherwise leave
-    // the pipe thread blocked in WriteFile and hang unload.
-    if (HANDLE thread = mServerThreadHandle.load(std::memory_order_acquire)) {
-        CancelSynchronousIo(thread);
-    }
+    // The channel observes mRunning while waiting for connect/read/write and
+    // cancels/drains its own operation before leaving the worker.
     if (mServerThread.joinable()) {
         mServerThread.join();
     }
-    if (HANDLE thread = mServerThreadHandle.exchange(nullptr, std::memory_order_acq_rel)) {
-        CloseHandle(thread);
-    }
+    recordStop();
     if (mSpoolThread.joinable()) {
         mSpoolThread.join();
     }

@@ -1,4 +1,6 @@
 #include "mod/Internal.h"
+#include "mod/PipeChannel.h"
+#include "mod/TransportModel.h"
 
 using namespace probe::detail;
 
@@ -19,6 +21,11 @@ void ProbeMod::enqueue(std::string line) {
 }
 
 void ProbeMod::spoolThreadLoop() {
+    auto reportRecordFault = [this] {
+        if (recordTakeFault()) {
+            enqueue(R"({"event":"error","reason":"internal_error","phase":"record_tick","message":"structured exception"})");
+        }
+    };
     // The spool thread is the only consumer of task/chat events; if one bad
     // payload ever threw, the whole task pipeline would freeze (event ring
     // fills, tickTask stops). Failures become error events instead.
@@ -28,6 +35,7 @@ void ProbeMod::spoolThreadLoop() {
         try {
             drainTaskEvents();
             drainChatHistory();
+            reportRecordFault();
             flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
             faultReported = false;
         } catch (std::exception const& e) {
@@ -55,6 +63,7 @@ void ProbeMod::spoolThreadLoop() {
     try {
         drainTaskEvents();
         drainChatHistory();
+        reportRecordFault();
     } catch (...) {
     }
     flushSpool(true);
@@ -200,42 +209,28 @@ void ProbeMod::queueServerTask(std::function<void()> fn) {
 }
 
 void ProbeMod::serverLoop() {
-    HANDLE pipe      = INVALID_HANDLE_VALUE;
+    PipeChannel pipe;
     bool   connected = false;
-
-    HANDLE threadHandle = nullptr;
-    if (DuplicateHandle(
-            GetCurrentProcess(),
-            GetCurrentThread(),
-            GetCurrentProcess(),
-            &threadHandle,
-            0,
-            FALSE,
-            DUPLICATE_SAME_ACCESS
-        )) {
-        mServerThreadHandle.store(threadHandle, std::memory_order_release);
-    }
+    CommandFramer<> commands;
+    std::string writeBuffer;
+    writeBuffer.reserve(PipeBuffer);
+    auto writeFailed = [this] {
+        auto const error = GetLastError();
+        if (error == ERROR_SEM_TIMEOUT) {
+            mPipeWriteTimeouts.fetch_add(1, std::memory_order_relaxed);
+        }
+        bootLog("pipe: write failed error=" + std::to_string(error));
+    };
 
     while (mRunning.load(std::memory_order_relaxed)) {
         try {
-            if (pipe == INVALID_HANDLE_VALUE) {
-                pipe = CreateNamedPipeW(
-                    PipeName,
-                    PIPE_ACCESS_DUPLEX,
-                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                    1,
-                    PipeBuffer,
-                    PipeBuffer,
-                    0,
-                    nullptr
-                );
-                if (pipe == INVALID_HANDLE_VALUE) {
+            if (!pipe.valid()) {
+                if (!pipe.open(PipeName, PipeBuffer)) {
                     Sleep(500);
                     bootLog("pipe: create failed, retrying");
                     continue;
                 }
-                mCommandBuffer.clear();
-                mDiscardPartial = false; // Framing state belongs to this pipe instance.
+                commands.reset(); // Framing state belongs to this pipe instance.
                 connected = false;
                 bootLog("pipe: instance created");
             }
@@ -249,14 +244,13 @@ void ProbeMod::serverLoop() {
             }
 
             if (!connected) {
-                BOOL ok = ConnectNamedPipe(pipe, nullptr);
+                bool const ok = pipe.connect(mRunning);
                 if (!mRunning.load(std::memory_order_relaxed)) {
                     break;
                 }
-                if (!ok && GetLastError() != ERROR_PIPE_CONNECTED) {
+                if (!ok) {
                     bootLog("pipe: connect failed");
-                    CloseHandle(pipe);
-                    pipe = INVALID_HANDLE_VALUE;
+                    pipe.close();
                     continue;
                 }
                 connected = true;
@@ -298,21 +292,20 @@ void ProbeMod::serverLoop() {
                 helloJson["compat"]        = allowVersionMismatch();
                 helloJson["profile"]       = profileJson();
                 auto const hello           = helloJson.dump() + "\n";
-                DWORD      written         = 0;
-                BOOL const helloOk = WriteFile(pipe, hello.data(), static_cast<DWORD>(hello.size()), &written, nullptr);
-                bootLog(
-                    "pipe: hello written=" + std::to_string(helloOk ? written : 0)
-                    + " error=" + std::to_string(helloOk ? 0 : GetLastError())
-                );
+                if (!pipe.writeAll(hello, mRunning)) {
+                    writeFailed();
+                    connected = false;
+                    pipe.close();
+                    continue;
+                }
+                bootLog("pipe: hello written=" + std::to_string(hello.size()));
             }
 
             DWORD available = 0;
-            if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) {
+            if (!pipe.peek(available)) {
                 bootLog("pipe: peek failed");
                 connected = false;
-                DisconnectNamedPipe(pipe);
-                CloseHandle(pipe);
-                pipe = INVALID_HANDLE_VALUE;
+                pipe.close();
                 continue;
             }
 
@@ -320,59 +313,25 @@ void ProbeMod::serverLoop() {
                 std::array<char, 4096> buf{};
                 DWORD                  toRead = available < buf.size() ? available : static_cast<DWORD>(buf.size());
                 DWORD                  read   = 0;
-                if (!ReadFile(pipe, buf.data(), toRead, &read, nullptr) || read == 0) {
+                if (!pipe.read(buf.data(), toRead, read, mRunning) || read == 0) {
                     bootLog("pipe: read failed");
                     connected = false;
-                    DisconnectNamedPipe(pipe);
-                    CloseHandle(pipe);
-                    pipe = INVALID_HANDLE_VALUE;
+                    pipe.close();
                     continue;
                 }
-                if (mDiscardPartial) {
-                    // Resync: drop everything up to and including the newline
-                    // that ends the oversized line.
-                    DWORD start = 0;
-                    while (start < read && buf[start] != '\n') {
-                        ++start;
+                commands.feed(
+                    std::string_view(buf.data(), read),
+                    [this](std::string const& line) { handleLine(line); },
+                    [this](std::size_t bytes) {
+                        enqueue(
+                            nlohmann::json{
+                                {"event",  "error"        },
+                                {"reason", "line_too_long"},
+                                {"bytes",  bytes          },
+                            }.dump()
+                        );
                     }
-                    if (start < read) {
-                        mDiscardPartial = false;
-                        mCommandBuffer.append(buf.data() + start + 1, read - start - 1);
-                    }
-                } else {
-                    mCommandBuffer.append(buf.data(), read);
-                }
-
-                size_t pos = 0;
-                while ((pos = mCommandBuffer.find('\n')) != std::string::npos) {
-                    std::string line = mCommandBuffer.substr(0, pos);
-                    mCommandBuffer.erase(0, pos + 1);
-                    if (!line.empty() && line.back() == '\r') {
-                        line.pop_back();
-                    }
-                    if (!line.empty()) {
-                        handleLine(line);
-                    }
-                }
-
-                // F1: a client that never sends '\n' must not grow the partial
-                // line without bound. Complete lines above are still handled,
-                // and the tail is discarded until the next newline so later
-                // commands are not glued to the oversized line.
-                constexpr std::size_t kMaxCommandLine = 1u << 20;
-                if (mCommandBuffer.size() > kMaxCommandLine) {
-                    std::uint64_t const bytes = mCommandBuffer.size();
-                    mCommandBuffer.clear();
-                    mDiscardPartial = true;
-                    enqueue(
-                        nlohmann::json{
-                            {"event",  "error"        },
-                            {"reason", "line_too_long"},
-                            {"bytes",  bytes          },
-                    }
-                            .dump()
-                    );
-                }
+                );
             }
 
             std::deque<std::string> batch;
@@ -381,67 +340,32 @@ void ProbeMod::serverLoop() {
                 batch.swap(mQueue);
             }
 
-            bool failed = false;
-            for (auto& line : batch) {
-                std::string out    = line + "\n";
-                size_t      offset = 0;
-                // Byte-mode pipes may accept a partial write; a split JSON line
-                // would desynchronise the client, so keep writing until done.
-                while (offset < out.size()) {
-                    DWORD       written = 0;
-                    DWORD const chunk   = static_cast<DWORD>(out.size() - offset);
-                    if (!WriteFile(pipe, out.data() + offset, chunk, &written, nullptr) || written == 0) {
-                        failed = true;
-                        break;
-                    }
-                    offset += written;
-                }
-                if (failed) {
-                    break;
-                }
-            }
+            bool const failed = !writeLineBatch<PipeBuffer>(batch, writeBuffer, [&](std::string const& bytes) {
+                return pipe.writeAll(bytes, mRunning);
+            });
 
             if (failed) {
-                bootLog("pipe: write failed");
+                writeFailed();
                 connected = false;
-                DisconnectNamedPipe(pipe);
-                CloseHandle(pipe);
-                pipe = INVALID_HANDLE_VALUE;
+                pipe.close();
                 continue;
             }
 
             Sleep(1);
         } catch (std::exception const& e) {
             getSelf().getLogger().error("harness: pipe loop error: {}", e.what());
-            if (pipe != INVALID_HANDLE_VALUE) {
-                if (connected) {
-                    DisconnectNamedPipe(pipe);
-                }
-                CloseHandle(pipe);
-                pipe = INVALID_HANDLE_VALUE;
-            }
+            pipe.close();
             connected = false;
             Sleep(100);
         } catch (...) {
             getSelf().getLogger().error("harness: pipe loop error: unknown exception");
-            if (pipe != INVALID_HANDLE_VALUE) {
-                if (connected) {
-                    DisconnectNamedPipe(pipe);
-                }
-                CloseHandle(pipe);
-                pipe = INVALID_HANDLE_VALUE;
-            }
+            pipe.close();
             connected = false;
             Sleep(100);
         }
     }
 
-    if (pipe != INVALID_HANDLE_VALUE) {
-        if (connected) {
-            DisconnectNamedPipe(pipe);
-        }
-        CloseHandle(pipe);
-    }
+    mHardwareInputLocked.store(false, std::memory_order_relaxed);
 }
 
 

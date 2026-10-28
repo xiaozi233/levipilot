@@ -188,12 +188,19 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 ## 实测（1.26.51.01 创作存档）
 
 当前基线：live selftest **222/222**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 **220/220**。常用实测数字：
+`allow_selftest_stress`）、离线单测 **223/223**。常用实测数字：
 
 2026-10-28 客户端 I/O 验收：`py -3.11 driver/selftest.py --client-io-only`
 离线检查 **20/20**，覆盖分片解码、录制事件保留/分页终止、spool 损坏行与临时 I/O 失败。
 该模式不连接游戏、不注入输入；本轮没有重跑完整 live selftest，222/222 是既有现场基线。
 解码微基准与具体边界见 [`../docs/mod-internals.md`](../docs/mod-internals.md#客户端-io2026-10-28离线)。
+
+同日 mod 核心验收：`py -3.11 driver/selftest.py --mod-core-only` 跑三组 native 检查，
+覆盖真实 Windows 管道取消/超时/重连/句柄回收、分帧与批量发送、录制重启与并发环绕覆写。
+LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-only` **33/33** 通过，
+覆盖管道分帧/超时重连、录制重启/导出与 spool。该模式只用普通管道与录制命令，不注入输入、
+不修改世界，也不运行逆向相关检查；默认完整 222/222 套件本轮未重跑。具体范围见
+[`../docs/mod-internals.md`](../docs/mod-internals.md#mod-核心2026-10-28离线与现场)。
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），
@@ -306,7 +313,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - spool 每 100 ms 或 64 KB 刷一次，进程被强杀时最多丢最后约 100 ms 的记录；队列溢出
   会写一条 `queue_dropped` 标记进 spool。
 - `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。
-- 二进制环固定 **524288 条 × 64 B ≈ 32 MB**，单写者（tick 线程）；`record_dump` 默认
+- 管道单次批量/大行写入预算为 **5 s**；超时会断开当前客户端，计数见
+  `status.pipe_write_timeouts`，客户端可重连。输入行完整或分片都受 **1 MiB** 上限约束。
+- 二进制环固定 **524288 条 × 64 B = 32 MiB payload**，加约 4 MiB 发布序号，单写者
+  （tick 线程）；start/stop 等待已准入的采样完成，dump 不会读取被覆写到一半的行。
+  `record_dump` 默认
   每次 1024 条，`since/next` 是绝对序号。因为传输是 JSONL，`bin`/`hex` 用 hex 分块而不是
   裸字节帧，避免破坏行协议。
 - 记录里的 `block_below/feet/head` 是方块类型名的 FNV-1a 32 哈希；用

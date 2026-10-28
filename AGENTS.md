@@ -209,8 +209,12 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
 执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **222/222**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 220/220、
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 223/223、
 ruff/mypy（driver+tests）全绿。
+
+2026-10-28 mod 核心补充验收：native `--mod-core-only` **3/3**；安装新 DLL 后
+`--mod-core-live-only` **33/33**（仅管道与录制，无逆向命令/输入注入/世界修改）。
+完整 222/222 是此前现场基线，本轮未重跑默认全套。
 
 任务提示词不在仓库内（本地维护）。
 
@@ -219,9 +223,6 @@ ruff/mypy（driver+tests）全绿。
 - ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化
   （下一个候选：宏管理器 `mMacro*`，跨 5 个 TU）
 - `captureState/captureScan`/legacy JSON 录制等「tick 内一请求式 JSON」家族迁到消费者线程
-- Transport 写阻塞看门狗（客户端存活但不读时管道线程永久阻塞）与 `disable()` 的
-  CancelSynchronousIo TOCTOU（改循环 cancel-then-wait）
-- `record_start` 打断在飞 `recordTick` 的世代竞态（可能混入上一会话的行）
 - UseTask 服务端回调超时、chat_history Requested 状态超时自愈、`mEntryInFlight` 看门狗
 - `mButtonStates/mHandlerStates` 数组的跨线程写（并入 RequestBlock 或走 client 任务）
 

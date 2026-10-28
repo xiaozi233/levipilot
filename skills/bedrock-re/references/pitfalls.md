@@ -27,7 +27,7 @@
 | 区块卸载回滚 | 场地“变回去” | guard: 现建现用 + 实验前 `blocks` 复核 |
 | 液体不流动 | 源头旁全空气 | guard: `Builder.poke` 戳醒 |
 | 直接传送进液体 | 游泳逻辑不启动、被动下沉 | guard: `experiments.md` 落到液面再按前进 |
-| `set_input(sprint=True)` 旧实现隐藏跳跃 | 0.42 跳跃污染游泳/岩浆数据 | guard: `selftest.py::sprint_no_jump` |
+| `set_input(sprint=True)` 旧实现隐藏跳跃（legacy 直接标志） | 0.42 跳跃污染游泳/岩浆数据 | guard: `selftest.py::sprint_no_jump`；默认路径已改为真实 HID |
 | `state.input.sprint` 静止锁存 | 走路基线其实是疾跑 | guard: `lab.settle(..., input_sprint=False)` |
 | 方块命令 `success=false` 当失败 | 误判没生效 | guard: 以 `blocks`/verify 回读为准 |
 | `TeleportRequest.clearEffects` 共享字段 | reset 后每次 teleport 清空药水 | guard: `selftest.py` 药水效果回归 |

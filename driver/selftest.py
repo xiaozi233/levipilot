@@ -1676,34 +1676,53 @@ def main(argv: list[str] | None = None) -> int:
             )
         checks.check("overhead_alive", wait_ticks(client, 3) >= 3)
 
+        # -- dynamic key bindings ------------------------------------------
+        bindings = client.state().get("bindings") or {}
+        checks.check(
+            "key_bindings_read",
+            all(
+                isinstance(bindings.get(key), int) and 0 <= int(bindings[key]) < 256
+                for key in ("forward", "back", "left", "right", "sneak", "jump", "sprint")
+            ),
+            str(bindings),
+        )
+
         # -- parkour jump/route primitives ---------------------------------
         check_jump_motion(client, checks, inject_enabled)
 
-        # Measured-broken takeoff modes must stay rejected (input pipeline
-        # only / setJumpPendingScale only); the mod is the authoritative guard
-        # for raw protocol sends.
-        for bad_mode, reason in (
-            (0, "jump_impulse_disabled"),
-            (2, "jump_impulse_pending_scale_only"),
-        ):
+        # Default movement is real HID keys. Legacy direct-impulse / direct-flag
+        # modes are diagnostics and must require force; the mod is the
+        # authoritative guard for raw protocol sends.
+        for bad_impulse in (1, 3):
             try:
-                client.request({"cmd": "input_cfg", "jump_impulse": bad_mode}, "input_cfg_ok")
-                checks.check(
-                    f"jump_impulse_guard_{bad_mode}", False, "broken takeoff mode accepted"
-                )
+                client.request({"cmd": "input_cfg", "jump_impulse": bad_impulse}, "input_cfg_ok")
+                checks.check(f"jump_impulse_guard_{bad_impulse}", False, "legacy impulse accepted")
             except ModProtocolError as exc:
-                checks.check(f"jump_impulse_guard_{bad_mode}", reason in str(exc), str(exc))
+                checks.check(
+                    f"jump_impulse_guard_{bad_impulse}",
+                    "legacy_jump_impulse_requires_force" in str(exc),
+                    str(exc),
+                )
+        try:
+            client.request({"cmd": "input_cfg", "mode": 7}, "input_cfg_ok")
+            checks.check("legacy_input_mode_guard", False, "legacy mode accepted")
+        except ModProtocolError as exc:
+            checks.check(
+                "legacy_input_mode_guard",
+                "legacy_input_mode_requires_force" in str(exc),
+                str(exc),
+            )
         forced = client.request(
-            {"cmd": "input_cfg", "jump_impulse": 0, "force": True}, "input_cfg_ok"
+            {"cmd": "input_cfg", "jump_impulse": 1, "mode": 7, "force": True}, "input_cfg_ok"
         )
         checks.check(
-            "jump_impulse_guard_force",
+            "legacy_input_force",
             forced.get("event") == "input_cfg_ok",
             str(forced),
         )
-        restored = client.input_cfg(jump_impulse=1)
+        restored = client.input_cfg(jump_impulse=0, mode=0)
         checks.check(
-            "jump_impulse_guard_restore",
+            "real_input_restore",
             restored.get("event") == "input_cfg_ok",
             str(restored),
         )

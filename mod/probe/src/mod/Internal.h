@@ -21,6 +21,8 @@
 #include "mc/client/game/IMinecraftGame.h"
 #include "mc/client/gui/GuiData.h"
 #include "mc/client/options/IOptionRegistry.h"
+#include "mc/client/input/KeyboardRemappingLayout.h"
+#include "mc/client/input/Keymapping.h"
 
 #include "mc/client/game/StartIntent.h"
 #include "mc/client/input/ClientMoveInputHandler.h"

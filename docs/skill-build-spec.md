@@ -104,7 +104,7 @@ py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 带游戏回归（改动后必须留一条检查）
-py -3.11 driver/selftest.py        # 当前基线 221/221
+py -3.11 driver/selftest.py        # 当前基线 222/222
 ```
 
 Python 客户端是 `driver/harness/`（`facade.Harness`、`commands/*` 的 `ModClient`）；协议与超时语义

@@ -371,6 +371,73 @@
         "[代码] 水 ctor 的注册回调；传 mode 1"
       ]
     },
+    "@liquid_flow_level": {
+      "strategy": [
+        "property:liquid_depth",
+        "returns:-1 when material differs"
+      ],
+      "address": "0x14345D010",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 读 block 状态字 +288 的 liquid_depth 位域；非该液体返回 -1；>=8 表示下落块（falling）"
+      ]
+    },
+    "@liquid_flow_vector": {
+      "strategy": [
+        "callees:from:@liquid_physics_tick",
+        "constant:-6.0@0x14E76B07C",
+        "store_y:0x14345E213"
+      ],
+      "address": "0x14345DE50",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] 4 邻液位差 → 水平向量（自身/邻 liquid_depth>=8 归一为 0，见 0x14345DEBA）；结尾 |v|<1e-4 直接 (0,-6,0)，否则先归一化再 y+=(-6.0)，最后整体再归一化（0x14345E1DC..0x14345E279）",
+        "[代码] 偏置门：自身 liquid_depth>=8 且 4 邻任一邻块或其上方 material 实心标志 byte(+5)!=0（0x14345E0DC..0x14345E1BD），命中即 break，至多一次",
+        "[实测] 1x1 贴墙瀑布 b80=-0.019，开放空气/3x3 居中 -0.005，3x3 贴墙与单方块上悬 -0.019；见 findings/1.26.51.01/cases/liquid-falling-push"
+      ]
+    },
+    "@liquid_flow_angle": {
+      "strategy": [
+        "callees:from:@liquid_flow_vector",
+        "atan2"
+      ],
+      "address": "0x14345ED00",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 用同一 flow 向量算 atan2 流向角（v=0 返回 -1000）；渲染/流向用"
+      ]
+    },
+    "@liquid_physics_tick": {
+      "strategy": [
+        "assert_string:1 LiquidPhysicsSystem",
+        "constant:0.014@0x14E7CA4D0",
+        "store_vel:0x1495E5281/528B/5295"
+      ],
+      "address": "0x1495E44E0",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] 每个 flow source 调 @liquid_flow_vector 后累加（0x1495E51BB）；|Σ|>=1e-4 归一化；k=0.014（material==5 水，0x14E7CA4D0）乘到三个分量并加到 actor+0x18/1C/20",
+        "[实测] 0.8 阻力下 v'=0.8v-0.005（静水）/ -0.019（下落+实心面）；稳态 -0.025 / -0.095"
+      ]
+    },
+    "@liquid_blip": {
+      "strategy": [
+        "live:StateVector+0x1C watch",
+        "constant:0.3 not found as a direct store",
+        "candidate:0x148B618A0 vertical accel add"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[实测] 贴墙 + 水面附近 + Space 时 vy 0.34→0.3（2 深水池，probe r01-001）；无墙/深水/不跳跃不触发",
+        "[动态] StateVector+0x1C 观察点在弹跳 tick 命中 0x148B61995（sub_148B618A0 加）、0x1431EC3FB（sub_1431EC2A0 Vec3 拷贝）、重力/阻力写点，无直接 0.3 store；函数地址未定，禁止猜"
+      ]
+    },
     "@sprint_tick_dispatch": {
       "strategy": [
         "tick:0x14B1A9FE0",
@@ -465,6 +532,44 @@
       "confidence": "none",
       "evidence": [],
       "note": "本版本未定位；这是“记录位→ADF 写位”2 tick 的最后一环"
+    },
+    "@lava_drag": {
+      "strategy": [
+        "callees:from:LavaTravel",
+        "constant:0.5"
+      ],
+      "address": "0x142DF0B80",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] 两条路径都在 0x142DF0F9A/FA8/FB6 与 0x142DF0DB1/DBF/DCD 对 vx/vy/vz 各乘 0.5；门是 LavaTravelFlag/Navigation 符号位，无液面高度/维度/效果读取",
+        "[实测] 脚在液面下 0.55 与 3 格都是 b50=-0.02、steady=-0.04；有无抗火序列一致"
+      ]
+    },
+    "@lava_gravity": {
+      "strategy": [
+        "callees:from:Gravity",
+        "constant:-0.02@0x142DE352F"
+      ],
+      "address": "0x142DE3260",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 结尾 0x142DE352F 写 -0.02f（0xBCA3D70A），只有 ±半格方块探针，无维度/效果"
+      ]
+    },
+    "@liquid_sim_tick": {
+      "strategy": [
+        "callees:8x @liquid_flow_level",
+        "constant:dropoff/tickdelay@0x14345B41D/0x14345B47C"
+      ],
+      "address": "0x14345B370",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] 液体扩散入口（8 处调 @liquid_flow_level）；material==6 时读 BlockSource→[vtable+0x138]→+0x1A6 维度字节：drop-off = 2-flag（0x14345B40F/41B），tick delay = flag?10:30（0x14345B46A/47C）",
+        "[实测] 80 tick 后下界前沿 +7、主世界 +3，与 drop-off 1/2（液位 7 起算）一致"
+      ]
     }
   }
 }

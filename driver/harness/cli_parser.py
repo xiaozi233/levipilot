@@ -358,12 +358,12 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--jump-impulse",
         type=int,
         choices=(0, 1, 2, 3),
-        help="1 = jumpFromGround (default), 3 = +setJumpPendingScale; 0/2 are the measured-broken takeoff paths",
+        help="0 = real Space key (default); 1/2/3 are legacy direct impulses and need --force",
     )
     input_cfg.add_argument(
         "--force",
         action="store_true",
-        help="allow the measured-broken jump impulse modes 0/2",
+        help="allow legacy direct-input modes / jump impulses (diagnostics only)",
     )
 
     sub.add_parser("jump")

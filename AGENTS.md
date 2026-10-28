@@ -46,7 +46,8 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 | `driver/landing.py` | 每轮逆向落盘：`begin/probe/claim/end/close/abandon`；账本在 `skills/bedrock-re/findings/` |
 | `scenarios/` | 场景 DSL 的 JSON |
 | `skills/bedrock-re/` | 静态优先的逆向 + 实验 skill（取代 `bedrock-client-re` / `reverse-security` / `mcbe-harness-experiments`），**真身、随仓库提交**；`.zcode/skills/bedrock-re` 与 `~/.agents/skills/bedrock-re` 是目录联接 |
-| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`；静态证据册本地维护，不随仓库分发）、UI 自动化、mod 构建、移植流程（`porting.md`）、静态优先的逆向方法与踩坑（`reverse-engineering.md`）、`offsets/` 版本 profile |
+| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`）、UI 自动化、mod 构建、移植流程（`porting.md`）、静态优先的逆向方法与踩坑（`reverse-engineering.md`）、`offsets/` 版本 profile |
+| `docs/notes/` | 证据册与任务提示词（由外部 notes 工作树合并；`re-fluid-12651.md` / `tick-order-12651.md` / `prompts/`） |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
 
 ## 硬约束（改代码前先读这段）
@@ -96,15 +97,23 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 - `GameMode::interact` 在空物品上下文会崩 ⇒ `interact_entity` 只做转向 + 注入使用按钮（best effort）。
 - 直接写客户端位置（`StateVector`/`ActorSetPositionRequest`）会被服务端覆盖；位置是服务端权威。
 - 朝向必须走命令通道（`/tp @s ~ ~ ~ yaw pitch`）；只改组件会橡皮筋（客户端相机每帧写回）。
-- 游泳态（ADF bit57）由**客户端 sprint 状态**门控：深水里 `set_input(forward=1, sprint=True)`
-  4–8 tick 置位（写 `MoveInputComponentSprinting` / `MoveInputStateSprintDown`，等价按住疾跑键）；只给前进不会进。
-  **HID 的 W+Ctrl / 双击 W 在浸没状态不会把 `state.sprinting` 置位**，纯按键事件驱动进不去
-  （2026-10-25 复核推翻旧说法）。`lab.swim_drive()` / CLI `swim --drive` 已改用输入路径；
-  `jump-key` 是拍空格（HID Space）触发跳跃。
-- 移动输入要同时写客户端与服务端两份，否则预测/校正互相拉扯。
-- **`set_input(sprint=True)` 旧实现会在 queue/handler 里重发 sprint 按钮，并在 1.26.51.01
-  触发一次 0.42 跳跃**（`forward=0` 也能复现），曾污染所有 sprint 系游泳/岩浆实验。
-  已在 `Input.cpp` 里改为 mode 1 同时开启时跳过该按钮；回归检查 `sprint_no_jump`。
+- **移动输入契约（2026-10-28）**：`set_input` / `move` / `jump` 默认把数字状态翻译成
+  **当前键位绑定的 Hardware HID 按键沿**：每次从
+  `IOptionRegistry::getCurrentKeyboardRemapping()` 读 `key.forward/back/left/right/sneak/jump/sprint`，
+  `state.bindings` 暴露实际 key code；疾跑按当前绑定键（现在是 R），未绑定才回退双击前进。
+  与真实键盘同 origin；禁止把直接写 `MoveInputComponent` / `MoveInputState`、
+  queue/handler 重发、`jumpFromGround` 当默认路径。legacy `mode`/`jump_impulse` 只在
+  `input_cfg force=true` 下作对照实验，正常脚本不要用。
+- 游泳态（ADF bit57）由**客户端 sprint 状态**门控：深水里前进 + 当前疾跑键
+  （`set_input` 自动完成）4–8 tick 置位；只给前进、不给 sprint 进不去。
+  **如果实测仍进不去，先查 HID 注入的时序/origin，不要把状态位直写加回来。**
+  旧“纯 HID 进不去游泳态”的结论是旧注入组合下的 harness 现象，待用新路径复核。
+  `lab.swim_drive()` / CLI `swim --drive` 同样走输入路径；`jump-key` 是拍空格（HID Space）。
+- 移动输入由游戏自己的输入管线同步到服务端；不要再在 harness 里手工“客户端+服务端双写”
+  来补偿，那会制造正常玩家到不了的状态。
+- **`set_input(sprint=True)` 旧实现**（legacy mode 1|2|4）会在 queue/handler 里重发 sprint 按钮，
+  并在 1.26.51.01 触发一次 0.42 跳跃；该路径现在只在 `force=true` 下可复现。
+  默认路径已不再经过它，回归检查 `sprint_no_jump`。
   实验每一步先 `lab.settle(...)` 验证 `on_ground`/静止/`in_water`/`sprinting` 再注入，
   不要用裸 `sleep` 当前提（`swim_start_still` 也是回归检查）。
 - **水里的疾跑延迟 = 记录位 → 输入/疾跑状态 → ADF 写位，约 2 tick**：`record`/`state` 的 `sprint`
@@ -112,10 +121,11 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
   （`sub_14B17C820`，写点 `0x14B17C870`）写入，但中间还有一拍状态链。同一 tick 内
   E14 主 pass 的注册序 ActionSprintTrigger 早于水阻力系统，阻力在写位之后读到**新位**
   （集合追加+正序；调用栈 [实测] 确认主 pass，catchup/correction 不在链上。旧“观察点显示
-  阻力写 `vx` 早于写位 ⇒ 读上一 tick”的结论已撤回）。所以**可见的 0.9 恒在记录位出现后 2 tick**：
-  正常起步记录位在 t1（第一个移动 tick 末）→ 第 3 tick（0.01959/0.03528/0.05133）；输入
-  晚一拍 → 第 4 tick（…/0.04782/0.06262）。静止时输入已被锁存的 harness 变体会提前到 t0 →
-  第 2 tick（0.03723），不是正常路径。地面加速的最终模长来自**移动速度属性**（疾跑时
+  阻力写 `vx` 早于写位 ⇒ 读上一 tick”的结论已撤回）。所以 0.9 落在 ADF 写位那一拍，而写位
+  比记录位晚约 2 tick：常规手动相位（按键落在采样点后）序列
+  `0.01959/0.03528/0.05133`（t3）；早相位（疾跑键在采样前已按住/注入落在采样前）
+  `0.01959/0.03723`（t2）。差别是输入落点，不是阻力读旧位——0.03723 不再是纯 harness 假象。
+  地面加速的最终模长来自**移动速度属性**（疾跑时
   `Actor::setSprinting` 把共享 modifier `SPRINTING_BOOST` 压进属性队列：amount 0.3f、
   `MULTIPLY_TOTAL`，重算 `(0.3+1)×0.1=0.13`；代码里没有 1.3 常数，早前归给实体定义字段
   `DEFAULT_SPRINT_SPEED_MULTIPLIER` 是错的——那是 AI goal 的 JSON 字段）
@@ -198,8 +208,8 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **221/221**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 204/204、
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **222/222**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 208/208、
 ruff/mypy（driver+tests）全绿。
 
 任务提示词不在仓库内（本地维护）。
@@ -215,8 +225,9 @@ ruff/mypy（driver+tests）全绿。
 - UseTask 服务端回调超时、chat_history Requested 状态超时自愈、`mEntryInFlight` 看门狗
 - `mButtonStates/mHandlerStates` 数组的跨线程写（并入 RequestBlock 或走 client 任务）
 
-> 任务提示词不随仓库分发；验收标准与结论：使用限制与基线数字在 `mod/README.md`，
-> 实现细节与逐项实测数字在 `docs/mod-internals.md`（含「实测数字速查」），以后看这两处。
+> 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收标准与结论：
+> 使用限制与基线数字在 `mod/README.md`，实现细节与逐项实测数字在 `docs/mod-internals.md`
+> （含「实测数字速查」），以后看这两处。
 
 改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查；使用限制/基线变化补进
 `mod/README.md` 的「实测 / 限制」，逐项实测数字补进 `docs/mod-internals.md` 的对应

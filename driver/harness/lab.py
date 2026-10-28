@@ -365,13 +365,13 @@ def swim_drive(
     hold: bool = True,
     poll_ticks: int = 4,
 ) -> dict[str, Any]:
-    """Enter SWIMMING the way the sprint key does: forward + sprint state.
+    """Enter SWIMMING the way the sprint key does: forward + sprint key.
 
-    ``set_input(forward=1, sprint=True)`` drives the same path a held sprint key
-    uses (``MoveInputComponentSprinting`` / ``MoveInputStateSprintDown``).
-    Measured on 1.26.51.01: while submerged, HID W +
-    Ctrl (and a double-tapped W) leave ``state.sprinting`` false, so a pure
-    key-event drive never enters SWIMMING; the sprint *state* is what gates it.
+    ``set_input(forward=1, sprint=True)`` now synthesizes Hardware HID edges for
+    the guest's current forward and sprint bindings (read from
+    ``IOptionRegistry``; visible as ``state.bindings``). If a pure key drive does
+    not enter SWIMMING, fix the injection path; do not fall back to writing
+    ``MoveInputComponentSprinting`` / ``MoveInputStateSprintDown`` directly.
     Water must be deep enough that the player is off the ground; from the bottom
     hold Space to swim up. ``hold=False`` stops right after entering (the state
     then clears); the drive is always released when the trigger does not fire.

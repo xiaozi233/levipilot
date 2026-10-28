@@ -82,25 +82,27 @@ with ModClient() as client:
 
 运动状态一律用**玩家会按的键**复现，不写状态位、不直接改速度：
 
-- **游泳**：深水（≥2–3 格、离底）里 `set_input(forward=1, sprint=True)` 4–8 tick 置
-  ADF bit57；`swim --drive` 封装。关键是 sprint 状态：HID 的 W+Ctrl 在浸没状态不会把
-  `state.sprinting` 置位（双击 W 也不行），纯按键事件进不去。
+- **游泳**：深水（≥2–3 格、离底）里 `set_input(forward=1, sprint=True)` 现在发的是
+  Hardware HID 的当前前进键 + 当前疾跑键（`state.bindings`；现在是 R），4–8 tick 置 ADF bit57；`swim --drive` 封装。
+  如果纯按键路径仍进不去，先查注入时序/origin，**不要**把 `MoveInputComponentSprinting`
+  直写加回来；那是正常玩家到不了的状态。
 - **上浮**：按住空格就升——水/游泳态都是 +0.175 格/tick，岩浆 +0.04；贴到水面会
   “探出又落回”。游泳态平视是真正 vy=0（踩水）；水下抬头按泳姿上升（pitch −30° ≈ +0.121）；
   头露出水面后抬头才会被置零。旧测的“游泳态 +0.2 / 平视也 +0.16~0.2”是 sprint 注入的
-  隐藏 jump（已修）。
+  隐藏 jump（legacy 直接标志路径，已从默认路径移除）。
 - **前提检查**：每个实验步骤先 `lab.settle(...)`（连续 N tick 验证 on_ground / 静止 /
   在水中 / 非疾跑），再注入；不要用裸 sleep 当前提。`swim_start_still` / `sprint_no_jump`
   是回归检查。
-- **跳跃**：`jump-key` 拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线逐位一致。
-- **疾跑**：`set_input(sprint=True)` 只走 MoveInput 标志路径（队列/处理器不再重发 sprint 按钮）。
-  旧实现会触发 0.42 跳跃，已修并有 `sprint_no_jump` 回归；用旧 sprint 注入得出的
-  “疾跑触发上浮”结论一律作废。
+- **跳跃**：默认 `jump` / `jump-key` 都按当前 jump 绑定（默认 Space，Hardware HID）；与真实键盘
+  同路径，`jump_motion_*` 逐 tick 比较完整弧线。
+- **疾跑**：默认 `set_input(sprint=True)` 按当前 sprint 绑定（现在 R；未绑定才双击前进），与真实键盘同路径；不再写
+  `MoveInputComponentSprinting`。legacy 直接标志/queue/handler 只在 `input_cfg force=true`
+  下复现旧测量；旧实现触发的 0.42 跳跃仍由 `sprint_no_jump` 回归看住。
   - 平地疾跑一般无延迟；偶发 1 tick 是 sprint 标志更新与 movement 的相位竞争。
-  - 水里（封闭池）：`record` 的 sprint 位（客户端状态）出现后 **2 tick** 才看到 0.9。
-    正常起步 `0.01959/0.03528/0.05133`（第 3 tick 生效）；输入晚一拍
-    `0.01959/0.03528/0.04782/0.06262`（第 4 tick）。静止时输入已锁存的 harness 变体会提前到
-    第 2 tick（`0.03723`），不是正常路径。
+  - 水里（封闭池）：`record` 的 sprint 位出现后约 **2 tick** 才看到 0.9。
+    常规手动相位 `0.01959/0.03528/0.05133`（第 3 个移动 tick 生效）；早相位
+    （疾跑键在采样前已按住/注入落在采样前）`0.01959/0.03723/0.05310`（第 2 个）。
+    差别是输入落点，不是阻力读旧位；0.03723 不是纯 harness 假象。
   - 2 tick 来自**状态链**（记录位 → 输入/疾跑状态 → ADF 写位），不是“阻力读上一 tick”。
     同一 tick 内 E14 主 pass 的注册序 ActionSprintTrigger 早于 travel，阻力在写位之后读**新位**。
   - 地面 ×1.3 来自移动速度属性：`Actor::setSprinting` 把 `SPRINTING_BOOST`（amount 0.3、
@@ -115,6 +117,28 @@ with ModClient() as client:
   或管道 `togglefly`；切游戏模式会重置，切完要重新开。
 - **药水保护**：碰岩浆/深水前 `lab.ensure_protection(client)`（抗火 + 水下呼吸，默认 900 s）；
   `teleport`/`checkpoint_load` 不会清效果，只有 `reset` 会。
+- **竖直流推（2026-10-28 配方）**：验证“下落水贴实心面才有 −6 偏置”不要只建一根瀑布，
+  要建对照组：静水柱 / 1×1 贴墙瀑布 / 露天瀑布 / 3×3 竖井中心 / 3×3 贴墙 / 露天+邻块上方
+  一格石头 / 2×2 水体邻接（水不算实心面）。`/fill`/`setblock` 的水必须用
+  `Builder.poke()` 戳醒才会下落。玩家传送到柱中后先等 4 tick，再 `record_bin_start`；
+  判据用 `b=median(v_{n+1}-0.8v_n)`（水阻力 0.8 已知，单 tick 采样毛刺会被中位数吃掉）：
+  $-0.005$ = 无竖直流推，$-0.019$ = 满额 $0.014$。`record` 环里旧会话的行可能残留，
+  先取 `state.tick` 再过滤 `tick > t0`。
+- **液体退出弹跳（Liquid Blip，2026-10-28 配方）**：2 格深水池 + 一圈墙；玩家脚离水面约
+  0.6 格、**碰撞箱边缘刚好贴住墙**（例如墙在 z=299 时把中心放到 z=300.32），`set_input`
+  W+Space 8–10 tick，`record`。命中时 `vy` 序列是 `0.34 → 0.3`，位置每 tick +0.3。
+  对照组：无墙（最大只有 0.098）、深水贴墙（抬 0.6 仍在水中）、不按跳跃、朝东贴墙
+  （1.8.9 的东南 bug 在基岩不复现）。陷阱：起点离墙 0.6 格时水阻力会在够到墙前衰减，
+  看起来像"没有弹跳"；必须让碰撞箱碰到墙面。
+- **岩浆维度 / 深度 / 抗火（2026-10-28 配方）**：3×3、5 深的岩浆池，分别把脚放到液面下
+  3 格和 0.55 格记录下沉；再清掉 `fire_resistance` 重录一次。判据 `b50=median(v_{n+1}-0.5v_n)`：
+  两档都应是 $-0.02$（基岩没有 Java 的浅浆 0.8 分支）；有无抗火应逐位一致（只差 health）。
+  维度用 `execute in nether run tp @s ...` 进下界（y 必须 <128，200 以上命令静默失败），
+  同规格建池；下沉与推力都不应变。测推力要在 1 宽通道里放岩浆源 + `poke`，等 260 tick，
+  站进流动段记录 `vx`（两维都应是 $0.007$）；岩浆扩散前沿则下界更远
+  （40/80/120/160 tick：下界 5/7/7/7，主世界 1/3/3/3——稳定前沿 = 液位 7 减 drop-off，
+  下界 1、其他 2，静态入口 `sub_14345B370`）。
+  陷阱：刚传进下界建池后的第一次记录可能因区块/填充未就绪停在原地，重传一次再测。
 - 直接写 ADF/速度只能造出正常输入不可达的状态，结论不可信；状态只用来**读**。
 
 ## 4. 记录字段与常用判据
@@ -137,8 +161,8 @@ with ModClient() as client:
 - 每轮用 `driver/landing.py` 落盘：`begin` → `probe` → `claim` → `end`；
   结案跑 `close`（lint + profile 检查）。
 - 改了 mod 命令/行为：按 `AGENTS.md` 流程补 `tests/` 单测 + `driver/selftest.py` 检查 +
-  `mod/README.md` 的「实测/限制」与基线数字（当前 **221/221** live、**204** 离线）。
-- 跨版本复核静态结论用 `tools/ida.py` + 本地证据册；不要复制/重开 `.i64`。
+  `mod/README.md` 的「实测/限制」与基线数字（当前 **222/222** live、**208** 离线）。
+- 跨版本复核静态结论用 `tools/ida.py` + [docs/notes/](../../../docs/notes/)；不要复制/重开 `.i64`。
 
 ## 6. 收尾检查清单
 

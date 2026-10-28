@@ -295,23 +295,27 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         mInputController.store(j.value("controller", 0));
         mInputFocus.store(j.value("focus", 0));
         if (j.contains("mode")) {
-            mButtonMode.store(j.value("mode", 7));
+            int const mode = j.value("mode", 0);
+            if (mode != 0 && !j.value("force", false)) {
+                enqueue(nlohmann::json{
+                    {"event",  "error"                          },
+                    {"reason", "legacy_input_mode_requires_force"},
+                    {"hint",   "mode=0 is real HID keys; non-zero reproduces old flag/queue/handler paths"},
+                }.dump());
+                return true;
+            }
+            mButtonMode.store(mode);
             mButtonStates.fill(false);
             mHandlerStates.fill(false);
             mPrevJump = false;
         }
         if (j.contains("jump_impulse")) {
-            // 0 (input pipeline only) and 2 (setJumpPendingScale only) are the
-            // measured-broken takeoff paths on 1.26.51.01: 0 stalls three
-            // ticks on the ground then snaps up ~0.99 blocks, 2 never leaves
-            // the ground. force=true opts back in to reproduce those.
-            int const impulse = std::clamp(j.value("jump_impulse", 1), 0, 3);
-            if ((impulse == 0 || impulse == 2) && !j.value("force", false)) {
+            int const impulse = std::clamp(j.value("jump_impulse", 0), 0, 3);
+            if (impulse != 0 && !j.value("force", false)) {
                 enqueue(nlohmann::json{
-                    {"event",  "error"                                      },
-                    {"reason", impulse == 0 ? "jump_impulse_disabled"
-                                            : "jump_impulse_pending_scale_only"},
-                    {"hint",   "use 1 (jumpFromGround) or 3; force=true reproduces the broken path"},
+                    {"event",  "error"                            },
+                    {"reason", "legacy_jump_impulse_requires_force"},
+                    {"hint",   "jump_impulse=0 presses Space; non-zero reproduces the old direct impulse"},
                 }.dump());
                 return true;
             }

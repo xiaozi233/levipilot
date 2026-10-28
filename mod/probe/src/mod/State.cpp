@@ -90,6 +90,17 @@ void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
         {"locked",        hardwareInputLocked() },
     };
 
+    refreshBindings(false);
+    j["bindings"] = {
+        {"forward", mBindings.forward},
+        {"back",    mBindings.back   },
+        {"left",    mBindings.left   },
+        {"right",   mBindings.right  },
+        {"sneak",   mBindings.sneak  },
+        {"jump",    mBindings.jump   },
+        {"sprint",  mBindings.sprint },
+    };
+
     auto const& item = player.getSelectedItem();
     if (!item.isNull()) {
         j["item"] = {

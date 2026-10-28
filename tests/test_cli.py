@@ -101,31 +101,35 @@ class CliCompatibilityTests(unittest.TestCase):
         self.assertIn("read retained client chat messages", help_result["stdout"])
 
     def test_input_cfg_jump_impulse_guard(self) -> None:
-        ok = invoke_cli(cli, ["input-cfg", "--jump-impulse", "1"])
+        ok = invoke_cli(cli, ["input-cfg", "--jump-impulse", "0"])
         self.assertEqual(ok["code"], 0)
         self.assertEqual(ok["calls"][1][0], "input_cfg")
-        self.assertEqual(ok["calls"][1][2].get("jump_impulse"), 1)
+        self.assertEqual(ok["calls"][1][2].get("jump_impulse"), 0)
 
-        forced = invoke_cli(cli, ["input-cfg", "--jump-impulse", "0", "--force"])
+        forced = invoke_cli(cli, ["input-cfg", "--jump-impulse", "1", "--force"])
         self.assertEqual(forced["code"], 0)
-        self.assertEqual(forced["calls"][1][2].get("jump_impulse"), 0)
+        self.assertEqual(forced["calls"][1][2].get("jump_impulse"), 1)
         self.assertIs(forced["calls"][1][2].get("force"), True)
 
-        passthrough = invoke_cli(cli, ["input-cfg", "--mode", "7"])
+        passthrough = invoke_cli(cli, ["input-cfg", "--mode", "7", "--force"])
         self.assertEqual(passthrough["code"], 0)
         self.assertEqual(passthrough["calls"][1][2].get("mode"), 7)
 
-        # The guard lives in the real client method; the CLI fixture replaces
-        # ModClient with a recorder, so validation is checked here directly.
-        # Valid modes pass validation and only fail on the unconnected pipe.
+        # Default movement is real HID keys; legacy direct modes/impulses are
+        # rejected unless force=True. The CLI fixture replaces ModClient with a
+        # recorder, so validation is checked on the real client method here.
         client = ModClient()
-        for bad in (0, 2):
+        for bad in (1, 2, 3):
             with self.assertRaises(ValueError):
                 client.input_cfg(jump_impulse=bad)
+        with self.assertRaises(ValueError):
+            client.input_cfg(mode=7)
         with self.assertRaises(ModPipeError):
-            client.input_cfg(jump_impulse=1)
+            client.input_cfg(jump_impulse=0)
         with self.assertRaises(ModPipeError):
-            client.input_cfg(jump_impulse=2, force=True)
+            client.input_cfg(jump_impulse=1, force=True)
+        with self.assertRaises(ModPipeError):
+            client.input_cfg(mode=7, force=True)
 
     def test_hotkey_command_wiring(self) -> None:
         jump_key = invoke_cli(cli, ["jump-key"])

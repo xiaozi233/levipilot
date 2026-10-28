@@ -304,6 +304,14 @@ private:
     void updateFocusState();
 
     void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
+    // Real-input path: translate the desired digital key state into Hardware
+    // HID key edges. Legacy flag/queue/handler/impulse paths are gated behind
+    // input_cfg force.
+    void applyRealInput(LocalPlayer& player, ControlState const& state);
+    void releaseRealInput();
+    // Reads the guest's current keyboard remapping (IOptionRegistry →
+    // KeyboardRemappingLayout → key.* actions). Returns true when valid.
+    bool refreshBindings(bool releaseOnChange);
     // Shared walk-to-target driver for tickNavigate/tickRoute; defined in
     // Tasks.cpp. Reads/writes the shared lastX/lastZ/haveLast/stuckTicks/
     // jumpCooldown fields directly on the task.
@@ -480,6 +488,27 @@ private:
     bool mPrevSneak   = false;
     bool mInjected    = false;
     bool mInputActive = false;
+    // Physical-input path: keys are held through HIDController with the
+    // Hardware origin, exactly like the guest's keyboard. The legacy
+    // flag/queue/handler/impulse paths are explicit diagnostics only.
+    struct KeyBindings {
+        int forward = 87;  // W fallback
+        int back    = 83;  // S
+        int left    = 65;  // A
+        int right   = 68;  // D
+        int sneak   = 16;  // Lshift
+        int jump    = 32;  // Space
+        int sprint  = 0;   // 0 = unassigned; use double-tap forward
+    };
+    KeyBindings mBindings;
+    bool        mBindingsValid = false;
+    std::uint64_t mBindingsTick = 0;
+    std::array<bool, 7> mHeldKeys{};
+    bool                mHeldLmb = false;
+    bool                mHeldRmb = false;
+    // 0 idle, 1 first W tap down, 2 W released, 3 sprint latched. Sprint is
+    // produced by the real double-tap-W gesture; Ctrl is not bound in this build.
+    int mSprintTapPhase = 0;
     // Set by input_cfg on the pipe thread, read/written on the tick thread.
     std::atomic_bool mPrevJump{false};
     // Set by applyControls when a jump press edge is injected; cleared at the
@@ -555,13 +584,14 @@ private:
     std::atomic<int>            mClickRequest{-1};
     std::atomic<float>          mClickReach{5.5f};
     std::atomic<int>            mSlotRequest{-1};
-    // bit 1 direct flags, bit 2 queue, bit 4 handler callbacks, bit 8 toggle fallback
-    std::atomic<int> mButtonMode{1 | 2 | 4};
-    // Local jump impulse: bit 1 = LocalPlayer::jumpFromGround,
-    // bit 2 = MobJump::setJumpPendingScale. Measured on 1.26.51.01:
-    // jumpFromGround gives the exact 0.42/0.3332/... arc immediately, while
-    // setJumpPendingScale alone still waits for the server (3-tick snap).
-    std::atomic<int> mJumpImpulseMode{1};
+    // 0 = real physical input (default). Legacy diagnostics:
+    // bit 1 direct flags, bit 2 queue, bit 4 handler callbacks, bit 8 toggle fallback.
+    // Non-zero is accepted by input_cfg only with force=true.
+    std::atomic<int> mButtonMode{0};
+    // 0 = real Space key (default). Legacy diagnostics:
+    // bit 1 = LocalPlayer::jumpFromGround, bit 2 = MobJump::setJumpPendingScale.
+    // Non-zero is accepted by input_cfg only with force=true.
+    std::atomic<int> mJumpImpulseMode{0};
     std::atomic_bool mButtonsRequested{false};
 
     std::mutex mEntityMutex;

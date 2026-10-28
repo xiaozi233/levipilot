@@ -77,7 +77,7 @@ xmake -j4 -y
 | `symbol_resolve` | `name`；编译期锚点 + E9/FF25 跟随，返回 `{anchor,real,module,rva}` |
 | `packet_stats` | 记录数/丢失/denied/peer_sends/hook 状态 |
 | `screen` | 当前界面名（`hud_screen` / `inventory_screen` / `chat_screen` / `pause_screen`） |
-| `set` | `forward,strafe,sprint,sneak,jump,ticks`；`ticks=-1` 持续 |
+| `set` | `forward,strafe,sprint,sneak,jump,ticks`；默认读当前键位并合成真实 Hardware HID 按键（`state.bindings` 可见），`ticks=-1` 持续 |
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
 | `entities` | `radius,limit`，附近 Actor |
 | `entity` | `runtime_id`；类型/名字/位置/速度/血量/距离 |
@@ -130,7 +130,7 @@ xmake -j4 -y
 `health/max_health`、`hunger/saturation/exhaustion`、`xp_level/xp_progress`、
 `gamemode/dimension/name/uuid/selected_slot/item`、
 `block_feet/block_below/block_head/block_above`、`effects`（`id/duration/amplifier/ambient`），
-以及 `input` 子对象。
+以及 `input`、`bindings` 子对象（后者是 forward/back/left/right/sneak/jump/sprint 的当前 key code）。
 
 每个 tick 还会在事件流里发跑酷相关事件（不需要 `start`）：`player_landed`
 （`fall_distance/health`）、`player_hurt`（`health/damage`）、`player_died`。
@@ -187,8 +187,8 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **221/221**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 204/204。常用实测数字：
+当前基线：live selftest **222/222**（`harness.json` 开 `allow_input_inject`/
+`allow_selftest_stress`）、离线单测 208/208。常用实测数字：
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），
@@ -243,12 +243,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），
   不是效果盒几何；浅水阈值（0.4 格）要另用速度行为判断。
-- 起跳只有一条正确路径：`jump` 命令 / `set --jump`（含任务与 `jump_when`）都落到
-  `LocalPlayer::jumpFromGround`（`input_cfg jump_impulse` 默认 1）。`jump_impulse=0`
-  （只走输入管线：前 3 tick 原地、第 4 tick 补 V1+V2+V3 约 0.99 格）与 `=2`
-  （`MobJump::setJumpPendingScale` 单独用不起跳）是实测坏路径，mod 直接回
-  `jump_impulse_disabled` / `jump_impulse_pending_scale_only`；确需复现时带 `force=true`。
-  `jump` 在空中发放会被丢弃（一次性请求，需 `onGround`），要等落地请用 `set --jump --ticks N`。
+- 起跳默认按当前 jump 绑定（默认 Space）发 Hardware HID：`jump` / `set --jump`
+  （含任务与 `jump_when`）都走这条真实按键路径。`input_cfg jump_impulse` 默认 0；
+  非零的直接冲量（1=jumpFromGround，2=setJumpPendingScale，3=两者）只在
+  `force=true` 下用于复现旧测量，正常脚本不要用。
+- `jump` 在空中发放会被丢弃（一次性请求，需 `onGround`），要等落地请用 `set --jump --ticks N`。
 - HUD、跑酷统计、practice、Input Checker 不在本 mod 范围内，直接用 dmf-mpk；
   本 mod 只提供脚本/LLM 使用的 API。
 - 同一时间只跑一个闭环任务；新任务会取消旧任务并停掉 macro。
@@ -279,8 +278,9 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 - 暂停菜单不响应注入按键（Esc/Enter 都无效）；退出暂停仍需桌面点击 Resume。背包（E）
   和聊天（`/`）可以开，背包用 Esc 能回到 hud。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。
-- 跳跃必须走本地 `jumpFromGround`；只靠输入标志/队列/handler 在 1.26.51.01 上会有
-  3 tick 延迟并一次性补位移。`jump_impulse` 只用于对照实验，正常不要改。
+- 移动/跳跃默认从 `IOptionRegistry` 读当前键位并合成真实 Hardware HID 按键，与玩家键盘同路径；
+  `jump_impulse`、`mode` 等直接标志/冲量只在 `input_cfg force=true` 下用于复现旧测量，
+  正常脚本不要改。
 - 只支持 **1.26.51.01** 的实测结论；换版本按 [`docs/porting.md`](../docs/porting.md)
   走 profile 流程，不要直接套 1.26.45 的偏移。
 - 版本数据（锚点签名、结构偏移、组件 id）只存在于 `docs/offsets/*.json` 和生成出来的

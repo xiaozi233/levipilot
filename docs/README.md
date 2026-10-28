@@ -19,6 +19,7 @@
 | [`roles/`](roles/) | RE 角色 → 静态地址与证据（与 offsets 分开；`unresolved` 不猜地址） |
 | [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | IDA MCP 代理卡死等排障（逆向工具链） |
 | [`reverse-engineering.md`](reverse-engineering.md) | **静态优先**的逆向工作流与踩坑：证据分级、无符号定位手法（注释记录/vtable/SDK）、顺序类问题的判据、磁盘与库纪律、动态取证的边界 |
+| [`notes/`](notes/) | 证据册（`re-fluid-12651.md`、`tick-order-12651.md`）与历轮任务提示词；已由外部 notes 工作树并入仓库 |
 
 ## 历史 / 参考
 
@@ -33,7 +34,8 @@
 
 - 改代码后同步更新：使用限制/基线进 `mod/README.md` 的「实测 / 限制」，逐项实测数字
   进 `mod-internals.md` 的对应小节或「实测数字速查」，并同步这里的相关文档。
-- 任务提示词不随仓库分发；验收结论直接写进 `mod-internals.md` 与 `mod/README.md`。
+- 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收结论直接写进
+  `mod-internals.md` 与 `mod/README.md`。
 - 静态优先的逆向 + 实验手册（建场回读、录制语义、输入/热键坑、版本角色、逐轮落盘）在仓库根目录
   [`skills/bedrock-re/`](../skills/bedrock-re/)；ZCode 本地通过 `.zcode/skills/` 联接发现，
   用户级通过 `~/.agents/skills/` 联接发现。

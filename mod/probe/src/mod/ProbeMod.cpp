@@ -255,6 +255,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     mJumpEdgeThisTick = false;
     auto client       = ll::service::getClientInstance();
     if (!client || client->getLocalPlayer() != &player) {
+        releaseRealInput();
         mWorld.observePlayer(false);
         return;
     }

@@ -1,0 +1,10 @@
+{
+  "case": "lava-dim-fire-depth",
+  "version": "1.26.51.01",
+  "goal": "静态定位液体扩散的维度 fast-lava（drop-off/tick delay）",
+  "environment": "",
+  "current_round": 4,
+  "status": "closed",
+  "created_at": "2026-10-28T11:02:18Z",
+  "updated_at": "2026-10-28T12:05:32Z"
+}

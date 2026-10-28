@@ -6,24 +6,21 @@
 
 - Hook `LocalPlayer::$normalTick`（LL 实例 hook），在 `origin()` **之前**注入输入、之后采样。
   这与 dmf-mpk 的 macro 注入时机一致；`ClientLevelTickEvent` 偏晚，跳跃/按键会被覆盖。
-- 移动：`ClientMoveInputHandler::_updateClientMoveVector(strafe, forward, ...)`
+- 移动（默认，2026-10-28）：先把 `ControlState` 的数字量翻译成动作，再从
+  `IOptionRegistry::getCurrentKeyboardRemapping()` 读 `key.forward/back/left/right/
+  sneak/jump/sprint` 的**当前键位**，发 Hardware HID 按键沿；`state.bindings` 暴露
+  实际 key code（当前疾跑=R）。未绑定的疾跑才回退双击前进。不再直接写
+  `MoveInputComponent`/`MoveInputState`，也不走 queue/handler 重发。
 - 视角：`LocalPlayer::_applyTurnDelta(Vec2{pitchDelta, yawDelta})`
   （pitch 符号与 `ActorRotation.x` 相反）
-- 按钮：`MoveInputComponent` 标志 + `InputEventQueue::enqueueButton` + 输入 handler 回调；
-  `input_cfg` 的 `mode` 位掩码：1=直接标志，2=队列，4=handler，8=toggle fallback。
-- 跳跃：只靠上面的输入管道会等服务器确认——实测前 3 tick 位置不动，第 4 tick 一次性补
-  `V1+V2+V3 ≈ 0.99` 格，看起来像卡回弹。注入跳跃在按住且接地时必须额外调用
-  `LocalPlayer::jumpFromGround()`，之后逐 tick 的位移是 0.4200、0.3332、0.2481、0.1648…
-  （顶点 1.252 格，滞空 11 tick）。`MobJump::setJumpPendingScale` 单独用仍是延迟的
-  （dmf-mpk 报告里它只是辅助）。`input_cfg jump_impulse`：1=仅 jumpFromGround（默认），
-  2=setJumpPendingScale，3=两者，0=都不做（对比用）。
-- 持续跳跃：不能只在 `jumpEdge` 时补本地起跳，否则落地后仍按住的第二跳起又变成
-  一次性 +0.99143 格。`jumpNow && isOnGround()` 在每次落地后补本地起跳；`jump_edge`
-  仍只表示按下沿，不伪造新的按键沿。`selftest` 的 `jump_motion_*` 用二进制逐 tick 位置
-  比较 HID 空格绑定、持续 `set` 和单次 `jump_when` 的完整地面到地面轨迹，且检查松开后落地。
-  H0 的 vy 写线程取证只做一次原地跳跃、等待 25 tick，不再前进并按住跳跃 30 秒。
-- 潜行：`LocalPlayer::setSneaking(true)` + `MoveInputComponent` 标志；实测 20 tick 前进
-  4.316 格，潜行 1.295 格（约 0.30x 速度）。
+- 跳跃（默认）：Space 按下/松开；`jump` 命令就是 1 tick 的 Space。实测 HID Space 的
+  逐 tick 位移仍是 0.4200、0.3332、0.2481、0.1648…（顶点 1.252 格，滞空 11 tick），
+  `selftest` 的 `jump_motion_*` 比较 HID Space、持续 `set` 和单次 `jump_when` 的完整轨迹。
+- Legacy 诊断：`input_cfg mode` 位掩码（1=直接标志，2=队列，4=handler，8=toggle fallback）与
+  `jump_impulse`（1=jumpFromGround，2=setJumpPendingScale，3=两者）默认都是 0；
+  非零只在 `force=true` 下接受，用来复现旧测量，不是正常移动路径。
+- 潜行：默认 Lshift；legacy mode 1 仍走 `LocalPlayer::setSneaking(true)` + 标志。
+  实测 20 tick 前进 4.316 格，潜行 1.295 格（约 0.30x 速度）。
 - 状态：`LocalPlayer` + `MoveInputComponent` + `PlayerActionComponent` + 属性 +
   `BlockSource` + `Level`。
 
@@ -527,9 +524,9 @@
   **不触发世界攻击**（攻击绑定不在这一层），攻击仍用 `click`/`attack_entity`。
 - 后台守卫：`allowTurnDelta()` 放行 `mInjectingLook` 和注入鼠标转向后的 2 tick
   （`mInjectTurnUntilTick`）。注入标志只在调用期间短暂置位，避免整帧放行真实鼠标。
-- **sprint 对照（G3）**：`driver/sprint_compare.py` + `scenarios/sprint-compare.json`。
-  逐 tick 位移中位数：B（`set_input` 标志）0.2875、C（ctrl+W 事件）0.2806，基线 0.2805。
-  结论是事件层能复现疾跑，差异不在输入事件层；G5 的启动条件不成立，未实现 raw-input hook。
+- **sprint 对照（G3，历史）**：`driver/sprint_compare.py` + `scenarios/sprint-compare.json`。
+  旧对比里 B（直接 `set_input` 标志）0.2875、C（ctrl+W 事件）0.2806，基线 0.2805；
+  说明事件层能复现疾跑。2026-10-28 起默认统一走 Hardware ctrl+W，B 只在 `force=true` 下保留。
 - **macro（G4）**：`macro_run {event_level:true}` 按相邻 tick 的按钮边沿走 G1/G2 事件注入，
   不再调 GameMode；旋转仍走 `_applyTurnDelta`。旧路径（默认 `event_level=false`）完全保留，
   文件格式未改。结束/取消时 `releaseMacroInputs()` 释放仍按下的键和鼠标。
@@ -585,8 +582,8 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **221/221**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 204/204。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **222/222**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 208/208。
 
 ### 实验辅助（`driver/harness/lab.py`）
 
@@ -595,13 +592,13 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 - `move_and_wait`：`set_input` 立即返回，等满输入窗口再返回。
 - 纯函数 `fit_recursion` / `recursion` / `steady` / `segments` 有离线单测（`tests/test_lab.py`）。
 
-### 起跳方式（2026-10-24 审计）
+### 起跳方式（2026-10-28 更新）
 
-- 正确路径：`jump` / `set --jump` / 任务 / 宏回放（HID Space）都落到
-  `LocalPlayer::jumpFromGround`；`jump_motion_matches_space` 逐位对比通过。
-- `input_cfg jump_impulse` 默认 1；0（输入管线，3 tick 原地后补约 0.99 格）与
-  2（`setJumpPendingScale` 单独，不起跳）被 mod 拒绝，`force=true` 才放行
-  （selftest `jump_impulse_guard_*` 四项）。
+- 默认：`jump` / `set --jump` / 任务 / 宏回放都按当前 jump 绑定（默认 Space）发
+  Hardware HID 按键；`jump_motion_matches_space` 逐位对比通过。
+- `input_cfg jump_impulse` 默认 0；非零（1=jumpFromGround，2=setJumpPendingScale，
+  3=两者）是 legacy 直接冲量，只在 `force=true` 下用于复现旧测量
+  （selftest `jump_impulse_guard_*` / `legacy_input_force`）。
 
 ### 游泳/热键驱动（2026-10-24）
 

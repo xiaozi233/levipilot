@@ -1,0 +1,10 @@
+{
+  "case": "liquid-blip",
+  "version": "1.26.51.01",
+  "goal": "补充无跳跃对照：基岩弹跳是否要求跳跃输入",
+  "environment": "",
+  "current_round": 3,
+  "status": "closed",
+  "created_at": "2026-10-28T10:09:06Z",
+  "updated_at": "2026-10-28T10:16:45Z"
+}

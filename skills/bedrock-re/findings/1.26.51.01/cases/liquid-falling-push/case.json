@@ -1,0 +1,10 @@
+{
+  "case": "liquid-falling-push",
+  "version": "1.26.51.01",
+  "goal": "补充 2x2 水体邻接对照：确认水材质不算实心面",
+  "environment": "",
+  "current_round": 4,
+  "status": "closed",
+  "created_at": "2026-10-28T08:53:10Z",
+  "updated_at": "2026-10-28T09:12:37Z"
+}

@@ -181,20 +181,24 @@ class InputCommands(PipeConnection):
     ) -> dict[str, Any]:
         """Configure synthetic input routing.
 
-        ``jump_impulse``: 1 = ``LocalPlayer::jumpFromGround`` (default, the
-        measured-correct takeoff), 3 = additionally ``setJumpPendingScale``.
-        Modes 0 (input pipeline only, three-tick ground stall then a ~0.99
-        block snap) and 2 (``setJumpPendingScale`` alone, no takeoff) are
-        rejected unless ``force=True``.
+        ``mode``: 0 = real Hardware HID key edges (default). Non-zero legacy
+        modes (direct flags / queue / handler callbacks / toggle fallback) are
+        diagnostics and require ``force=True``.
+        ``jump_impulse``: 0 = real Space key (default). Non-zero legacy direct
+        impulses require ``force=True``; they are not the normal movement path.
 
         The mod applies ``source``/``controller``/``focus`` on every call and
         resets the ones omitted to their defaults (-1/0/0).
         """
-        if jump_impulse is not None and jump_impulse not in (1, 3) and not force:
+        if mode is not None and mode != 0 and not force:
             raise ValueError(
-                f"jump_impulse={jump_impulse} 复现实测无法正常起跳的路径"
-                "（0 = 输入管线三拍橡皮筋；2 = setJumpPendingScale 单独不起跳）；"
-                "用 1（jumpFromGround）或 3，或 force=True 显式复现"
+                f"mode={mode} 是旧的直接标志/队列/回调路径；默认 mode=0 走真实 HID 按键，"
+                "复现旧路径请显式 force=True"
+            )
+        if jump_impulse is not None and jump_impulse != 0 and not force:
+            raise ValueError(
+                f"jump_impulse={jump_impulse} 是旧的直接跳跃冲量；默认 0 走真实 Space，"
+                "复现旧路径请显式 force=True"
             )
         message: dict[str, Any] = {"cmd": "input_cfg"}
         if source is not None:

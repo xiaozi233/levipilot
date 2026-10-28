@@ -583,7 +583,37 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
 与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **222/222**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 208/208。
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **220/220**。
+
+### 客户端 I/O（2026-10-28；离线）
+
+- `protocol.LineDecoder` 只扫描新收到的字节，每次 feed 完成后统一压缩缓冲，
+  移除逐行的额外 `bytes` 拷贝；UTF-8 替换、CRLF、空行及 pending 的行为不变。
+- `RecordingCommands.record` 用现有 `wait_event` 保留异步通知，避免将同一条延后事件
+  反复读回；移动发送或 sample 回调失败时 best-effort 发 stop 后保留原异常。
+  整次录制/分页共用 `exchange`，防止其他请求交错消费响应。
+- `record_dump_all` 按首个 head 限定后续分页大小；非空页游标不前进时抛
+  `ModProtocolError`（仍属 `ModPipeError`），空页终止，不无限追赶正在增长的 head。
+- `spool` 两个入口复用逐行解析；非法 dropped 计数、超长整数、坏 JSON 和过深 JSON
+  计入 bad_lines 并继续处理。基于已打开文件的 fstat 限定读取窗口，成功读取后才提交
+  offset/rotation；临时 I/O 失败保留状态供重试，轮转为空时清除 pending。
+  `read_spool(max_bytes=0)` 返回空，负数报 ValueError；poll 单次仍最多读取 4 MiB。
+- `py -3.11 driver/selftest.py --client-io-only`：**20/20**；此入口只跑本地回归夹具，
+  不连接游戏。全量离线单测 **220/220**，ruff lint/format、mypy（79 文件）全绿。
+  完整 live selftest 本轮未运行；没有构建/替换 mod 或执行逆向操作。
+
+解码微基准：Windows / Python 3.11.9，对比提交 `27cb2d3`，9 轮中位数；随机种子
+20261028 的 1000 组字节流输出与 pending 全部一致。以下仅表示 Python 解码吞吐，
+不代表游戏 tick 性能提升。
+
+| 输入 | 改前 | 改后 | 吞吐倍率 |
+| --- | ---: | ---: | ---: |
+| 1 MiB 长行，256 B 分片 | 52.091 ms | 2.003 ms | 26.00x |
+| 20,000 行，一批输入 | 10.476 ms | 7.782 ms | 1.35x |
+| 20,000 行，4 KiB 分片 | 10.406 ms | 7.951 ms | 1.31x |
+
+本地基准脚本与日志：`out/bench-client-io.py`、`out/optimization-client-io-bench.log`
+（忽略的运行产物）；可复现的功能边界已保留在上述 selftest 入口和 tests 中。
 
 ### 实验辅助（`driver/harness/lab.py`）
 

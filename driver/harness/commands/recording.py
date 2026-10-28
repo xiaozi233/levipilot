@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..connection import PipeConnection
-from ..errors import ModPipeError
+from ..errors import ModProtocolError
 from ..record import RecordEntry, decode_dump
 
 
@@ -60,14 +60,20 @@ class RecordingCommands(PipeConnection):
         entries: list[RecordEntry] = []
         stop_at: int | None = None
         cursor = since
-        while True:
-            message = self.record_dump(cursor, limit=chunk, format=format, timeout=timeout)
-            entries.extend(decode_dump(message))
-            cursor = int(message.get("next", cursor))
-            if stop_at is None:
-                stop_at = int(message.get("head", cursor))
-            if cursor >= stop_at or int(message.get("count", 0)) == 0:
-                break
+        with self.exchange():
+            while True:
+                limit = chunk if stop_at is None else min(chunk, stop_at - cursor)
+                message = self.record_dump(cursor, limit=limit, format=format, timeout=timeout)
+                batch = decode_dump(message)
+                next_cursor = int(message.get("next", cursor))
+                if batch and next_cursor <= cursor:
+                    raise ModProtocolError("record_dump cursor did not advance")
+                entries.extend(batch)
+                cursor = next_cursor
+                if stop_at is None:
+                    stop_at = int(message.get("head", cursor))
+                if cursor >= stop_at or not batch:
+                    break
         return entries
 
     def record(
@@ -78,40 +84,34 @@ class RecordingCommands(PipeConnection):
         move_strafe: float = 0.0,
         move_ticks: int = 0,
     ) -> list[dict[str, Any]]:
-        self.start(max_ticks)
-        if move_ticks:
-            self.send(
-                {
-                    "cmd": "move",
-                    "forward": move_forward,
-                    "strafe": move_strafe,
-                    "ticks": move_ticks,
-                }
-            )
         samples: list[dict[str, Any]] = []
-        try:
-            while True:
-                message = self.readline()
-                event = message.get("event")
-                if event == "error":
-                    raise ModPipeError(str(message.get("reason", message)))
-                if event in {"moving", "stopping"}:
-                    continue
-                if event == "tick":
-                    samples.append(message)
-                    if on_sample is not None:
-                        on_sample(message)
-                elif event == "stopped":
-                    break
-                else:
-                    # Unrelated async events (watch hits, packet taps, ...) stay
-                    # available to later readline/wait calls instead of being
-                    # silently consumed here.
-                    self._defer(message)
-        except BaseException:
-            # Leaving the mod recording (max_ticks=0 is unbounded) would poison
-            # every later experiment on this connection.
-            with contextlib.suppress(Exception):
-                self.send({"cmd": "stop"})
-            raise
+        with self.exchange():
+            self.start(max_ticks)
+            try:
+                if move_ticks:
+                    self.send(
+                        {
+                            "cmd": "move",
+                            "forward": move_forward,
+                            "strafe": move_strafe,
+                            "ticks": move_ticks,
+                        }
+                    )
+                while True:
+                    # wait_event preserves unrelated notifications without
+                    # immediately rereading the same deferred notification.
+                    message = self.wait_event(("tick", "stopped", "moving", "stopping"))
+                    event = message.get("event")
+                    if event == "tick":
+                        samples.append(message)
+                        if on_sample is not None:
+                            on_sample(message)
+                    elif event == "stopped":
+                        break
+            except BaseException:
+                # Leaving the mod recording (max_ticks=0 is unbounded) would
+                # poison every later workflow on this connection.
+                with contextlib.suppress(Exception):
+                    self.send({"cmd": "stop"})
+                raise
         return samples

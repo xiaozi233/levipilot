@@ -63,26 +63,31 @@ kernel32.PeekNamedPipe.restype = wintypes.BOOL
 class LineDecoder:
     """Incrementally split a byte stream into newline-terminated lines."""
 
-    __slots__ = ("_buffer",)
+    __slots__ = ("_buffer", "_scan_from")
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+        self._scan_from = 0
 
     def feed(self, chunk: bytes) -> list[str]:
         if not chunk:
             return []
         self._buffer.extend(chunk)
         lines: list[str] = []
+        start = 0
         while True:
-            index = self._buffer.find(b"\n")
+            # Bytes retained from the previous feed contain no newline.
+            index = self._buffer.find(b"\n", self._scan_from)
             if index < 0:
                 break
-            raw = bytes(self._buffer[:index])
-            del self._buffer[: index + 1]
-            if raw.endswith(b"\r"):
-                raw = raw[:-1]
-            if raw:
-                lines.append(raw.decode("utf-8", errors="replace"))
+            end = index - 1 if index > start and self._buffer[index - 1] == 13 else index
+            if end > start:
+                lines.append(self._buffer[start:end].decode("utf-8", errors="replace"))
+            start = self._scan_from = index + 1
+        # Compact once per chunk, rather than once per decoded line.
+        if start:
+            del self._buffer[:start]
+        self._scan_from = len(self._buffer)
         return lines
 
     def pending(self) -> bytes:

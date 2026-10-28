@@ -427,3 +427,25 @@ screen 栈，约 10 秒后（tick 147–192）在 UI 回调里空指针崩溃。
 - 一次自检在关闭背包时按 Esc 后世界进入暂停菜单，排队命令 20 s 超时；这是已知的
   “暂停菜单不响应注入按键”限制，重启并聚焦后同一 DLL 复跑 **209/209**。该失败与
   本次拆分无关（封包相关检查在失败前已全部通过），未通过放宽断言规避。
+
+## 2026-10-28 客户端 I/O 小幅优化与加固
+
+基于 `27cb2d3`，保留现有 command mixin / PipeConnection / 协议 4 的分层，
+没有调整 C++、HID 默认输入、线程模型或 wire 字段。本轮只处理 Python 消费侧：
+
+1. 优先修复录制循环：异步通知 defer 后被立即重读会卡住；非空分页游标不前进会无限请求。
+   先补可终止的失败回归，再复用 `wait_event` 与 `exchange`；分页固定首个 head，异常时停录。
+2. spool 统一解析，隔离坏计数/坏 JSON；打开文件后获取大小并限制读取窗口，
+   临时 I/O 失败不推进游标，轮转为空时清空残留诊断。
+3. JSONL 解码保存扫描位置、每批只压缩一次，避免碎片长行的重复扫描及逐行额外拷贝。
+
+验证：改前全量离线单测 **208/208**；改后 **220/220**（新增 12 项），
+ruff lint/format、mypy（79 文件）、`git diff --check` 通过。
+`py -3.11 driver/selftest.py --client-io-only` **20/20**；只使用本地夹具，不连接游戏。
+对比旧解码器的 1000 组随机分片字节流结果一致；本机 9 轮中位数微基准中，
+1 MiB/256 B 分片约 26.00x，普通 4 KiB 分片流约 1.31x；详细输入与耗时见
+`mod-internals.md` 的“客户端 I/O”。这些数字只衡量 Python 解码，不表示游戏帧率提升。
+
+验收日志：`out/optimization-baseline-tests.log`、`out/optimization-final-tests.log`、
+`out/optimization-client-io-bench.log`（忽略的本地产物）。没有执行逆向操作、IDA 或
+完整 live selftest，也没有安装/重启游戏。既有现场 222/222 基线未在本轮重验。

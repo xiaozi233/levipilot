@@ -188,7 +188,12 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 ## 实测（1.26.51.01 创作存档）
 
 当前基线：live selftest **222/222**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 208/208。常用实测数字：
+`allow_selftest_stress`）、离线单测 **220/220**。常用实测数字：
+
+2026-10-28 客户端 I/O 验收：`py -3.11 driver/selftest.py --client-io-only`
+离线检查 **20/20**，覆盖分片解码、录制事件保留/分页终止、spool 损坏行与临时 I/O 失败。
+该模式不连接游戏、不注入输入；本轮没有重跑完整 live selftest，222/222 是既有现场基线。
+解码微基准与具体边界见 [`../docs/mod-internals.md`](../docs/mod-internals.md#客户端-io2026-10-28离线)。
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），

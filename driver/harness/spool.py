@@ -13,6 +13,8 @@ tail. This module reads that file incrementally:
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,39 @@ class SpoolStats:
     rotations: int = 0
     offset: int = 0
     pending: str = ""
+
+
+def _parse_lines(lines: Iterable[bytes], stats: SpoolStats) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in lines:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            # json.loads also raises ValueError for oversized integer tokens.
+            stats.bad_lines += 1
+            continue
+        if not isinstance(event, dict):
+            stats.bad_lines += 1
+            continue
+        if event.get("event") == "queue_dropped":
+            count = event.get("count", stats.dropped)
+            try:
+                if isinstance(count, bool) or not isinstance(count, (int, str)):
+                    raise ValueError("count must be an integer")
+                dropped = int(count)
+                if dropped < 0:
+                    raise ValueError("count must be nonnegative")
+            except ValueError:
+                stats.bad_lines += 1
+                continue
+            stats.dropped = dropped
+            continue
+        rows.append(event)
+    stats.rows += len(rows)
+    return rows
 
 
 @dataclass
@@ -43,23 +78,25 @@ class SpoolReader:
 
     def poll(self) -> list[dict[str, Any]]:
         try:
-            size = self.path.stat().st_size
+            with self.path.open("rb") as handle:
+                # Inspect the opened file, not a path which may be rotated
+                # between stat() and open(). Commit state only after read().
+                size = os.fstat(handle.fileno()).st_size
+                rotated = size < self.stats.offset
+                offset = 0 if rotated else self.stats.offset
+                handle.seek(offset)
+                chunk = handle.read(min(4 << 20, size - offset))
         except OSError:
             return []
-        if size < self.stats.offset:
+        if rotated:
             # The file was recreated (new pid or truncated): read it from the
             # start and count the rotation for diagnostics.
-            self.stats.offset = 0
             self.stats.rotations += 1
             self._pending = b""
-        if size == self.stats.offset:
+            self.stats.pending = ""
+        self.stats.offset = offset + len(chunk)
+        if not chunk:
             return []
-
-        # Bounded read so one poll after a long pause cannot balloon memory.
-        with self.path.open("rb") as handle:
-            handle.seek(self.stats.offset)
-            chunk = handle.read(4 << 20)
-        self.stats.offset += len(chunk)
 
         # Split on bytes and decode only complete lines: a multi-byte UTF-8
         # character split across poll boundaries stays intact for the next
@@ -67,29 +104,8 @@ class SpoolReader:
         parts = (self._pending + chunk).split(b"\n")
         partial_bytes = parts.pop()
         self._pending = partial_bytes
-        partial = partial_bytes.decode("utf-8", errors="replace")
-        self.stats.pending = partial
-        lines = [part.decode("utf-8", errors="replace") for part in parts]
-
-        rows: list[dict[str, Any]] = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                self.stats.bad_lines += 1
-                continue
-            if not isinstance(event, dict):
-                self.stats.bad_lines += 1
-                continue
-            if event.get("event") == "queue_dropped":
-                self.stats.dropped = int(event.get("count", self.stats.dropped))
-                continue
-            rows.append(event)
-        self.stats.rows += len(rows)
-        return rows
+        self.stats.pending = partial_bytes.decode("utf-8", errors="replace")
+        return _parse_lines(parts, self.stats)
 
 
 def read_spool(
@@ -100,44 +116,23 @@ def read_spool(
     Large files are read from a bounded tail so a long recording session does
     not have to fit in RAM. ``max_bytes=None`` reads everything.
     """
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes must be nonnegative or None")
     target = Path(path)
     stats = SpoolStats()
     try:
-        size = target.stat().st_size
-    except OSError:
-        return [], stats
-    offset = 0
-    if max_bytes is not None and size > max_bytes:
-        offset = size - max_bytes
-    try:
         with target.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            offset = max(0, size - max_bytes) if max_bytes is not None else 0
             handle.seek(offset)
-            data = handle.read()
+            data = handle.read(size - offset)
     except OSError:
         return [], stats
     if offset:
         boundary = data.find(b"\n")
         data = data[boundary + 1 :] if boundary >= 0 else b""
 
-    rows: list[dict[str, Any]] = []
-    for line in data.decode("utf-8", errors="replace").split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            stats.bad_lines += 1
-            continue
-        if not isinstance(event, dict):
-            stats.bad_lines += 1
-            continue
-        if event.get("event") == "queue_dropped":
-            stats.dropped = int(event.get("count", stats.dropped))
-            continue
-        stats.rows += 1
-        rows.append(event)
-    return rows, stats
+    return _parse_lines(data.split(b"\n"), stats), stats
 
 
 __all__ = ["SpoolReader", "SpoolStats", "read_spool"]

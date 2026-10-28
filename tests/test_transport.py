@@ -52,6 +52,28 @@ class LineDecoderTests(unittest.TestCase):
         decoder = LineDecoder()
         self.assertEqual(decoder.feed(b"\n\r\n"), [])
 
+    def test_many_lines_and_partial_tail_across_chunk_sizes(self) -> None:
+        payload = b"\n\r\n" + ("中文\r\n".encode() + b"bad:\xff\n") * 100 + b"tail\r"
+        expected = ["中文", "bad:\ufffd"] * 100
+        for size in (1, 2, 7, 64, len(payload)):
+            with self.subTest(chunk=size):
+                decoder = LineDecoder()
+                actual = []
+                for offset in range(0, len(payload), size):
+                    actual.extend(decoder.feed(payload[offset : offset + size]))
+                self.assertEqual(actual, expected)
+                self.assertEqual(decoder.pending(), b"tail\r")
+                self.assertEqual(decoder.feed(b""), [])
+                self.assertEqual(decoder.feed(b"\nnext\n"), ["tail", "next"])
+
+    def test_long_fragmented_line_then_more_lines(self) -> None:
+        decoder = LineDecoder()
+        fragment = b"x" * 1024
+        for _ in range(256):
+            self.assertEqual(decoder.feed(fragment), [])
+        self.assertEqual(decoder.feed(b"\nlast\n"), ["x" * (256 * 1024), "last"])
+        self.assertEqual(decoder.pending(), b"")
+
 
 class CompatibilityTests(unittest.TestCase):
     def test_legacy_exports_keep_the_same_objects(self) -> None:

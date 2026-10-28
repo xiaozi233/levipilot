@@ -1,8 +1,9 @@
-"""Live smoke test for the probe mod. Requires the game in a world.
+"""Probe smoke tests. The default live suite requires the game in a world.
 
     py -3.11 driver/selftest.py
     py -3.11 driver/selftest.py --keep          # keep the test entity
     py -3.11 driver/selftest.py --entity minecraft:cow
+    py -3.11 driver/selftest.py --client-io-only  # offline; never connects to the game
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -673,11 +674,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--entity", default="minecraft:pig")
     parser.add_argument("--keep", action="store_true", help="do not remove the test entity")
     parser.add_argument("--radius", type=float, default=10.0)
+    parser.add_argument(
+        "--client-io-only",
+        action="store_true",
+        help="run offline decoder/recording/spool regressions without connecting to the game",
+    )
     parser.add_argument("--stress-cycles", type=int, default=0, help="opt-in lifecycle soak cycles")
     parser.add_argument(
         "--stress-world", help="leave/re-enter this test world every 10 soak cycles"
     )
     args = parser.parse_args(argv)
+    if args.client_io_only:
+        # Reuse the bounded regression fixtures; no game commands, input or
+        # live diagnostics are needed to verify these client-side workflows.
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests.test_transport.LineDecoderTests",
+                "tests.test_recording_commands",
+                "tests.test_spool",
+                "-v",
+            ],
+            cwd=ROOT,
+            check=False,
+        ).returncode
     if args.stress_cycles < 0 or (args.stress_world and args.stress_cycles < 10):
         parser.error(
             "--stress-cycles must be nonnegative; --stress-world requires at least 10 cycles"

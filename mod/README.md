@@ -294,7 +294,7 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   `jump_impulse`、`mode` 等直接标志/冲量只在 `input_cfg force=true` 下用于复现旧测量，
   正常脚本不要改。
 - 只支持 **1.26.51.01** 的实测结论；换版本按 [`docs/porting.md`](../docs/porting.md)
-  走 profile 流程，不要直接套 1.26.45 的偏移。
+  走 profile 流程，不要直接套旧版本的偏移。
 - 版本数据（锚点签名、结构偏移、组件 id）只存在于 `docs/offsets/*.json` 和生成出来的
   `GeneratedProfiles.h`；`.cpp` 里不允许再写死。改了 JSON 必须跑
   `py -3.11 driver/gen_profiles.py`，否则 `tests/test_profiles.py` 会挂。

@@ -377,7 +377,7 @@
   [`porting.md`](porting.md)。
 - `diagnose` 输出每个锚点的地址、resolved 地址、配置状态、匹配结果和耗时；
   `signature_check {name,expected_hex}` 用来验证负路径（传错签名应回 `match=false`）。
-- `docs/offsets/1.26.45.01.json` 没有 `runtime` 标记，是历史数据，不参与生成。
+- 只有带 `"runtime": true` 的 profile 参与生成；旧 schema 的历史数据没有这个标记，会被跳过。
 
 ## 封包解码注册表（H4）
 

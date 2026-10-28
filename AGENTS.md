@@ -9,9 +9,6 @@
 一个 C++ mod（`mod/probe/`）+ 命名管道 `\\.\pipe\mcbe-harness` 的 UTF-8 JSONL 协议 +
 Python 客户端（`driver/harness/`）。目标是让脚本/LLM 读状态、控玩家、跑逐 tick 实验。
 
-`legacy/frida` 分支是旧的 frida 路线（1.26.45.01），**主分支只有文档** `docs/legacy-frida-1.26.45.md`；
-不要把它当现行实现，但它的「运行时结论」和「采样口径」仍然是有效知识。
-
 ## 常用命令
 
 ```bash
@@ -32,7 +29,7 @@ py -3.11 driver/selftest.py
 py -3.11 driver/landing.py begin --case <slug> --goal "..."
 ```
 
-`py -3.11` 是硬要求（frida 时代的教训：默认解释器可能没有依赖）。
+`py -3.11` 是硬要求（默认解释器可能没有依赖）。
 
 ## 目录地图
 
@@ -150,8 +147,8 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
   −0.0784。`state`/`record` 的 `vx/vy/vz` 来自 `Actor::getVelocity()`，等于下一 tick 的位移
   （液体里与 Δy 1:1），不要再乘 0.546；判速度仍以相邻 tick 位置差为准。
 - `pos.y` 是**脚部**；StateVector 里是眼睛（脚部 + 1.6200101）。
-- 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（旧 frida 路线实测置 0 后
-  后台仍满速 tick）；raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
+- 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（置 0 后后台仍满速 tick）；
+  raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
 - `harness.json` 的 `auto_enter` 要求游戏在**前台**（后台进世界会触发鼠标捕获）。
 - 脚本运行会锁真实输入：`input_lock {on}`（配置 `lock_input` / `dev.py --lock-input`；selftest 自动上锁）
   丢弃硬件来源键鼠与转向；注入照常，但 `key_event` 的 `via` 决定是否过锁——
@@ -176,8 +173,8 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
   原始投递次数看 `packet_stats.recv_anchors`。
 - 改 `docs/offsets/*.json` 后必须跑 `py -3.11 driver/gen_profiles.py`；`GeneratedProfiles.h`
   是提交物，`tests/test_profiles.py` 会比对，忘了生成 CI 直接红。
-- `docs/offsets/1.26.45.01.json` 是旧 schema（绝对 VA），没有 `"runtime": true`，
-  生成器会跳过；不要把它改成 runtime。
+- 只有带 `"runtime": true` 的 profile 才参与生成；旧 schema（绝对 VA）没有这个标记，
+  生成器会跳过。
 - `allow_version_mismatch` 只是移植开关：没有 profile 校验，偏移可能读错；日常配置保持关闭。
 - 硬件观察点只记录**装过 DR 的线程**；其他线程上的 DR6 事件计入 `watch_list.foreign_hits`。
   旧线程遗留的 DR 曾导致服务端线程被误记为写 tick 变量。

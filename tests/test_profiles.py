@@ -22,11 +22,6 @@ class GeneratedProfilesTests(unittest.TestCase):
             self.assertNotEqual(profile["version"], "")
             self.assertNotEqual(profile["build_id"], "")
 
-    def test_legacy_profile_is_not_runtime(self) -> None:
-        # docs/offsets/1.26.45.01.json is reference data with a different schema.
-        build_ids = {profile["build_id"] for profile in load_profiles()}
-        self.assertNotIn("1.26.45.1", build_ids)
-
     def test_current_version_profile_matches_the_game_build(self) -> None:
         profiles = {profile["build_id"]: profile for profile in load_profiles()}
         profile = profiles["1.26.51.1"]

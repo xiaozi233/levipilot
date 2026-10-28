@@ -99,7 +99,6 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 证据册与历轮任务提示词（已并入仓库）：[`docs/notes/`](docs/notes/)
 - 单一逆向 + 实验 skill（静态优先、版本角色、逐轮落盘、建场/录制/输入坑）：[`skills/bedrock-re/`](skills/bedrock-re/)
 - UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
-- 旧 frida 路线（1.26.45.01，历史资料；代码在 `legacy/frida` 分支）：[`docs/legacy-frida-1.26.45.md`](docs/legacy-frida-1.26.45.md)
 - IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
 - Agent 常驻约定（硬约束 / 已知坑 / 当前优先级）：[`AGENTS.md`](AGENTS.md)
 - 文档索引：[`docs/README.md`](docs/README.md)

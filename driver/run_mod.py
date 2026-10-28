@@ -1,7 +1,7 @@
 """Run the scenario DSL against the in-game LeviLamina probe mod.
 
-This is the mod-transport counterpart of ``driver/run.py`` (which drives the
-retired frida agent). Scenarios, the runner and the JSONL/summary writer are
+This is the mod-transport counterpart of ``driver/run.py`` (which drove the
+retired agent). Scenarios, the runner and the JSONL/summary writer are
 shared; only the transport differs.
 
 Usage::

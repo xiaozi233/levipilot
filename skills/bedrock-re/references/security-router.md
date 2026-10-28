@@ -17,7 +17,7 @@
 1. 读 `<root>\skills\SKILL.md`（路由入口），再读 `<root>\skills\routing.md` 选子技能；
 2. 执行 `<root>\skills\<name>\SKILL.md` 的流程与脚本；
 3. 工具索引在 `<root>\skills\tool-index.md` / `tool-index.json`；
-   缺 jadx、radare2、Ghidra、frida 等工具时按子技能说明按需 bootstrap，
+   缺 jadx、radare2、Ghidra 等工具时按子技能说明按需 bootstrap，
    大下载先确认；
 4. 只做**授权目标**：自有系统、CTF 靶场、明确授权的委托。越界请求直接拒绝。
 

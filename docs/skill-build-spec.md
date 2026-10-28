@@ -51,7 +51,7 @@
 - **不替代 `AGENTS.md`**。编码规范、加命令的标准步骤、构建流程仍以 `AGENTS.md` 为准，skill 引用而不复制。
 - **不复制 `docs/` 已有内容**。`architecture.md`、`mod-internals.md`、`porting.md`、`scenario-dsl.md` 已存在，skill 只写到它们的指针。
 - **不重造版本机制**。`docs/offsets/<version>.json` + `driver/gen_profiles.py` + `GeneratedProfiles.h` 已经是单一事实源，见 `AGENTS.md` 硬约束第 6 条。
-- **不把旧 1.26.45.01 的 1848 个地址搬进来**。旧版结论只作为"历史对照"，按版本目录冻结，不参与新版本解析。
+- **不把旧版本地址表搬进来**。旧结论只作为"历史对照"，不参与新版本解析。
 - **不新增 skill 副本**。`~/.agents/skills/<name>/` 必须是指向仓库内实体的链接或一行指针文件，不能是第二份正文。
 
 ---
@@ -376,8 +376,8 @@ skills/bedrock-re/                 # 仓库内唯一实体
 
 1. **脱敏 + 冻结旧版**：先跑 `checks/lint_public.py`。旧 `known-facts.md` 含本机用户目录的
    绝对路径（实测 1 处），用户级指针 `SKILL.md` 也含绝对环境路径；**仓库是公开的**，
-   这些一律删改成 `%APPDATA%`、`%USERPROFILE%` 或相对路径；然后才把 `known-facts.md` 按版本归档为
-   `findings/1.26.45.01/`（只读），不再编辑。
+   这些一律删改成 `%APPDATA%`、`%USERPROFILE%` 或相对路径；旧版结论按版本归档（只读），
+   不再编辑。
 2. **拆层**：脚本按正则把旧文件分成「含地址/常量」「含手法/陷阱」「其他」三堆；前两堆人工复核后分别进 L3 与 L1。
 3. **建 roles**：只解析当前最常用的 10–15 个角色，跑通链路；其余留 `unresolved`，按需补。
 4. **建落盘**：`landing.py` 六命令（begin/probe/claim/end/close/abandon）+ journal schema + 强制门。
@@ -396,8 +396,8 @@ skills/bedrock-re/                 # 仓库内唯一实体
 - [ ] `methods.md` 中 `grep -c '0x1[45][0-9A-Fa-f]\{7\}'` 为 0
 - [ ] 所有 `@role` 引用都能在 `docs/roles/<ver>.json` 找到，或落在 `unresolved` 列表
 - [ ] `docs/roles/<ver>.json` 与 `docs/offsets/<ver>.json` 版本一致；`unresolved` 不含猜测地址
-- [ ] 换版本模拟：用只读 fixture（旧 schema 的 `docs/offsets/1.26.45.01.json` 或
-      `tests/fixtures/` 副本）重跑，`methods.md` 的 `git diff` 为空；不修改 live profile
+- [ ] 换版本模拟：用只读 fixture（`tests/fixtures/` 的旧 schema 副本）重跑，
+      `methods.md` 的 `git diff` 为空；不修改 live profile
 - [ ] 任取一轮：`journal.jsonl` 有记录、`probes/` 有 `.cmd`/`.py` 与 `.out`、`resume.md` 已更新
 - [ ] 每条 `confirmed` 的 `evidence_tier ∈ {code, constant}` 且 `static_closure` 非空
 - [ ] 顺序类结论附静态顺序证据（注册顺序/写点/调用图），否则为 `inconclusive`
@@ -435,10 +435,6 @@ skills/bedrock-re/                 # 仓库内唯一实体
 | `docs/offsets/<ver>.json` + `gen_profiles.py` | 视为 L2 的既有实现，扩展而非替代 |
 | `skills/bedrock-re/references/experiments.md` | 实验操作手册已并入本 skill；不再单列 |
 | `docs/scenario-dsl.md` | 引用为事件账本格式的权威 |
-| `docs/legacy-frida-1.26.45.md` | 归档为历史路径，不作为现行方法 |
-| `docs/offsets-1.26.45.01.md` | 冻结进旧版本 findings，不参与新版本解析 |
-| 旧 `known-facts.md`（1,848 地址） | 只作为旧版本冻结事实；方法论段落拆出后原文归档 |
-| 旧 `techniques.md`（31 个编号手法） | 拆入 `methods.md`，去掉地址后按角色重写 |
 
 ---
 

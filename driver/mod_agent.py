@@ -3,7 +3,7 @@
 ``driver.runner`` only needs a duck-typed agent (``call`` + ``wait_ticks``).
 This module implements that interface on top of the named pipe transport, so
 the existing scenarios (``scenarios/*.json``) and the JSONL/summary writer can
-run against the LeviLamina mod instead of the retired frida agent.
+run against the LeviLamina mod instead of the retired agent.
 
 Example::
 
@@ -242,7 +242,7 @@ class ModAgent:
         sprint: bool,
     ) -> dict[str, Any]:
         # The scenario runner pre-scales sneak input to 0.3 because the old
-        # frida agent wrote the input vector directly. The game itself applies
+        # agent wrote the input vector directly. The game itself applies
         # the sneak multiplier based on the sneaking flag, so undo that scale
         # here to avoid a 0.09x walk.
         if sneak and self._move_flags == "sneak":

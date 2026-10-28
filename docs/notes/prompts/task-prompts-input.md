@@ -104,7 +104,7 @@ harness.json 增加 allow_input_inject（默认 false）；tests/ 与 selftest �
 ```text
 目标：用三组输入方式跑同一段直线，判定疾跑 1.3× 的差异在「输入事件层」还是「服务端/请求层」。
 
-背景：旧 frida 路线遗留未解项——真按 ctrl+w 得 0.2805 格/tick（×1.3），
+背景：旧路线遗留未解项——真按 ctrl+w 得 0.2805 格/tick（×1.3），
 只注入 sprint 标志位仍是走路速度 0.2158。已排除 ADF 各位、MoveInput 偏移、
 PlayerInputRequest 前 2KB 与全部 ECS 组件。现在有 G1/G2 与 record，可以做成对照实验。
 

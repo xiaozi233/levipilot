@@ -163,7 +163,7 @@ panic 恰恰是用在"出事之前"，这里不落盘等于最需要证据的时
 - Resolve 暴露 structOffset("Block","mLegacyBlock") / ("BlockLegacy","mBlockId") 之类查询，
   以及 componentSize(id) / componentName(id)；查不到回明确错误，不要回默认 0 去猜。
 - Memory.cpp 的 probe 全部改走查询；缺表项时回 {"event":"error","reason":"no_offset","field":"..."}。
-- 把 1.26.45.01 的 structs 填全（本轮实测值）：
+- 把旧版本的 structs 填全（本轮实测值）：
   Block.mLegacyBlock=0x68；BlockLegacy.mName=0xE0（哈希）、mNameText=0xE8、mBlockId=0x17E（u16）、
   mFriction=0x15C、mFrictionGeneric=0x178。components 先把已知的气泡柱条目与 StateVector 填上。
 - diagnose 里列出"已从表读取的字段数 / 缺表字段"。

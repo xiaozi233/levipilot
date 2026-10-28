@@ -58,8 +58,8 @@ def load_profiles(directory: Path = PROFILE_DIR) -> list[dict[str, Any]]:
             # Not a runtime profile (notes, partial data); skip it.
             continue
         if data.get("runtime") is not True:
-            # Historical reference files (e.g. the frida-era 1.26.45.01 dump)
-            # use a different schema and must never be loaded at runtime.
+            # Historical reference files use a different schema and must
+            # never be loaded at runtime.
             continue
         if build_id in seen:
             raise ProfileError(f"{path.name}: duplicate build_id {build_id!r}")

@@ -50,7 +50,6 @@ await app.getScreenshot();     // 官方截图会自己显示
 - Minecraft 不暴露无障碍元素（`getAXState` 只有 7 个窗口边框），只能按坐标。
 - 官方路径报 `Computer Use is unavailable for this node_repl session` 时，说明本会话的
   node-repl 宿主没拿到 CUA 权限代理（长寿命进程，补不上）→ 重启 ZCode 后重新 bootstrap。
-- 离线兜底脚本 `driver/bringup.py` 在 `legacy/frida` 分支；日常 UI 操作不要用它。
 - CUA 的合成点击在后台只产生鼠标移动事件；录制真实按键需要窗口在前台并使用 raw 输入。
 
 ## 另见

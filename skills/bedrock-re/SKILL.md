@@ -108,5 +108,5 @@ py -3.11 skills/bedrock-re/roles/resolve.py --version 1.26.51.01 --check
 ## 6. 旧入口
 
 旧的 `bedrock-client-re`、`reverse-security`、`mcbe-harness-experiments` 已折叠到本 skill：
-用户级/工作区的同名指针只指向这里；旧的 1.26.45.01 事实库按版本冻结，不参与新版本解析。
+用户级/工作区的同名指针只指向这里。
 新机器/新克隆的目录联接步骤见 [`README.md`](README.md)。

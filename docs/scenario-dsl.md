@@ -8,9 +8,6 @@ py -3.11 driver/run_mod.py --scenario scenarios/setup-platform.json   # 先铺 6
 py -3.11 driver/run_mod.py --scenario scenarios/example.json          # 再跑实验
 ```
 
-旧 frida 路线的 `driver/run.py` 在 `legacy/frida` 分支，见
-[`legacy-frida-1.26.45.md`](legacy-frida-1.26.45.md)。
-
 ## 示例
 
 ```json
@@ -39,7 +36,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json          # 再跑�
 | --- | --- | --- |
 | `tp` | `pos`, `settle_ticks` | 服务端权威传送，坐标是**脚部**；`mode` 仅为兼容旧 DSL 接受，mod 始终走服务端 |
 | `look` | `yaw`, `pitch`, `mode` (`command`/`memory`), `settle_ticks` | 有命令通道时默认 `command`（`tp @s ~ ~ ~ yaw pitch`）；`memory` 只改客户端朝向 |
-| `vel` | `v:[x,y,z]` | 旧 frida 能力；mod agent 会跳过并给 warning |
+| `vel` | `v:[x,y,z]` | 兼容旧 DSL 接受；mod agent 会跳过并给 warning（不能直写速度） |
 | `input` | `world:[dx,dz]` 或 `forward`/`strafe`，`jump`/`sneak`/`sprint`，`mode:"sneak"`，`ticks` | 推荐 `world`；`sneak` 会自动处理原版 0.3 倍速 |
 | `jump` | `ticks` | 单次起跳请求 |
 | `wait` | `ticks` | 只等待 |

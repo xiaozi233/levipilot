@@ -3,7 +3,7 @@
 > 用途：把「补能力」拆成可逐条派给 agent 的独立任务。每条提示词自带背景、范围、实现要点与验收，
 > 派活时只需在开头粘上本文的 **公共前置**，再把对应任务整块粘过去。
 > 生成依据：对当前实现的代码级review（`mod/probe/src/mod/*`、`driver/harness/*`、`docs/*`），
-> 重点是「纯 frida 路线踩过的坑」在 mod 路线上的映射与残余缺口。
+> 重点是「旧路线踩过的坑」在 mod 路线上的映射与残余缺口。
 
 ## 0. 分工判据（什么该进 mod）
 
@@ -42,19 +42,19 @@
 - 错误一律变成事件（internal_error 等），不能让异常穿过游戏 tick；新增命令要加 tests/ 里的无游戏单测，
   并在 driver/selftest.py 加一条需要游戏的检查。
 - 协议只做增量变更：hello 的 protocol 号升到 4 时，旧字段必须继续可用；未知命令仍回 error/unknown_cmd。
-- 禁止把 1.26.45.01 的硬编码 VA 写进代码；锚点一律走符号或签名解析（见 T7）。
+- 禁止把旧版本的硬编码 VA 写进代码；锚点一律走符号或签名解析（见 T7）。
 ```
 
 ---
 
-## T1（P0）崩溃取证 + tick 数据落盘 —— 修掉目前唯一「比 frida 更差」的地方
+## T1（P0）崩溃取证 + tick 数据落盘 —— 修掉目前唯一「比旧路线更差」的地方
 
 ```text
 目标：让 tick/事件记录在游戏崩溃时不丢；崩溃时留下可诊断的现场。当前最高优先级。
 
 背景（为什么）：tick 记录只存在内存 std::deque<std::string>（ProbeMod.h 的 mQueue，上限 20000，
 超出丢最旧，计数在 status.queue_dropped），管道线程只有客户端连上才排空，且 Transport.cpp 的
-连接处理会清空队列。后果：跑长实验时游戏一崩，全部记录消失。旧 frida 路线是脚本内持续
+连接处理会清空队列。后果：跑长实验时游戏一崩，全部记录消失。旧路线是脚本内持续
 File.write+flush，进程死后 3.5 万行记录仍完整 —— 这个能力现在退化了。
 
 范围：Transport.cpp（队列与写入）、ProbeMod.cpp 的 safeTickPost 记录块与 enable/disable、
@@ -86,7 +86,7 @@ Commands.cpp 的 dispatchLine 外层、mod 初始化处。
 
 ```text
 目标：让 harness 能读活对象（Block* / BlockLegacy* / 组件原始字节 / 任意地址），
-补上旧 frida 分支 blockAt / inspect 那部分能力（主线已删）。这是所有逆向类功能的地基。
+补上旧分支 blockAt / inspect 那部分能力（主线已删）。这是所有逆向类功能的地基。
 
 背景：现在 mod/probe/src/mod 里连一个十六进制字面量都没有，blockName 只回字符串
 （Internal.cpp 里 source.getBlock(pos).getTypeName()），拿不到指针与哈希，
@@ -118,7 +118,7 @@ Commands.cpp 的 dispatchLine 外层、mod 初始化处。
 ## T3（P0）硬件观察点 watch —— 回答「谁写了这个字段」
 
 ```text
-目标：对任意地址设写观察点，命中时报告 rip / 线程 / 栈，替代 frida 缺失的
+目标：对任意地址设写观察点，命中时报告 rip / 线程 / 栈，替代旧路线缺失的
 Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反查」的迂回手法）。
 
 范围：新增 Watch.cpp/.hpp；与 T2 共用地址校验；事件走管道（建议配合 T4 的二进制环）。
@@ -197,7 +197,7 @@ Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反�
 ## T6（P1）ECS / registry 内省
 
 ```text
-目标：能枚举 registry、实体、组件与元素字节，补上旧 frida 的 inspect_registries。
+目标：能枚举 registry、实体、组件与元素字节，补上旧路线的 inspect_registries。
 
 范围：新增 Ecs.cpp/.hpp；命令 + client。
 
@@ -230,7 +230,7 @@ Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反�
    structs:{Block:{mLegacyBlock:0x68}, BlockLegacy:{mName:0xE0, mBlockId:0x17E, ...}},
    components:{...}}
 - 启动时按 anchors 解析，任一关键锚点失败 → enable 中止，hello 带 version_mismatch + 失败清单。
-- 支持至少 3 段字节签名校验（旧 frida 路线有 24 字节校验，思路照搬）。
+- 支持至少 3 段字节签名校验（旧路线有 24 字节校验，思路照搬）。
 - diagnose 输出每个锚点的解析方式与耗时；status 输出 build_id。
 
 不要做：不要把某版本的 VA 写死在 .cpp（包括注释里的「历史地址」也不要当常量用）。
@@ -238,7 +238,7 @@ Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反�
 验收：
 - 人为改 exe 一个签名字节 → mod 拒绝 enable 并指出哪个锚点不匹配；
 - 正常版本下 anchors 全部 resolved，status.build_id 与 exe 一致；
-- 把 1.26.45.01 的偏移表填进 docs/offsets/1.26.45.01.json（只作数据，不参与本次构建）。
+- 把旧版本的偏移表归档（只作数据，不参与本次构建）。
 ```
 
 ---
@@ -246,7 +246,7 @@ Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反�
 ## T8（P2）unhook_all / panic —— 出问题立刻卸钩，不杀游戏
 
 ```text
-目标：对位 frida 时代「杀驱动留僵尸会话、只能重启游戏」的痛点：能在进程内优雅停用内省。
+目标：对位旧桥接时代「杀驱动留僵尸会话、只能重启游戏」的痛点：能在进程内优雅停用内省。
 
 范围：ProbeMod 的 HookRegistrar 生命周期（现在是文件级 static，ProbeMod.cpp 末尾）、Commands.cpp。
 
@@ -293,4 +293,4 @@ Thread.setHardwareWatchpoint（旧路线因此只能靠「实测值→常量反�
    这既是安全边界，也是以后排查「到底是不是我在动内存」的唯一线索。
 2. **热路径只写定长数据**：任何可能在 tick 内高频执行的代码，只允许写预分配的定长结构；
    格式化、字符串、JSON、加锁一律放到管道线程或 Python 侧。
-   （纯 frida 路线曾因为 13 k/s 的 JS 回调让游戏进程退出；原生 detour 更便宜，但纪律必须提前立好。）
+   （旧桥接路线曾因为 13 k/s 的回调让游戏进程退出；原生 detour 更便宜，但纪律必须提前立好。）

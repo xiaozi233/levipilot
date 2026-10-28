@@ -26,9 +26,6 @@
 | 文档 | 说明 |
 | --- | --- |
 | [`refactoring.md`](refactoring.md) | 2026-10-23/24 结构重构、任务与会话重设计、世界进入崩溃修复的**决策与验收记录**；其中的通过数随时间过时，现行结构看 `architecture.md` 与 `mod-internals.md` |
-| [`legacy-frida-1.26.45.md`](legacy-frida-1.26.45.md) | 旧 frida 路线（1.26.45.01），只保留运行时结论和采样口径 |
-| [`offsets-1.26.45.01.md`](offsets-1.26.45.01.md) | 旧版本偏移/组件写回记录，不参与当前构建 |
-| [`offsets/1.26.45.01.json`](offsets/1.26.45.01.json) | 同上，JSON 形式 |
 
 ## 约定
 

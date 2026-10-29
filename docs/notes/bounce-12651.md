@@ -305,7 +305,15 @@ y_{k+1} = y_k − v_{k+1}
 ```
 
 落地那一 tick（`y_k − v_{k+1} ≤ 覆盖块顶`）的 `preY = y_k`、`δy = −v_{k+1}`，代进
-§3.2 的盒公式即可：
+§3.2 的盒公式即可。仓库里的可执行版本是 [`../../driver/bounce_predict.py`](../../driver/bounce_predict.py)：
+
+```bash
+py -3.11 driver/bounce_predict.py --layers 3 --drops 0.5,0.75,1.25,3.0
+py -3.11 driver/bounce_predict.py --table        # 各层覆盖的「不弹」落差
+py -3.11 driver/bounce_predict.py --validate     # 回放账本里的 60 行实测
+```
+
+核心两步（完整版含 picked/restitution 分支与 CLI）：
 
 ```python
 def predict(cover_top, drop, slime_top=-59.0, auto_step=0.5625):

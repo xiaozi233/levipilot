@@ -157,4 +157,4 @@ capstone 定位的处理器一致（8 参数签名）。**注意**：这套 MCP 
 改完的验收（2026-10-29，干净地面、`allow_input_inject` + `allow_selftest_stress`）：
 
 - live selftest **224/224**（新增 `h0_hook_mem`）；
-- 离线单测 **232/232**；`ruff check` / `ruff format --check` / `mypy` 全绿。
+- 离线单测 **238/238**；`ruff check` / `ruff format --check` / `mypy` 全绿。

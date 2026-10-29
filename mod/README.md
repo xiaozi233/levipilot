@@ -189,7 +189,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 当前基线：live selftest **224/224**（`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-29 在干净地面重跑，新增 `h0_hook_mem`）、
-离线单测 **232/232**。常用实测数字：
+离线单测 **238/238**。常用实测数字：
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步
 采参数指向的短命缓冲）；`ecs_components` 改为逐 storage 探测，坏条目进 `skipped`

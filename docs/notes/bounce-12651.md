@@ -145,6 +145,25 @@ ActorDataFlag(24)/VerticalCollisionFlag）。结构布局（在 resolver 入口�
   截获 std::function 对象里真正的 `operator()` 地址，再 decompile 它——而不是继续在
   system 注册簿记里往下钻。
 
+### 3.1 静态已确认的子系统身份（2026-10-29 追到）
+
+- vtable `off_14E8EBEB0` / `off_14E8EBEF0` 的末槽就是 std::function 的 `operator()`：
+  - `0x1448A4FD0`：每 tick 取 `BlockCollisionResolutionVectorComponent`（`0x2462ED53`），
+    调一次虚函数后 `end = begin` —— **碰撞列表每 tick 清空重建**。
+  - `0x1448A4570`：按实体遍历的 runner，每个实体回调 `0x1448A4360`；
+    后者把两个 vec 累加进 `ActorSetPositionRequestComponent`（`0x5E3CA211`）。
+- `BlockCollisionsSystem::BlockCollisionsSystem`（`0x14488F8E0`）注册四个子系统，
+  视图定义由 `0x1448A2B80/3FB0/4BD0/5100` 构造（运行期 0 命中 ⇒ 注册期代码）。
+
+### 3.2 方法论教训（下一轮别再踩）
+
+- **按 tick 对齐**才有效：resolver 在 T-1 和 T 各可能命中一次；把 T-1 的表和 T 的
+  结果混在一起会得到互相矛盾的 margin。
+- **每次试次前必须回到静止地面**再传送到试验台；从弹跳中途直接传送会改变落地 tick 的
+  请求位移（实测同一落差 `v` 从 −0.585 变成 −0.14），结果直接翻面。
+- 每轮用 `blocks` 回读确认 `slime`/`snow_layer` 还在原位；`prep()` 的 fill 会静默失败。
+
+
 ## 4. 判据与阈值
 
 设覆盖块顶面与黏液上表面重合、高度 `h`，脚底在 `top`：

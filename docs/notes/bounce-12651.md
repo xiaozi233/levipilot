@@ -54,26 +54,77 @@ if ((*flag & 2) == 0) {
 
 ### 2.2 选块 `[代码]`
 
-`@block_pos_resolver = 0x141E144A0`：
+`@block_pos_resolver = 0x141E144A0`（函数体 `0x2EF` 字节 / 170 条指令）。它**只读不写**：
+输入是候选表和一条 AABB，输出是「方块坐标 + 方块指针」四元组。签名与类型：
 
 ```c
-v = aabb[1] - 0.2f;                 // 探针
-aabb[1] = v; aabb[4] = v;           // 查询盒 Y 压成平面，X/Z 不变
-for (shape : shapes) {              // 24 B/个
-  cy = (shape.maxY - shape.minY) * 0.5f + shape.minY;
-  if (v - cy < 0) continue;                         // 中心高于探针 → 跳过
-  if (v - cy < best_d) { best = shape; best_d = v - cy; }   // 取最高中心
-  else if (v - cy == best_d) { 水平中心更近者优先 }
-}
-if (best) { pos = floor(shape.min); block = refs[best_index]; }
+struct AABB  { float minX, minY, minZ, maxX, maxY, maxZ; };   // 24 B
+struct Out   { int32_t x, y, z; Block const* block; };        // 16 B
+struct Shapes {                 // MoveRequest + 0x58
+    AABB*  begin; AABB*  end; AABB*  cap;                     // +0x00 / +0x08 / +0x10
+    Ref*   refsBegin; Ref* refsEnd; Ref* refsCap;             // +0x18 / +0x20 / +0x28
+};
+struct Ref   { Block const* block; uint8_t pad[16]; };        // 24 B，首 8 B 就是方块指针
+                                                              // refs 与 shapes 一一对应
+
+void __fastcall resolve(Shapes* shapes, Out* out, AABB* aabb);   // rcx, rdx, r8
 ```
 
-三处容易读错的地方：
+调用点传进来的 `aabb` 是**移动后、已裁剪**的那个实体 AABB（脚底在方块顶面上）；
+`shapes` 是 `MoveRequest+0x58`，`refs` 在 `+0x70`。重构自指令列表（本轮 IDA 反编译服务掉线，
+用 capstone 逐条读的；`resolver.disasm.txt` 是本轮临时产物）：
 
-1. 探针是**一条水平面**，不是点；判定是「形状中心的**高度** ≤ 探针」，不是「点落在方块里」。
-2. 中心是**碰撞形状**的中心，不是方块中心。3 层雪形状 `[−59, −58.625]` → 中心 `−58.8125`；
-   同一格的整块方块中心在 `−58.5`，比雪面还高 0.125，两者差 0.3125。
-3. X/Z 中心只在「两个形状到探针距离完全相等」时用来决平，不参与主判定。
+```c
+float probe = aabb->minY - 0.2f;      // 探针
+aabb->minY = probe;                   // 查询盒 Y 压成 probe，
+aabb->maxY = probe;                   // X/Z 原样保留（脚底那块 0.6×0.6 的范围）
+const Vec3 center = { (aabb->minX + aabb->maxX) * 0.5f, probe,
+                      (aabb->minZ + aabb->maxZ) * 0.5f };
+
+AABB const* begin = shapes->begin;
+AABB const* end   = shapes->end;
+if (begin == end) { *out = {}; return; }        // 空表 → 全 0
+
+float bestD   = FLT_MAX;              // 0x14E6258C8 = 3.40282347e38
+int   bestIdx = 0;
+bool  found   = false;
+
+for (int i = 0; begin + i != end; ++i) {
+    AABB const& s = begin[i];
+    float cy = (s.minY + s.maxY) * 0.5f;          // 形状的竖直中心
+    float d  = probe - cy;
+    if (d < 0.0f) continue;                       // 中心高于探针 → 跳过
+    if (d < bestD) { bestIdx = i; found = true; bestD = d; continue; }
+    if (!found || d != bestD) continue;           // 不是并列
+    // 并列：比「形状中心到查询盒中心的平方距离」，取更近的那个
+    if (dist2(center, begin[i]) < dist2(center, begin[bestIdx])) {
+        bestIdx = i; found = true;
+    }
+}
+
+if (!found) { *out = {}; return; }
+AABB const& b = begin[bestIdx];
+if (!(b.minX < b.maxX && b.minY < b.maxY && b.minZ < b.maxZ)) { *out = {}; return; }
+
+out->x = (int)floorf(b.minX);         // 输出的是「形状的 min 坐标取整」，
+out->y = (int)floorf(b.minY);         // 不是方块自己的坐标
+out->z = (int)floorf(b.minZ);
+out->block = shapes->refsBegin[bestIdx].block;
+```
+
+要点：
+
+1. **`best` 不是指针，是下标。** 循环里只维护 `bestIdx`（`r11`）、`bestD`（`xmm5`）和
+   `found`（`sil`）；循环结束后才用 `bestIdx` 去取形状和 `refs[bestIdx]`。
+2. **`bestD` 初值 FLT_MAX**，配合严格小于比较，第一个合格形状必然被记下；相等时走单独的
+   并列分支（比较到查询盒中心的平方距离，`cy` 项两边相同，实际就是水平中心更近者优先）。
+3. **探针是一条水平面**，判定是「形状中心的**高度** ≤ 探针」，不是「点落在方块里」；
+   3 层雪形状 `[−59, −58.625]` 中心 `−58.8125` 比探针 `−58.825` 高 0.0125，因此被跳过。
+4. **输出前还有一次有效性检查**（三条轴都必须 `min < max`），退化形状当作没找到。
+5. **输出坐标是 `floor(形状.min)`**，不是方块坐标；两者平时相同，但形状不从方块底面开始时
+   （栅栏、悬空形状）可能差一格。
+6. **`refs` 的元素是 24 B**（首 8 B 是 `Block const*`），不是 8 B 的裸指针数组；它和
+   `shapes` 一一对应，所以按同一个 `bestIdx` 取。
 
 ### 2.3 结算 `[代码]`
 
@@ -122,7 +173,7 @@ MoveRequest(152) / ActorDataFlag(24) / VerticalCollisionFlag。客户端与服�
 | `+0x30..+0x38` | 请求位移，竖直分量在 `+0x34` |
 | `+0x3C..+0x44` | 填充读的是这一份 δ；**移动后会被改写成实际应用的（裁剪过的）位移** |
 | `+0x48..+0x50` | 0.01, 0.01, 0.01 |
-| `+0x58 / +0x70` | 候选形状（24 B/个）/ 方块指针（8 B/个） |
+| `+0x58 / +0x70` | 候选形状（24 B/个）/ 对应引用（24 B/个，首 8 B 是 `Block const*`，§2.2） |
 
 `+0x30` 与 `+0x3C` 在填充时刻相同，移动之后 `+0x3C` 才是裁剪值（实测 3.0 落差：
 `+0x34 = −0.6517`，`+0x40 = −0.3054` = 脚到雪面的实际距离）。代价见 E4。

@@ -1,10 +1,10 @@
 # resume: slime-bounce-coverage
 
 - version: `1.26.51.01`
-- goal: 第二轮：定位候选表宿主与落地 tick 的判定变量
+- goal: 第三轮：追 BlockCollisionsSystem 的 tick 体与候选表填充
 - environment: -
-- current round: 3
-- last record: r02-009
+- current round: 4
+- last record: r03-011
 - journal: `skills/bedrock-re/findings/1.26.51.01/cases/slime-bounce-coverage/journal.jsonl`
 
 ## Confirmed (static closure required)
@@ -13,6 +13,7 @@
 - r01-002: 解析器判据 = 探针点 `AABB.minY - 0.2`：把查询盒 minY/maxY 都改写为 minY-0.2 后，遍历 24 字节世界空间形状，取中心 Y 不高于探针的最高者 （并列取水平中心最近），输出 floor(shape.min) 与该形状的方块指针。 [code; 0x141E144A0：movss [r8+4]; addss [-0.2]（.rdata 0x14E5A6A90 侧常量）; movss [r8+4]/[r8+0x10] 写回；逐形状计算 centerY=(maxY-minY)/2+minY、 v18=probe-centerY，`jb` 跳过 v18<0，min 选最小 v18；并列时用中心平方距离 比较；末尾 `comiss min<max` 后三次 floorf(0x14E5A6A90) 与 `[[rcx+0x18]+24*i]` 取方块指针。]
 - r01-005: 覆盖块挡住反弹的阈值由「覆盖块碰撞盒中心 vs 探针」决定：顶面在黏液上表面、 高度 h 的方块中心在 top-h/2，被选中需 h/2 <= 0.2，即 h >= 0.4（6/16=0.375 差 0.0125 落在临界外侧，7/16=0.4375 起稳定挡住）。 [code; 解析器选形状的 `centerY <= minY-0.2`（0x141E144A0）+ 实测 shape 记录 （雪层盒 y=[-59,-58.625] ⇒ center=-58.8125，黏液盒 y=[-60,-59] ⇒ center=-59.5） 代入即得 h>=0.4。]
 - r02-007: 解析器的候选形状容器是 MoveRequestComponent 的成员：组件 id 0x4C8F7288、 表项 152 B，容器在 +0x58。系统视图由 0x148B6AB80 按 StateVector(36)/AABBShape(32)/MoveRequest(152)/ActorDataFlag(24)/VerticalCollisionFlag 构造，bounce 执行器把该表项作为 5th 参数传给处理器， 处理器再以 `a5 + 0x58` 调解析器。 [code; 0x148B6AB80 的 5 次 sub_14021F330/sub_1402287E0/sub_141AA7610 调用分别带 459100728/3133256655/1284469384/3329500915/3332385434；1284469384=0x4C8F7288 即 MoveRequest，执行器按 152 字节步长取表项；0x148B5DB00 里 `sub_141E144A0(a5+88, ...)`。]
+- r03-010: 候选表的宿主是 MoveRequestComponent+0x58，碰撞侧来自 BlockCollisionsSystem （0x14488F8E0）注册的子系统；其组件 BlockCollisionsSystem::BlockCollisionResolutionVectorComponent 的 id 是 0x2462ED53。 [code; 0x1448A5100 里 strcpy 该名字后写死 610463059=0x2462ED53；0x14488F8E0 用 sub_1463B13E0 注册四个子系统，视图定义由 0x1448A2B80/3FB0/4BD0/5100 构造。]
 
 ## Open / pending
 

@@ -125,6 +125,26 @@ ActorDataFlag(24)/VerticalCollisionFlag）。结构布局（在 resolver 入口�
 （h=0.5 的 d2.0 要求 >0.38，h=0.375 的 d1.0 要求 <0.22），说明填充用的是逐轴裁剪
 的分步/块坐标逻辑，而不是一次扫掠。这一环没有静态闭合，本轮停在这里，不猜。
 
+静态侧已推进到的边界（下一轮从这里接）：
+
+- `BlockCollisionsSystem` = `0x14488F8E0`（0xAB6）。它在世界加载时注册四个子系统
+  （`BlockCollisionsAddActorSetPosRequestSystem`、`BlockCollisionResolutionVectorSystem`
+  等），并给每个子系统传一份「视图定义 + 可调用体」。
+- 视图定义构造器是 `0x1448A2B80` / `0x1448A3FB0` / `0x1448A4BD0` / `0x1448A5100`；
+  运行期挂上去 **20 tick 内 0 命中**，确认它们是注册期代码，不是 tick 体。
+- 真正的 tick 体在 std::function 里：vtable `off_14E8EBEB0/EF0` 的末槽
+  `0x1448A4570` / `0x1448A4FD0`。后者就是「清除碰撞向量」的系统：
+  `v3 = sub_1432920F0(registry, 0x2462ED53)`，然后 `*(v3+40) = *(v3+32)`（end=begin）
+  ——**碰撞列表每 tick 先清空再重建**。
+- 组件 `BlockCollisionsSystem::BlockCollisionResolutionVectorComponent` 的 id 是
+  `0x2462ED53`（构造字符串的 `0x1448A5100` 里写死 `610463059`），与 45.01 文档一致；
+  它的向量在表项 `+0x20`，和 MoveRequest 的 `+0x58` 不是同一个成员。
+  玩家的 `ecs_components` / `ecs_context` 里都查不到它和 MoveRequest —— 移动系统用的是
+  另一套 EnTT registry（客户端 level），现有 ECS 命令取不到。
+- 下一步（可执行）：在**主菜单**装钩，再进世界，让 `0x14488F8E0` 的注册跑一遍，
+  截获 std::function 对象里真正的 `operator()` 地址，再 decompile 它——而不是继续在
+  system 注册簿记里往下钻。
+
 ## 4. 判据与阈值
 
 设覆盖块顶面与黏液上表面重合、高度 `h`，脚底在 `top`：

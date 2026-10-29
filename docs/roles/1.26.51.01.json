@@ -570,6 +570,40 @@
         "[代码] 液体扩散入口（8 处调 @liquid_flow_level）；material==6 时读 BlockSource→[vtable+0x138]→+0x1A6 维度字节：drop-off = 2-flag（0x14345B40F/41B），tick delay = flag?10:30（0x14345B46A/47C）",
         "[实测] 80 tick 后下界前沿 +7、主世界 +3，与 drop-off 1/2（液位 7 起算）一致"
       ]
+    },
+    "@bounce_handler": {
+      "strategy": [
+        "component_id:0x7DF54114 immediate (mov edx)",
+        "apply_restitution caller"
+      ],
+      "address": "0x148B5DB00",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 读 vy 0x148B5DB39、0.080000117f@0x14EA350B0、call 0x141E144A0、vtable+0x3E8、写 ApplyRestitution[1]；见 docs/notes/bounce-12651.md §1"
+      ]
+    },
+    "@block_pos_resolver": {
+      "strategy": [
+        "float -0.2 addss + minY/maxY 同写 + 24B 形状迭代"
+      ],
+      "address": "0x141E144A0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 探针 = minY-0.2；取 centerY<=probe 的最高形状；floor(shape.min)；方块指针 [container+0x18]；见 docs/notes/bounce-12651.md §1"
+      ]
+    },
+    "@bounce_threshold_f32": {
+      "strategy": [
+        "float 0x3DA3D70B in .rdata, movss xref from @bounce_handler"
+      ],
+      "address": "0x14EA350B0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] 0.080000117f，|vy| 门槛（与 45.01 同值）"
+      ]
     }
   }
 }

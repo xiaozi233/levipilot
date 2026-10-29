@@ -10,6 +10,7 @@ LeviPilot（`<repo>`）的开发任务提示词，按轮分册；已并入仓库
 | 第四轮 | [`task-prompts-packets.md`](task-prompts-packets.md) | H0–H4：能力验收 / 被动封包 tap / CommandRequest 注入 / PlayerAction 注入 / Python 解码表 | 待做（H3 为条件项） |
 | 第四轮·续 | [`task-prompts-packet-tap.md`](task-prompts-packet-tap.md) | H1 封包 tap 修订版（H0 实测后重写：阶段 A 只读身份 + 先测"字节该从哪拿"，阶段 B 按测量选 B1/B2/B3） | 待做（**取代** packets 册里的 H1 草图） |
 | 第四轮·续二 | [`task-prompts-packet-bytes.md`](task-prompts-packet-bytes.md) | H1-B 封包字节：先解 dllimport 桩（followThunk / IAT / 对象 vtable 三法）→ 只计数探针 → 按决策表选 B1/B2，B3 兜底 | 待做（**取代** packet-tap 册的阶段 B） |
+| 逆向·黏液 | [`task-bounce-fill.md`](task-bounce-fill.md) | R1–R3：截获 BlockCollisionsSystem 注册的 std::function 真实体 → 读出 `MoveRequest+0x58` 候选形状表的填充判据 → 与按 tick 对齐的 8 个样本对质并落盘 | 待做（承接 `../../notes/bounce-12651.md`） |
 
 ## 使用规则
 
@@ -22,7 +23,11 @@ LeviPilot（`<repo>`）的开发任务提示词，按轮分册；已并入仓库
    文档要跟代码一起走。
 6. **前提被实测推翻时，另起一册并注明"取代某册的某节"** —— 不要原地改历史，否则后来的人分不清哪版才是当前设计。
 
-## 当前唯一实质缺口
+## 当前实质缺口
 
 封包层（第四册）。当前卡在**一个测量**上：`LocalNetworkPeer::sendPacket` 的真实地址能否解出来、单机里是否有流量（见 `task-prompts-packet-bytes.md` 步骤 1/2）。它同时是两条遗留未解项的钥匙：疾跑 1.3× 的来源、命令派发的 RPC。
 其余能力（watch / probe / hook_va / ECS / offsets / 事件级输入）在第三轮已落地。
+
+逆向侧另有一个缺口（[`task-bounce-fill.md`](task-bounce-fill.md)）：黏液反弹的候选形状表
+「按什么判据填」还没静态闭合；判据本身、表宿主和每 tick 重建都已确认（见
+[`../bounce-12651.md`](../bounce-12651.md)）。

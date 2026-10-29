@@ -1,10 +1,10 @@
 # resume: slime-bounce-coverage
 
 - version: `1.26.51.01`
-- goal: 第四轮：定位并证明 MoveRequest+0x58 候选表的填充判据
+- goal: 第五轮：把判据接上自由落体积分，做成只给落差的预测器
 - environment: -
-- current round: 5
-- last record: r04-015
+- current round: 6
+- last record: r05-017
 - journal: `skills/bedrock-re/findings/1.26.51.01/cases/slime-bounce-coverage/journal.jsonl`
 
 ## Confirmed (static closure required)
@@ -16,6 +16,7 @@
 - r03-010: 候选表的宿主是 MoveRequestComponent+0x58，碰撞侧来自 BlockCollisionsSystem （0x14488F8E0）注册的子系统；其组件 BlockCollisionsSystem::BlockCollisionResolutionVectorComponent 的 id 是 0x2462ED53。 [code; 0x1448A5100 里 strcpy 该名字后写死 610463059=0x2462ED53；0x14488F8E0 用 sub_1463B13E0 注册四个子系统，视图定义由 0x1448A2B80/3FB0/4BD0/5100 构造。]
 - r04-012: MoveRequest+0x58 的候选形状表由 sub_1431C2F50 填充；它先用 「扫掠盒 ∪ 台阶盒 ∪ (preAABB 下扩 0.2+|δy|、上扩 0.08)」算出收集盒，再经 a10->vfn[+0xB0](out,&box,1,..) 向方块源要形状，最后写回 +0x58；盒缓存在 +0x18， 新盒被旧盒包含时直接返回（表不重建）。 [code; 0x1431C3049..0x1431C3122 逐轴按符号扫掠请求位移；0x1431C314A 调 0x14B177650 （台阶盒，`*a3 * 1.01`）；0x1431C3193 调 0x149026EB0；0x1431C31F7 下界取 a2.minY-0.2-|delta.y|；0x1431C31FC 上界取 a2.maxY+0.08；0x1431C324A..0x1431C32B0 盒包含即 return；0x1431C34D9 虚调用 vtable+0xB0；0x1431C34DF/0x1431C35FA 写 +0x58 （`add [r13+0x60], 0x18` = 24 B push_back）。系统体 0x1431DD080、runner 0x1431DC500。]
 - r04-013: 收集盒下界 min(preY-0.5625*1.01, preY+δy-0.2) 逐位决定候选表内容：黏液块入表 ⇔ 盒下界 < 黏液顶；3 层雪时 弹 ⇔ 黏液入表。δy 取 MoveRequest+0x30..0x38 的 「请求位移」。 [code; 见上一条的取 min/max 站点；δy<0 时 preY+δy-0.2 < preY+δy，扫掠项被预测项覆盖。]
+- r05-016: §3.2 的收集盒判据 + 自由落体积分（v_{k+1}=0.98·v_k+0.0784，v0=0）可以从 「覆盖块高度 + 落差」直接算出 preY、请求位移、候选表与弹否，不需要运行游戏。 [code; 盒公式来自 sub_1431C2F50（min(preY-autoStep*1.01, preY+dy-0.2)、maxY+autoStep）； 解析器判据来自 0x141E144A0（中心<=minY-0.2 取最高）。积分式是离散拟合， 但逐位复现了 60 个样本的 preY/δy（差 <1e-4），因此只作输入模型、不下物理结论。]
 
 ## Open / pending
 

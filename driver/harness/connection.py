@@ -22,6 +22,28 @@ from typing import Any, Self, cast
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
 from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, HelloEvent, LineDecoder, kernel32
 
+# Win32 errors seen when the pipe cannot be opened, with the action that
+# actually fixes them. "Invalid argument" on its own sends people hunting the
+# wrong bug (the usual cause is a wedged mod-side pipe thread, not the client).
+_PIPE_HINTS: dict[int, str] = {
+    2: "游戏没开或 probe mod 没加载（先 dev.py run，确认 mods/probe 已安装）",
+    5: "拒绝访问：用同一用户运行游戏与脚本（不要混用管理员/普通权限）",
+    87: "管道实例状态异常（多为上一次脚本把 mod 的管道线程卡住）；重启游戏",
+    231: "管道忙：另一个客户端或上一次的脚本还连着；关掉它或重启游戏",
+    232: "管道正在关闭；等游戏回到主菜单后重试",
+    109: "管道已断开；等游戏回到主菜单后重试",
+}
+
+
+def pipe_error_hint(error: OSError | None) -> str:
+    """Map the last CreateFile failure to an actionable sentence."""
+    if error is None:
+        return "连接超时：游戏没有在 connect_timeout 内出现可用的管道"
+    winerror = getattr(error, "winerror", None)
+    if winerror is None:
+        winerror = getattr(error, "errno", None)
+    return _PIPE_HINTS.get(int(winerror or 0), "确认游戏在运行且已进入存档")
+
 
 @dataclass
 class _PipeSession:
@@ -104,7 +126,9 @@ class PipeConnection:
             self.protocol = int(hello.get("protocol", 0))
             self.hello = cast(HelloEvent, hello)
             return self
-        raise ModPipeError(f"无法连接 {self.pipe_name}: {last_error}")
+        raise ModPipeError(
+            f"无法连接 {self.pipe_name}: {last_error}\n提示：{pipe_error_hint(last_error)}"
+        )
 
     def reconnect(self) -> Self:
         """Drop the current pipe and open a fresh one (game restart, mod reload)."""

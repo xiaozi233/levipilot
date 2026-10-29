@@ -8,6 +8,11 @@ from pathlib import Path
 from .protocol import PIPE_NAME
 
 
+def _hexint(value: str) -> int:
+    """Accept ``24`` and ``0x18`` for offsets/sizes that read better in hex."""
+    return int(value, 0)
+
+
 def _add_macro_parser(parent: argparse._SubParsersAction) -> None:
     macro = parent.add_parser("macro", help="macro file playback/recording")
     sub = macro.add_subparsers(dest="macro_command", required=True)
@@ -142,6 +147,20 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     hook_install.add_argument("--tag", default="")
     hook_install.add_argument("--sample", type=int, default=1)
     hook_install.add_argument("--dry-run", action="store_true")
+    hook_install.add_argument(
+        "--mem-arg",
+        type=int,
+        default=None,
+        metavar="0-3",
+        help="capture memory behind rcx/rdx/r8/r9 on every hit",
+    )
+    hook_install.add_argument("--mem-offset", type=_hexint, default=0)
+    hook_install.add_argument(
+        "--mem-size",
+        type=_hexint,
+        default=0,
+        help="bytes to capture at arg+offset (4..64, step 4)",
+    )
 
     hook_rm = sub.add_parser("hook-rm")
     hook_rm.add_argument("--id", type=int, required=True)

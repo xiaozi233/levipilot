@@ -176,6 +176,50 @@ class CliCompatibilityTests(unittest.TestCase):
         self.assertEqual(with_slot["code"], 0)
         self.assertEqual(with_slot["calls"][1], ["equip", ["head"], {"slot": 5}])
 
+    def test_hook_install_mem_capture_wiring(self) -> None:
+        plain = invoke_cli(cli, ["hook-install", "--tag", "probe"])
+        self.assertEqual(plain["code"], 0)
+        self.assertEqual(
+            plain["calls"][1],
+            [
+                "hook_install",
+                ["MobJump::setJumpPendingScale"],
+                {"va": None, "tag": "probe", "sample": 1, "dry_run": False},
+            ],
+        )
+
+        captured = invoke_cli(
+            cli,
+            [
+                "hook-install",
+                "--va",
+                "0x7ff6e007db00",
+                "--mem-arg",
+                "3",
+                "--mem-offset",
+                "0x10",
+                "--mem-size",
+                "24",
+            ],
+        )
+        self.assertEqual(captured["code"], 0)
+        self.assertEqual(
+            captured["calls"][1],
+            [
+                "hook_install",
+                [None],
+                {
+                    "va": "0x7ff6e007db00",
+                    "tag": "",
+                    "sample": 1,
+                    "dry_run": False,
+                    "mem_arg": 3,
+                    "mem_offset": 16,
+                    "mem_size": 24,
+                },
+            ],
+        )
+
     def test_every_parser_command_has_a_handler(self) -> None:
         # The parser definition and the dispatch registry must stay in sync;
         # before the registry existed a missing handler exited 0 silently.

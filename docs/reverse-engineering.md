@@ -49,6 +49,37 @@
   关键工具：`decompile`、`disasm`、`xrefs_to`、`callees`、`insn_query`、`get_bytes`、
   `py_eval`、`find(type="string")`。
 - 反编译结果尽量**落文件**离线读：大函数会被工具截断，屏幕上看不全。
+- **MCP 不在时**（面板显示“服务器连接失败”，它只是 13337 的代理，需要 IDA 侧
+  idalib server 在跑）：用 `idat.exe -A -S<script.py> -L<log> <db.i64>` 定点反编译，
+  搜索改走 capstone。两个坑：
+  - `ida_bytes.bin_search(start, end, patt, None, flags)` 在 9.4 上会抛异常
+    （mask 不能是 `None`），用 `idc.find_binary` 或干脆不用 IDA 搜索；
+  - 一次性把 240 MB `.text` 交给 `md.disasm()` 会让 Python 端吃 8 GB 内存；
+    **按 1 MB 分块**喂 `md.disasm(blob, addr)`（`skipdata=True`），解析
+    `[rip + disp]` 求目标地址。先在 `.rdata` 里定位常量，再用 capstone 找引用点，
+    最后只让 IDA 反编译这几个地址。
+
+### 2.1 钩住“只在几微秒内存在”的缓冲
+
+入口 hook 默认只记录 `rcx/rdx/r8/r9` 四个整数；对“指针参数指向的临时向量/结构”
+（每 tick 重建的形状表、按地址传入的 AABB），等 `hook_drain` 时那块内存已经没了
+（`mem_read` 读到空容器）。用 in-detour 内存快照：
+
+```bash
+# 抓 resolver 的 r8（AABB，6 个 float）
+py -3.11 driver/harness/cli.py hook-install --va <runtime VA> --mem-arg 2 --mem-size 24
+```
+
+```python
+hook = client.hook_install(va=resolver_va, mem_arg=2, mem_size=24)
+rows = [h for h in decode_hook_hits(client.hook_drain(0)) if h.hook == hook["id"]]
+rows[-1].mem_f32      # (minx, miny, minz, maxx, maxy, maxz)
+rows[-1].mem_ok       # False = 参数不是可读指针（不会崩）
+```
+
+约束：`mem_arg` 0..3 对应四个整数寄存器；`mem_size` 4..64、按 4 递增；
+拷贝发生在 detour 里（`VirtualQuery` + `ReadProcessMemory`，无分配），未开启时
+只多一次可分支。VA hook 仍受 `allow_hook_va` 管控。
 
 ---
 

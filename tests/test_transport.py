@@ -14,7 +14,7 @@ from unittest.mock import patch
 import driver.harness as public_api
 import driver.harness.client as client_api
 import driver.transport_mod as legacy_api
-from driver.harness.connection import PipeConnection, _PipeSession
+from driver.harness.connection import PipeConnection, _PipeSession, pipe_error_hint
 from driver.transport_mod import (
     Harness,
     LineDecoder,
@@ -557,6 +557,25 @@ class HarnessForwardingTests(unittest.TestCase):
                 ("place", 4, 5, 6, {"expected": "stone"}),
             ],
         )
+
+
+class PipeHintTests(unittest.TestCase):
+    def test_busy_and_wedged_map_to_actions(self) -> None:
+        for winerror, needle in (
+            (231, "管道忙"),
+            (87, "重启游戏"),
+            (2, "mod 没加载"),
+            (5, "拒绝访问"),
+        ):
+            error = OSError(22, "Invalid argument")
+            error.winerror = winerror  # type: ignore[attr-defined]
+            self.assertIn(needle, pipe_error_hint(error))
+
+    def test_unknown_and_timeout_fall_back(self) -> None:
+        self.assertIn("连接超时", pipe_error_hint(None))
+        error = OSError(22, "Invalid argument")
+        error.winerror = 1234  # type: ignore[attr-defined]
+        self.assertIn("已进入存档", pipe_error_hint(error))
 
 
 if __name__ == "__main__":

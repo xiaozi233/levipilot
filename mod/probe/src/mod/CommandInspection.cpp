@@ -184,6 +184,18 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             std::clamp(j.value("sample", 1), 1, 1000000);
         bool const dryRun = j.value("dry_run", false);
         std::string const tag = j.value("tag", std::string{});
+        HookMemSpec mem;
+        if (j.contains("mem_size")) {
+            mem.arg    = j.value("mem_arg", 0u);
+            mem.offset = j.value("mem_offset", 0u);
+            mem.size   = j.value("mem_size", 0u);
+            if (mem.arg > 3 || mem.size % 4 != 0 || mem.size > 64 || mem.offset > 4096) {
+                enqueue(
+                    R"({"event":"error","reason":"bad_mem_spec","hint":"mem_arg 0..3, mem_size 4..64 step 4, mem_offset <= 4096"})"
+                );
+                return true;
+            }
+        }
         enqueue(
             hookInstall(
                 symbol,
@@ -195,7 +207,8 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
                 mAllowHookVa.load(std::memory_order_relaxed),
                 mWorld.inWorld(),
                 j.value("inject_fail", false)
-                    && mAllowHookVa.load(std::memory_order_relaxed)
+                    && mAllowHookVa.load(std::memory_order_relaxed),
+                mem
             )
                 .dump()
         );

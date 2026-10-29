@@ -47,6 +47,43 @@ class HookDecodeTests(unittest.TestCase):
         self.assertEqual(hit.args, (5, 0, 0, 0))
         self.assertEqual(hit.b_float, 0.0)
 
+    def test_mem_snapshot_decodes(self) -> None:
+        raw = struct.pack("<6f", 1.5, -2.25, 3.0, 4.0, 5.0, 6.0)
+        hit = HookHit.from_json(
+            {
+                "seq": 9,
+                "args": [0x1000, 0, 0, 0],
+                "mem": {
+                    "arg": 0,
+                    "offset": 4,
+                    "len": len(raw),
+                    "ok": True,
+                    "addr": 0x1004,
+                    "hex": raw.hex(),
+                    "f32": list(struct.unpack("<6f", raw)),
+                },
+            }
+        )
+        self.assertTrue(hit.mem_ok)
+        self.assertEqual(hit.mem_arg, 0)
+        self.assertEqual(hit.mem_offset, 4)
+        self.assertEqual(hit.mem_addr, 0x1004)
+        self.assertEqual(hit.mem, raw)
+        self.assertEqual(hit.mem_u32, struct.unpack("<6I", raw))
+        self.assertAlmostEqual(hit.mem_f32[1], -2.25)
+
+    def test_mem_snapshot_failure_keeps_metadata(self) -> None:
+        hit = HookHit.from_json(
+            {
+                "seq": 10,
+                "mem": {"arg": 2, "offset": 0, "len": 8, "ok": False, "addr": 0x40, "hex": ""},
+            }
+        )
+        self.assertFalse(hit.mem_ok)
+        self.assertEqual(hit.mem, b"")
+        self.assertEqual(hit.mem_u32, ())
+        self.assertEqual(hit.mem_addr, 0x40)
+
     def test_unrelated_message_returns_empty(self) -> None:
         self.assertEqual(decode_hook_hits({"event": "tick"}), [])
 

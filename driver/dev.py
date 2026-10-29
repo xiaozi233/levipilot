@@ -117,21 +117,63 @@ def write_auto_config(
     ``options`` land under the config's ``options`` object (game options);
     ``allow`` keys are written at the top level where the mod reads its
     capability switches (``allow_input_inject``, ``allow_selftest_stress`` …).
+
+    The file is *merged*, not replaced: a previous experiment's
+    ``allow_hook_va`` or a hand-written ``events`` switch must not vanish just
+    because this run only passed ``--allow allow_input_inject=1``. The first
+    version of the file is kept as ``harness.json.prev`` so
+    ``dev.py restore-config`` can put it back; ``auto_enter``/``options`` are
+    owned by this function and are dropped/updated explicitly (a stale
+    auto_enter races with the explicit ``enter_world`` below).
     """
     mod_dir.mkdir(parents=True, exist_ok=True)
     path = mod_dir / "harness.json"
     allow = allow or {}
+
+    previous: dict[str, object] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                previous = loaded
+        except (OSError, ValueError):
+            log(f"warning: {path.name} 不是合法 JSON，按空配置处理")
+        backup = mod_dir / "harness.json.prev"
+        if not backup.exists():
+            shutil.copy2(path, backup)
+
     if not world and not options and not allow:
-        if path.exists():
-            path.unlink()
         return
-    config: dict[str, object] = {"delay_ms": 2000}
+
+    config: dict[str, object] = {
+        key: value for key, value in previous.items() if key not in {"auto_enter", "options"}
+    }
+    config.setdefault("delay_ms", 2000)
     if world:
         config["auto_enter"] = world
     if options:
-        config["options"] = options
+        existing_options = previous.get("options")
+        merged_options: dict[str, object] = (
+            dict(existing_options) if isinstance(existing_options, dict) else {}
+        )
+        merged_options.update(options)
+        config["options"] = merged_options
     config.update(allow)
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"harness.json: {path}")
+
+
+def restore_config(mod_dir: Path) -> bool:
+    """Put back the config that existed before this tool first wrote one."""
+    path = mod_dir / "harness.json"
+    backup = mod_dir / "harness.json.prev"
+    if not backup.exists():
+        log(f"没有备份可恢复：{backup}")
+        return False
+    shutil.copy2(backup, path)
+    backup.unlink()
+    log(f"harness.json 已恢复：{path}")
+    return True
 
 
 def wait_for_menu(client: ModClient, timeout: float = 90.0) -> list[dict]:
@@ -279,6 +321,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop", help="kill Minecraft.Windows.exe")
     worlds_parser = sub.add_parser("worlds", help="list cached worlds")
     worlds_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
+    restore_parser = sub.add_parser(
+        "restore-config",
+        help="restore harness.json to the state before dev.py first rewrote it",
+    )
+    restore_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
 
     args = parser.parse_args(argv)
 
@@ -292,6 +339,9 @@ def main(argv: list[str] | None = None) -> int:
                 for world in client.worlds().get("worlds", []):
                     print(f"{world.get('name')}\t{world.get('id')}\t{world.get('last_saved')}")
             return 0
+        if args.command == "restore-config":
+            ok = restore_config(Path(args.version_dir).expanduser() / "mods" / "probe")
+            return 0 if ok else 1
         return run(args)
     except (ModPipeError, ModTimeout) as exc:
         print(f"error: {exc}", file=sys.stderr)

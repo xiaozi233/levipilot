@@ -45,9 +45,9 @@ xmake -j4 -y
 | `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程，`thread=all` 被拒绝）；`depth` 可选 1..32（默认 8）控制每次命中抓多少返回地址，深度越大 VEH 开销与环内存越高；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
 | `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
 | `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
-| `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va` |
+| `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va`；可选 `mem_arg(0..3)/mem_offset/mem_size(4..64, step 4)` 在 detour 内抓参数指向的短命缓冲 |
 | `hook_rm` / `hook_list` | 卸钩 / 列出已装钩与命中统计 |
-| `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`） |
+| `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`）；开了内存采样时另带 `mem{arg,offset,len,ok,addr,hex,f32}` |
 | `hook_call` | 调用一个已导出符号做自检（当前支持 `MobJump::setJumpPendingScale`） |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、停任务并清输入，不杀进程 |
 | `diagnose` | 版本/profile、4 个符号锚点的地址/24 字节签名匹配/耗时、能力表 |
@@ -59,7 +59,7 @@ xmake -j4 -y
 | `ecs_context` | `context,component_id`；从 hook 捕获的 `EntityContext*` 直接解析组件（address/index/count/size） |
 | `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
 | `ecs_entity` | `runtime_id` → actor/context/registry/entity 地址、拥有组件数 |
-| `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count` |
+| `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count`；单个 storage 探测失败时跳过并在 `skipped` 里报 id，不再整条命令回 `internal_error` |
 | `ecs_component` | 读组件原始字节（`len` 默认 stride，最大 512） |
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
@@ -187,8 +187,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **222/222**（`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`）、离线单测 **223/223**。常用实测数字：
+当前基线：live selftest **224/224**（`harness.json` 开 `allow_input_inject`/
+`allow_selftest_stress`；2026-10-29 在干净地面重跑，新增 `h0_hook_mem`）、
+离线单测 **232/232**。常用实测数字：
+
+2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步
+采参数指向的短命缓冲）；`ecs_components` 改为逐 storage 探测，坏条目进 `skipped`
+而不是整条 `internal_error`。验收数字见
+[`../docs/notes/tooling-pain-points.md`](../docs/notes/tooling-pain-points.md)。
 
 2026-10-28 客户端 I/O 验收：`py -3.11 driver/selftest.py --client-io-only`
 离线检查 **20/20**，覆盖分片解码、录制事件保留/分页终止、spool 损坏行与临时 I/O 失败。
@@ -326,7 +332,11 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   向量返回、超过 4 个参数或隐藏返回指针的目标**不安全**，需要 typed detour。目前 typed
   符号钩只实现了 `MobJump::setJumpPendingScale`。
 - VA 只校验“已提交且可执行”的页，不校验指令边界；地址必须由 IDA 侧确认。
-- `allow_hook_va` 默认关闭；`hook_install` 的 `sample` 用于降采样，命中环固定 4096 条。
+- `allow_hook_va` 默认关闭；`hook_install` 的 `sample` 用于降采样，命中环固定 4096 条
+  （每条记录含最多 64 B 的可选内存快照；不开启时只多一次分支）。
+- `hook_install` 的内存快照是**同步**读：`mem_arg` 指向的缓冲可以随 tick 重建/释放
+  （形状表、栈上的 AABB），`hook_drain` 之后再用 `mem_read` 读同一地址通常已经是空容器。
+  指针不可读时该条命中 `mem.ok=false`，不影响被钩函数。
 - 版本校验：`build_id` 选中 profile 且 4 个锚点签名全匹配才 `version_ok=true`；不匹配时
   钩子/观察/记录回 `version_mismatch`，管道、`diagnose`、`profile_dump`、`mem_read`/`probe`
   仍可用（`allow_version_mismatch` 只改看 `hooks_allowed`，移植用）。锚点先跟随

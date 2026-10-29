@@ -34,6 +34,39 @@ std::uint32_t storageStride(entt::basic_registry<EntityId>::common_type const* s
     return static_cast<std::uint32_t>(a > b ? a - b : b - a);
 }
 
+// One bad storage must not blank the whole listing: value()/index() assume the
+// storage really holds this component type, and the outer SEH backstop loses
+// every row after the faulting one (a registry with 142 storages returned
+// nothing at all because a single entry faulted). Probe each storage in its own
+// guard so the reply can report the offender instead.
+struct StorageRow {
+    std::uint32_t id      = 0;
+    std::uint64_t index   = 0;
+    std::uint64_t address = 0;
+    std::uint64_t count   = 0;
+    std::uint32_t stride  = 0;
+    bool          ok      = false; // false: the probe faulted, skip the row
+};
+
+bool probeStorageRow(
+    entt::basic_registry<EntityId>::common_type* storage,
+    EntityId                                     entity,
+    StorageRow&                                  out
+) {
+    __try {
+        out.count   = static_cast<std::uint64_t>(storage->size());
+        out.index   = static_cast<std::uint64_t>(storage->index(entity));
+        out.address = reinterpret_cast<std::uint64_t>(storage->value(entity));
+        out.stride  = storageStride(storage);
+        out.ok      = true;
+    } __except (
+        isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
+    ) {
+        out.ok = false;
+    }
+    return true;
+}
+
 // The EntityContext* comes from the pipe (a hook view), so the whole access
 // chain must stay under SEH: applyEcs runs on the game tick thread where a
 // plain C++ catch cannot intercept an access violation. Keep this function
@@ -197,28 +230,35 @@ void ProbeMod::applyRuntimeEcsRequest(EcsRequest const& request) {
 
     if (request.kind == EcsRequest::Kind::Components) {
         nlohmann::json components = nlohmann::json::array();
+        nlohmann::json skipped    = nlohmann::json::array();
         for (auto&& [id, storage] : registry.storage()) {
             if (!storage.contains(context.mEntity)) {
                 continue;
             }
-            void const* value = storage.value(context.mEntity);
+            StorageRow row{};
+            row.id = static_cast<std::uint32_t>(id);
+            probeStorageRow(&storage, context.mEntity, row);
+            if (!row.ok) {
+                skipped.push_back(row.id);
+                continue;
+            }
             std::uint32_t tableSize = 0;
-            bool const    sized     = componentSize(static_cast<std::uint32_t>(id), tableSize);
-            nlohmann::json row{
-                {"id",      static_cast<std::uint32_t>(id)                   },
-                {"index",   static_cast<std::uint64_t>(storage.index(context.mEntity))},
-                {"address", reinterpret_cast<std::uint64_t>(value)           },
-                {"stride",  storageStride(&storage)                          },
-                {"count",   static_cast<std::uint64_t>(storage.size())       },
+            bool const    sized     = componentSize(row.id, tableSize);
+            nlohmann::json entry{
+                {"id",      row.id    },
+                {"index",   row.index },
+                {"address", row.address},
+                {"stride",  row.stride },
+                {"count",   row.count  },
             };
             if (sized) {
-                row["size"] = tableSize;
+                entry["size"] = tableSize;
             }
-            auto name = componentName(static_cast<std::uint32_t>(id));
+            auto name = componentName(row.id);
             if (!name.empty()) {
-                row["name"] = std::move(name);
+                entry["name"] = std::move(name);
             }
-            components.push_back(std::move(row));
+            components.push_back(std::move(entry));
         }
         enqueue(
             nlohmann::json{
@@ -227,6 +267,7 @@ void ProbeMod::applyRuntimeEcsRequest(EcsRequest const& request) {
                 {"registry",   reinterpret_cast<std::uint64_t>(&registry)    },
                 {"entity",     static_cast<std::uint64_t>(context.mEntity.mRawId)},
                 {"components", std::move(components)                         },
+                {"skipped",    std::move(skipped)                            },
         }
                 .dump()
         );

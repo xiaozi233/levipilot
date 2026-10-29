@@ -14,6 +14,8 @@ namespace {
 constexpr std::size_t kHookSlots        = 4;
 constexpr std::size_t kHookRingCapacity = 1u << 12;
 constexpr std::size_t kHookMaxFrames    = 4;
+// One AABB is 24 B and a Vec3 is 12 B; 64 B also covers a small struct header.
+constexpr std::size_t kHookMemMax       = 64;
 constexpr char const* kJumpPendingSymbol = "MobJump::setJumpPendingScale";
 
 using SetJumpPendingScaleFn = void (*)(EntityContext&, float);
@@ -32,6 +34,14 @@ struct HookHit {
     std::uint32_t              frameCount = 0;
     std::uint32_t              pad        = 0;
     std::uint64_t              frames[kHookMaxFrames]{};
+    // Optional snapshot of arg[memArg] + memOff, taken while the buffer is
+    // still alive. memLen == 0 means "this hit did not ask for memory".
+    std::uint32_t              memArg  = 0;
+    std::uint32_t              memOff  = 0;
+    std::uint32_t              memLen  = 0;
+    std::uint32_t              memOk   = 0;
+    std::uint64_t              memAddr = 0;
+    std::uint8_t               mem[kHookMemMax]{};
 };
 
 struct HookSlot {
@@ -48,6 +58,9 @@ struct HookSlot {
     std::string                name;
     std::uint64_t              address = 0;
     std::atomic<std::uint32_t> sample{1};
+    std::atomic<std::uint32_t> memArg{0};
+    std::atomic<std::uint32_t> memOff{0};
+    std::atomic<std::uint32_t> memLen{0};
     ll::memory::FuncPtr        target = nullptr;
     ll::memory::FuncPtr        detour = nullptr;
     std::atomic<SetJumpPendingScaleFn> originTyped{nullptr};
@@ -126,6 +139,20 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
     record.frameCount          = static_cast<std::uint32_t>(
         RtlCaptureStackBackTrace(0, kHookMaxFrames, reinterpret_cast<PVOID*>(record.frames), nullptr)
     );
+    // Memory snapshot: only when the install asked for it. readMemory() checks
+    // the range with VirtualQuery and uses ReadProcessMemory, so an argument
+    // that is not a readable pointer yields mem_ok=false instead of a fault.
+    std::uint32_t const memLen = watch.memLen.load(std::memory_order_relaxed);
+    if (memLen > 0) {
+        std::uint32_t const memArg = watch.memArg.load(std::memory_order_relaxed);
+        std::uint32_t const memOff = watch.memOff.load(std::memory_order_relaxed);
+        std::uint64_t const base   = memArg == 0 ? a : memArg == 1 ? b : memArg == 2 ? c : d;
+        record.memArg  = memArg;
+        record.memOff  = memOff;
+        record.memLen  = memLen;
+        record.memAddr = base != 0 ? base + memOff : 0;
+        record.memOk   = base != 0 && readMemory(base + memOff, record.mem, memLen) ? 1u : 0u;
+    }
     record.seq.store(index + 1, std::memory_order_release);
     watch.captured.fetch_add(1, std::memory_order_relaxed);
 }
@@ -224,8 +251,12 @@ nlohmann::json hookInstall(
     bool               dryRun,
     bool               allowVa,
     bool               inWorld,
-    bool               injectFail
+    bool               injectFail,
+    HookMemSpec const& mem
 ) {
+    if (mem.size != 0 && (mem.arg > 3 || mem.size % 4 != 0 || mem.size > kHookMemMax)) {
+        return errorJson("bad_mem_spec");
+    }
     std::uint64_t targetAddress = 0;
     std::string   name;
     if (useVa) {
@@ -250,6 +281,7 @@ nlohmann::json hookInstall(
         };
         out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
         out["va"]     = useVa ? nlohmann::json(targetAddress) : nlohmann::json(nullptr);
+        out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}};
         return out;
     }
     if (!executable) {
@@ -288,6 +320,9 @@ nlohmann::json hookInstall(
         watch.name      = name;
         watch.address   = targetAddress;
         watch.sample.store(std::max<std::uint32_t>(1, sample), std::memory_order_relaxed);
+        watch.memArg.store(mem.arg, std::memory_order_relaxed);
+        watch.memOff.store(mem.offset, std::memory_order_relaxed);
+        watch.memLen.store(mem.size, std::memory_order_relaxed);
         watch.target = reinterpret_cast<ll::memory::FuncPtr>(targetAddress);
         watch.detour = useVa ? genericDetour(static_cast<std::size_t>(slot))
                              : typedDetour(static_cast<std::size_t>(slot));
@@ -400,6 +435,7 @@ nlohmann::json hookInstall(
     };
     out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
     out["va"]     = useVa ? nlohmann::json(targetAddress) : nlohmann::json(nullptr);
+    out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}};
     return out;
 }
 
@@ -477,6 +513,9 @@ nlohmann::json hookListJson() {
             {"address",  watch.address                },
             {"tag",      watch.tag                    },
             {"sample",   watch.sample.load()          },
+            {"mem_arg",  watch.memArg.load()          },
+            {"mem_off",  watch.memOff.load()          },
+            {"mem_len",  watch.memLen.load()          },
             {"hits",     watch.hits.load()            },
             {"captured", watch.captured.load()        },
         });
@@ -527,6 +566,26 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
         };
         for (std::uint32_t frame = 0; frame < record.frameCount && frame < kHookMaxFrames; ++frame) {
             row["stack"].push_back(record.frames[frame]);
+        }
+        if (record.memLen > 0) {
+            nlohmann::json mem{
+                {"arg",    record.memArg                  },
+                {"offset", record.memOff                  },
+                {"len",    record.memLen                  },
+                {"ok",     record.memOk != 0              },
+                {"addr",   record.memAddr                 },
+                {"hex",    hexEncode(record.mem, record.memLen)},
+            };
+            if (record.memLen % 4 == 0) {
+                nlohmann::json f32 = nlohmann::json::array();
+                for (std::uint32_t offset = 0; offset < record.memLen; offset += 4) {
+                    float value = 0.0f;
+                    std::memcpy(&value, record.mem + offset, sizeof(value));
+                    f32.push_back(value);
+                }
+                mem["f32"] = std::move(f32);
+            }
+            row["mem"] = std::move(mem);
         }
         hits.push_back(std::move(row));
     }

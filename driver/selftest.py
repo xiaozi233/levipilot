@@ -1215,6 +1215,43 @@ def main(argv: list[str] | None = None) -> int:
             if hook.get("event") == "hook_installed":
                 client.hook_rm(int(hook["id"]))
 
+        # H0.5: the in-detour memory snapshot reads a pointer argument while the
+        # call is live. Capture 8 bytes at args[0]+0 and compare with mem_read at
+        # the address the mod recorded, so a stale/failed copy cannot pass.
+        mem_hook = client.hook_install(
+            "MobJump::setJumpPendingScale",
+            tag="h0_mem",
+            mem_arg=0,
+            mem_offset=0,
+            mem_size=8,
+        )
+        if mem_hook.get("event") == "hook_installed":
+            client.hook_call("MobJump::setJumpPendingScale", 1.0)
+            wait_ticks(client, 3)
+            mem_hits = [
+                hit
+                for hit in decode_hook_hits(client.hook_drain(0))
+                if hit.hook == int(mem_hook["id"])
+            ]
+            latest = mem_hits[-1] if mem_hits else None
+            detail: dict[str, object] = {"hits": len(mem_hits)}
+            ok = False
+            if latest is not None and latest.mem_ok and len(latest.mem) == 8:
+                direct = client.mem_read(latest.mem_addr, 8)
+                detail.update(
+                    {
+                        "mem_addr": hex(latest.mem_addr),
+                        "hook_hex": latest.mem.hex(),
+                        "read_hex": direct.get("hex"),
+                        "mem_arg": latest.mem_arg,
+                    }
+                )
+                ok = direct.get("hex") == latest.mem.hex()
+            checks.check("h0_hook_mem", ok, str(detail))
+            client.hook_rm(int(mem_hook["id"]))
+        else:
+            checks.check("h0_hook_mem", False, str(mem_hook))
+
         # H0.4: spool tick order survives a panic.
         mod_spool = Path(str(client.hello.get("spool", "")))
         client.start(80)

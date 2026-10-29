@@ -205,9 +205,15 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **222/222**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`）、离线单测 223/223、
-ruff/mypy（driver+tests）全绿。
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **224/224**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-29 干净地面重跑）、
+离线单测 **232/232**、ruff/mypy（driver+tests）全绿。
+
+2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
+参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage
+探测，坏条目进 `skipped` 而不是整条 `internal_error`；`dev.py` 改写 `harness.json` 改为合并
++ 备份 + `restore-config`；管道连接失败按 WinError 给可操作提示。痛点和验收见
+[`docs/notes/tooling-pain-points.md`](docs/notes/tooling-pain-points.md)。
 
 2026-10-28 mod 核心补充验收：native `--mod-core-only` **3/3**；安装新 DLL 后
 `--mod-core-live-only` **33/33**（仅管道与录制，无逆向命令/输入注入/世界修改）。

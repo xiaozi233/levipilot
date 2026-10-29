@@ -72,6 +72,13 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         return True
     if args.command == "hook-install":
         symbol = None if args.va else args.symbol
+        extra = {}
+        if args.mem_size:
+            extra = {
+                "mem_arg": args.mem_arg,
+                "mem_offset": args.mem_offset,
+                "mem_size": args.mem_size,
+            }
         print(
             json.dumps(
                 client.hook_install(
@@ -80,6 +87,7 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                     tag=args.tag,
                     sample=args.sample,
                     dry_run=args.dry_run,
+                    **extra,
                 ),
                 ensure_ascii=False,
                 indent=2,

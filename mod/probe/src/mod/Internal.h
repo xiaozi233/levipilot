@@ -363,6 +363,17 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
 // ---------------------------------------------------------------------------
 bool hookAddressExecutable(std::uint64_t addr);
 
+// Optional per-hit memory snapshot, taken inside the detour. Four integer
+// registers are not enough when the interesting data lives behind a pointer and
+// is short-lived (a per-tick vector, an AABB passed by address): by the time
+// hook_drain runs, that buffer is already gone. size == 0 disables the
+// snapshot, and the detour then costs one predictable branch.
+struct HookMemSpec {
+    std::uint32_t arg    = 0; // 0..3 = rcx/rdx/r8/r9
+    std::uint32_t offset = 0;
+    std::uint32_t size   = 0; // 0, or a multiple of 4 no larger than 64
+};
+
 nlohmann::json hookInstall(
     std::string const& symbol,
     std::uint64_t      va,
@@ -372,7 +383,8 @@ nlohmann::json hookInstall(
     bool               dryRun,
     bool               allowVa,
     bool               inWorld,
-    bool               injectFail
+    bool               injectFail,
+    HookMemSpec const& mem = {}
 );
 nlohmann::json hookRemove(int id);
 int            hookRemoveAll();

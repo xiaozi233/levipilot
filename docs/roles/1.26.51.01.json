@@ -604,6 +604,64 @@
       "evidence": [
         "[常量] 0.080000117f，|vy| 门槛（与 45.01 同值）"
       ]
+    },
+    "@collision_shape_gather": {
+      "strategy": [
+        "write_watch MoveRequest+0x60 -> rip -> decompile host function",
+        "24 B push_back: add [r13+0x60], 0x18 at 0x1431C35FA"
+      ],
+      "address": "0x1431C2F50",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] 收集盒下界 = min(preAABB.minY - 0.5625*1.01, preAABB.minY - 0.2 - |delta.y|)，上界 = maxY + 0.5625；盒缓存在 MoveRequest+0x18，被旧盒包含则直接返回；重建走 a10->vfn[+0xB0](out,&box,1,..) 再写回 +0x58",
+        "[实测] 75 个按 tick 对齐样本：盒下界逐位复现（<1e-4），候选表长度与弹否 0 反例"
+      ]
+    },
+    "@collision_gather_system": {
+      "strategy": [
+        "xrefs_to:@collision_shape_gather -> per-entity system body",
+        "view components {0xAF9E0C56, AABBShapeComponent, 0x9AB0D3FF, MoveRequestComponent}"
+      ],
+      "address": "0x1431DD080",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 系统体把 MoveRequest(第 6 个视图组件) 与收集盒参数传给 0x1431C2F50；两个组件 id 未解析出名字"
+      ]
+    },
+    "@collision_gather_runner": {
+      "strategy": [
+        "xrefs_to:@collision_shape_gather -> entity iterator"
+      ],
+      "address": "0x1431DC500",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 构造视图 {0xAF9E0C56, AABBShapeComponent(3133256655), 0x9AB0D3FF, MoveRequestComponent(1284469384)} 并按实体回调"
+      ]
+    },
+    "@step_box_helper": {
+      "strategy": [
+        "callee of @collision_shape_gather; literal *a3 * 1.01 with autoStep"
+      ],
+      "address": "0x14B177650",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 台阶盒：下扩 autoStep*1.01、上扩 autoStep；调用点 0x1431C314A"
+      ]
+    },
+    "@sweep_box_helper": {
+      "strategy": [
+        "callee of @collision_shape_gather at 0x1431C3193"
+      ],
+      "address": "0x149026EB0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 由 (位移, autoStep, preAABB) 生成第二个候选盒并进并集"
+      ]
     }
   }
 }

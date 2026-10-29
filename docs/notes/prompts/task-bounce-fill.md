@@ -150,7 +150,7 @@ py -3.11 driver/dev.py restore-config   # 还原 harness.json（dev.py 会留 .p
 
 ## §5 本轮的临时产物（不在仓库里）
 
-`C:\Users\xiaozi\reverse-skill\work\mc-bedrock-12651-bounce\`：
+`%USERPROFILE%\reverse-skill\work\mc-bedrock-12651-bounce\`（本地临时目录，不进仓库）：
 
 - `dec_*.c`：handler / resolver / 执行器 / 视图构造 / BlockCollisionsSystem / invoker 的反编译；
 - `scan_text.py` / `scan_container_write.py` / `scan_entry_58.py` / `scan_vec_write2.py`：锚点扫描；

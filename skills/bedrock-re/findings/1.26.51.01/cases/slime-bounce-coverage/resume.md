@@ -1,10 +1,10 @@
 # resume: slime-bounce-coverage
 
 - version: `1.26.51.01`
-- goal: 第三轮：追 BlockCollisionsSystem 的 tick 体与候选表填充
+- goal: 第四轮：定位并证明 MoveRequest+0x58 候选表的填充判据
 - environment: -
-- current round: 4
-- last record: r03-011
+- current round: 5
+- last record: r04-015
 - journal: `skills/bedrock-re/findings/1.26.51.01/cases/slime-bounce-coverage/journal.jsonl`
 
 ## Confirmed (static closure required)
@@ -14,6 +14,8 @@
 - r01-005: 覆盖块挡住反弹的阈值由「覆盖块碰撞盒中心 vs 探针」决定：顶面在黏液上表面、 高度 h 的方块中心在 top-h/2，被选中需 h/2 <= 0.2，即 h >= 0.4（6/16=0.375 差 0.0125 落在临界外侧，7/16=0.4375 起稳定挡住）。 [code; 解析器选形状的 `centerY <= minY-0.2`（0x141E144A0）+ 实测 shape 记录 （雪层盒 y=[-59,-58.625] ⇒ center=-58.8125，黏液盒 y=[-60,-59] ⇒ center=-59.5） 代入即得 h>=0.4。]
 - r02-007: 解析器的候选形状容器是 MoveRequestComponent 的成员：组件 id 0x4C8F7288、 表项 152 B，容器在 +0x58。系统视图由 0x148B6AB80 按 StateVector(36)/AABBShape(32)/MoveRequest(152)/ActorDataFlag(24)/VerticalCollisionFlag 构造，bounce 执行器把该表项作为 5th 参数传给处理器， 处理器再以 `a5 + 0x58` 调解析器。 [code; 0x148B6AB80 的 5 次 sub_14021F330/sub_1402287E0/sub_141AA7610 调用分别带 459100728/3133256655/1284469384/3329500915/3332385434；1284469384=0x4C8F7288 即 MoveRequest，执行器按 152 字节步长取表项；0x148B5DB00 里 `sub_141E144A0(a5+88, ...)`。]
 - r03-010: 候选表的宿主是 MoveRequestComponent+0x58，碰撞侧来自 BlockCollisionsSystem （0x14488F8E0）注册的子系统；其组件 BlockCollisionsSystem::BlockCollisionResolutionVectorComponent 的 id 是 0x2462ED53。 [code; 0x1448A5100 里 strcpy 该名字后写死 610463059=0x2462ED53；0x14488F8E0 用 sub_1463B13E0 注册四个子系统，视图定义由 0x1448A2B80/3FB0/4BD0/5100 构造。]
+- r04-012: MoveRequest+0x58 的候选形状表由 sub_1431C2F50 填充；它先用 「扫掠盒 ∪ 台阶盒 ∪ (preAABB 下扩 0.2+|δy|、上扩 0.08)」算出收集盒，再经 a10->vfn[+0xB0](out,&box,1,..) 向方块源要形状，最后写回 +0x58；盒缓存在 +0x18， 新盒被旧盒包含时直接返回（表不重建）。 [code; 0x1431C3049..0x1431C3122 逐轴按符号扫掠请求位移；0x1431C314A 调 0x14B177650 （台阶盒，`*a3 * 1.01`）；0x1431C3193 调 0x149026EB0；0x1431C31F7 下界取 a2.minY-0.2-|delta.y|；0x1431C31FC 上界取 a2.maxY+0.08；0x1431C324A..0x1431C32B0 盒包含即 return；0x1431C34D9 虚调用 vtable+0xB0；0x1431C34DF/0x1431C35FA 写 +0x58 （`add [r13+0x60], 0x18` = 24 B push_back）。系统体 0x1431DD080、runner 0x1431DC500。]
+- r04-013: 收集盒下界 min(preY-0.5625*1.01, preY+δy-0.2) 逐位决定候选表内容：黏液块入表 ⇔ 盒下界 < 黏液顶；3 层雪时 弹 ⇔ 黏液入表。δy 取 MoveRequest+0x30..0x38 的 「请求位移」。 [code; 见上一条的取 min/max 站点；δy<0 时 preY+δy-0.2 < preY+δy，扫掠项被预测项覆盖。]
 
 ## Open / pending
 

@@ -159,7 +159,12 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--mem-size",
         type=_hexint,
         default=0,
-        help="bytes to capture at arg+offset (4..64, step 4)",
+        help="bytes to capture at arg+offset (4..128, step 4)",
+    )
+    hook_install.add_argument(
+        "--mem-deref",
+        action="store_true",
+        help="treat arg+offset as a pointer and capture from the pointee",
     )
 
     hook_rm = sub.add_parser("hook-rm")

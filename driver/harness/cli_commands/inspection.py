@@ -78,6 +78,7 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                 "mem_arg": args.mem_arg,
                 "mem_offset": args.mem_offset,
                 "mem_size": args.mem_size,
+                "mem_deref": args.mem_deref,
             }
         print(
             json.dumps(

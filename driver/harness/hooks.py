@@ -67,7 +67,11 @@ class HookHit:
             mem_offset=int(mem.get("offset", 0)),
             mem_addr=int(mem.get("addr", 0)),
             mem=raw,
-            mem_f32=tuple(float(value) for value in mem.get("f32", [])),
+            mem_f32=tuple(
+                # nlohmann serialises NaN/Inf as null; keep the slot aligned.
+                float(value) if isinstance(value, (int, float)) else float("nan")
+                for value in mem.get("f32", [])
+            ),
         )
 
 

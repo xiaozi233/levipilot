@@ -19,6 +19,7 @@ class HookCommands(PipeConnection):
         mem_arg: int | None = None,
         mem_offset: int = 0,
         mem_size: int = 0,
+        mem_deref: bool = False,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Install an enter hook by LL symbol or (gated) VA; dry_run only validates.
@@ -33,8 +34,10 @@ class HookCommands(PipeConnection):
         if mem_size:
             if mem_arg is None or not 0 <= int(mem_arg) <= 3:
                 raise ValueError("mem_arg must be 0..3 when mem_size is set")
-            if int(mem_size) % 4 or not 4 <= int(mem_size) <= 64:
-                raise ValueError("mem_size must be a multiple of 4 between 4 and 64")
+            if int(mem_size) % 4 or not 4 <= int(mem_size) <= 128:
+                raise ValueError("mem_size must be a multiple of 4 between 4 and 128")
+            if not -4096 <= int(mem_offset) <= 4096:
+                raise ValueError("mem_offset must be within -4096..4096")
         message: dict[str, Any] = {
             "cmd": "hook_install",
             "tag": tag,
@@ -47,6 +50,8 @@ class HookCommands(PipeConnection):
             message["mem_arg"] = int(mem_arg or 0)
             message["mem_offset"] = int(mem_offset)
             message["mem_size"] = int(mem_size)
+            if mem_deref:
+                message["mem_deref"] = True
         if symbol is not None:
             message["symbol"] = symbol
         else:

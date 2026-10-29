@@ -187,11 +187,13 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
         HookMemSpec mem;
         if (j.contains("mem_size")) {
             mem.arg    = j.value("mem_arg", 0u);
-            mem.offset = j.value("mem_offset", 0u);
+            mem.offset = j.value("mem_offset", 0);
             mem.size   = j.value("mem_size", 0u);
-            if (mem.arg > 3 || mem.size % 4 != 0 || mem.size > 64 || mem.offset > 4096) {
+            mem.deref  = j.value("mem_deref", false);
+            if (mem.arg > 3 || mem.size % 4 != 0 || mem.size > 128 || mem.offset > 4096
+                || mem.offset < -4096) {
                 enqueue(
-                    R"({"event":"error","reason":"bad_mem_spec","hint":"mem_arg 0..3, mem_size 4..64 step 4, mem_offset <= 4096"})"
+                    R"({"event":"error","reason":"bad_mem_spec","hint":"mem_arg 0..3, mem_size 4..128 step 4, mem_offset -4096..4096"})"
                 );
                 return true;
             }

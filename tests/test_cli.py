@@ -216,6 +216,7 @@ class CliCompatibilityTests(unittest.TestCase):
                     "mem_arg": 3,
                     "mem_offset": 16,
                     "mem_size": 24,
+                    "mem_deref": False,
                 },
             ],
         )

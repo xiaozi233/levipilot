@@ -15,7 +15,7 @@ constexpr std::size_t kHookSlots        = 4;
 constexpr std::size_t kHookRingCapacity = 1u << 12;
 constexpr std::size_t kHookMaxFrames    = 4;
 // One AABB is 24 B and a Vec3 is 12 B; 64 B also covers a small struct header.
-constexpr std::size_t kHookMemMax       = 64;
+constexpr std::size_t kHookMemMax       = 128; // includes one deref hop
 constexpr char const* kJumpPendingSymbol = "MobJump::setJumpPendingScale";
 
 using SetJumpPendingScaleFn = void (*)(EntityContext&, float);
@@ -37,7 +37,7 @@ struct HookHit {
     // Optional snapshot of arg[memArg] + memOff, taken while the buffer is
     // still alive. memLen == 0 means "this hit did not ask for memory".
     std::uint32_t              memArg  = 0;
-    std::uint32_t              memOff  = 0;
+    std::int32_t               memOff  = 0;
     std::uint32_t              memLen  = 0;
     std::uint32_t              memOk   = 0;
     std::uint64_t              memAddr = 0;
@@ -59,8 +59,9 @@ struct HookSlot {
     std::uint64_t              address = 0;
     std::atomic<std::uint32_t> sample{1};
     std::atomic<std::uint32_t> memArg{0};
-    std::atomic<std::uint32_t> memOff{0};
+    std::atomic<std::int32_t>  memOff{0};
     std::atomic<std::uint32_t> memLen{0};
+    std::atomic_bool           memDeref{false};
     ll::memory::FuncPtr        target = nullptr;
     ll::memory::FuncPtr        detour = nullptr;
     std::atomic<SetJumpPendingScaleFn> originTyped{nullptr};
@@ -145,13 +146,22 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
     std::uint32_t const memLen = watch.memLen.load(std::memory_order_relaxed);
     if (memLen > 0) {
         std::uint32_t const memArg = watch.memArg.load(std::memory_order_relaxed);
-        std::uint32_t const memOff = watch.memOff.load(std::memory_order_relaxed);
+        std::int32_t const  memOff = watch.memOff.load(std::memory_order_relaxed);
         std::uint64_t const base   = memArg == 0 ? a : memArg == 1 ? b : memArg == 2 ? c : d;
+        std::uint64_t       target = base + static_cast<std::uint64_t>(static_cast<std::int64_t>(memOff));
+        if (watch.memDeref.load(std::memory_order_relaxed)) {
+            std::uint64_t pointee = 0;
+            if (!readMemory(target, &pointee, sizeof(pointee)) || pointee == 0) {
+                target = 0;
+            } else {
+                target = pointee;
+            }
+        }
         record.memArg  = memArg;
         record.memOff  = memOff;
         record.memLen  = memLen;
-        record.memAddr = base != 0 ? base + memOff : 0;
-        record.memOk   = base != 0 && readMemory(base + memOff, record.mem, memLen) ? 1u : 0u;
+        record.memAddr = target;
+        record.memOk   = target != 0 && readMemory(target, record.mem, memLen) ? 1u : 0u;
     }
     record.seq.store(index + 1, std::memory_order_release);
     watch.captured.fetch_add(1, std::memory_order_relaxed);
@@ -254,7 +264,9 @@ nlohmann::json hookInstall(
     bool               injectFail,
     HookMemSpec const& mem
 ) {
-    if (mem.size != 0 && (mem.arg > 3 || mem.size % 4 != 0 || mem.size > kHookMemMax)) {
+    if (mem.size != 0
+        && (mem.arg > 3 || mem.size % 4 != 0 || mem.size > kHookMemMax || mem.offset > 4096
+            || mem.offset < -4096)) {
         return errorJson("bad_mem_spec");
     }
     std::uint64_t targetAddress = 0;
@@ -281,7 +293,7 @@ nlohmann::json hookInstall(
         };
         out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
         out["va"]     = useVa ? nlohmann::json(targetAddress) : nlohmann::json(nullptr);
-        out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}};
+        out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}, {"deref", mem.deref}};
         return out;
     }
     if (!executable) {
@@ -323,6 +335,7 @@ nlohmann::json hookInstall(
         watch.memArg.store(mem.arg, std::memory_order_relaxed);
         watch.memOff.store(mem.offset, std::memory_order_relaxed);
         watch.memLen.store(mem.size, std::memory_order_relaxed);
+        watch.memDeref.store(mem.deref, std::memory_order_relaxed);
         watch.target = reinterpret_cast<ll::memory::FuncPtr>(targetAddress);
         watch.detour = useVa ? genericDetour(static_cast<std::size_t>(slot))
                              : typedDetour(static_cast<std::size_t>(slot));
@@ -435,7 +448,7 @@ nlohmann::json hookInstall(
     };
     out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
     out["va"]     = useVa ? nlohmann::json(targetAddress) : nlohmann::json(nullptr);
-    out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}};
+    out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}, {"deref", mem.deref}};
     return out;
 }
 
@@ -516,6 +529,7 @@ nlohmann::json hookListJson() {
             {"mem_arg",  watch.memArg.load()          },
             {"mem_off",  watch.memOff.load()          },
             {"mem_len",  watch.memLen.load()          },
+            {"mem_deref", watch.memDeref.load()        },
             {"hits",     watch.hits.load()            },
             {"captured", watch.captured.load()        },
         });
@@ -547,9 +561,11 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
             break;
         }
         std::string tag;
+        bool        deref = false;
         for (std::size_t slot = 0; slot < kHookSlots; ++slot) {
             if (gSlots[slot].id.load(std::memory_order_relaxed) == record.hookId) {
-                tag = gSlots[slot].tag;
+                tag   = gSlots[slot].tag;
+                deref = gSlots[slot].memDeref.load(std::memory_order_relaxed);
                 break;
             }
         }
@@ -573,6 +589,7 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
                 {"offset", record.memOff                  },
                 {"len",    record.memLen                  },
                 {"ok",     record.memOk != 0              },
+                {"deref",  deref                          },
                 {"addr",   record.memAddr                 },
                 {"hex",    hexEncode(record.mem, record.memLen)},
             };

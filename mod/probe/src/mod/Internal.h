@@ -370,8 +370,12 @@ bool hookAddressExecutable(std::uint64_t addr);
 // snapshot, and the detour then costs one predictable branch.
 struct HookMemSpec {
     std::uint32_t arg    = 0; // 0..3 = rcx/rdx/r8/r9
-    std::uint32_t offset = 0;
-    std::uint32_t size   = 0; // 0, or a multiple of 4 no larger than 64
+    std::int32_t  offset = 0; // -4096..4096; negative reaches the base of a
+                              // struct from a pointer to one of its members
+    std::uint32_t size   = 0; // 0, or a multiple of 4 no larger than 128
+    // Read a pointer at arg+offset first, then snapshot from the pointee. Use
+    // it for vectors/arrays reached through a member (e.g. a shape list).
+    bool          deref  = false;
 };
 
 nlohmann::json hookInstall(

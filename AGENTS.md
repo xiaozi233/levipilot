@@ -42,6 +42,8 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 | `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
 | `driver/landing.py` | 每轮逆向落盘：`begin/probe/claim/end/close/abandon`；账本在 `skills/bedrock-re/findings/` |
 | `driver/bounce_predict.py` | 黏液反弹预测器（覆盖高度 + 落差 → 弹否）；`--validate` 回放账本里的逐 tick 实测 |
+| `driver/pe_map.py` | 地址 → 所属段/函数（`.pdata` 二分，读磁盘上的 exe，离线可用） |
+| `driver/ida.py` | IDA MCP 客户端：端点发现、`idb_open` 重试、会话缓存、`decompile/callers` |
 | `scenarios/` | 场景 DSL 的 JSON |
 | `skills/bedrock-re/` | 静态优先的逆向 + 实验 skill（取代 `bedrock-client-re` / `reverse-security` / `mcbe-harness-experiments`），**真身、随仓库提交**；`.zcode/skills/bedrock-re` 与 `~/.agents/skills/bedrock-re` 是目录联接 |
 | `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`）、UI 自动化、mod 构建、移植流程（`porting.md`）、静态优先的逆向方法与踩坑（`reverse-engineering.md`）、`offsets/` 版本 profile |
@@ -208,7 +210,7 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
 执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **224/224**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-29 干净地面重跑）、
-离线单测 **238/238**、ruff/mypy（driver+tests）全绿。
+离线单测 **262/262**、ruff/mypy（driver+tests）全绿。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage

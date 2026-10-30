@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..connection import PipeConnection
+from .hooks import remember_ring_head, ring_head
 
 
 class WatchCommands(PipeConnection):
@@ -34,7 +35,10 @@ class WatchCommands(PipeConnection):
         }
         if depth is not None:
             message["depth"] = int(depth)
-        return self.request(message, "watch_installed", timeout=timeout)
+        reply = self.request(message, "watch_installed", timeout=timeout)
+        if reply.get("id") is not None:
+            remember_ring_head(self, "watch", int(reply["id"]))
+        return reply
 
     def watch_clear(
         self, watch_id: int | None = None, *, all: bool = False, timeout: float | None = None
@@ -51,7 +55,22 @@ class WatchCommands(PipeConnection):
     def watch_list(self) -> dict[str, Any]:
         return self.request({"cmd": "watch_list"}, "watch_list")
 
-    def watch_drain(self, since: int = 0, *, limit: int = 4096) -> dict[str, Any]:
-        return self.request(
-            {"cmd": "watch_drain", "since": int(since), "limit": int(limit)}, "watch_hits"
+    def watch_drain(
+        self,
+        since: int | None = None,
+        *,
+        watch_id: int | None = None,
+        limit: int = 4096,
+    ) -> dict[str, Any]:
+        """Drain watch hits; by default only those of the watchpoint set last.
+
+        Same rules as ``hook_drain``: ``since=None`` starts at the install-time
+        ring head, and ``watch_id`` filters rows to one watchpoint.
+        """
+        resolved = ring_head(self, "watch", watch_id) if since is None else int(since)
+        reply = self.request(
+            {"cmd": "watch_drain", "since": resolved, "limit": int(limit)}, "watch_hits"
         )
+        if watch_id is not None:
+            reply["hits"] = [hit for hit in reply.get("hits", []) if hit.get("watch") == watch_id]
+        return reply

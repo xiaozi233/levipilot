@@ -143,6 +143,67 @@ capstone 定位的处理器一致（8 参数签名）。**注意**：这套 MCP 
 本轮结论落在 [`bounce-12651.md`](bounce-12651.md)，账本在
 `skills/bedrock-re/findings/1.26.51.01/cases/slime-bounce-coverage/`。
 
+## P8 hook / watch 的环是进程级的，`drain(since=0)` 会吐旧记录（已修）
+
+**现象**：抓回来的 1300 行里混着上一轮钩子的记录，`mem.len` 直方图出现
+24/48/64/72/128 —— 环是全进程共享的，`since=0` 等于"从头重放"。
+
+**修法**：客户端在 `hook_install` / `watch_set` 之后各做一次 `hook_list` /
+`watch_list`，记住当时的 `head`；`hook_drain()` / `watch_drain()` 的 `since`
+默认 `None` → 用记下的 head。显式传 `since` 仍是原语义；另加 `hook_id=` /
+`watch_id=` 在客户端过滤行。CLI 的 `--since` 默认改成 `None`，help 文本不变
+（`tests/fixtures/cli-baseline.jsonl` 没动）。
+
+**验收**：`tests/test_hooks.py::RingHeadTests`（默认取 head、显式 since 保留、
+按 id 过滤、没装过钩子时回落 0）。
+
+## P9 没有「地址 → 函数」的查询（已修）
+
+**现象**：拿到 watch/hook 的 RIP 后，每次都要手写 PE 解析（section 表 + `.pdata`
+二分），一轮里写了三次。
+
+**修法**：`driver/pe_map.py` —— mmap 读 exe，`function_at()` 对 `.pdata` 的
+RUNTIME_FUNCTION 做二分，`--sections` 打表；默认取 `MCBE_EXE` 或最新的
+`%APPDATA%\levilauncher.exe\versions\*\Minecraft.Windows.exe`。
+
+```bash
+py -3.11 driver/pe_map.py 0x1431C35FF
+#   section .text (+0x31c35ff)
+#   function 0x1431c2f50..0x1431c4494  (size 0x1544, offset +0x6af)
+```
+
+**验收**：`tests/test_pe_map.py`（合成 PE 头部与 `.pdata` 各一条 + 真实二进制上的
+性质检查：返回区间必须包含查询地址）。
+
+## P10 IDA 后端：会话静默消失，根因是 idalib 打不开任何库（客户端已修，后端待外部处理）
+
+**现象**（本轮三次）：`idb_list` 返回空；已开 session 变
+`Worker for session ... is not reachable`；`idb_open` 回 `WinError 10054`；
+supervisor 日志出现 `Failed to open initial binary`。
+
+**客户端的修法** `driver/ida.py`：
+
+- 端口不再假设 8745 —— supervisor 实际可能绑 13337；从我们自己写的日志里发现端点，
+  再退回已知端口表；
+- `idb_open` 的回复丢了就轮询 `idb_list` 等会话（冷库要几分钟）；
+- 会话 id 缓存到 `out/ida-session.json`，stale 时自动重开一次；
+- 失败时把 supervisor 日志尾巴贴进错误里，不用再去翻文件。
+
+```bash
+py -3.11 driver/ida.py status / start / open
+py -3.11 driver/ida.py decompile 0x1431C2F50
+py -3.11 driver/ida.py callers 0x1431C2F50
+```
+
+**根因（本轮定位，不在本仓库）**：直接 `import idapro; idapro.open_database(<i64>)`
+和打开**原始 exe** 都报
+`FATAL ERROR: Oops! internal error 1228 occurred.` —— 当前 idalib 对任何数据库都失败，
+与客户端、与会话无关。清掉 `.id0/.id1/.nam/.til` 强制重新解包无效（解包成功，
+随后仍报 1228）。排查方向：重启 IDA/机器、核对许可（9.x 部分版本走在线许可）、
+用 `idat64 -A` 打开任意小文件复现。
+
+**影响**：本轮静态部分最终用 capstone 完成（见 `bounce-12651.md` §2.2 的说明）。
+
 ## 状态一览
 
 | 项 | 状态 | 证据 |
@@ -153,8 +214,11 @@ capstone 定位的处理器一致（8 参数签名）。**注意**：这套 MCP 
 | P4 dev.py 配置 | 已修 | `tests/test_dev_config.py` |
 | P5 IDA MCP | 文档化 + 加速后端 | 本文件 §P5 |
 | P6 claim 细节 | 文档化 | 本文件 §P6 |
+| P8 drain 默认 since | 已修 | `tests/test_hooks.py::RingHeadTests` |
+| P9 地址 → 函数 | 已修 | `driver/pe_map.py` + `tests/test_pe_map.py` |
+| P10 IDA 会话 | 客户端已修；后端 1228 待外部处理 | `driver/ida.py` + `tests/test_ida_client.py` |
 
 改完的验收（2026-10-29，干净地面、`allow_input_inject` + `allow_selftest_stress`）：
 
 - live selftest **224/224**（新增 `h0_hook_mem`）；
-- 离线单测 **238/238**；`ruff check` / `ruff format --check` / `mypy` 全绿。
+- 离线单测 **262/262**；`ruff check` / `ruff format --check` / `mypy` 全绿。

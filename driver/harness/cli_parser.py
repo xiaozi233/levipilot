@@ -138,7 +138,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     sub.add_parser("watch-list")
 
     watch_drain = sub.add_parser("watch-drain")
-    watch_drain.add_argument("--since", type=int, default=0)
+    watch_drain.add_argument("--since", type=int, default=None)
     watch_drain.add_argument("--limit", type=int, default=4096)
 
     hook_install = sub.add_parser("hook-install", help="install an enter hook")
@@ -172,7 +172,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     sub.add_parser("hook-list")
 
     hook_drain = sub.add_parser("hook-drain")
-    hook_drain.add_argument("--since", type=int, default=0)
+    hook_drain.add_argument("--since", type=int, default=None)
     hook_drain.add_argument("--limit", type=int, default=4096)
 
     hook_call = sub.add_parser("hook-call", help="call a hooked symbol for verification")

@@ -71,8 +71,9 @@ void __fastcall resolve(Shapes* shapes, Out* out, AABB* aabb);   // rcx, rdx, r8
 ```
 
 调用点传进来的 `aabb` 是**移动后、已裁剪**的那个实体 AABB（脚底在方块顶面上）；
-`shapes` 是 `MoveRequest+0x58`，`refs` 在 `+0x70`。重构自指令列表（本轮 IDA 反编译服务掉线，
-用 capstone 逐条读的；`resolver.disasm.txt` 是本轮临时产物）：
+`shapes` 是 `MoveRequest+0x58`，`refs` 在 `+0x70`。下面这份重构自指令列表（当时 IDA 后端
+掉线，用 capstone 逐条读；2026-10-30 重建数据库后用 Hex-Rays 复核过，`a3[1] + -0.2`、
+压扁后的 `(v6 - v6) * 0.5 + v6`、`3.4028235e38` 初值、平方距离决平、三次 `floorf` 逐点一致）：
 
 ```c
 float probe = aabb->minY - 0.2f;      // 探针

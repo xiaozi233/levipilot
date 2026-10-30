@@ -36,7 +36,7 @@ HUD / 跑酷 / 练习 / Input Checker **不在本项目的复刻范围内**，�
 # 开发循环：编译、重启 exe、等主菜单、直接进世界，全程不用点 UI
 py -3.11 driver/dev.py run --world "超平坦测试" --build
 
-# 只重启并进世界（不编译）
+# 按需重建、重启并进世界；--no-build 可跳过构建
 py -3.11 driver/dev.py run --world "超平坦测试"
 
 # 手动启动时也可以让 mod 自己进世界：写 mods/probe/harness.json

@@ -212,6 +212,9 @@ void WorldSession::listOnClient() {
 
         nlohmann::json out{
             {"event",  "worlds"               },
+            {"ready", !mInWorld.load() && isMenuScreen(client->getScreenName())
+                && client->getMinecraftGame().isLeaveGameDone() && client->isLeaveGameDone()
+                && client->getMinecraftGame().canStartLocalServer()},
             {"worlds", nlohmann::json::array()}
         };
         for (auto const& summary : list) {

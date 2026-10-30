@@ -95,7 +95,8 @@ scenario DSL / LLM / shell
 - **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
   结构化异常由 `dispatchWithSeh` 转成 `internal_error`，不会写 minidump。
 
-输入、视角、传送合并在 `RequestBlock`：写端串行更新，tick 用 seqlock 快照读取；
+输入、视角、传送合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
+载荷按 64 位原子字读写，tick 有界校验序号，竞争时保留上一份已验证快照，不等待写者。
 其他跨线程状态使用互斥量（任务、背包等请求）或原子量（各种 `*Requested`、`mRunning`）。
 任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
@@ -162,6 +163,10 @@ driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 ```
+
+`PipeConnection.subscribe(event, consumer)` 在请求线程分发通知，并返回幂等的取消函数。
+订阅只属于当前连接代次；订阅者不得重入请求。场景录制订阅 tick，不再替换 `readline`，
+因此 `request` / `wait_ticks` 消费响应时也会采集 tick，且不会把采样堆积到 pending 队列。
 
 `ModClient` 用独立轮询线程读取同步管道，避免挂起的 `ReadFile` 阻塞写入。
 每次连接建立 `_PipeSession`，独占句柄、停止信号、读队列和延后事件；读取线程只持有

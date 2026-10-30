@@ -2,6 +2,12 @@
 
 面向维护者。用户 API 见 [`../mod/README.md`](../mod/README.md)。
 
+2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
+快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
+同步收集 tick，停止失败会传递错误。离线全量 **280/280**，现场 **228/228**（未跳过）；
+真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
+[`reliability-repairs.md`](reliability-repairs.md)。
+
 ## 注入时机
 
 - Hook `LocalPlayer::$normalTick`（LL 实例 hook），在 `origin()` **之前**注入输入、之后采样。

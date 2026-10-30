@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+from collections.abc import Callable
 from typing import Any
 
 from driver.harness import Harness, ModPipeError, ModTimeout
@@ -87,22 +88,12 @@ class ModAgent:
         self._samples: list[dict[str, Any]] = []
         self._recording = False
         self._move_flags = "none"
-        self._raw_readline = self.client.readline
-        self.client.readline = self._readline  # type: ignore[method-assign]
-
-    # -- transport plumbing -------------------------------------------------
-    def _readline(self, timeout: float | None = None) -> dict[str, Any]:
-        # Keep PipeConnection.readline's signature so keyword calls such as
-        # readline(timeout=5) keep working through the patch.
-        message = self._raw_readline(timeout)
-        if message.get("event") == "tick" and self._recording:
-            self._samples.append(_tick_row(message))
-        return message
+        self._unsubscribe: Callable[[], None] | None = None
 
     def close(self) -> None:
-        if getattr(self, "_raw_readline", None) is not None:
-            self.client.readline = self._raw_readline  # type: ignore[method-assign]
-            self._raw_readline = None  # type: ignore[assignment]
+        if self._recording:
+            with contextlib.suppress(ModPipeError):
+                self.stop_recording()
         self.harness.close()
 
     def __enter__(self) -> ModAgent:
@@ -134,19 +125,31 @@ class ModAgent:
             raise AgentError(str(exc)) from exc
 
     def start_recording(self, max_ticks: int = 0) -> dict[str, Any]:
+        if self._recording:
+            raise AgentError("recording already active")
         self._samples.clear()
         self._recording = True
         try:
             self.client.start(max_ticks)
-        except Exception:
-            self._recording = False
+            self._unsubscribe = self.client.subscribe(
+                "tick", lambda message: self._samples.append(_tick_row(message))
+            )
+        except BaseException:
+            self._end_recording()
             raise
         return {"ok": True, "max_ticks": max_ticks}
 
-    def stop_recording(self) -> dict[str, Any]:
+    def _end_recording(self) -> None:
         self._recording = False
-        with contextlib.suppress(ModPipeError):
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+    def stop_recording(self) -> dict[str, Any]:
+        try:
             self.client.request({"cmd": "stop"}, "stopped")
+        finally:
+            self._end_recording()
         samples = list(self._samples)
         self._samples.clear()
         return {

@@ -54,6 +54,9 @@ class _PipeSession:
     stopped: threading.Event = field(default_factory=threading.Event)
     reader: threading.Thread | None = None
     pending: deque[dict[str, Any]] = field(default_factory=deque)
+    consumers: dict[str, dict[object, Callable[[dict[str, Any]], None]]] = field(
+        default_factory=dict
+    )
     failure: str = "pipe 已关闭（游戏退出或 mod 被卸载）"
 
 
@@ -191,16 +194,52 @@ class PipeConnection:
     def _next_line(self, timeout: float | None = None) -> dict[str, Any]:
         wait = self.timeout if timeout is None else timeout
         session = self._session
-        if session.stopped.is_set() and session.lines.empty():
-            raise ModDisconnected(session.failure)
-        try:
-            message = session.lines.get(timeout=max(0.0, wait))
-        except queue.Empty as exc:
-            raise ModTimeout(f"等待 mod 响应超时（{wait:.1f}s）") from exc
-        if message.get("event") == "__closed__":
-            self._disconnect(session)
-            raise ModDisconnected(session.failure)
-        return message
+        deadline = time.monotonic() + max(0.0, wait)
+        while True:
+            if session.stopped.is_set() and session.lines.empty():
+                raise ModDisconnected(session.failure)
+            try:
+                message = session.lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty as exc:
+                raise ModTimeout(f"等待 mod 响应超时（{wait:.1f}s）") from exc
+            if message.get("event") == "__closed__":
+                self._disconnect(session)
+                raise ModDisconnected(session.failure)
+            consumers = tuple(session.consumers.get(str(message.get("event")), {}).values())
+            if not consumers:
+                return message
+            try:
+                for consume in consumers:
+                    consume(message)
+            except BaseException:
+                self._disconnect(session)
+                raise
+            if time.monotonic() >= deadline:
+                raise ModTimeout(f"等待 mod 响应超时（{wait:.1f}s）")
+
+    def subscribe(
+        self, event: str, consume: Callable[[dict[str, Any]], None]
+    ) -> Callable[[], None]:
+        """Consume new notifications during any read/request; return an unsubscribe function.
+
+        Consumers run on the request's thread under the exchange lock and must
+        not issue requests themselves. Subscriptions belong to this connection
+        generation, so reconnecting cannot deliver stale events to them.
+        """
+        with self.exchange():
+            session = self._session
+            token = object()
+            session.consumers.setdefault(event, {})[token] = consume
+
+        def unsubscribe() -> None:
+            with self.exchange():
+                handlers = session.consumers.get(event)
+                if handlers is not None:
+                    handlers.pop(token, None)
+                    if not handlers:
+                        session.consumers.pop(event, None)
+
+        return unsubscribe
 
     def close(self) -> None:
         """Also safe from another thread to interrupt an outstanding read."""

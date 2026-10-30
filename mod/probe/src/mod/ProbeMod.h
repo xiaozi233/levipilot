@@ -3,6 +3,7 @@
 #include "mod/TaskModel.h"
 #include "mod/PacketTap.h"
 #include "mod/WorldSession.h"
+#include "mod/RequestModel.h"
 
 #include "ll/api/event/Listener.h"
 #include "ll/api/mod/NativeMod.h"
@@ -395,10 +396,10 @@ private:
     std::atomic<std::uint64_t> mTick{0};
     std::atomic<std::uint64_t> mMaxTicks{0};
 
-    // T9: movement, look and teleport requests share one seqlock'd block so the
-    // client tick can take a single lock-free snapshot. Pipe-thread writers
-    // publish under mRequestWriteMutex; the tick thread never takes it on the
-    // read path. Sequence numbers make each command visible exactly once, which
+    // Movement, look and teleport requests share one transactional mailbox so
+    // the client tick can take a single lock-free snapshot. Atomic payload
+    // words make concurrent reads legal. Command sequence numbers make each
+    // command visible exactly once, which
     // keeps the tick-local countdowns (ticks < 0 means "until stopped").
     struct RequestBlock {
         ControlState  input;
@@ -419,41 +420,16 @@ private:
 
     template <typename Fn>
     void updateRequests(Fn&& fn) {
-        // fn must only write POD fields of RequestBlock. A structured
-        // exception inside fn would skip the destructor of this lock_guard
-        // and leave mRequestSeq odd, which readRequests turns into a
-        // degraded "keep the last snapshot" tick instead of a hang.
-        std::lock_guard     writeLock(mRequestWriteMutex);
-        std::uint32_t const seq = mRequestSeq.load(std::memory_order_relaxed);
-        mRequestSeq.store(seq + 1, std::memory_order_relaxed); // odd: write in progress
-        std::atomic_thread_fence(std::memory_order_release);
-        fn(mRequestBlock);
-        mRequestSeq.store(seq + 2, std::memory_order_release); // even: stable
+        mRequests.update(std::forward<Fn>(fn));
     }
 
-    [[nodiscard]] RequestBlock readRequests() const {
-        // Bounded: a writer that faulted mid-update would leave the sequence
-        // odd forever. After the retry cap the tick keeps the last consistent
-        // snapshot instead of spinning, so the game survives a wedged writer.
-        RequestBlock last{};
-        for (int attempt = 0; attempt < 4096; ++attempt) {
-            std::uint32_t const before = mRequestSeq.load(std::memory_order_acquire);
-            if ((before & 1u) == 0) {
-                RequestBlock copy = mRequestBlock;
-                std::atomic_thread_fence(std::memory_order_acquire);
-                if (mRequestSeq.load(std::memory_order_relaxed) == before) {
-                    return copy;
-                }
-                last = copy;
-            }
-            std::this_thread::yield();
-        }
-        return last;
+    [[nodiscard]] RequestBlock readRequests() {
+        mRequests.read(mLastRequests);
+        return mLastRequests;
     }
 
-    alignas(64) std::atomic<std::uint32_t> mRequestSeq{0};
-    RequestBlock mRequestBlock;
-    std::mutex   mRequestWriteMutex;
+    detail::RequestMailbox<RequestBlock> mRequests;
+    RequestBlock mLastRequests{}; // Game-thread-owned fallback, never a partial copy.
 
     // safeTickPre/Post stage helpers; each keeps the exact ordering the
     // monolithic functions had (ProbeMod.cpp).
@@ -542,6 +518,7 @@ private:
     std::atomic_bool   mPrevActionRmb{false};
     std::array<bool, 9> mButtonStates{};
     std::array<bool, 9> mHandlerStates{};
+    std::atomic_bool mResetInputButtons{false};
 
     // Look requests live in RequestBlock above (mLookMutex removed in T9).
 

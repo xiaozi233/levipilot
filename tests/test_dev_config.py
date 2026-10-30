@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from driver import dev
 
@@ -79,6 +80,40 @@ class AutoConfigTests(unittest.TestCase):
         self.path.write_text(json.dumps({"allow_input_inject": True}), encoding="utf-8")
         dev.write_auto_config(self.dir, None, {}, None)
         self.assertEqual(self.read(), {"allow_input_inject": True})
+
+    def test_empty_update_clears_stale_launch_actions_and_can_restore(self) -> None:
+        previous = {"auto_enter": "旧世界", "options": {"gfx_gamma": "1.2"}, "allow_write": True}
+        self.path.write_text(json.dumps(previous), encoding="utf-8")
+        dev.write_auto_config(self.dir, None, {})
+        self.assertNotIn("auto_enter", self.read())
+        self.assertNotIn("options", self.read())
+        self.assertTrue(self.read()["allow_write"])
+        self.assertTrue(dev.restore_config(self.dir))
+        self.assertEqual(self.read(), previous)
+
+    def test_write_config_does_not_build_stop_install_or_launch(self) -> None:
+        with (
+            patch.object(dev, "probe_is_stale", side_effect=AssertionError("build inspection")),
+            patch.object(dev, "build_mod", side_effect=AssertionError("build")),
+            patch.object(dev, "kill_game", side_effect=AssertionError("stop")),
+            patch.object(dev, "install_mod", side_effect=AssertionError("install")),
+            patch.object(dev.subprocess, "Popen", side_effect=AssertionError("launch")),
+        ):
+            # The exe deliberately does not exist: writing configuration needs none.
+            code = dev.main(
+                [
+                    "run",
+                    "--write-config",
+                    "--build",
+                    "--version-dir",
+                    str(self.dir),
+                    "--world",
+                    "测试",
+                ]
+            )
+        self.assertEqual(code, 0)
+        config = json.loads((self.dir / "mods/probe/harness.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["auto_enter"], "测试")
 
 
 if __name__ == "__main__":

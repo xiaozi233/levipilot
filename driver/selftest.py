@@ -832,6 +832,27 @@ def check_mod_core_backpressure(client: ModClient, checks: Checks) -> None:
         checks.check("mod_core_world_survives_timeout", client.state().get("in_world") is True)
 
 
+def check_request_recovery(client: ModClient, checks: Checks) -> None:
+    before = client.state()
+    yaw, pitch = float(before["yaw"]), float(before["pitch"])
+    for command in (
+        {"cmd": "set", "sprint": "invalid"},
+        {"cmd": "move", "ticks": "invalid"},
+        {"cmd": "look", "relative": "invalid"},
+    ):
+        reply = client.request(command, "error")
+        checks.check(f"request_reject_{command['cmd']}", reply.get("reason") == "bad_command")
+    try:
+        client.look(yaw + 5, pitch, relative=False)
+        wait_ticks(client, 8)
+        actual = float(client.state()["yaw"])
+        gap = abs((actual - yaw - 5 + 180) % 360 - 180)
+        checks.check("request_recovers_after_bad_types", gap < 0.5, f"yaw_gap={gap:.3f}")
+    finally:
+        client.look(yaw, pitch, relative=False)
+        client.stop_move()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
@@ -867,6 +888,9 @@ def main(argv: list[str] | None = None) -> int:
             else [
                 "tests.test_transport.LineDecoderTests",
                 "tests.test_recording_commands",
+                "tests.test_mod_agent.RecordingIntegrationTests",
+                "tests.test_dev_config",
+                "tests.test_dev.GameShutdownTests",
                 "tests.test_spool",
             ]
         )
@@ -930,6 +954,7 @@ def main(argv: list[str] | None = None) -> int:
             str(chat),
         )
         check_dispatch_compatibility(client, checks)
+        check_request_recovery(client, checks)
         check_task_lifecycle(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)

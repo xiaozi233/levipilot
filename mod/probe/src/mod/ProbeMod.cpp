@@ -269,6 +269,12 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     // T9: one lock-free snapshot of movement/look/teleport requests per tick.
     RequestBlock const requests = readRequests();
 
+    if (mResetInputButtons.exchange(false, std::memory_order_acq_rel)) {
+        mButtonStates.fill(false);
+        mHandlerStates.fill(false);
+        mPrevJump = false;
+    }
+
     consumeTeleportRequest(player, requests);
 
     applyFlyRequest(player);

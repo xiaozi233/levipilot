@@ -154,6 +154,64 @@ class WriteTests(unittest.TestCase):
 
 
 class RequestTests(unittest.TestCase):
+    def test_subscribed_events_do_not_fill_pending_or_hide_other_events(self) -> None:
+        client = FakeClient()
+        samples = []
+        unsubscribe = client.subscribe("tick", samples.append)
+        for tick in range(5000):
+            client._session.lines.put({"event": "tick", "tick": tick})
+        client._session.lines.put({"event": "notice"})
+        client._session.lines.put({"event": "pong"})
+        self.assertEqual(client.ping()["event"], "pong")
+        self.assertEqual(len(samples), 5000)
+        self.assertEqual(client.readline(), {"event": "notice"})
+        unsubscribe()
+        unsubscribe()  # Cleanup is idempotent.
+        client._session.lines.put({"event": "tick", "tick": 5000})
+        self.assertEqual(client.readline()["tick"], 5000)
+
+    def test_subscriptions_belong_to_one_connection_generation(self) -> None:
+        client = FakeClient()
+        samples = []
+        unsubscribe = client.subscribe("tick", samples.append)
+        old_session = client._session
+        client._session = _PipeSession()
+        client._session.lines.put({"event": "tick", "tick": 1})
+        self.assertEqual(client.readline()["tick"], 1)
+        self.assertFalse(samples)
+        unsubscribe()
+        self.assertFalse(old_session.consumers)
+
+    def test_subscriber_exception_closes_the_incomplete_exchange(self) -> None:
+        client = FakeClient()
+
+        def fail(_event):
+            raise RuntimeError("consumer failed")
+
+        client.subscribe("tick", fail)
+        client._session.lines.put({"event": "tick"})
+        with self.assertRaisesRegex(RuntimeError, "consumer failed"):
+            client.ping()
+        self.assertTrue(client._session.stopped.is_set())
+
+    def test_notifications_do_not_extend_request_deadline(self) -> None:
+        client = FakeClient()
+        now = 0.0
+
+        def slow_consumer(_row):
+            nonlocal now
+            now = 2.0
+
+        client.subscribe("tick", slow_consumer)
+        client._session.lines.put({"event": "tick"})
+        client._session.lines.put({"event": "pong"})
+        with (
+            patch("driver.harness.connection.time.monotonic", side_effect=lambda: now),
+            self.assertRaises(ModTimeout),
+        ):
+            client.ping()
+        self.assertTrue(client._session.stopped.is_set())
+
     def test_preserves_unrelated_events(self) -> None:
         client = FakeClient()
         client._session.lines.put({"event": "tick", "tick": 1})

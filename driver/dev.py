@@ -63,12 +63,92 @@ def log(message: str) -> None:
         buffer.flush()
 
 
-def kill_game() -> None:
-    subprocess.run(
-        ["taskkill", "/F", "/IM", "Minecraft.Windows.exe"],
+def game_pids(exe: Path) -> list[int]:
+    """Match the full executable path so another installed version is untouched."""
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+            "Get-CimInstance Win32_Process -Filter \"Name='Minecraft.Windows.exe'\" | "
+            "Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress",
+        ],
         capture_output=True,
-        check=False,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=15,
     )
+    rows = json.loads(result.stdout) if result.stdout.strip() else []
+    if isinstance(rows, dict):
+        rows = [rows]
+    pids = []
+    for row in rows:
+        path = row.get("ExecutablePath")
+        if not path:
+            raise SystemExit("无法读取游戏进程路径；请以相同用户运行游戏与开发工具")
+        if Path(path).resolve() == exe.resolve():
+            pids.append(int(row["ProcessId"]))
+    return pids
+
+
+def kill_game(exe: Path | None = None, *, force: bool = False) -> None:
+    exe = exe or DEFAULT_VERSION / "Minecraft.Windows.exe"
+    pids = game_pids(exe)
+    if not pids:
+        return
+    if not force:
+        if len(pids) != 1:
+            raise SystemExit("目标 exe 有多个实例，无法确定保存退出的会话；请先关闭多余实例")
+        try:
+            with ModClient(connect_timeout=3, timeout=30) as client:
+                status = client.status()
+                spool = Path(str(status.get("spool", "")))
+                if spool.name != f"spool-{pids[0]}.jsonl":
+                    raise SystemExit("管道属于其他游戏实例，已保留目标进程")
+                if status.get("in_world"):
+                    log(f"saving and leaving world (pid={pids[0]})")
+                    # Remove replayed exit events before starting this exit.
+                    while True:
+                        try:
+                            client.wait_event("world_left", 0)
+                        except ModTimeout:
+                            break
+                    if not client.leave_world().get("ok"):
+                        raise SystemExit("保存退出请求失败，已保留游戏进程")
+                    client.wait_event("world_left", 45)
+                deadline = time.monotonic() + 45
+                while True:
+                    worlds = client.worlds()
+                    ready = worlds.get("ready")
+                    if ready is None:  # Compatibility with the previously installed mod.
+                        screen = str(client.screen().get("name", ""))
+                        ready = (
+                            "progress_screen" not in screen
+                            and ("start_screen" in screen or screen.startswith("ui://"))
+                            and client.signin().get("known")
+                        )
+                    if ready:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise ModTimeout("等待世界保存退出完成超时")
+                    time.sleep(0.1)
+        except ModPipeError as exc:
+            raise SystemExit(
+                f"未能确认保存退出，游戏已保留：{exc}；故障恢复可显式加 --force-stop"
+            ) from exc
+    # Recheck the executable identity immediately before stopping the selected PID.
+    remaining = set(game_pids(exe))
+    for pid in pids:
+        if pid in remaining:
+            log(f"stopping target game pid={pid}" + (" (forced)" if force else " after save"))
+            result = subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False
+            )
+            if result.returncode and pid in game_pids(exe):
+                raise SystemExit(f"无法停止目标游戏进程 {pid}")
 
 
 def focus_game(pid: int, timeout: float = 15.0) -> bool:
@@ -236,7 +316,7 @@ def write_auto_config(
         if not backup.exists():
             shutil.copy2(path, backup)
 
-    if not world and not options and not allow:
+    if not world and not options and not allow and not {"auto_enter", "options"} & previous.keys():
         return
 
     config: dict[str, object] = {
@@ -286,26 +366,6 @@ def wait_for_menu(client: ModClient, timeout: float = 90.0) -> list[dict]:
 
 def run(args: argparse.Namespace) -> int:
     version_dir = Path(args.version_dir).expanduser()
-    exe = Path(args.exe).expanduser() if args.exe else version_dir / "Minecraft.Windows.exe"
-    if not exe.exists():
-        raise SystemExit(f"找不到游戏 exe：{exe}")
-
-    stale, newest, dll_mtime = probe_is_stale()
-    if args.build:
-        build_mod()
-    elif stale and not args.no_build:
-        log(
-            "probe.dll is older than the mod sources "
-            f"({time.strftime('%H:%M:%S', time.localtime(dll_mtime))} < "
-            f"{time.strftime('%H:%M:%S', time.localtime(newest))}); rebuilding"
-        )
-        build_mod()
-    elif stale:
-        log("warning: probe.dll is older than the mod sources; run without --no-build to rebuild")
-    kill_game()
-    time.sleep(1.0)
-    install_mod(version_dir)
-
     options: dict[str, str] = {}
     for item in args.options:
         key, sep, value = item.partition("=")
@@ -332,6 +392,25 @@ def run(args: argparse.Namespace) -> int:
         write_auto_config(version_dir / "mods" / "probe", args.world, options, allow)
         log("wrote harness.json; the mod will auto-enter on launch")
         return 0
+
+    exe = Path(args.exe).expanduser() if args.exe else version_dir / "Minecraft.Windows.exe"
+    if not exe.exists():
+        raise SystemExit(f"找不到游戏 exe：{exe}")
+    stale, newest, dll_mtime = probe_is_stale()
+    if args.build:
+        build_mod()
+    elif stale and not args.no_build:
+        log(
+            "probe.dll is older than the mod sources "
+            f"({time.strftime('%H:%M:%S', time.localtime(dll_mtime))} < "
+            f"{time.strftime('%H:%M:%S', time.localtime(newest))}); rebuilding"
+        )
+        build_mod()
+    elif stale:
+        log("warning: probe.dll is older than the mod sources; run without --no-build to rebuild")
+    kill_game(exe, force=args.force_stop)
+    time.sleep(1.0)
+    install_mod(version_dir)
     # A stale auto_enter would race with the explicit enter_world below; the
     # capability switches must still be present when the mod loads its config.
     write_auto_config(version_dir / "mods" / "probe", None, {}, allow)
@@ -422,6 +501,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     run_parser.add_argument("--exe", help="override the game executable path")
+    run_parser.add_argument(
+        "--force-stop",
+        action="store_true",
+        help="stop the target PID without saving (recovery only)",
+    )
     run_parser.add_argument("--timeout", type=float, default=90.0)
     run_parser.add_argument(
         "--attempts",
@@ -440,7 +524,10 @@ def main(argv: list[str] | None = None) -> int:
         help="only write harness.json (the mod auto-enters on launch)",
     )
 
-    sub.add_parser("stop", help="kill Minecraft.Windows.exe")
+    stop_parser = sub.add_parser("stop", help="save, leave and stop the selected game executable")
+    stop_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
+    stop_parser.add_argument("--exe")
+    stop_parser.add_argument("--force-stop", action="store_true")
     worlds_parser = sub.add_parser("worlds", help="list cached worlds")
     worlds_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     restore_parser = sub.add_parser(
@@ -453,7 +540,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "stop":
-            kill_game()
+            exe = (
+                Path(args.exe).expanduser()
+                if args.exe
+                else Path(args.version_dir).expanduser() / "Minecraft.Windows.exe"
+            )
+            kill_game(exe, force=args.force_stop)
             log("stopped")
             return 0
         if args.command == "worlds":
@@ -465,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
             ok = restore_config(Path(args.version_dir).expanduser() / "mods" / "probe")
             return 0 if ok else 1
         return run(args)
-    except (ModPipeError, ModTimeout) as exc:
+    except (ModPipeError, ModTimeout, OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

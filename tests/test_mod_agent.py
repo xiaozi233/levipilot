@@ -3,13 +3,16 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from driver.harness import ModProtocolError  # noqa: E402
 from driver.mod_agent import ModAgent, _tick_row  # noqa: E402
 from driver.run_mod import _probe_scenario  # noqa: E402
+from tests.test_transport import FakeClient as TransportClient  # noqa: E402
 
 
 class TickRowTest(unittest.TestCase):
@@ -201,6 +204,67 @@ class ModAgentTest(unittest.TestCase):
         scenario = _probe_scenario(20)
         self.assertEqual(scenario.name, "probe-forward")
         self.assertEqual(scenario.steps[-1].type, "stop")
+
+
+class RecordingIntegrationTests(unittest.TestCase):
+    def make_recording_agent(self) -> tuple[ModAgent, TransportClient]:
+        client = TransportClient()
+        with patch("driver.mod_agent.Harness") as harness:
+            harness.return_value.client = client
+            agent = ModAgent()
+        return agent, client
+
+    def test_requests_and_wait_ticks_collect_notifications_through_stop(self) -> None:
+        agent, client = self.make_recording_agent()
+        tick = 0
+
+        def respond(message):
+            nonlocal tick
+            if message["cmd"] == "start":
+                client._session.lines.put({"event": "started"})
+            elif message["cmd"] == "status":
+                tick += 1
+                client._session.lines.put({"event": "tick", "tick": tick})
+                client._session.lines.put({"event": "status", "tick": tick})
+            else:
+                client._session.lines.put({"event": "tick", "tick": tick + 1})
+                client._session.lines.put({"event": "stopped"})
+
+        with patch.object(client, "send", side_effect=respond):
+            agent.start_recording()
+            agent.wait_ticks(3)
+            result = agent.stop_recording()
+        self.assertEqual([row["t"] for row in result["samples"]], [1, 2, 3, 4, 5])
+        self.assertEqual(len(client._session.pending), 0)
+        self.assertFalse(client._session.consumers)
+
+    def test_stop_failure_propagates_and_unsubscribes(self) -> None:
+        agent, client = self.make_recording_agent()
+        client._session.lines.put({"event": "started"})
+        agent.start_recording()
+        client._session.lines.put({"event": "error", "reason": "stop_failed"})
+        with self.assertRaisesRegex(ModProtocolError, "stop_failed"):
+            agent.stop_recording()
+        self.assertFalse(agent._recording)
+        self.assertFalse(client._session.consumers)
+
+    def test_start_failure_unsubscribes(self) -> None:
+        agent, client = self.make_recording_agent()
+        client._session.lines.put({"event": "error", "reason": "start_failed"})
+        with self.assertRaisesRegex(ModProtocolError, "start_failed"):
+            agent.start_recording()
+        self.assertFalse(agent._recording)
+        self.assertFalse(client._session.consumers)
+
+    def test_start_does_not_collect_ticks_from_previous_session(self) -> None:
+        agent, client = self.make_recording_agent()
+        client._session.lines.put({"event": "tick", "tick": 99})
+        client._session.lines.put({"event": "started"})
+        agent.start_recording()
+        client._session.lines.put({"event": "tick", "tick": 1})
+        client._session.lines.put({"event": "stopped"})
+        self.assertEqual([row["t"] for row in agent.stop_recording()["samples"]], [1])
+        self.assertEqual(client.readline()["tick"], 99)
 
 
 if __name__ == "__main__":

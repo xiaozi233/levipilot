@@ -24,7 +24,7 @@ py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 结果是 210/210 而不是 224/224
+# 跳过项会减少执行数；2026-10-30 完整基线是 228/228
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
@@ -138,10 +138,10 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 - **`state.input.sprint` 可能是静止锁存的 true**：当前世界里只按 W（HID）或
   `set_input(forward=1, sprint=False)` 都会在第一个移动 tick 进疾跑（0.28 稳态）。
   做走/跑对照前让 `lab.settle(..., input_sprint=False)` 通过，否则走路基线其实是疾跑。
-- 跳跃不能只靠输入标志/队列/handler：1.26.51.01 上前 3 tick 位置不动、第 4 tick 一次性补
-  V1+V2+V3（约 0.99 格）。起跳沿必须调 `LocalPlayer::jumpFromGround()`；
-  `MobJump::setJumpPendingScale` 单独用不解决。水中按 Space 到第一个 `+0.04` 有 2–4 tick
-  延迟（输入队列 + 水物理切换），"刚进水跳不起来"是延迟不是门。
+- **旧输入路径的跳跃结论**：直接标志/队列/handler 曾出现前 3 tick 位置不动、第 4 tick
+  一次性补 V1+V2+V3（约 0.99 格），当时用 `jumpFromGround` 对照。
+  这不适用于默认 Hardware HID 路径，禁止据此恢复默认冲量注入。
+  水中按 Space 到第一个 `+0.04` 有 2–4 tick 延迟（输入队列 + 水物理切换）。
 - 版本锚点的导入符号是 `jmp [rip+0]` thunk，且指针随 ASLR 变化；签名必须先跟 thunk 到真实
   函数，绝不能把 thunk 里的绝对地址当签名。
 - 运行时 hook 的通用 VA detour 只保留 rcx/rdx/r8/r9；float/xmm 参数、向量返回、超过 4 个
@@ -214,9 +214,10 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **224/224**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-29 干净地面重跑）、
-离线单测 **262/262**、ruff/mypy（driver+tests）全绿。
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **228/228**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-30 全套，无跳过）、
+离线单测 **280/280**、ruff/mypy（driver+tests）全绿。审阅修复进度见
+[`docs/reliability-repairs.md`](docs/reliability-repairs.md)，其余项目仍待推进。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage

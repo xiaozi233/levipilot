@@ -195,12 +195,21 @@ py -3.11 driver/ida.py decompile 0x1431C2F50
 py -3.11 driver/ida.py callers 0x1431C2F50
 ```
 
-**根因（本轮定位，不在本仓库）**：直接 `import idapro; idapro.open_database(<i64>)`
-和打开**原始 exe** 都报
-`FATAL ERROR: Oops! internal error 1228 occurred.` —— 当前 idalib 对任何数据库都失败，
-与客户端、与会话无关。清掉 `.id0/.id1/.nam/.til` 强制重新解包无效（解包成功，
-随后仍报 1228）。排查方向：重启 IDA/机器、核对许可（9.x 部分版本走在线许可）、
-用 `idat64 -A` 打开任意小文件复现。
+**根因（本轮定位）：数据库文件本身坏了，不是许可也不是客户端。**
+
+分档实测：
+
+| 输入 | 结果 |
+| --- | --- |
+| 64 KB 的 exe（`idapro.open_database`） | 正常，83 个函数 |
+| 7 MB 的 `shell32.dll` | 正常，13 s |
+| **原始 311 MB exe**（`idat -A`） | 正常，进入 `IDA is analysing the input file...` |
+| **`Minecraft.Windows.exe.i64`**（`idalib` 或 `idat -A` 都试过） | `FATAL ERROR: Oops! internal error 1228 occurred.` |
+
+所以 idalib 和 IDA 本身都好着，坏的是那份 `.i64`（23:27 那次被 `taskkill` 打断的保存）。
+重新解包（删 `.id0/.id1/.nam/.til`）无效：解包成功、读库时仍 1228。
+恢复办法是从 exe 重建数据库（`idat -A <exe>`，本轮已挂后台跑）；
+旧库已改名 `.i64.corrupt` 留证，不删。
 
 **影响**：本轮静态部分最终用 capstone 完成（见 `bounce-12651.md` §2.2 的说明）。
 

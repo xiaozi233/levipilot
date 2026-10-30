@@ -66,6 +66,7 @@ scenario DSL / LLM / shell
 | `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 9 个 send/recv 钩子、逐锚点统计、身份/字节环与 drain |
 | `Packets.cpp` | 命令包模板捕获与 `chat_send` 注入；对 tap 钩子的薄转发 |
 | `Overhead.cpp` | tick/hook 开销采样与分位数、自检忙等 |
+| `OverheadModel.h` | 原子载荷的定长统计窗口、有界一致快照及路径计数；不依赖游戏 SDK |
 | `Resolve.cpp` | exe 版本指纹、符号锚点 + 24 字节签名、offsets.json 覆盖 |
 
 `Internal.h` 是唯一允许被所有 TU 引用的内部头；它集中引入 Bedrock 头文件，避免每个

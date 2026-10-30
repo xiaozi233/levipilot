@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **287/287**，现场 **324/324**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **288/288**，现场 **330/330**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -60,8 +60,8 @@ ruff check/format、mypy、profile 一致性及完整 C++ 构建通过。安装 
 SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC44`。
 同一空中 32768 格区域实测 64 批、跨度 63 tick，单批最大 3160 µs；连续 30 次 state
 采样中位数 148.5 µs、最大 209 µs。这里只记录本机这轮采样值，不代表稳定上界或性能提升倍率。
-`Overhead.cpp` 旧统计环仍有普通字段并发读写，改前后窗口也非同一批样本，不用其分位数
-宣称重构收益；该并发问题已记入后续修复。日志与原始数字在 `out/reliability-query-*`。
+该轮 `Overhead.cpp` 旧统计环尚有普通字段并发读写，改前后窗口也非同一批样本，不用其分位数
+宣称重构收益；现行修复见“开销语义（F9）”。日志与原始数字在 `out/reliability-query-*`。
 
 ## 服务端权威操作
 
@@ -372,15 +372,17 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 - `onPlayerTick` 进入时取一次 QPC，`safeTickPre` 结束后算 pre 耗时；`afterPlayerTick` 同理算
   post 耗时。`hook_us = pre + post`（不含 `origin()` 的游戏 tick），
   `tick_us` 是相邻两次 pre 开始的间隔。
-- 1024 条定长样本环，tick 线程单写者（写完再 publish head）；`overhead`/`status.overhead`
-  在管道线程复制、排序并给出 p50/p99/max、`tick_hz`、`calls_per_sec`。
+- 1024 条定长样本环，现行实现复用 `AtomicRing` 原子载荷和逐槽发布序号；
+  `overhead`/`status.overhead` 在管道线程验证完整窗口，再排序并给出
+  p50/p99/max、`tick_hz`、`calls_per_sec`。
 - `overhead.paths.{record,watch,hook}` 给出三条路径各自的 `calls_per_sec` 与 `calls_total`
   （窗口从首次调用起算），用于发现异常回调频率。
 - `selftest_busy {us,ticks}` 在 `safeTickPost` 里忙等，需要 `allow_selftest_stress=true`
   （默认拒绝，避免误让 tick 卡近 1 秒）；关闭时回 `error/stress_disabled`。
-- 实机（1.26.51.01，20 TPS，seqlock 改后空闲 1024 样本）：`tick_p50=50.006 ms`、
+- 历史实机（1.26.51.01，20 TPS，旧统计载荷尚非原子；保留证据，不用来论证性能收益）：
+  seqlock 改后空闲 1024 样本 `tick_p50=50.006 ms`、
   `tick_p99=50.970 ms`、`hook_p50=10 µs`、`hook_p99=38 µs`；改前空闲为
-  `tick_p99=54.596 ms`、`hook_p99=30 µs`。tick p99 没有劣化。
+  `tick_p99=54.596 ms`、`hook_p99=30 µs`；两轮不是受控对照，不能据此认定没有劣化。
   注入 1 ms ×20 tick 后 `hook_p99=1013 µs`、`hook_max=1040 µs`，证明指标可观测。
 
 ## hook_va 安装与生命周期（F2/F3）
@@ -441,8 +443,23 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 
 - `tick_p50/p99/max_us` 保留旧名，语义是**相邻 tick 开始的间隔**；新增同值的
   `tick_interval_*_us` 以免误读。`hook_*_us` 才是钩子体（pre+post）的耗时。
-- `window_samples=1024`、`qpc_resolution_ns` 随响应返回；样本环读写用 `gEpoch` 奇偶守卫，
-  `consistent=false` 表示读侧重试 64 次仍未拿到完整窗口。
+- `window_samples=1024`、`qpc_resolution_ns` 随响应返回。原 `gEpoch` 加普通 Sample
+  的方案已移除：版本检查不能消除 C++ 数据竞争。`OverheadWindow` 复用 `AtomicRing`
+  的原子载荷与逐槽发布序号，最多尝试 64 次；只接受所有槽有效且 head 未变化的窗口。
+- `sample_first/sample_head` 是左闭右开的采样序号区间，`samples` 等于其长度。
+  竞争超限时 `consistent=false/samples=0/reason=snapshot_busy`，不输出无效分位数；
+  初始化失败回 `unavailable`。空环为 `consistent=true/samples=0`。
+- 初始化在 enable 冷侧完成，失败时 tick 丢弃样本，禁止在 tick 重试初始化/分配/加锁。
+  QPC 频率改为原子读写。路径调用率与调用总数共用一个单调计数，首次调用只设置起始时间，
+  不再重置可能被其他生产者增加的窗口计数。
+- 2026-10-31 验收：离线 **288/288**、`--overhead-only` **7/7**、完整现场
+  **330/330**（无跳过），构建、ruff check/format、mypy 与 profile 一致性通过；
+  安装/构建 DLL SHA-256 相同，无新增 crash 文件。真实游戏推进 **1100 tick**，
+  **1741 次**窗口读取全部一致，录制路径调用计数增量 **9**。
+  native 覆盖空环/未初始化/容量 1/最大 uint32/强制零次重试失败、20 万次并发写入与
+  4 个并发读者的窗口顺序/载荷关联、记录及快照复制零分配、4 线程共 40000 次路径计数。
+  内存从 8 KiB 样本载荷变为 16 KiB 原子槽；读取最多 64 次重试，无性能倍率结论。
+  日志 `out/reliability-overhead-{unit,live,full-live,build,restart}.log`。
 
 ## 版本指纹与锚点（T7 / 版本 profile）
 
@@ -701,8 +718,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **324/324**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **287/287**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **330/330**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **288/288**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

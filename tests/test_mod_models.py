@@ -82,6 +82,9 @@ class ModModelTests(unittest.TestCase):
     def test_world_entry_timeout_quarantine_and_obsolete_completion(self) -> None:
         self.run_native("world_entry_model")
 
+    def test_overhead_window_concurrent_wrap_and_allocation_contract(self) -> None:
+        self.run_native("overhead_model")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipes required")
     def test_pipe_cancellation_and_nonreading_client(self) -> None:
         self.run_native("pipe_channel")

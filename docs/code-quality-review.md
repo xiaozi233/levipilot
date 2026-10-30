@@ -26,7 +26,7 @@
 | 9 | P2 / 本批完成 | `State.cpp::captureState/stateJson` | 原方块读取失败被静默吞掉，响应缺字段却像完整成功。现局部 SEH 返回 partial/warnings，正常查询可恢复；专项验证失败字段缺省、其他字段存在及后续恢复。整条采样 C++ 异常走明确的 capture_failed，不再静默成功。 |
 | 10 | P3 / 重构 | `TaskModel.h::PlaceTask::phase`、`Tasks.cpp::tickPlace`、`Input.cpp::applyControls` | phase=0/1/2 和 mode 的位数语义分散在分支中，读代码时依赖记忆，新增阶段/模式容易漏分支。引入 PlacePhase 和具名输入模式位；只在协议边界保留兼容数字。顺带移除构建已报告的未用 Key 常量。 |
 | 11 | P3 / 文档完善 | `docs/mod-internals.md` 的历史“移动、跳跃与输入”与实验辅助小节、`docs/architecture.md` 的 CI 说明、`skills/bedrock-re/SKILL.md` 的旧基线 | 局部仍把 jumpFromGround 写成默认路径，或称完整 mod 仅本机构建；与当前 HID 默认实现、GitHub mod-build 作业不符。把历史实测明确标为 legacy，把现行契约与验收基线集中维护；不要删除原始历史证据。 |
-| 补充 | P2 / 并发修复 | `Overhead.cpp::overheadRecord/overheadJson` 的 `gSamples` | 客户端 tick 写普通 Sample 字段，管道线程同时读取；epoch 检查只能发现版本变化，不能消除 C++ 数据竞争。统计读数及据此作出的性能判断不可靠。改为原子载荷或复用已有并发环模型，补覆写读取回归；修复前不以旧 overhead 分位数宣称收益。 |
+| 补充 | P2 / 已修复 | `OverheadModel.h`、`Overhead.cpp::overheadRecord/overheadJson` | 原普通 Sample 的跨线程数据竞争已改为 AtomicRing 原子载荷与完整窗口验证；读取失败显式 busy，不计算无效分位数。native 覆盖 20 万次写入/四读者与零分配，现场跨 1100 tick、1741 次读取全部一致，专项 7/7、完整 330/330。旧统计数字保留为历史证据，未用来宣称收益。 |
 
 ## 已修复问题与验收界限
 
@@ -60,6 +60,10 @@ SHA-256 相同。日志与复现入口见 `reliability-repairs.md`。
 实体避让前提。一次 `use_failed` 未稳定复现，仍保留诊断证据；未把有限现场验收推广为
 所有放置场景稳定，原第 12/15 项仍未完成。
 
-下一步继续补其余游戏读取边界，处理 Overhead 原子载荷，
+Overhead 原子载荷补修：离线 **288/288**、专项现场 **7/7**、完整现场 **330/330**
+（无跳过），构建、静态检查、安装一致性与无新增 crash 验证通过。第 12 项其余读取/
+格式化/锁与 SDK 分配仍未完成。
+
+下一步继续补其余游戏读取边界，
 再迁其余 tick 格式化与拆分子系统，最后统一类型命名及文档。每批以 native 回归、
 离线检查、完整构建和适用的现场回归独立验收，避免把未验证的行为变更混为一个大提交。

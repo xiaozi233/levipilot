@@ -1,6 +1,6 @@
 #include "mod/Internal.h"
 
-#include <new>
+#include "mod/OverheadModel.h"
 
 using namespace probe::detail;
 
@@ -10,34 +10,20 @@ namespace {
 
 constexpr std::size_t kOverheadCapacity = 1024;
 
-struct Sample {
-    std::uint32_t tickUs = 0;
-    std::uint32_t hookUs = 0;
-};
-
-std::unique_ptr<Sample[]>  gSamples;
-std::atomic<std::uint64_t> gHead{0};
-// F9: seqlock around the ring so readers never mix pre/post-wrap samples.
-std::atomic<std::uint64_t> gEpoch{0};
+OverheadWindow<kOverheadCapacity> gSamples;
 std::atomic<std::uint32_t> gBusyUs{0};
 std::atomic<std::uint32_t> gBusyTicks{0};
-std::uint64_t              gFrequency = 0;
+std::atomic<std::uint64_t>  gFrequency{0};
 std::mutex                 gInitMutex;
 
-// Per-path rate windows. A window starts on the first call after the counter
-// is read for the first time and is never reset; the rate therefore smooths
-// over the whole session, which is what matters for spotting a storm.
-struct RateCounter {
-    std::atomic<std::uint64_t> total{0};
-    std::atomic<std::uint64_t> windowStartMs{0};
-    std::atomic<std::uint64_t> windowCount{0};
-};
+// Per-path rates use one count from the first call through the whole session.
+// Never reset a second counter during first-call publication: another producer
+// may already have incremented it.
+PathRateCounter gRecordRate;
+PathRateCounter gWatchRate;
+PathRateCounter gHookRate;
 
-RateCounter gRecordRate;
-RateCounter gWatchRate;
-RateCounter gHookRate;
-
-RateCounter& rateCounter(PathCounter path) {
+PathRateCounter& rateCounter(PathCounter path) {
     switch (path) {
     case PathCounter::Record:
         return gRecordRate;
@@ -49,34 +35,18 @@ RateCounter& rateCounter(PathCounter path) {
     }
 }
 
-void rateCount(RateCounter& counter) {
-    counter.total.fetch_add(1, std::memory_order_relaxed);
+nlohmann::json rateJson(PathRateCounter const& counter) {
     std::uint64_t const now   = GetTickCount64();
-    std::uint64_t       start = counter.windowStartMs.load(std::memory_order_relaxed);
-    if (start == 0) {
-        if (counter.windowStartMs.compare_exchange_strong(
-                start,
-                now,
-                std::memory_order_relaxed,
-                std::memory_order_relaxed
-            )) {
-            counter.windowCount.store(0, std::memory_order_relaxed);
-        }
-    }
-    counter.windowCount.fetch_add(1, std::memory_order_relaxed);
-}
-
-nlohmann::json rateJson(RateCounter& counter) {
-    std::uint64_t const now   = GetTickCount64();
-    std::uint64_t const start = counter.windowStartMs.load(std::memory_order_acquire);
-    std::uint64_t const count = counter.windowCount.load(std::memory_order_relaxed);
+    auto const snapshot = counter.snapshot();
+    std::uint64_t const start = snapshot.startedMs;
+    std::uint64_t const count = snapshot.total;
     double              rate  = 0.0;
     if (start != 0 && now > start) {
         rate = static_cast<double>(count) * 1000.0 / static_cast<double>(now - start);
     }
     return nlohmann::json{
         {"calls_per_sec", rate                                         },
-        {"calls_total",   counter.total.load(std::memory_order_relaxed)},
+        {"calls_total",   count},
     };
 }
 
@@ -95,9 +65,7 @@ std::uint32_t percentile(std::vector<std::uint32_t> const& values, double fracti
 
 void overheadInit() {
     std::lock_guard lock(gInitMutex);
-    if (!gSamples) {
-        gSamples = std::unique_ptr<Sample[]>(new (std::nothrow) Sample[kOverheadCapacity]());
-    }
+    gSamples.initialize();
     if (gFrequency == 0) {
         LARGE_INTEGER frequency{};
         if (QueryPerformanceFrequency(&frequency)) {
@@ -113,30 +81,16 @@ std::uint64_t qpcNow() {
 }
 
 std::uint64_t qpcElapsedUs(std::uint64_t start, std::uint64_t end) {
-    if (gFrequency == 0 || end < start) {
+    auto const frequency = gFrequency.load(std::memory_order_relaxed);
+    if (frequency == 0 || end < start) {
         return 0;
     }
-    return (end - start) * 1'000'000ull / gFrequency;
+    return (end - start) * 1'000'000ull / frequency;
 }
 
 void overheadRecord(std::uint32_t tickUs, std::uint32_t hookUs) {
-    if (!gSamples) {
-        overheadInit();
-    }
-    if (!gSamples) {
-        return;
-    }
-    // Single writer: the client tick thread. The epoch lets readers detect a
-    // half-written window across the ring wrap.
-    std::uint64_t const epoch  = gEpoch.load(std::memory_order_relaxed);
-    gEpoch.store(epoch + 1, std::memory_order_relaxed); // odd: writing
-    std::atomic_thread_fence(std::memory_order_release);
-    std::uint64_t const index  = gHead.load(std::memory_order_relaxed);
-    Sample&             sample = gSamples[index % kOverheadCapacity];
-    sample.tickUs              = tickUs;
-    sample.hookUs              = hookUs;
-    gHead.store(index + 1, std::memory_order_release);
-    gEpoch.store(epoch + 2, std::memory_order_release);
+    // No lazy initialization, allocation or mutex on the sampling path.
+    gSamples.record({tickUs, hookUs});
 }
 
 nlohmann::json overheadJson() {
@@ -144,41 +98,27 @@ nlohmann::json overheadJson() {
     out["event"]              = "overhead";
     out["paths"]              = pathRatesJson();
     out["window_samples"]     = kOverheadCapacity;
+    auto const frequency = gFrequency.load(std::memory_order_relaxed);
     out["qpc_resolution_ns"]  =
-        gFrequency > 0 ? 1'000'000'000.0 / static_cast<double>(gFrequency) : 0.0;
+        frequency > 0 ? 1'000'000'000.0 / static_cast<double>(frequency) : 0.0;
 
-    std::uint64_t head  = 0;
-    std::size_t   count = 0;
+    auto const snapshot = gSamples.snapshot();
+    auto const count = snapshot.count;
+    out["samples"] = count;
+    out["consistent"] = snapshot.consistent;
+    out["sample_head"] = snapshot.head;
+    out["sample_first"] = snapshot.head - count;
+    if (!snapshot.consistent || count == 0) {
+        if (!snapshot.consistent) out["reason"] = gSamples.available() ? "snapshot_busy" : "unavailable";
+        return out;
+    }
     std::vector<std::uint32_t> tick;
     std::vector<std::uint32_t> hook;
-    bool consistent = false;
-    for (int attempt = 0; attempt < 64 && !consistent; ++attempt) {
-        std::uint64_t const before = gEpoch.load(std::memory_order_acquire);
-        if ((before & 1u) != 0) {
-            continue; // writer is mid-sample
-        }
-        head  = gHead.load(std::memory_order_acquire);
-        count = static_cast<std::size_t>(
-            std::min<std::uint64_t>(head, kOverheadCapacity)
-        );
-        tick.clear();
-        hook.clear();
-        if (gSamples && count > 0) {
-            std::uint64_t const first = head - count;
-            tick.reserve(count);
-            hook.reserve(count);
-            for (std::size_t offset = 0; offset < count; ++offset) {
-                Sample const& sample = gSamples[(first + offset) % kOverheadCapacity];
-                tick.push_back(sample.tickUs);
-                hook.push_back(sample.hookUs);
-            }
-        }
-        std::atomic_thread_fence(std::memory_order_acquire);
-        consistent = gEpoch.load(std::memory_order_relaxed) == before;
-    }
-    if (!gSamples || count == 0) {
-        out["samples"] = 0;
-        return out;
+    tick.reserve(count);
+    hook.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        tick.push_back(snapshot.rows[i].tickUs);
+        hook.push_back(snapshot.rows[i].hookUs);
     }
     std::sort(tick.begin(), tick.end());
     std::sort(hook.begin(), hook.end());
@@ -189,8 +129,6 @@ nlohmann::json overheadJson() {
     }
     double const average = count > 0 ? static_cast<double>(sum) / static_cast<double>(count) : 0.0;
 
-    out["samples"]       = count;
-    out["consistent"]    = consistent;
     // tick_p50/p99 keep their old names for callers; they measure the interval
     // between tick starts, not the hook's own cost.
     out["tick_p50_us"]   = percentile(tick, 0.50);
@@ -212,7 +150,7 @@ void overheadRequestBusy(std::uint32_t us, std::uint32_t ticks) {
     gBusyTicks.store(std::min<std::uint32_t>(ticks, 200), std::memory_order_release);
 }
 
-void pathCount(PathCounter path) { rateCount(rateCounter(path)); }
+void pathCount(PathCounter path) { rateCounter(path).record(GetTickCount64()); }
 
 nlohmann::json pathRatesJson() {
     return nlohmann::json{

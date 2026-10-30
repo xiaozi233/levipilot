@@ -11,6 +11,7 @@
     py -3.11 driver/selftest.py --macro-limit-only  # bounded recording and retained rows
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
     py -3.11 driver/selftest.py --entry-lifecycle-world "超平坦测试"  # startup watchdog/recovery
+    py -3.11 driver/selftest.py --overhead-only  # read concurrently across a full sample-ring wrap
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -750,6 +751,72 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
         checks.check("query_lifecycle_world_recovery", recovered.get("visited") == 1)
 
 
+def check_overhead_window(client: ModClient, checks: Checks, *, wrap: bool = False) -> None:
+    """Verify published window bounds/legacy metrics while real ticks overwrite it."""
+    start = client.overhead()
+    first_head = int(start.get("sample_head", 0))
+    last_head = first_head
+    deadline = time.monotonic() + (80 if wrap else 15)
+    valid = aliases = ordered = monotonic = True
+    reads = consistent = busy = 0
+    while reads < 100 or (wrap and last_head - first_head < 1100):
+        if time.monotonic() >= deadline:
+            break
+        result = client.overhead()
+        reads += 1
+        if result.get("consistent") is not True:
+            busy += 1
+            valid &= (
+                result.get("reason") == "snapshot_busy"
+                and result.get("samples") == 0
+                and "tick_p99_us" not in result
+            )
+            continue
+        consistent += 1
+        head, count = int(result.get("sample_head", -1)), int(result.get("samples", -1))
+        valid &= (
+            0 <= count <= 1024
+            and count == min(head, 1024)
+            and int(result.get("sample_first", -1)) + count == head
+        )
+        monotonic &= head >= last_head
+        last_head = head
+        if count:
+            aliases &= all(
+                result.get(f"tick_{part}_us") == result.get(f"tick_interval_{part}_us")
+                for part in ("p50", "p99", "max")
+            )
+            ordered &= all(
+                0
+                <= float(result.get(f"{path}_p50_us", -1))
+                <= float(result.get(f"{path}_p99_us", -1))
+                <= float(result.get(f"{path}_max_us", -1))
+                for path in ("tick", "hook")
+            )
+        time.sleep(0.02)
+    detail = str(
+        {"reads": reads, "consistent": consistent, "busy": busy, "advance": last_head - first_head}
+    )
+    checks.check("overhead_window_readback", reads >= 100 and consistent > 0 and valid, detail)
+    checks.check("overhead_window_monotonic", monotonic)
+    checks.check("overhead_window_legacy_aliases", aliases)
+    checks.check("overhead_window_percentiles", ordered)
+    if wrap:
+        checks.check("overhead_window_wrap", last_head - first_head >= 1100, detail)
+    if not checks.check(
+        "overhead_record_fixture_idle", client.status().get("record_active") is False
+    ):
+        return
+    before = int(client.overhead()["paths"]["record"]["calls_total"])
+    try:
+        client.record_bin_start(period=1)
+        wait_ticks(client, 8)
+    finally:
+        client.record_bin_stop()
+    after = int(client.overhead()["paths"]["record"]["calls_total"])
+    checks.check("overhead_record_counter", after - before >= 8, f"delta={after - before}")
+
+
 def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
     """Exercise the real deadline/probe pipeline, then restore the saved world."""
     original = client.state()
@@ -1379,6 +1446,11 @@ def main(argv: list[str] | None = None) -> int:
         help="check scan cancellation on reconnect/exit, then re-enter WORLD",
     )
     modes.add_argument(
+        "--overhead-only",
+        action="store_true",
+        help="read overhead concurrently across 1100 real ticks and verify record path counters",
+    )
+    modes.add_argument(
         "--entry-lifecycle-world",
         metavar="WORLD",
         help="save/leave, check entry timeout/quarantine and missing join recovery, then restore WORLD",
@@ -1441,6 +1513,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
+
+    if args.overhead_only:
+        try:
+            check_overhead_window(client, checks, wrap=True)
+        except (ModPipeError, OSError, ValueError) as exc:
+            checks.check("overhead_window_error", False, str(exc))
+        finally:
+            client.close()
+        return checks.finish()
 
     if (
         args.query_capture_only
@@ -2480,6 +2561,7 @@ def main(argv: list[str] | None = None) -> int:
         checks.check("panic_alive", wait_ticks(client, 3) >= 3)
 
         # -- T9: tick/hook overhead metric ---------------------------------
+        check_overhead_window(client, checks)
         overhead_before = client.overhead()
         checks.check(
             "overhead",

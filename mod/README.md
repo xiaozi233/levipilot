@@ -190,10 +190,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **324/324**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **330/330**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **287/287**。常用实测数字：
+离线单测 **288/288**。常用实测数字：
+
+2026-10-31 Overhead 统计环：`--overhead-only` **7/7**，真实推进 1100 tick、
+1741 次窗口读取全部一致；完整现场 **330/330**（无跳过），离线 **288/288**。
+统计载荷改为原子发布，只有完整窗口才计算分位数；窗口竞争过强时回
+`consistent=false/samples=0/reason=snapshot_busy`，不输出无效分位数。
+新增 `sample_first/sample_head`，旧字段与别名保留。采样热路径无初始化、分配或 mutex。
+构建、静态检查、安装 DLL 哈希一致性通过，无新增崩溃文件；本轮未做性能提升对照实验。
 
 2026-10-31 世界进入看门狗：`--entry-lifecycle-world "超平坦测试"` **30/30**，
 完整现场 **324/324**（无跳过）、离线 **287/287**。启动后 30 秒超时明确失败并保留隔离，

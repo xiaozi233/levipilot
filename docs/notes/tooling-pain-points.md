@@ -208,8 +208,26 @@ py -3.11 driver/ida.py callers 0x1431C2F50
 
 所以 idalib 和 IDA 本身都好着，坏的是那份 `.i64`（23:27 那次被 `taskkill` 打断的保存）。
 重新解包（删 `.id0/.id1/.nam/.til`）无效：解包成功、读库时仍 1228。
-恢复办法是从 exe 重建数据库（`idat -A <exe>`，本轮已挂后台跑）；
-旧库已改名 `.i64.corrupt` 留证，不删。
+恢复办法是从 exe 重建数据库；旧库已改名 `.i64.corrupt` 留证，不删。
+
+```bash
+# 1) 重建（本轮约 1 小时，单核；新库 5.9 GB，旧的 893 MB 是被打断的那份）
+idat.exe -A -Lout/ida_rebuild.log "%APPDATA%\levilauncher.exeersions.26.51.01\Minecraft.Windows.exe"
+# 2) 拉起后端 + 开会话 + 反编译（客户端会自动等就绪、重试、缓存会话）
+py -3.11 driver/ida.py start --wait 480
+py -3.11 driver/ida.py open
+py -3.11 driver/ida.py decompile 0x141E144A0 --out resolver.c
+```
+
+**还有一个坑（本轮修在客户端里）**：supervisor 的**首次打开**走的是工具超时（默认 60 s），
+5.9 GB 的库要两分多钟，日志里表现为
+`Failed to open initial binary: Unexpected error: Tool timed out after 60.00s`。
+`driver/ida.py start` 现在会把 `IDA_MCP_TOOL_TIMEOUT_SEC=1800` 传给子进程；
+手工起 supervisor 时要自己加。
+
+**端到端验收（2026-10-30）**：`driver/ida.py decompile 0x141E144A0` 返回 126 行 Hex-Rays
+伪代码，与 `bounce-12651.md` §2.2 按指令重建的版本逐点吻合（`a3[1] + -0.2`、压扁后的
+`(v6-v6)*0.5+v6`、`3.4028235e38` 初值、平方距离决平、三次 `floorf`）。
 
 **影响**：本轮静态部分最终用 capstone 完成（见 `bounce-12651.md` §2.2 的说明）。
 

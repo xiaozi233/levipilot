@@ -196,6 +196,11 @@ def start_supervisor(i64: Path, *, log: Path | None = None, wait: float = 0.0) -
     log.parent.mkdir(parents=True, exist_ok=True)
     handle = log.open("ab")
     creation = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    # The worker's *initial* open runs under this timeout (60 s by default) and a
+    # multi-GB database needs minutes: without it the supervisor dies with
+    # "Tool timed out after 60.00s" before the endpoint ever binds.
+    env = dict(os.environ)
+    env["IDA_MCP_TOOL_TIMEOUT_SEC"] = str(int(CALL_TIMEOUT))
     subprocess.Popen(
         [
             sys.executable,
@@ -206,6 +211,7 @@ def start_supervisor(i64: Path, *, log: Path | None = None, wait: float = 0.0) -
             str(PORT),
             str(i64),
         ],
+        env=env,
         stdout=handle,
         stderr=handle,
         stdin=subprocess.DEVNULL,

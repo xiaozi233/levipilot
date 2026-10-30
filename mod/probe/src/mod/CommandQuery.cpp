@@ -26,18 +26,36 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         }
         auto const target   = j.value("target", std::string{"state"});
         auto const now      = GetTickCount64();
+        auto const timeout  = static_cast<std::uint64_t>(std::clamp(j.value("timeout_ms", 250), 1, 10000));
         bool       accepted = false;
-        if (target == "state") accepted = mStateCapture.begin({test}, now, 250);
-        else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, 250);
-        else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, 250);
+        if (target == "state") accepted = mStateCapture.begin({test}, now, timeout);
+        else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, timeout);
+        else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, timeout);
+        else if (target == "select_slot") accepted = mSlotCapture.begin({0, test}, now, timeout);
+        else if (target == "entities") {
+            EntityQuery query;
+            query.test = test;
+            auto const stage = j.value("stage", std::string{"client"});
+            if (stage == "client") query.testStage = EntityStage::Client;
+            else if (stage == "server") query.testStage = EntityStage::Server;
+            else if (stage == "aim") {
+                query.testStage = EntityStage::Aim;
+                query.operation = EntityOperation::LookAt;
+                query.runtimeId = j.value("runtime_id", std::uint64_t{0});
+            } else {
+                enqueue(R"({"event":"error","reason":"bad_test_stage"})");
+                return true;
+            }
+            accepted = bool(mEntityCapture.begin(query, now, timeout));
+        }
         else if (target == "blocks") {
             BlockRequest request;
             request.test = test;
-            accepted     = mBlockCapture.begin(request, now, 250);
+            accepted     = mBlockCapture.begin(request, now, timeout);
         } else if (target == "scan") {
             ScanQuery request;
             request.test = test;
-            accepted     = mScanCapture.begin(request, now, 250);
+            accepted     = mScanCapture.begin(request, now, timeout);
         } else {
             enqueue(R"({"event":"error","reason":"bad_test_target"})");
             return true;
@@ -63,12 +81,15 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
-        {
-            std::lock_guard lock(mEntityMutex);
-            mEntityRadius      = j.value("radius", 16.0f);
-            mEntityLimit       = std::clamp(j.value("limit", 64), 1, 512);
-            mEntitiesRequested = true;
+        EntityQuery request;
+        request.radius = j.value("radius", 16.0f);
+        request.limit = std::clamp(j.value("limit", 64), 1, 512);
+        if (!std::isfinite(request.radius) || request.radius < 0) {
+            enqueue(R"({"event":"error","reason":"bad_radius"})");
+            return true;
         }
+        if (!mEntityCapture.begin(request, GetTickCount64()))
+            enqueue(R"({"event":"error","reason":"entities_busy"})");
         return true;
     }
     if (cmd == "blocks") {
@@ -143,8 +164,10 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "select_slot") {
-        mSlotRequest.store(std::clamp(j.value("slot", 0), 0, 8));
-        enqueue(R"({"event":"select_slot_ok"})");
+        if (!mWorld.inWorld()) enqueue(R"({"event":"error","reason":"not_in_world"})");
+        else if (!mSlotCapture.begin({std::clamp(j.value("slot", 0), 0, 8)}, GetTickCount64(), 2000))
+            enqueue(R"({"event":"error","reason":"select_slot_busy"})");
+        else enqueue(R"({"event":"select_slot_ok"})");
         return true;
     }
     if (cmd == "inventory") {
@@ -225,21 +248,23 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "entity" || cmd == "attack_entity" || cmd == "interact_entity" || cmd == "look_at_entity") {
-        EntityAction action;
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        EntityQuery action;
         if (cmd == "entity") {
-            action.kind = EntityAction::Kind::Info;
+            action.operation = EntityOperation::Info;
         } else if (cmd == "attack_entity") {
-            action.kind = EntityAction::Kind::Attack;
+            action.operation = EntityOperation::Attack;
         } else if (cmd == "interact_entity") {
-            action.kind = EntityAction::Kind::Interact;
+            action.operation = EntityOperation::Interact;
         } else {
-            action.kind = EntityAction::Kind::LookAt;
+            action.operation = EntityOperation::LookAt;
         }
         action.runtimeId = j.value("runtime_id", std::uint64_t{0});
-        {
-            std::lock_guard lock(mEntityActionMutex);
-            mEntityAction = action;
-        }
+        if (!mEntityCapture.begin(action, GetTickCount64()))
+            enqueue(R"({"event":"error","reason":"entities_busy"})");
         return true;
     }
     return false;

@@ -3,245 +3,197 @@
 using namespace probe::detail;
 
 namespace probe {
+namespace {
+EntitySnapshot::Vec snapshotVec(Vec3 const& value) { return {value.x, value.y, value.z}; }
 
-void ProbeMod::applyEntityAction(LocalPlayer& player, EntityAction const& action) {
-    // getRuntimeActorList() belongs to the integrated server thread; iterating
-    // it from the client tick thread races with entity spawn/despawn. The
-    // client-side data is read here (same thread as the player), the scan and
-    // the actor reads happen in a server task, and anything that touches the
-    // local player hops back through the client queue.
-    Vec3 const origin = player.getPosition();
-    Vec3 const eye    = player.getHeadPos();
-    auto const selfUuid = player.getUuid();
-    std::string const selfName = player.getRealName();
+void captureActor(Actor& actor, EntitySnapshot::Vec const& origin, EntitySnapshot::Row& row, bool& truncated,
+                  bool detailed) {
+    row.runtimeId = static_cast<std::uint64_t>(actor.getRuntimeID());
+    auto const& type = actor.getTypeName();
+    auto const& name = actor.getNameTag();
+    row.type.assign(type);
+    row.name.assign(name);
+    truncated = truncated || row.type.view().size() != type.size() || row.name.view().size() != name.size();
+    row.pos = snapshotVec(actor.getPosition());
+    row.isPlayer = actor.isPlayer();
+    row.health = actor.getHealth();
+    float dx = row.pos.x - origin.x, dy = row.pos.y - origin.y, dz = row.pos.z - origin.z;
+    row.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (detailed) {
+        row.velocity = snapshotVec(actor.getVelocity());
+        auto const rot = actor.getRotation();
+        row.yaw = rot.y;
+        row.pitch = rot.x;
+        row.alive = actor.isAlive();
+        row.onGround = actor.isOnGround();
+    }
+}
 
-    queueServerTask([this, action, origin, eye, selfUuid, selfName] {
-        auto level = ll::service::bedrock::getLevel();
-        if (!level) {
-            enqueue(R"({"event":"error","reason":"level_unavailable"})");
-            return;
-        }
+nlohmann::json entityRowJson(EntitySnapshot::Row const& row) {
+    return {{"runtime_id", row.runtimeId}, {"type", row.type.c_str()}, {"name", row.name.c_str()},
+            {"is_player", row.isPlayer}, {"health", finiteOrZero(row.health)},
+            {"x", finiteOrZero(row.pos.x)}, {"y", finiteOrZero(row.pos.y)}, {"z", finiteOrZero(row.pos.z)},
+            {"distance", finiteOrZero(row.distance)}};
+}
 
-        Actor* target = nullptr;
-        for (auto* actor : level->getRuntimeActorList()) {
-            if (actor != nullptr && static_cast<std::uint64_t>(actor->getRuntimeID()) == action.runtimeId) {
-                target = actor;
-                break;
-            }
-        }
-        if (target == nullptr) {
-            enqueue(R"({"event":"error","reason":"entity_not_found"})");
-            return;
-        }
+nlohmann::json entityJson(EntityQuery const& query, EntitySnapshot const& out) {
+    if (out.error) return {{"event", "error"}, {"reason", out.error}, {"phase", "entities"}};
+    auto const& row = out.rows.front();
+    nlohmann::json result;
+    switch (query.operation) {
+    case EntityOperation::List:
+        result = {{"event", "entities"}, {"radius", query.radius}, {"count", out.count},
+                  {"entities", nlohmann::json::array()}};
+        for (std::size_t i = 0; i < out.count; ++i) result["entities"].push_back(entityRowJson(out.rows[i]));
+        break;
+    case EntityOperation::Info:
+        result = entityRowJson(row);
+        result.update({{"event", "entity_info"}, {"is_alive", row.alive}, {"on_ground", row.onGround},
+                       {"vx", finiteOrZero(row.velocity.x)}, {"vy", finiteOrZero(row.velocity.y)},
+                       {"vz", finiteOrZero(row.velocity.z)}, {"yaw", finiteOrZero(row.yaw)},
+                       {"pitch", finiteOrZero(row.pitch)}});
+        break;
+    case EntityOperation::Attack:
+        result = {{"event", "entity_attacked"}, {"runtime_id", query.runtimeId}, {"ok", out.ok},
+                  {"type", row.type.c_str()}, {"health_before", finiteOrZero(row.health)}};
+        break;
+    case EntityOperation::Interact:
+        result = {{"event", "entity_interacted"}, {"runtime_id", query.runtimeId}, {"ok", out.ok},
+                  {"type", row.type.c_str()}, {"method", "input"}};
+        break;
+    case EntityOperation::LookAt:
+        result = {{"event", "look_at_done"}, {"runtime_id", query.runtimeId},
+                  {"yaw", finiteOrZero(out.yaw)}, {"pitch", finiteOrZero(out.pitch)}};
+        break;
+    }
+    result["truncated"] = out.truncated;
+    return result;
+}
+} // namespace
 
-        if (action.kind == EntityAction::Kind::Info) {
-            auto const& pos = target->getPosition();
-            auto        vel = target->getVelocity();
-            auto const  rot = target->getRotation();
-            float       dx  = static_cast<float>(pos.x - origin.x);
-            float       dy  = static_cast<float>(pos.y - origin.y);
-            float       dz  = static_cast<float>(pos.z - origin.z);
-
-            nlohmann::json out;
-            out["event"]      = "entity_info";
-            out["runtime_id"] = action.runtimeId;
-            out["type"]       = target->getTypeName();
-            out["name"]       = target->getNameTag();
-            out["is_player"]  = target->isPlayer();
-            out["is_alive"]   = target->isAlive();
-            out["health"]     = target->getHealth();
-            out["x"]          = finiteOrZero(static_cast<float>(pos.x));
-            out["y"]          = finiteOrZero(static_cast<float>(pos.y));
-            out["z"]          = finiteOrZero(static_cast<float>(pos.z));
-            out["vx"]         = finiteOrZero(static_cast<float>(vel.x));
-            out["vy"]         = finiteOrZero(static_cast<float>(vel.y));
-            out["vz"]         = finiteOrZero(static_cast<float>(vel.z));
-            out["yaw"]        = finiteOrZero(rot.y);
-            out["pitch"]      = finiteOrZero(rot.x);
-            out["distance"]   = finiteOrZero(std::sqrt(dx * dx + dy * dy + dz * dz));
-            out["on_ground"]  = target->isOnGround();
-            enqueue(out.dump());
-            return;
-        }
-
-        // Snapshot everything the client side needs; the Actor* itself is only
-        // dereferenced inside the immediately queued client task.
-        std::string const type         = target->getTypeName();
-        float const       healthBefore = target->getHealth();
-        Vec3 const        aim          = target->getHeadPos();
-
-        if (action.kind == EntityAction::Kind::Attack) {
-            // Entirely on the server thread: the Actor* never hops threads
-            // (a one-frame-older pointer faulted under the client-task SEH),
-            // and the server player's GameMode is the authoritative attack,
-            // mirroring requestServerTeleport's lookup pattern.
-            Player* serverPlayer = level->getPlayer(selfUuid);
-            if (serverPlayer == nullptr && !selfName.empty()) {
-                serverPlayer = level->getPlayer(selfName);
-            }
-            if (serverPlayer == nullptr) {
-                enqueue(R"({"event":"error","reason":"player_not_found"})");
+EntityStage ProbeMod::captureEntityStage(EntityStage stage, EntityQuery const& query, EntitySnapshot& out) {
+    // SDK owning strings live outside the raw SEH frame; no actor pointer or
+    // SDK reference escapes this callback. These callbacks never run in tick.
+    std::string selfName;
+    std::vector<Actor*> actors;
+    EntityStage next = EntityStage::Complete;
+    if (!guardedGameRead([&] {
+            if (stage == query.testStage) injectCaptureFault(query.test);
+            if (stage == EntityStage::Client) {
+                auto client = ll::service::getClientInstance();
+                auto* player = client ? client->getLocalPlayer() : nullptr;
+                if (!player) { out.error = "no_player"; return; }
+                out.origin = snapshotVec(player->getPosition());
+                out.eye = snapshotVec(player->getHeadPos());
+                out.selfId = static_cast<std::uint64_t>(player->getRuntimeID());
+                auto const& uuid = player->getUuid();
+                out.uuidA = uuid.a;
+                out.uuidB = uuid.b;
+                if (query.operation == EntityOperation::Attack) {
+                    selfName = player->getRealName();
+                    out.selfName.assign(selfName);
+                    // Never resolve another player using a truncated identity.
+                    if (out.selfName.view().size() != selfName.size()) out.selfName.assign({});
+                }
+                next = EntityStage::Server;
                 return;
             }
-            bool const ok =
-                serverPlayer->mGameMode != nullptr && serverPlayer->mGameMode->attack(*target, aim);
-            enqueue(
-                nlohmann::json{
-                    {"event",         "entity_attacked"},
-                    {"runtime_id",    action.runtimeId },
-                    {"ok",            ok               },
-                    {"type",          type             },
-                    {"health_before", healthBefore     },
-            }
-                    .dump()
-            );
-            return;
-        }
-
-        if (action.kind == EntityAction::Kind::Interact) {
-            queueClientTask([this, action, type, eye, aim] {
-                auto  client = ll::service::getClientInstance();
-                auto* local  = client ? client->getLocalPlayer() : nullptr;
-                if (local == nullptr) {
-                    enqueue(R"({"event":"error","reason":"no_player"})");
+            if (stage == EntityStage::Server) {
+                auto level = ll::service::bedrock::getLevel();
+                if (!level) { out.error = "level_unavailable"; return; }
+                actors = level->getRuntimeActorList();
+                for (auto* actor : actors) {
+                    if (!actor) continue;
+                    if (query.operation == EntityOperation::List) {
+                        if (!actor->isAlive() || (actor->isPlayer()
+                            && static_cast<std::uint64_t>(actor->getRuntimeID()) == out.selfId)) continue;
+                        auto const pos = snapshotVec(actor->getPosition());
+                        float dx = pos.x - out.origin.x, dy = pos.y - out.origin.y, dz = pos.z - out.origin.z;
+                        if (std::sqrt(dx * dx + dy * dy + dz * dz) > query.radius) continue;
+                        captureActor(*actor, out.origin, out.rows[out.count++], out.truncated, false);
+                        if (out.count >= static_cast<std::size_t>(std::clamp(query.limit, 1, 512))) break;
+                        continue;
+                    }
+                    if (static_cast<std::uint64_t>(actor->getRuntimeID()) != query.runtimeId) continue;
+                    captureActor(*actor, out.origin, out.rows.front(), out.truncated, query.operation == EntityOperation::Info);
+                    out.count = 1;
+                    if (query.operation == EntityOperation::Info) return;
+                    auto const aim = actor->getHeadPos();
+                    out.aim = snapshotVec(aim);
+                    if (query.operation != EntityOperation::Attack) { next = EntityStage::Aim; return; }
+                    auto* player = level->getPlayer(mce::UUID{out.uuidA, out.uuidB});
+                    if (!player && !out.selfName.empty()) {
+                        selfName = out.selfName.c_str();
+                        player = level->getPlayer(selfName);
+                    }
+                    if (!player) { out.error = "player_not_found"; return; }
+                    out.ok = player->mGameMode && player->mGameMode->attack(*actor, aim);
                     return;
                 }
-                // Calling Player::interact / GameMode::interact directly crashes this
-                // build with a null internal item context. Instead, aim at the entity
-                // and press the game's own use button for a few ticks.
-                LocalPlayer& player = *local;
-                double       dx     = aim.x - eye.x;
-                double       dy     = aim.y - eye.y;
-                double       dz     = aim.z - eye.z;
-                double       horiz  = std::sqrt(dx * dx + dz * dz);
-                float        yaw    = yawTo(dx, dz);
-                float        pitch  = pitchTo(dy, horiz);
-
-                auto const rot    = player.getRotation();
-                float      dyaw   = wrapDegrees(yaw - rot.y);
-                float      dpitch = rot.x - pitch;
-                if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
-                    applyTurnDelta(player, Vec2{dpitch, dyaw});
-                }
-                updateRequests([](RequestBlock& request) {
-                    request.input        = ControlState{};
-                    request.input.rmb    = true;
-                    request.input.active = true;
-                    request.inputTicks   = 3;
-                    ++request.inputSeq;
-                });
-
-                enqueue(
-                    nlohmann::json{
-                        {"event",      "entity_interacted"},
-                        {"runtime_id", action.runtimeId  },
-                        {"ok",         true              },
-                        {"method",     "input"           },
-                        {"type",       type              },
-                }
-                        .dump()
-                );
-            });
-            return;
-        }
-
-        // Kind::LookAt
-        queueClientTask([this, action, eye, aim] {
-            auto  client = ll::service::getClientInstance();
-            auto* local  = client ? client->getLocalPlayer() : nullptr;
-            if (local == nullptr) {
-                enqueue(R"({"event":"error","reason":"no_player"})");
+                if (query.operation != EntityOperation::List) out.error = "entity_not_found";
                 return;
             }
-            LocalPlayer& player = *local;
-            double       dx     = aim.x - eye.x;
-            double       dy     = aim.y - eye.y;
-            double       dz     = aim.z - eye.z;
-            double       horiz  = std::sqrt(dx * dx + dz * dz);
-            float        yaw    = yawTo(dx, dz);
-            float        pitch  = pitchTo(dy, horiz);
-
-            auto const rot    = player.getRotation();
-            float      dyaw   = wrapDegrees(yaw - rot.y);
-            float      dpitch = rot.x - pitch;
-            if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f) {
-                applyTurnDelta(player, Vec2{dpitch, dyaw});
-            }
-
-            enqueue(
-                nlohmann::json{
-                    {"event",      "look_at_done"  },
-                    {"runtime_id", action.runtimeId},
-                    {"yaw",        yaw             },
-                    {"pitch",      pitch           },
-            }
-                .dump()
-            );
+            auto client = ll::service::getClientInstance();
+            auto* player = client ? client->getLocalPlayer() : nullptr;
+            if (!player) { out.error = "no_player"; return; }
+            // The original request eye is preserved for compatibility.
+            double dx = out.aim.x - out.eye.x, dy = out.aim.y - out.eye.y, dz = out.aim.z - out.eye.z;
+            out.yaw = yawTo(dx, dz);
+            out.pitch = pitchTo(dy, std::sqrt(dx * dx + dz * dz));
+            auto const rot = player->getRotation();
+            float dyaw = wrapDegrees(out.yaw - rot.y), dpitch = rot.x - out.pitch;
+            if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f)
+                applyTurnDelta(*player, Vec2{dpitch, dyaw});
+        })) out.error = "entities_fault";
+    // RequestMailbox owns a lock: keep it outside the raw SEH frame so an AV
+    // cannot bypass lock destruction. A failed game read never injects input.
+    if (!out.error && stage == EntityStage::Aim && query.operation == EntityOperation::Interact) {
+        updateRequests([](RequestBlock& request) {
+            request.input = ControlState{};
+            request.input.rmb = true;
+            request.input.active = true;
+            request.inputTicks = 3;
+            ++request.inputSeq;
         });
-    });
-}
-
-
-void ProbeMod::captureEntities(LocalPlayer& player) {
-    auto const origin = player.getPosition();
-    auto const selfId = player.getRuntimeID();
-    float      radius = 16.0f;
-    int        limit  = 64;
-    {
-        std::lock_guard lock(mEntityMutex);
-        radius = mEntityRadius;
-        limit  = mEntityLimit;
+        out.ok = true;
     }
-
-    // Same rule as applyEntityAction: the actor list is server-owned, so the
-    // whole scan runs as a server task.
-    queueServerTask([this, origin, selfId, radius, limit] {
-        auto level = ll::service::bedrock::getLevel();
-        if (!level) {
-            enqueue(R"({"event":"error","reason":"level_unavailable"})");
-            return;
-        }
-
-        nlohmann::json out;
-        out["event"]    = "entities";
-        out["radius"]   = radius;
-        out["entities"] = nlohmann::json::array();
-
-        int count = 0;
-        for (auto* actor : level->getRuntimeActorList()) {
-            if (actor == nullptr || !actor->isAlive()) {
-                continue;
-            }
-            if (actor->isPlayer() && actor->getRuntimeID() == selfId) {
-                continue;
-            }
-            auto const& pos      = actor->getPosition();
-            float       dx       = static_cast<float>(pos.x - origin.x);
-            float       dy       = static_cast<float>(pos.y - origin.y);
-            float       dz       = static_cast<float>(pos.z - origin.z);
-            float       distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (distance > radius) {
-                continue;
-            }
-            out["entities"].push_back({
-                {"type",       actor->getTypeName()                            },
-                {"name",       actor->getNameTag()                             },
-                {"is_player",  actor->isPlayer()                               },
-                {"runtime_id", static_cast<std::uint64_t>(actor->getRuntimeID())},
-                {"x",          finiteOrZero(static_cast<float>(pos.x))         },
-                {"y",          finiteOrZero(static_cast<float>(pos.y))         },
-                {"z",          finiteOrZero(static_cast<float>(pos.z))         },
-                {"distance",   finiteOrZero(distance)                          },
-                {"health",     actor->getHealth()                              },
-            });
-            if (++count >= limit) {
-                break;
-            }
-        }
-        out["count"] = count;
-        enqueue(out.dump());
-    });
+    return next;
 }
 
+void ProbeMod::drainEntities() {
+    if (auto request = mEntityCapture.current()) {
+        if (auto stage = request->dispatch()) {
+            if (request->query.test == CaptureTest::Deferred && *stage == request->query.testStage) {
+                // Deliberately leave this stage queued; the wall-clock owner
+                // must still terminate it without another game tick.
+            } else {
+                auto weak = std::weak_ptr{request};
+                auto run = [this, weak, stage = *stage] {
+                    if (auto active = weak.lock()) {
+                        active->run(stage, GetTickCount64(), [&](EntitySnapshot& out) {
+                            return captureEntityStage(stage, active->query, out);
+                        });
+                    }
+                };
+                try {
+                    if (*stage == EntityStage::Server) {
+                        queueServerTask(std::move(run), [weak](char const* error) {
+                            if (auto active = weak.lock()) active->cancel(error);
+                        });
+                    } else queueClientTask(std::move(run), [weak](char const* error) {
+                        if (auto active = weak.lock()) active->cancel(error);
+                    });
+                } catch (...) { request->cancel("entity_queue_failed"); }
+            }
+        }
+    }
+    auto done = mEntityCapture.take(GetTickCount64());
+    if (!done.request) return;
+    auto result = done.error
+        ? nlohmann::json{{"event", "error"}, {"reason", done.error}, {"phase", "entities"}}
+        : entityJson(done.request->query, done.request->snapshot);
+    auto line = result.dump();
+    if (done.release()) enqueue(std::move(line));
+}
 
 } // namespace probe

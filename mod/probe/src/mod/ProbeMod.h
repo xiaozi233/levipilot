@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/ChatModel.h"
+#include "mod/EntityModel.h"
 #include "mod/PacketTap.h"
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
@@ -100,13 +101,6 @@ struct TeleportRequest {
     float yaw          = 0.0f;
     float pitch        = 0.0f;
     bool  clearEffects = false;
-};
-
-struct EntityAction {
-    enum class Kind { Info, Attack, Interact, LookAt };
-
-    Kind          kind      = Kind::Info;
-    std::uint64_t runtimeId = 0;
 };
 
 class ProbeMod {
@@ -320,7 +314,7 @@ private:
     );
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
     void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
-    void applySlotRequest(LocalPlayer& player, int slot);
+    void applySlotRequest(LocalPlayer& player, detail::SlotQuery const& request, detail::SlotSnapshot& out);
     void captureState(
         ClientInstance&               client,
         LocalPlayer&                  player,
@@ -328,7 +322,9 @@ private:
         detail::StateSnapshot&        out
     );
     void captureInventory(LocalPlayer& player, detail::CaptureRequest const& request, detail::InventorySnapshot& out);
-    void applyEntityAction(LocalPlayer& player, EntityAction const& action);
+    void drainEntities();
+    detail::EntityStage captureEntityStage(detail::EntityStage stage, detail::EntityQuery const& query,
+                                           detail::EntitySnapshot& out);
     void applyEcs(LocalPlayer& player, EcsRequest const& request);
     // Runtime-id ECS requests resolve server-side actors; they run on the
     // server thread with a structured-exception backstop.
@@ -340,7 +336,6 @@ private:
     void queueEquip(std::string const& target, int slot);
     void queueGive(std::string const& item, int count, int aux);
     void queueClearInventory();
-    void captureEntities(LocalPlayer& player);
     void captureBlocks(LocalPlayer& player, detail::BlockRequest const& request, detail::BlockSnapshot& out);
     bool captureScan(LocalPlayer& player, detail::ScanQuery const& request, detail::ScanSnapshot& out);
     void drainQueries();
@@ -373,7 +368,7 @@ private:
     ll::mod::NativeMod& mSelf;
     WorldSession mWorld{*this};
     PacketTap    mPackets;
-    bool queueClientTask(std::function<void()> task);
+    bool queueClientTask(std::function<void()> task, std::function<void(char const*)> onFailure = {});
 
     ll::event::ListenerPtr mMouseListener;
     ll::event::ListenerPtr mServerCommandListener;
@@ -524,10 +519,10 @@ private:
     detail::BlockCapture  mBlockCapture;
     detail::ScanCapture   mScanCapture;
     detail::InventoryCapture mInventoryCapture;
+    detail::SlotCapture mSlotCapture;
     // UI work owns a bounded snapshot; the spool consumer owns timeout and JSON.
     detail::ChatCapture mChatCapture;
-    std::mutex                  mEntityActionMutex;
-    std::optional<EntityAction> mEntityAction;
+    detail::EntityCapture mEntityCapture;
     std::mutex                  mEcsMutex;
     std::optional<EcsRequest>   mEcsRequest;
     std::atomic<int>            mInputSource{-1};
@@ -551,11 +546,6 @@ private:
     // bit 1 = LocalPlayer::jumpFromGround, bit 2 = MobJump::setJumpPendingScale.
     // Non-zero is accepted by input_cfg only with force=true.
     std::atomic<int> mJumpImpulseMode{0};
-
-    std::mutex mEntityMutex;
-    bool       mEntitiesRequested = false;
-    float      mEntityRadius      = 16.0f;
-    int        mEntityLimit       = 64;
 
 
     std::mutex                        mCheckpointMutex;

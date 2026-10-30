@@ -286,6 +286,8 @@ void ProbeMod::resetQueries() {
     mBlockCapture.reset();
     mScanCapture.reset();
     mInventoryCapture.reset();
+    mSlotCapture.reset();
+    mEntityCapture.reset();
 }
 void ProbeMod::cancelQueries(char const* reason) {
     mStateCapture.cancel(reason);
@@ -293,9 +295,12 @@ void ProbeMod::cancelQueries(char const* reason) {
     mBlockCapture.cancel(reason);
     mScanCapture.cancel(reason);
     mInventoryCapture.cancel(reason);
+    mSlotCapture.cancel(reason);
+    mEntityCapture.cancel(reason);
 }
 
 void ProbeMod::drainQueries() {
+    drainEntities();
     auto const now     = GetTickCount64();
     auto       publish = [&](auto& done, nlohmann::json out) {
         auto line = out.dump();
@@ -313,6 +318,16 @@ void ProbeMod::drainQueries() {
         }
         );
     };
+    if (auto done = mSlotCapture.take(now)) {
+        auto const& s = done.snapshot();
+        if (auto error = done.error ? done.error : s.error) emitFailure(done, "select_slot", error);
+        else {
+            nlohmann::json item = nullptr;
+            if (s.present) item = {{"type", s.type.c_str()}, {"count", s.count}};
+            publish(done, {{"event", "select_slot_done"}, {"slot", s.slot}, {"applied", s.applied},
+                           {"ok", s.slot == s.applied}, {"item", std::move(item)}, {"truncated", s.truncated}});
+        }
+    }
     if (auto done = mStateCapture.take(now)) {
         auto const& s = done.snapshot();
         if (auto error = done.error ? done.error : s.error) emitFailure(done, "state", error);

@@ -616,8 +616,15 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     // Slot changes are applied after the original tick: the normal tick re-reads
     // the hotbar from input state, so a pre-tick change would be overwritten.
     if (int slot = mSlotRequest.exchange(-1); slot >= 0) {
-        applySlotRequest(player, slot);
+        // Internal task selection is not a user select_slot request.
+        SlotSnapshot ignored;
+        applySlotRequest(player, SlotQuery{slot}, ignored);
     }
+    mSlotCapture.advance([&](auto const& request, auto& out) {
+        if (request.test == CaptureTest::Deferred) return false;
+        applySlotRequest(player, request, out);
+        return true;
+    });
 
     runCaptureRequests(*client, player);
 
@@ -671,16 +678,6 @@ void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
         return true;
     });
     {
-        std::optional<EntityAction> action;
-        {
-            std::lock_guard lock(mEntityActionMutex);
-            action.swap(mEntityAction);
-        }
-        if (action) {
-            applyEntityAction(player, *action);
-        }
-    }
-    {
         std::optional<EcsRequest> request;
         {
             std::lock_guard lock(mEcsMutex);
@@ -688,18 +685,6 @@ void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
         }
         if (request) {
             applyEcs(player, *request);
-        }
-    }
-
-    {
-        bool requested = false;
-        {
-            std::lock_guard lock(mEntityMutex);
-            requested          = mEntitiesRequested;
-            mEntitiesRequested = false;
-        }
-        if (requested) {
-            captureEntities(player);
         }
     }
 

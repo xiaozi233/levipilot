@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **288/288**，现场 **330/330**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **289/289**，现场 **377/377**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -72,7 +72,11 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 - **命令**：服务器线程 + `PlayerCommandOrigin` + `MinecraftCommands::executeCommand`，
   保留 `@s` / `~` 语义。方块类命令是 deferred，`success=false` 只表示“已提交/延迟执行”。
 - **快捷栏**：在 tick 之后调用 `PlayerInventory::selectSlot(slot, ContainerID::Inventory)`；
-  放在 tick 之前会被原 tick 覆盖。
+  放在 tick 之前会被原 tick 覆盖。用户请求使用独占的 `SlotCapture`，立即返回
+  `select_slot_ok`，应用后固定快照交由 spool 格式化 `select_slot_done`，保留
+  slot/applied/ok/item；同域在途拒绝 `select_slot_busy`，2 秒截止、退出取消、重连丢弃。
+  应用/回读有局部 SEH；SDK 的物品类型名仍有 owning-string 分配，不能宣称零分配。
+  闭环任务的内部槽切换仍走原 tick 时机，不再产生用户选择回执。
 
 ## 物品栏
 
@@ -81,7 +85,7 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   容量为 256 个背包槽及固定盔甲/副手，约 1.1 MiB；保留真实 `size`，槽位或文字超出
   容量时显式 `truncated=true`。普通 36 格背包完整返回，增加 `sample_us`。
   状态/背包共用 `ItemSnapshot` 复制与冷侧 JSON 格式化；游戏对象不会交给消费者。
-  快捷栏选择回执仍走旧路径，本次迁移不包含它。
+  快捷栏选择回执在后续批次接入独占固定快照，见上文。
 - 背包后续验收：查询专项 **52/52**，完整现场 **305/305**（无跳过），离线 **283/283**；
   覆盖五类查询的 SEH/C++/超时、唯一终结、恢复，另有背包占用拒绝。原生模型验证
   256 个槽位中的首/尾和副手发布、下一请求清空旧物品及基础设施零分配。
@@ -97,8 +101,15 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 ## 实体
 
 - `getRuntimeActorList()` 归**集成服务端线程**所有；客户端 tick 线程不遍历它。所有
-  `runtime_id` 查找与快照都在 `queueServerTask` 里执行：命令把客户端侧数据（玩家位置、
-  头部、uuid/名字）在 tick 线程读好后投递，服务端线程找到目标并快照（类型/血量/头位）。
+  `runtime_id` 查找与快照都在 `queueServerTask` 里执行。实体请求完全离开 tick：spool
+  调度客户端平台队列复制玩家位置/头部/UUID（攻击才取名字），再调度服务端读取目标。
+  `EntityCapture` 用独享定长快照跨阶段发布，任何 Actor* 都不跨阶段；三个读取阶段都有
+  局部 SEH，SDK 返回的 owning string/vector 的持有对象在 raw SEH 帧外。
+  最多 512 行，类型 255、实体名 4095 UTF-8 字节，截断报告 `truncated`，每个在途请求
+  约 2.2 MiB；同域请求不合并，回 `entities_busy`。2 秒 wall-clock 截止、退出取消、
+  重连丢弃，队列弱引用防止未运行的旧任务保留快照，消费只读取成功发布的数据。
+  超时后的未开始阶段不再有副作用；已开始的游戏调用不能被超时强行中断。
+  客户端/服务端任务投递或执行失败归属同一请求，spool 生成唯一结果。
 - `attack_entity` 全程在服务端线程执行：解析服务端玩家（uuid→name 回退，同
   `requestServerTeleport`），用**服务端玩家的** `GameMode::attack(actor, headPos)`；
   Actor* 不跨线程传递（一帧旧的指针曾在 client 任务里 SEH）。
@@ -109,6 +120,12 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   崩溃。
 - `look_at_entity` 用玩家头部到实体头部的向量算 yaw/pitch（`probe::detail::yawTo/
   pitchTo` 共享公式），再走 `_applyTurnDelta`。
+- 2026-10-31 实体/快捷栏验收：离线 **289/289**，查询专项 **99/99**，真实生命周期
+  **16/16**，完整现场 **377/377**（无跳过）。原生模型覆盖 500 轮跨线程阶段交接、
+  超时运行中回调与新请求隔离、消费中重连丢弃及槽位快照；现场覆盖三个实体阶段的
+  SEH/C++/超时唯一终结和恢复、busy、快捷栏空/非空/边界回读、断线与真实退出重进。
+  安装/构建 DLL SHA-256 为 `B55D3DD56823A4C0CCAE438A4B8713054197E7465DFCD3AC53AD1C708F0063C5`，
+  无新增/修改 crash 文件；实体攻击血量回读 9→8。日志 `out/reliability-entities-*`。
 
 ## Macro
 
@@ -718,8 +735,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **330/330**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **288/288**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **377/377**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **289/289**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

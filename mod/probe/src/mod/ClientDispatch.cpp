@@ -17,22 +17,25 @@ bool runGuardedClientTask(std::function<void()> const& task) {
 }
 } // namespace
 
-bool ProbeMod::queueClientTask(std::function<void()> task) {
+bool ProbeMod::queueClientTask(std::function<void()> task, std::function<void(char const*)> onFailure) {
     // LL's ClientThreadExecutor is driven by ClientLevelTickEvent, so it does
     // not run at the main menu. The platform queue runs throughout UI lifetime.
     auto platform = ll::service::getAppPlatform();
     if (!platform) {
-        enqueue(R"({"event":"error","reason":"no_app_platform"})");
+        if (onFailure) onFailure("no_app_platform");
+        else enqueue(R"({"event":"error","reason":"no_app_platform"})");
         return false;
     }
-    platform->queueForMainThread_DEPRECATED([this, task = std::move(task)] {
+    std::function<void()> run = [this, task = std::move(task), onFailure] {
         if (!mRunning.load(std::memory_order_acquire)) return;
         try {
             if (!runGuardedClientTask(task)) {
-                enqueue(R"({"event":"error","reason":"internal_error","phase":"client_task","message":"seh"})");
+                if (onFailure) onFailure("client_task_failed");
+                else enqueue(R"({"event":"error","reason":"internal_error","phase":"client_task","message":"seh"})");
             }
         } catch (std::exception const& error) {
-            enqueue(
+            if (onFailure) onFailure("client_task_failed");
+            else enqueue(
                 nlohmann::json{
                     {"event",   "error"         },
                     {"reason",  "internal_error"},
@@ -41,9 +44,16 @@ bool ProbeMod::queueClientTask(std::function<void()> task) {
             }.dump()
             );
         } catch (...) {
-            enqueue(R"({"event":"error","reason":"internal_error","phase":"client_task","message":"exception"})");
+            if (onFailure) onFailure("client_task_failed");
+            else enqueue(R"({"event":"error","reason":"internal_error","phase":"client_task","message":"exception"})");
         }
-    });
-    return true;
+    };
+    std::function<void()> submit = [&] { platform->queueForMainThread_DEPRECATED(run); };
+    try {
+        if (runGuardedClientTask(submit)) return true;
+    } catch (...) {}
+    if (onFailure) onFailure("client_task_queue_failed");
+    else enqueue(R"({"event":"error","reason":"client_task_queue_failed"})");
+    return false;
 }
 } // namespace probe

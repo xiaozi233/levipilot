@@ -35,6 +35,7 @@ scenario DSL / LLM / shell
 | `State.cpp` | `state`、`buttons`、`blocks`、`scan` 的游戏线程采样与后台 JSON 格式化 |
 | `Inventory.cpp` | 背包定长采样与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
+| `EntityModel.h` | 实体请求独享的定长快照、分阶段调度、超时与迟到回调隔离；不依赖游戏 SDK |
 | `Server.cpp` | 服务端权威传送 |
 | `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
 | `WorldEntryModel.h` | 独立进入编号、启动截止、唯一终结与安全菜单恢复；不依赖游戏 SDK |
@@ -109,11 +110,11 @@ scenario DSL / LLM / shell
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
 重入控制器；游戏调用不得同步等待另一个需要任务锁的线程。
 
-`state/buttons/inventory/blocks/scan` 各有一个预分配 `SnapshotMailbox`，生命周期为
+`state/buttons/inventory/blocks/scan/select_slot` 各有一个预分配 `SnapshotMailbox`，生命周期为
 `Idle → Pending → Capturing → Ready → Consuming → Idle`。管道线程提交，游戏线程用 CAS
 取得独占快照并采样，spool 线程取得完成快照后格式化；采样不取得控制锁，也不访问传输队列。
 控制锁只串行化提交、取消、超时及消费回收；取消/断连不会复用仍在采样或格式化的存储。
-重复请求返回对应 `*_busy`，`state/buttons/inventory/blocks` 有 2 秒截止，`scan` 为 10 秒。
+重复请求返回对应 `*_busy`，`state/buttons/inventory/blocks/select_slot` 有 2 秒截止，`scan` 为 10 秒。
 退出世界取消未完成请求；新连接丢弃旧的在途快照，已进入传输队列的历史行仍遵循原 replay 契约。
 
 危险的游戏读取由局部 SEH 边界转成失败结果，C++ 异常由 mailbox 转成 `capture_failed`；
@@ -123,8 +124,17 @@ scenario DSL / LLM / shell
 扫描存储固定占约 4.4 MiB，背包快照约 1.1 MiB。背包保留 slots/armor/offhand/selected_slot
 字段，最多采样 256 个背包槽，文本/槽位截断时标记 `truncated`。物品复制与格式化共用
 `ItemSnapshot`，其中只有复制可触碰游戏对象；`guardedGameRead` 统一局部 SEH 规则。
-游戏 SDK 的玩家/物品名称访问器仍可能分配，快捷栏回执、实体前置读取、legacy JSON 等
-其他路径也尚未迁移，不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
+快捷栏仍在原 tick 后应用，固定快照保留 slot/applied/ok/item，spool 格式化 `select_slot_done`；
+接受回执 `select_slot_ok` 不表示已应用。内部任务槽选择与用户请求分开，不再生成用户完成回执。
+
+实体路径已离开 tick：spool 只调度，客户端平台队列复制玩家上下文，服务端队列查找/读取实体
+并执行攻击，必要时平台队列用值快照转向/注入交互。每个请求冷侧分配一个约 2.2 MiB 的定长
+快照，最多 512 个实体，文字截断显式报告；同域请求在途返回 `entities_busy`。截止为 2 秒，
+退出取消，重连丢弃；队列仅持弱引用，迟到阶段不能操作新请求，JSON 在 spool 格式化。
+已开始的游戏调用不支持超时抢占；不会把跨阶段快照宣称为同一 tick 的原子状态。
+
+游戏 SDK 的玩家/物品名称访问器仍可能分配，legacy JSON、跑酷事件、宏等路径尚未迁移，
+不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
 
 ## 任务生命周期
 

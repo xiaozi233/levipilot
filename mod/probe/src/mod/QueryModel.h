@@ -71,6 +71,17 @@ struct InventorySnapshot {
     std::uint32_t                      sampleUs  = 0;
 };
 
+struct SlotQuery {
+    int slot = 0;
+    CaptureTest test = CaptureTest::None;
+};
+struct SlotSnapshot {
+    FixedText<256> type;
+    int slot = 0, applied = -1, count = 0;
+    bool present = false, truncated = false;
+    char const* error = nullptr;
+};
+
 struct BlockPoint {
     int x = 0, y = 0, z = 0;
 };
@@ -164,6 +175,7 @@ bool advanceScan(ScanQuery const& request, ScanSnapshot& out, std::uint64_t tick
 using StateCapture     = SnapshotMailbox<CaptureRequest, StateSnapshot>;
 using ButtonCapture    = SnapshotMailbox<CaptureRequest, ButtonSnapshot>;
 using InventoryCapture = SnapshotMailbox<CaptureRequest, InventorySnapshot>;
+using SlotCapture      = SnapshotMailbox<SlotQuery, SlotSnapshot>;
 using BlockCapture     = SnapshotMailbox<BlockRequest, BlockSnapshot>;
 using ScanCapture      = SnapshotMailbox<ScanQuery, ScanSnapshot>;
 

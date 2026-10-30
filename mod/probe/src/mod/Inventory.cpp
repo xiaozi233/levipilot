@@ -4,33 +4,25 @@ using namespace probe::detail;
 
 namespace probe {
 
-void ProbeMod::applySlotRequest(LocalPlayer& player, int slot) {
-    slot = std::clamp(slot, 0, 8);
-
-    bool applied = false;
-    if (player.mInventory) {
-        applied = player.mInventory->selectSlot(slot, ContainerID::Inventory);
-    }
-    if (!applied) {
-        player.setSelectedSlot(slot);
-        applied = player.getSelectedItemSlot() == slot;
-    }
-
-    nlohmann::json result;
-    result["event"]   = "select_slot_done";
-    result["slot"]    = slot;
-    result["applied"] = player.getSelectedItemSlot();
-    result["ok"]      = player.getSelectedItemSlot() == slot;
-    auto const& item  = player.getSelectedItem();
-    if (!item.isNull()) {
-        result["item"] = {
-            {"type",  item.getTypeName()           },
-            {"count", static_cast<int>(item.mCount)},
-        };
-    } else {
-        result["item"] = nullptr;
-    }
-    enqueue(result.dump());
+void ProbeMod::applySlotRequest(LocalPlayer& player, SlotQuery const& request, SlotSnapshot& out) {
+    out.slot = std::clamp(request.slot, 0, 8);
+    // Keep the owning SDK return outside the raw SEH frame. The remaining SDK
+    // name allocation is tracked separately from JSON/transport removal.
+    std::string type;
+    if (!guardedGameRead([&] {
+            injectCaptureFault(request.test);
+            bool const applied = player.mInventory && player.mInventory->selectSlot(out.slot, ContainerID::Inventory);
+            if (!applied) player.setSelectedSlot(out.slot);
+            out.applied = player.getSelectedItemSlot();
+            auto const& item = player.getSelectedItem();
+            if (!item.isNull()) {
+                type = item.getTypeName();
+                out.type.assign(type);
+                out.present = true;
+                out.count = static_cast<int>(item.mCount);
+                out.truncated = out.type.view().size() != type.size();
+            }
+        })) out.error = "select_slot_fault";
 }
 
 

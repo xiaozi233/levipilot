@@ -609,6 +609,122 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
     )
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     checks.check("query_handled_fault_no_dump", after == before)
+    check_entity_slot_capture(client, checks)
+
+
+def check_entity_slot_capture(client: ModClient, checks: Checks) -> None:
+    """Exercise all three entity stages and tick-owned slot receipts."""
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    inventory = client.inventory()
+    selected = int(inventory["selected_slot"])
+    empty_slot = next(
+        (int(row["slot"]) for row in inventory["slots"][:9] if row["item"] is None), None
+    )
+    wrote_item = False
+    self_id = int(client.state()["runtime_id"])
+    with contextlib.suppress(ModTimeout):
+        while True:
+            client.wait_event("select_slot_done", 0.02)
+    try:
+        for target, stage in (
+            ("select_slot", "client"),
+            ("entities", "client"),
+            ("entities", "server"),
+            ("entities", "aim"),
+        ):
+            event = "select_slot_done" if target == "select_slot" else "entities"
+            for mode, reason in (
+                ("seh", f"{target}_fault"),
+                ("cpp", "capture_failed"),
+                ("timeout", "capture_timeout"),
+            ):
+                result = client.request(
+                    {
+                        "cmd": "selftest_query_failure",
+                        "target": target,
+                        "stage": stage,
+                        "runtime_id": self_id,
+                        "mode": mode,
+                    },
+                    (event, "error"),
+                )
+                if result.get("reason") == "selftest_stress_disabled":
+                    checks.note("entity_slot_fault_recovery", "skipped: stress is disabled")
+                    return
+                label = f"query_{target}_{stage}_{mode}"
+                checks.check(
+                    f"{label}_terminal",
+                    result.get("event") == "error"
+                    and result.get("reason") == reason
+                    and result.get("phase") == target,
+                    str(result),
+                )
+                duplicate = None
+                with contextlib.suppress(ModTimeout):
+                    duplicate = client.wait_event((event, "error"), 0.05)
+                checks.check(f"{label}_unique", duplicate is None, str(duplicate or ""))
+                if target == "select_slot":
+                    client.select_slot(selected)
+                    recovered = client.wait_event("select_slot_done", 3)
+                    ok = recovered.get("ok") is True and recovered.get("applied") == selected
+                else:
+                    recovered = client.entity(self_id)
+                    ok = recovered.get("runtime_id") == self_id
+                checks.check(f"{label}_recovery", ok and wait_ticks(client, 2) >= 2)
+
+        for target in ("select_slot", "entities"):
+            with client.exchange():
+                client.send({"cmd": "selftest_query_failure", "target": target, "mode": "timeout"})
+                client.send({"cmd": target})
+                busy = client.wait_event("error", 3)
+                terminal = client.wait_event("error", 3)
+            checks.check(
+                f"query_{target}_busy",
+                busy.get("reason") == f"{target}_busy"
+                and terminal.get("reason") == "capture_timeout"
+                and terminal.get("phase") == target,
+            )
+
+        # Preserve the old ack/completion contract and clamp/readback behavior.
+        for requested in (-1, 0, 4, 8, 9):
+            expected = min(8, max(0, requested))
+            ack = client.select_slot(requested)
+            done = client.wait_event("select_slot_done", 3)
+            current = client.inventory()
+            item = current["slots"][expected]["item"]
+            expected_item = None if item is None else {"type": item["type"], "count": item["count"]}
+            checks.check(
+                f"select_slot_receipt_{requested}",
+                ack.get("event") == "select_slot_ok"
+                and done.get("slot") == expected
+                and done.get("applied") == expected
+                and done.get("ok") is True
+                and done.get("item") == expected_item
+                and current.get("selected_slot") == expected,
+                str(done),
+            )
+        rejected = client.request({"cmd": "entities", "radius": -1}, "error")
+        checks.check("entities_reject_radius", rejected.get("reason") == "bad_radius")
+        if checks.check("select_slot_item_fixture", empty_slot is not None):
+            assert empty_slot is not None
+            wrote_item = True
+            client.set_item(empty_slot, "minecraft:stone", count=3)
+            client.select_slot(empty_slot)
+            done = client.wait_event("select_slot_done", 3)
+            checks.check(
+                "select_slot_item_receipt",
+                done.get("ok") is True
+                and done.get("item") == {"type": "minecraft:stone", "count": 3},
+                str(done),
+            )
+    finally:
+        if wrote_item and empty_slot is not None:
+            client.clear_item(empty_slot)
+        client.select_slot(selected)
+        client.wait_event("select_slot_done", 3)
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("entity_slot_handled_fault_no_dump", after == before)
 
 
 def check_macro_record_limits(client: ModClient, checks: Checks) -> None:
@@ -698,6 +814,8 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
     low, high = [x, y + 8, z], [x + 31, y + 39, z + 31]
     scan = {"cmd": "scan", "from": low, "to": high, "limit": 1}
     client.send(scan)
+    client.send({"cmd": "selftest_query_failure", "target": "entities", "mode": "timeout"})
+    client.send({"cmd": "selftest_query_failure", "target": "select_slot", "mode": "timeout"})
     client.ping()  # Ensure submission reached the mod before closing the pipe.
     client.reconnect()
     # Already queued rows are intentionally replayed; they precede new work.
@@ -714,20 +832,53 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
     with contextlib.suppress(ModTimeout):
         late = client.wait_event(("scan", "error"), 0.2)
     checks.check("query_lifecycle_no_stale_scan", late is None, str(late or ""))
+    checks.check(
+        "query_lifecycle_entity_reconnect",
+        client.entities(limit=1).get("event") == "entities",
+    )
+    client.select_slot(int(original["selected_slot"]))
+    checks.check(
+        "query_lifecycle_slot_reconnect",
+        client.wait_event("select_slot_done", 3).get("ok") is True,
+    )
 
     try:
         with client.exchange():
             client.send(scan)
+            client.send(
+                {
+                    "cmd": "selftest_query_failure",
+                    "target": "entities",
+                    "mode": "timeout",
+                    "timeout_ms": 10000,
+                }
+            )
+            client.send(
+                {
+                    "cmd": "selftest_query_failure",
+                    "target": "select_slot",
+                    "mode": "timeout",
+                    "timeout_ms": 10000,
+                }
+            )
             left = client.leave_world()
             checks.check("query_lifecycle_leave", left.get("ok") is True, str(left))
             client.wait_event("world_left", 45)
             cancelled = client.wait_event(("scan", "error"), 5)
+            other_cancellations = [client.wait_event("error", 5), client.wait_event("error", 5)]
+        cancellations = [cancelled, *other_cancellations]
+        scan_cancelled = next((row for row in cancellations if row.get("phase") == "scan"), {})
         checks.check(
             "query_lifecycle_world_cancel",
-            cancelled.get("event") == "error"
-            and cancelled.get("reason") == "world_left"
-            and cancelled.get("phase") == "scan",
-            str(cancelled),
+            scan_cancelled.get("event") == "error" and scan_cancelled.get("reason") == "world_left",
+            str(scan_cancelled),
+        )
+        # Consumption order is unspecified across query domains.
+        checks.check(
+            "query_lifecycle_entity_slot_cancel",
+            {row.get("phase") for row in cancellations} == {"scan", "entities", "select_slot"}
+            and all(row.get("reason") == "world_left" for row in cancellations),
+            str(cancellations),
         )
         deadline = time.monotonic() + 45
         while not client.worlds().get("ready"):
@@ -737,6 +888,9 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
         checks.check("query_lifecycle_menu_state", client.state().get("in_world") is False)
         refused = client.request(scan, ("scan", "error"))
         checks.check("query_lifecycle_menu_scan", refused.get("reason") == "not_in_world")
+        for command in ("entities", "select_slot"):
+            refused = client.request({"cmd": command}, "error")
+            checks.check(f"query_lifecycle_menu_{command}", refused.get("reason") == "not_in_world")
     finally:
         joined = client.enter_world_ready(world)
         checks.check("query_lifecycle_rejoin", joined.get("ok") is True, str(joined))
@@ -749,6 +903,14 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
         wait_ticks(client, 8)
         recovered = client.scan(low, low, include_air=True)
         checks.check("query_lifecycle_world_recovery", recovered.get("visited") == 1)
+        checks.check(
+            "query_lifecycle_entity_recovery", client.entities(limit=1).get("event") == "entities"
+        )
+        client.select_slot(int(original["selected_slot"]))
+        checks.check(
+            "query_lifecycle_slot_recovery",
+            client.wait_event("select_slot_done", 3).get("ok") is True,
+        )
 
 
 def check_overhead_window(client: ModClient, checks: Checks, *, wrap: bool = False) -> None:

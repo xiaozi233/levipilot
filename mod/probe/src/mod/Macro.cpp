@@ -37,7 +37,13 @@ void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
 
     bool limitReached = false;
     {
-        std::lock_guard lock(mRecordMutex);
+        std::lock_guard lock(mMacroSessionMutex);
+        // The pipe thread closes recording under the same mutex before taking
+        // its snapshot. Re-checking here prevents a tick that observed the
+        // old flag from appending after macro_rec_stop has begun.
+        if (!mMacroRecording.load(std::memory_order_relaxed)) {
+            return;
+        }
         if (mRecordedMacro.size() < MaxRecordedTicks) {
             mRecordedMacro.push_back(row);
         }
@@ -53,8 +59,11 @@ void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
 }
 
 void ProbeMod::finishMacro(std::string reason) {
-    if (!mMacroPlaying.exchange(false)) {
-        return;
+    {
+        std::lock_guard sessionLock(mMacroSessionMutex);
+        if (!mMacroPlaying.exchange(false)) {
+            return;
+        }
     }
     if (mMacroEventLevel) {
         releaseMacroInputs();

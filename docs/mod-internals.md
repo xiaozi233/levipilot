@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **280/280**，现场 **228/228**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **281/281**，现场 **235/235**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -75,6 +75,12 @@
   `traceRay + GameMode`（左键破坏、右键放置）。
 - 录制：WASD/Sprint/Sneak/Jump 来自输入状态，Yaw/Pitch 由 `ActorRotation` 差分；
   RMB/LMB 由 `MouseInputEvent` 记录。
+- 录制和播放共享 `mMacroSessionMutex` 管理会话边界。停止录制先在锁内关掉 tick 采样，再
+  复制完整快照并保存；保存完成后按录制代次清理，避免并发新会话的数据被旧保存操作清除。
+  达到 `max_ticks` 后也保留缓冲供 `macro_rec_stop` 保存。重复录制、
+  播放时录制、录制时播放都会返回明确错误，避免两个会话同时改写按键状态。
+- 事件级播放停止后在下一客户端 tick 释放按住的 HID 按键和鼠标；卸载路径关闭录制状态并
+  提交同一释放请求。
 
 ## 鼠标录制
 
@@ -605,8 +611,8 @@ Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **222/222**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **220/220**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **235/235**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **281/281**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

@@ -2702,6 +2702,67 @@ def main(argv: list[str] | None = None) -> int:
             _, legacy_left, _ = run_macro(False)
             checks.check("macro_legacy_path", legacy_left == 0, f"left={legacy_left}")
 
+            # Macro recording lifecycle: the tick-side append and pipe-side
+            # stop must share a boundary, and playback must never be recorded
+            # concurrently. A short capped session also exercises the
+            # automatic limit path before the explicit save.
+            lifecycle_name = "selftest_macro_lifecycle"
+            lifecycle_path = mod_dir / "macros" / f"{lifecycle_name}.json"
+            with contextlib.suppress(OSError):
+                lifecycle_path.unlink()
+            client.macro_record_start(max_ticks=3)
+            wait_ticks(client, 6)
+            limited = client.macro_status()
+            checks.check(
+                "macro_record_limit_stops",
+                not bool(limited.get("recording")) and int(limited.get("recorded_ticks", 0)) >= 3,
+                f"recording={limited.get('recording')} ticks={limited.get('recorded_ticks')}",
+            )
+            saved = client.macro_record_stop(lifecycle_name)
+            checks.check(
+                "macro_record_limit_save",
+                int(saved.get("ticks", 0)) == int(limited.get("recorded_ticks", 0)),
+                f"saved={saved.get('ticks')} buffered={limited.get('recorded_ticks')}",
+            )
+            after_save = client.macro_status()
+            checks.check(
+                "macro_record_stop_clears_session",
+                int(after_save.get("recorded_ticks", -1)) == 0,
+                str(after_save.get("recorded_ticks")),
+            )
+
+            client.macro_record_start()
+            duplicate = client.request({"cmd": "macro_rec_start"}, "error")
+            checks.check(
+                "macro_record_duplicate_rejected",
+                duplicate.get("reason") == "macro_already_recording",
+                str(duplicate.get("reason")),
+            )
+            wait_ticks(client, 1)
+            client.macro_record_stop("selftest_macro_duplicate")
+
+            client.macro_run(loop=True, event_level=True)
+            wait_ticks(client, 6)
+            held_input = client.state().get("input", {})
+            checks.check("macro_loop_holds_key", bool(held_input.get("w")), str(held_input))
+            reply = client.request({"cmd": "macro_rec_start"}, "error")
+            checks.check(
+                "macro_record_during_playback_rejected",
+                reply.get("reason") == "macro_playing",
+                str(reply.get("reason")),
+            )
+            client.macro_stop()
+            wait_ticks(client, 4)
+            released_input = client.state().get("input", {})
+            checks.check(
+                "macro_stop_releases_session",
+                not bool(client.macro_status().get("playing"))
+                and not any(
+                    bool(released_input.get(key)) for key in ("w", "a", "s", "d", "jump", "sneak")
+                ),
+                str(released_input),
+            )
+
         # -- review hardening guards ---------------------------------------
         # Each check pins one fix from the code-review round; see mod/README.md.
         reply = client.request({"cmd": "look", "yaw": 1e30, "relative": False}, "error")

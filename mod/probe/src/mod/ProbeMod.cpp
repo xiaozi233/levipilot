@@ -132,8 +132,16 @@ bool ProbeMod::disable() {
     }
 
     cancelTasks("disabled");
-    mMacroRecording = false;
+    {
+        std::lock_guard lock(mMacroSessionMutex);
+        mMacroRecording = false;
+    }
     mMacroPlaying   = false;
+    mMacroStartRequested = false;
+    // Input release must happen on the game tick. If a final tick is still
+    // delivered during shutdown, this request clears event-level keys before
+    // the mod leaves; it also makes the intent explicit for a later unload.
+    mMacroStopRequested = true;
     packetCaptureStop();
     // Never leave the game with real input dropped after an unload.
     mHardwareInputLocked = false;
@@ -291,9 +299,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         return;
     }
 
-    if (mMacroStartRequested.exchange(false)) {
-        startMacroIfRequested();
-    }
+    startMacroIfRequested();
 
     if (mMacroPlaying.load(std::memory_order_relaxed)) {
         tickMacroPlayback(*client, player);
@@ -439,13 +445,24 @@ void ProbeMod::applyToggleFlyRequest(LocalPlayer& player) {
 }
 
 void ProbeMod::startMacroIfRequested() {
+    if (!mMacroStartRequested.load(std::memory_order_acquire)) {
+        return;
+    }
+    bool started = false;
     {
-        std::lock_guard lock(mMacroMutex);
-        if (mMacro) {
-            mMacroPlaying = true;
+        std::lock_guard sessionLock(mMacroSessionMutex);
+        if (!mMacroStartRequested.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        if (!mMacroRecording.load(std::memory_order_relaxed)) {
+            std::lock_guard macroLock(mMacroMutex);
+            if (mMacro) {
+                mMacroPlaying = true;
+                started = true;
+            }
         }
     }
-    if (mMacroPlaying) {
+    if (started) {
         mPrevSprint   = false;
         mPrevSneak    = false;
         mPrevMacroRmb = false;

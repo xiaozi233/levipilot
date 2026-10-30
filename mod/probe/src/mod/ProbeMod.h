@@ -622,7 +622,8 @@ private:
     // Macro recorder.
     std::atomic_bool           mMacroRecording{false};
     std::atomic<std::uint64_t> mMacroRecordMax{0};
-    std::mutex                 mRecordMutex;
+    std::mutex                 mMacroSessionMutex;
+    std::uint64_t              mMacroRecordGeneration = 0;
     Macro                      mRecordedMacro;
     std::atomic_bool           mHavePrevRotation{false};
     float                      mPrevYaw          = 0.0f;

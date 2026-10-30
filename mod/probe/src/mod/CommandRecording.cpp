@@ -88,10 +88,15 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         // would leave index/end pointing past the new, possibly much shorter
         // buffer. Clear a pending start too: the tick consumes it after this
         // returns and would restart playback on the new macro otherwise.
-        bool const wasPlaying = mMacroPlaying.exchange(false);
-        bool const wasPending = mMacroStartRequested.exchange(false);
-        if (wasPlaying) {
-            mMacroStopRequested = true;
+        bool wasPlaying = false;
+        bool wasPending = false;
+        {
+            std::lock_guard sessionLock(mMacroSessionMutex);
+            wasPlaying = mMacroPlaying.exchange(false);
+            wasPending = mMacroStartRequested.exchange(false);
+            if (wasPlaying) {
+                mMacroStopRequested = true;
+            }
         }
         size_t count = 0;
         {
@@ -120,20 +125,31 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             enqueue(R"({"event":"error","reason":"no_macro_loaded"})");
             return true;
         }
-        if (mMacroPlaying.load()) {
-            enqueue(R"({"event":"error","reason":"macro_already_playing"})");
-            return true;
-        }
         int start = std::clamp(j.value("start", 0), 0, static_cast<int>(macro->size()) - 1);
         int end   = j.value("end", static_cast<int>(macro->size()));
         end       = std::clamp(end, start + 1, static_cast<int>(macro->size()));
-        mMacroStart.store(start);
-        mMacroEnd.store(end);
-        mMacroIndex.store(start);
-        mMacroLoop.store(j.value("loop", false));
-        mMacroEventLevel     = j.value("event_level", false);
-        mHavePrevMacroTick   = false;
-        mMacroStartRequested = true;
+        bool recording = false;
+        bool playing   = false;
+        {
+            std::lock_guard sessionLock(mMacroSessionMutex);
+            recording = mMacroRecording.load(std::memory_order_relaxed);
+            playing   = mMacroPlaying.load(std::memory_order_relaxed)
+                     || mMacroStartRequested.load(std::memory_order_relaxed);
+            if (!recording && !playing) {
+                mMacroStart.store(start);
+                mMacroEnd.store(end);
+                mMacroIndex.store(start);
+                mMacroLoop.store(j.value("loop", false));
+                mMacroEventLevel   = j.value("event_level", false);
+                mHavePrevMacroTick = false;
+                mMacroStartRequested.store(true, std::memory_order_release);
+            }
+        }
+        if (recording || playing) {
+            enqueue(recording ? R"({"event":"error","reason":"macro_recording_active"})"
+                              : R"({"event":"error","reason":"macro_already_playing"})");
+            return true;
+        }
         enqueue(
             nlohmann::json{
                 {"event",       "macro_started"},
@@ -150,9 +166,12 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
     if (cmd == "macro_stop") {
         // Also drop a pending start so a stop that races macro_run cannot be
         // overwritten by the start block re-enabling playback next tick.
-        mMacroStartRequested = false;
-        mMacroPlaying        = false;
-        mMacroStopRequested  = true;
+        {
+            std::lock_guard sessionLock(mMacroSessionMutex);
+            mMacroStartRequested = false;
+            mMacroPlaying        = false;
+            mMacroStopRequested  = true;
+        }
         enqueue(R"({"event":"macro_stopped","reason":"client"})");
         return true;
     }
@@ -171,7 +190,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             out["ticks"]  = mMacro ? mMacro->size() : 0;
         }
         {
-            std::lock_guard lock(mRecordMutex);
+            std::lock_guard lock(mMacroSessionMutex);
             out["recorded_ticks"] = mRecordedMacro.size();
         }
         enqueue(out.dump());
@@ -192,30 +211,41 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
     }
     if (cmd == "macro_rec_start") {
         {
-            std::lock_guard lock(mRecordMutex);
+            std::lock_guard lock(mMacroSessionMutex);
+            if (mMacroRecording.load(std::memory_order_relaxed)) {
+                enqueue(R"({"event":"error","reason":"macro_already_recording"})");
+                return true;
+            }
+            if (mMacroPlaying.load(std::memory_order_acquire)
+                || mMacroStartRequested.load(std::memory_order_acquire)) {
+                enqueue(R"({"event":"error","reason":"macro_playing"})");
+                return true;
+            }
             mRecordedMacro.clear();
+            ++mMacroRecordGeneration;
+            mMacroRecordMax = j.value("max_ticks", std::uint64_t{0});
+            mHavePrevRotation = false;
+            mMouseLeftLatch   = false;
+            mMouseRightLatch  = false;
+            mMouseLeft        = false;
+            mMouseRight       = false;
+            mPrevActionLmb    = false;
+            mPrevActionRmb    = false;
+            mMacroRecording   = true;
         }
-        mHavePrevRotation = false;
-        mMouseLeftLatch   = false;
-        mMouseRightLatch  = false;
-        mMouseLeft        = false;
-        mMouseRight       = false;
-        mPrevActionLmb    = false;
-        mPrevActionRmb    = false;
-        mMacroRecordMax   = j.value("max_ticks", std::uint64_t{0});
-        mMacroRecording   = true;
         enqueue(R"({"event":"macro_rec_started"})");
         return true;
     }
     if (cmd == "macro_rec_stop") {
         std::string name = j.value("name", std::string{"recorded"});
         Macro       rows;
+        std::uint64_t generation = 0;
         {
-            std::lock_guard lock(mRecordMutex);
+            std::lock_guard lock(mMacroSessionMutex);
+            mMacroRecording = false;
+            generation = mMacroRecordGeneration;
             rows = mRecordedMacro;
-            mRecordedMacro.clear();
         }
-        mMacroRecording = false;
         if (rows.empty()) {
             enqueue(R"({"event":"error","reason":"no_recorded_ticks"})");
             return true;
@@ -230,6 +260,12 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             }.dump()
             );
             return true;
+        }
+        {
+            std::lock_guard lock(mMacroSessionMutex);
+            if (mMacroRecordGeneration == generation) {
+                mRecordedMacro.clear();
+            }
         }
         enqueue(
             nlohmann::json{

@@ -257,6 +257,7 @@ void ProbeMod::serverLoop() {
             }
 
             if (!connected) {
+                mChatCapture.reset();
                 bool const ok = pipe.connect(mRunning);
                 if (!mRunning.load(std::memory_order_relaxed)) {
                     break;

@@ -14,6 +14,8 @@ class QueryCommands(PipeConnection):
 
         This is a snapshot, not a durable log. Each text is capped at 2047 UTF-8
         bytes and reports truncation; the game controls history retention.
+        A menu request returns ok=False/reason=no_player; the mod ends an
+        unserviced request after 2 seconds with reason=chat_history_timeout.
         """
         return self.request({"cmd": "chat_history", "limit": int(limit)}, "chat_history")
 

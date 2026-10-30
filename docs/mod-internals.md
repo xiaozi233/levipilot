@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **281/281**，现场 **235/235**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **282/282**，现场 **237/237**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -599,20 +599,28 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 保留给 `readline/wait_event`，任务等待按 ID 关联。详细限制与迁移见 `architecture.md`
 和 `refactoring.md` 的“行为重设计”。
 
-`Chat.cpp` 将 `GuiData` 的聊天缓存作为只读快照开放。管道只提交一次客户端 executor
-工作，客户端线程复制定长文字，spool 线程格式化 JSON。单槽 mailbox 的
-Idle → Requested → Ready → Idle 通过 acquire/release 发布；繁忙时明确拒绝，
+`Chat.cpp` 将 `GuiData` 的聊天缓存作为只读快照开放。管道通过 `queueClientTask` 提交
+一次平台主线程工作（主菜单也执行），客户端线程复制定长文字，spool 线程格式化 JSON。
+`ChatModel.h` 为每次请求分配独享快照，Requested → Capturing → Ready 通过 acquire/release
+发布；繁忙时明确拒绝。超过 2 秒由 spool 消费端回 `chat_history_timeout` 并释放槽，
+退出世界取消请求，断连/重启取消并丢弃旧请求。迟到回调不读写新请求；已在采集中的旧回调
+独享存储直到返回，超时消费端不读取其载荷。主菜单直接回 `ok=false/reason=no_player`。
 不增加 tick 锁或在 tick 格式化聊天 JSON。消息优先使用过滤后的文字，返回最近最多 64 条，
 每条 2047 UTF-8 字节并带 truncated；不返回账号标识。此接口读取游戏保留的缓存，
 不保证永久历史，也不把 `command_done` 的即时结果当作 deferred 命令最终效果。
+
+2026-10-31 聊天生命周期验收：native 模型覆盖排队/采集中超时、取消/重启、重复回调、
+并发异常发布、迟到完成和弱引用释放；现场 `--chat-lifecycle-world "超平坦测试"` **9/9**，
+验证超时终结、`world_left` 取消、无世界 tick 的主菜单两次请求与重进后的正常快照。
+默认完整现场套件 **237/237**（无跳过），其中新增 `chat_timeout_terminal/recovery`。
 
 ## 实测数字速查（1.26.51.01 创作存档）
 
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **235/235**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **281/281**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **237/237**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **282/282**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

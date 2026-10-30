@@ -853,6 +853,60 @@ def check_request_recovery(client: ModClient, checks: Checks) -> None:
         client.stop_move()
 
 
+def check_chat_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
+    """Exercise chat without world ticks and restore the test world afterward."""
+    original = client.state()
+    if not checks.check("chat_lifecycle_in_world", original.get("in_world") is True):
+        return
+    probe = client.request({"cmd": "selftest_chat_timeout"}, ("chat_history", "error"))
+    if not checks.check(
+        "chat_lifecycle_timeout",
+        probe.get("event") == "chat_history" and probe.get("reason") == "chat_history_timeout",
+        str(probe),
+    ):
+        return
+    try:
+        with client.exchange():
+            client.send({"cmd": "selftest_chat_timeout"})
+            left = client.leave_world()
+            checks.check("chat_lifecycle_leave", left.get("ok") is True, str(left))
+            client.wait_event("world_left", 45)
+            cancelled = client.wait_event("chat_history", 5)
+        checks.check(
+            "chat_lifecycle_world_cancel",
+            cancelled.get("ok") is False and cancelled.get("reason") == "world_left",
+            str(cancelled),
+        )
+        deadline = time.monotonic() + 45
+        while not client.worlds().get("ready"):
+            if time.monotonic() >= deadline:
+                raise ModTimeout("chat lifecycle: main menu did not become ready")
+            time.sleep(0.1)
+        tick = client.status().get("tick")
+        for attempt in range(2):
+            result = client.chat_history(limit=1)
+            checks.check(
+                f"chat_lifecycle_menu_{attempt}",
+                result.get("ok") is False and result.get("reason") == "no_player",
+                str(result),
+            )
+        checks.check("chat_lifecycle_no_world_ticks", client.status().get("tick") == tick)
+    finally:
+        # Both normal completion and a failed menu check must return the game
+        # to the caller's test world; recovery errors remain visible.
+        joined = client.enter_world_ready(world)
+        checks.check("chat_lifecycle_rejoin", joined.get("ok") is True, str(joined))
+        client.wait_in_world(timeout=60)
+        client.reset(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        wait_ticks(client, 8)
+        result = client.chat_history(limit=1)
+        checks.check("chat_lifecycle_world_recovery", result.get("ok") is True, str(result))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", default="minecraft:pig")
@@ -868,6 +922,11 @@ def main(argv: list[str] | None = None) -> int:
         "--mod-core-only",
         action="store_true",
         help="compile/run native mod transport/recording checks without connecting to the game",
+    )
+    modes.add_argument(
+        "--chat-lifecycle-world",
+        metavar="WORLD",
+        help="save/leave, check chat cancellation and main menu recovery, then re-enter WORLD",
     )
     modes.add_argument(
         "--mod-core-live-only",
@@ -927,6 +986,15 @@ def main(argv: list[str] | None = None) -> int:
             client.close()
         return checks.finish()
 
+    if args.chat_lifecycle_world:
+        try:
+            check_chat_lifecycle(client, checks, args.chat_lifecycle_world)
+        except (ModPipeError, OSError, ValueError) as exc:
+            checks.check("chat_lifecycle_error", False, str(exc))
+        finally:
+            client.close()
+        return checks.finish()
+
     try:
         # Scripts own the session: drop real hardware keys/mouse so a person at
         # the machine cannot perturb the run. Injected events still pass; use
@@ -953,6 +1021,23 @@ def main(argv: list[str] | None = None) -> int:
             ),
             str(chat),
         )
+        delayed_chat = client.request({"cmd": "selftest_chat_timeout"}, ("chat_history", "error"))
+        if delayed_chat.get("event") == "error":
+            checks.check(
+                "chat_timeout_gate", delayed_chat.get("reason") == "selftest_stress_disabled"
+            )
+            checks.note("chat_timeout_recovery", "skipped: allow_selftest_stress is disabled")
+        else:
+            checks.check(
+                "chat_timeout_terminal",
+                delayed_chat.get("ok") is False
+                and delayed_chat.get("reason") == "chat_history_timeout",
+                str(delayed_chat),
+            )
+            recovered_chat = client.chat_history(limit=1)
+            checks.check(
+                "chat_timeout_recovery", recovered_chat.get("ok") is True, str(recovered_chat)
+            )
         check_dispatch_compatibility(client, checks)
         check_request_recovery(client, checks)
         check_task_lifecycle(client, checks)

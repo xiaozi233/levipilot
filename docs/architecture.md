@@ -85,8 +85,8 @@ scenario DSL / LLM / shell
 - **客户端主线程**：世界列表、进退世界、登录查询和自动进入经 `queueClientTask` 投递到
   `AppPlatform::queueForMainThread_DEPRECATED`，由 SEH/C++ 异常边界保护。
   登录与自动进入的延迟用 wall-clock timer 计时，再排回主线程；`WorldSession::stop`
-  取消计时器并更新代次，使过期回调失效。LL 默认 `ClientThreadExecutor` 仅在世界 tick 执行，
-  保留给世界内聊天快照，不能用来处理主菜单请求。
+  取消计时器并更新代次，使过期回调失效。聊天快照同样走平台主线程队列；LL 默认
+  `ClientThreadExecutor` 仅在世界 tick 执行，不能用于任何需要主菜单响应的请求。
 - **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
   `spool-<pid>.jsonl`；`world_left` / `panic` / `stop` / `disable` 会强制刷盘。
   该线程也消费任务定长事件、格式化响应并调度 `use` 的服务端工作。
@@ -241,9 +241,11 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 `chat_history` 展示了「游戏对象只在游戏线程读、格式化在后台线程」的完整路径：
 
 - 客户端：`ModClient.chat_history(limit=32)`；CLI：`harness chat-history --limit 32`。
-- `Chat.cpp` 在客户端 executor 里把游戏保留的最近消息复制进定长 `ChatCapture`
+- `Chat.cpp` 在平台主线程队列里把游戏保留的最近消息复制进请求独享的定长快照
   （最多 64 条、每条 2047 UTF-8 字节，带截断标记），管道线程不直接读取 UI 对象；
   spool 线程把快照格式化成 `chat_history` 事件。
+- 等待超过 2 秒回 `ok=false/reason=chat_history_timeout` 并释放请求槽；退出世界取消
+  在途请求，主菜单返回 `no_player`。旧回调只持有自己的快照，无法改写新请求。
 - 历史由游戏管理，不保证重启后保留；`hello.capabilities` 里的 `chat_history` 标示该能力可用。
 
 ### 加一个管道命令

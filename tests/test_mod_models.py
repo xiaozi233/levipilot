@@ -70,6 +70,9 @@ class ModModelTests(unittest.TestCase):
     def test_request_transactions_and_concurrent_snapshots(self) -> None:
         self.run_native("request_model")
 
+    def test_chat_timeout_cancellation_and_late_completion(self) -> None:
+        self.run_native("chat_model")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipes required")
     def test_pipe_cancellation_and_nonreading_client(self) -> None:
         self.run_native("pipe_channel")

@@ -4,6 +4,7 @@
 #include "mod/PacketTap.h"
 #include "mod/WorldSession.h"
 #include "mod/RequestModel.h"
+#include "mod/ChatModel.h"
 
 #include "ll/api/event/Listener.h"
 #include "ll/api/mod/NativeMod.h"
@@ -274,8 +275,8 @@ private:
     void          cancelTasks(char const* reason = "cancelled");
     std::uint64_t startTask(TaskState state);
     void          drainTaskEvents();
-    void          requestChatHistory(int limit);
-    void          captureChatHistory(int limit);
+    void          requestChatHistory(int limit, bool deferForSelftest = false);
+    static void   captureChatHistory(detail::ChatCapture::Snapshot& snapshot, int limit);
     void          drainChatHistory();
     void          dispatchUseTask(std::uint64_t id);
     void          beginTask();
@@ -523,23 +524,8 @@ private:
     // Look requests live in RequestBlock above (mLookMutex removed in T9).
 
     std::atomic_bool mStateRequested{false};
-    // Chat history capture subsystem (Chat.cpp): a bounded, allocation-free
-    // snapshot taken on the client thread and formatted by the spool thread.
-    // One outstanding request; the client executor owns Requested -> Ready,
-    // the spool thread owns Ready -> Idle. Neither game objects nor strings
-    // cross threads.
-    struct ChatCapture {
-        struct Line {
-            detail::FixedText<2048> text;
-            int                     type      = 0;
-            bool                    truncated = false;
-        };
-        enum class Phase { Idle, Requested, Ready };
-        std::atomic<Phase>  phase{Phase::Idle};
-        std::array<Line, 64> lines{};
-        std::size_t          count = 0, total = 0;
-        char const*          error = nullptr;
-    } mChatCapture;
+    // UI work owns a bounded snapshot; the spool consumer owns timeout and JSON.
+    detail::ChatCapture mChatCapture;
     std::atomic_bool            mInventoryRequested{false};
     std::mutex                  mEntityActionMutex;
     std::optional<EntityAction> mEntityAction;

@@ -187,10 +187,10 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **235/235**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **237/237**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`；2026-10-30 全套，无跳过，新增异常请求恢复与宏会话生命周期检查）、
-离线单测 **281/281**。常用实测数字：
+`allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话和聊天超时检查）、
+离线单测 **282/282**。常用实测数字：
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步
 采参数指向的短命缓冲）；`ecs_components` 改为逐 storage 探测，坏条目进 `skipped`
@@ -229,9 +229,14 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 
 ## 限制
 
+- `chat_history` 使用平台主线程队列；主菜单回 `ok=false,reason=no_player`，等待超过
+  2 秒回 `chat_history_timeout` 并自动恢复。退出世界会取消在途请求（`world_left`），
+  断连或卸载丢弃旧工作。`py -3.11 driver/selftest.py --chat-lifecycle-world "超平坦测试"`
+  可复现保存退出、主菜单连续请求和重进恢复（需开启 `allow_selftest_stress`）。
+
 - 2026-10-30 审阅修复进行中，逐项状态及本轮证据见
   [`docs/reliability-repairs.md`](../docs/reliability-repairs.md)。请求 mailbox 与 DSL tick 消费已补
-  回归；本批离线 **281/281**、现场 **235/235**，无跳过。
+  回归；本批离线 **282/282**、现场 **237/237**，无跳过。
 - `dev.py run --write-config` 只合并/备份配置，不要求 exe、不编译、不停止游戏、不安装 mod。
   普通 run 会清除旧 `auto_enter`/启动选项，保留手写能力开关；可用 `restore-config` 恢复。
 - 普通 `dev.py run/stop` 只处理指定 exe 路径的 PID，先保存退出并等待主菜单就绪；

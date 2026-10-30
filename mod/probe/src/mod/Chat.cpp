@@ -2,46 +2,49 @@
 
 namespace probe {
 
-void ProbeMod::requestChatHistory(int limit) {
+void ProbeMod::requestChatHistory(int limit, bool deferForSelftest) {
     if (!detail::hooksAllowed()) {
         enqueue(R"({"event":"error","reason":"version_mismatch"})");
         return;
     }
-    auto expected = ChatCapture::Phase::Idle;
-    if (!mChatCapture.phase.compare_exchange_strong(expected, ChatCapture::Phase::Requested)) {
+    auto request = mChatCapture.begin(GetTickCount64());
+    if (!request) {
         enqueue(R"({"event":"error","reason":"chat_history_busy"})");
         return;
     }
+    if (deferForSelftest) return;
     try {
-        ll::thread::ClientThreadExecutor::getDefault().execute([this, limit] {
-            try {
-                captureChatHistory(limit);
-            } catch (...) {
-                mChatCapture.count = 0;
-                mChatCapture.error = "chat_history_failed";
+        queueClientTask([weak = std::weak_ptr{request}, limit] {
+            if (auto active = weak.lock()) {
+                active->run(GetTickCount64(), [limit](auto& snapshot) {
+                    captureChatHistory(snapshot, limit);
+                });
             }
-            mChatCapture.phase.store(ChatCapture::Phase::Ready, std::memory_order_release);
         });
     } catch (...) {
-        mChatCapture.phase.store(ChatCapture::Phase::Idle, std::memory_order_release);
-        throw;
+        request->cancel("chat_history_failed");
     }
 }
 
-void ProbeMod::captureChatHistory(int limit) {
+void ProbeMod::captureChatHistory(detail::ChatCapture::Snapshot& snapshot, int limit) {
     // A bounded, allocation-free snapshot on the UI/client thread. Prefer the
     // filtered displayed text; do not expose XUIDs or unfiltered chat content.
-    mChatCapture.count = 0;
-    mChatCapture.total = 0;
-    mChatCapture.error = nullptr;
+    snapshot.count = 0;
+    snapshot.total = 0;
+    snapshot.error = nullptr;
     __try {
         auto client = ll::service::getClientInstance();
         if (!client) {
-            mChatCapture.error = "no_client";
+            snapshot.error = "no_client";
             return;
         }
-        auto const& messages = *client->getGuiData()->mGuiMessages;
-        mChatCapture.total   = messages.size();
+        if (!client->getLocalPlayer()) {
+            snapshot.error = "no_player";
+            return;
+        }
+        auto gui = client->getGuiData();
+        auto const& messages = *gui->mGuiMessages;
+        snapshot.total       = messages.size();
         auto const count     = std::min(messages.size(), static_cast<std::size_t>(limit));
         for (std::size_t i = messages.size() - count; i < messages.size(); ++i) {
             auto const&        message      = messages[i];
@@ -52,7 +55,7 @@ void ProbeMod::captureChatHistory(int limit) {
                                             : filtered      ? *filtered
                                             : !full.empty() ? full
                                                             : *message.mMessage;
-            auto&              line         = mChatCapture.lines[mChatCapture.count++];
+            auto&              line         = snapshot.lines[snapshot.count++];
             line.text.assign(text);
             line.type      = static_cast<int>(message.mType);
             line.truncated = line.text.view().size() < text.size();
@@ -60,24 +63,27 @@ void ProbeMod::captureChatHistory(int limit) {
     } __except (
         probe::detail::isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
     ) {
-        mChatCapture.count = 0;
-        mChatCapture.error = "chat_history_fault";
+        snapshot.count = 0;
+        snapshot.error = "chat_history_fault";
     }
 }
 
 void ProbeMod::drainChatHistory() {
-    if (mChatCapture.phase.load(std::memory_order_acquire) != ChatCapture::Phase::Ready) return;
+    auto completion = mChatCapture.take(GetTickCount64());
+    if (!completion.request) return;
+    auto const& snapshot = completion.request->snapshot;
+    auto const error = completion.error ? completion.error : snapshot.error;
     nlohmann::json result{
         {"event", "chat_history"                },
-        {"ok",    mChatCapture.error == nullptr}
+        {"ok",    error == nullptr}
     };
-    if (mChatCapture.error) {
-        result["reason"] = mChatCapture.error;
+    if (error) {
+        result["reason"] = error;
     } else {
-        result["total"]    = mChatCapture.total;
+        result["total"]    = snapshot.total;
         result["messages"] = nlohmann::json::array();
-        for (std::size_t i = 0; i < mChatCapture.count; ++i) {
-            auto const& line = mChatCapture.lines[i];
+        for (std::size_t i = 0; i < snapshot.count; ++i) {
+            auto const& line = snapshot.lines[i];
             result["messages"].push_back({
                 {"text",      line.text.c_str()},
                 {"type",      line.type        },
@@ -86,7 +92,6 @@ void ProbeMod::drainChatHistory() {
         }
     }
     auto output = result.dump();
-    mChatCapture.phase.store(ChatCapture::Phase::Idle, std::memory_order_release);
     enqueue(std::move(output));
 }
 

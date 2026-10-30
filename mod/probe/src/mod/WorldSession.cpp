@@ -126,6 +126,7 @@ void WorldSession::start() {
     });
     mExitListener      = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
         mInWorld = false;
+        mOwner.mChatCapture.cancel("world_left");
         finishEntry();
         mOwner.cancelTasks("world_left");
         mOwner.beginTask();

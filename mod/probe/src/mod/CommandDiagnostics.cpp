@@ -125,6 +125,16 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         enqueue(overheadJson().dump());
         return true;
     }
+    if (cmd == "selftest_chat_timeout") {
+        if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+        } else {
+            // Leave a real request pending without scheduling UI work. The
+            // spool consumer must time it out and free the slot by itself.
+            requestChatHistory(1, true);
+        }
+        return true;
+    }
     if (cmd == "selftest_busy") {
         // F10: this can stall the tick for ~1 s, so it needs an explicit opt-in.
         if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {

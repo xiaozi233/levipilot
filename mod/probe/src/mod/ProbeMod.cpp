@@ -31,6 +31,7 @@ bool ProbeMod::enable() {
         return true;
     }
     bootLog("enable: begin");
+    mChatCapture.reset();
 
     mMouseListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::input::MouseInputEvent>([this](auto& event) {
@@ -132,6 +133,7 @@ bool ProbeMod::disable() {
     }
 
     cancelTasks("disabled");
+    mChatCapture.cancel("disabled");
     {
         std::lock_guard lock(mMacroSessionMutex);
         mMacroRecording = false;

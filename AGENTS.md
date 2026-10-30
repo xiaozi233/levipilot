@@ -24,7 +24,7 @@ py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 跳过项会减少执行数；2026-10-30 完整基线是 228/228
+# 跳过项会减少执行数；2026-10-31 完整基线是 237/237
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
@@ -214,9 +214,9 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **228/228**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-30 全套，无跳过）、
-离线单测 **280/280**、ruff/mypy（driver+tests）全绿。审阅修复进度见
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **237/237**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-31 全套，无跳过）、
+离线单测 **282/282**、ruff/mypy（driver+tests）全绿。审阅修复进度见
 [`docs/reliability-repairs.md`](docs/reliability-repairs.md)，其余项目仍待推进。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采

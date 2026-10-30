@@ -33,19 +33,12 @@ std::shared_ptr<ll::data::CancellableCallback> WorldSession::after(std::function
     );
 }
 
-void WorldSession::enter(std::string name, std::string id, int intent, bool force) {
-    post([this, name = std::move(name), id = std::move(id), intent, force] {
+void WorldSession::enter(std::string name, std::string id, int intent, bool force, EntryTest test) {
+    post([this, name = std::move(name), id = std::move(id), intent, force, test] {
         // An explicit enter always wins over a pending auto_enter.
         if (auto old = mAutoRetry.exchange({})) old->cancel();
-        if (mEntryInFlight.load(std::memory_order_acquire)) {
-            // The load already in flight will emit enter_world_settled; replying
-            // ok keeps the caller waiting for that event instead of retrying.
-            mOwner.enqueue(
-                R"({"event":"enter_world_result","ok":true,"reason":"already_starting"})"
-            );
-            return;
-        }
-        enterOnClient(name, id, intent, force, false, GetTickCount64() + mSignInWaitMs.load());
+        if (replyEntryBusy()) return;
+        enterOnClient(name, id, intent, force, false, GetTickCount64() + mSignInWaitMs.load(), test);
     });
 }
 
@@ -73,7 +66,7 @@ void WorldSession::autoEnterOnClient(
 ) {
     // A scripted enter is authoritative; stop the auto chain instead of racing
     // it with a second local-server start.
-    if (mEntryInFlight.load(std::memory_order_acquire)) {
+    if (mEntry.snapshot().phase != WorldEntryModel::Phase::Idle) {
         if (auto old = mAutoRetry.exchange({})) old->cancel();
         return;
     }
@@ -103,6 +96,8 @@ void WorldSession::start() {
     mEpoch.fetch_add(1);
     auto& bus          = ll::event::EventBus::getInstance();
     mStartJoinListener = bus.emplaceListener<ll::event::client::ClientStartJoinLevelEvent>([this](auto& event) {
+        // Manual UI starts share the same observation and terminal contract.
+        if (mEntry.snapshot().phase == WorldEntryModel::Phase::Idle) mEntry.begin(GetTickCount64());
         mPhase = Phase::Entering;
         mOwner.enqueue(
             nlohmann::json{
@@ -112,9 +107,10 @@ void WorldSession::start() {
         );
     });
     mJoinListener      = bus.emplaceListener<ll::event::client::ClientJoinLevelEvent>([this](auto& event) {
+        if (mEntryTest.load() == EntryTest::MissingJoin
+            && mEntry.snapshot().phase == WorldEntryModel::Phase::Starting) return;
         mInWorld = true;
         mPhase   = Phase::Playing;
-        finishEntry();
         mOwner.enqueue(
             nlohmann::json{
                 {"event",  "world_entered"             },
@@ -122,29 +118,25 @@ void WorldSession::start() {
         }
                 .dump()
         );
-        mOwner.enqueue(R"({"event":"enter_world_settled","ok":true,"reason":"joined"})");
+        settleEntry(true, "joined");
     });
     mExitListener      = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
         mInWorld = false;
         mOwner.mChatCapture.cancel("world_left");
         mOwner.cancelQueries("world_left");
-        finishEntry();
         mOwner.cancelTasks("world_left");
         mOwner.beginTask();
-        bool const wasJoining = mPhase.exchange(Phase::Leaving) == Phase::Entering;
+        mPhase = Phase::Leaving;
         mOwner.enqueue(R"({"event":"world_left"})");
-        if (wasJoining) {
-            mOwner.enqueue(R"({"event":"enter_world_settled","ok":false,"reason":"left_while_joining"})");
-        }
+        settleEntry(false, "left_while_joining");
         // F4: this listener may run on the client thread; ask the spool thread
         // to flush immediately instead of doing file IO here.
         mOwner.mSpoolForce.store(true, std::memory_order_release);
     });
     mCancelListener    = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
         mPhase = Phase::Leaving;
-        finishEntry();
         mOwner.enqueue(R"({"event":"world_join_cancelled"})");
-        mOwner.enqueue(R"({"event":"enter_world_settled","ok":false,"reason":"cancelled"})");
+        settleEntry(false, "cancelled");
     });
 }
 
@@ -175,10 +167,77 @@ void WorldSession::stop() {
 
     mInWorld = false;
     mPhase   = Phase::Menu;
-    finishEntry();
+    mEntry.reset();
+    mEntryProbeQueued = 0;
 }
 
-void WorldSession::finishEntry() { mEntryInFlight.store(false, std::memory_order_release); }
+void WorldSession::emitEntryCompletion(std::optional<WorldEntryModel::Completion> const& completion) {
+    if (!completion) return;
+    mOwner.enqueue(nlohmann::json{
+        {"event", "enter_world_settled"}, {"entry_id", completion->id},
+        {"ok", completion->ok}, {"reason", completion->reason},
+        {"entry", entryStatus()}
+    }.dump());
+}
+
+void WorldSession::settleEntry(bool ok, char const* reason) {
+    emitEntryCompletion(mEntry.settle(mEntry.snapshot().id, ok, reason));
+    if (ok) mEntryTest = EntryTest::None;
+}
+
+bool WorldSession::replyEntryBusy() {
+    auto const state = mEntry.snapshot();
+    if (state.phase == WorldEntryModel::Phase::Idle) return false;
+    bool const pending = state.phase == WorldEntryModel::Phase::Starting;
+    mOwner.enqueue(nlohmann::json{
+        {"event", "enter_world_result"}, {"ok", pending}, {"entry_id", state.id},
+        {"reason", pending ? "already_starting" : "entry_recovering"}
+    }.dump());
+    return true;
+}
+
+nlohmann::json WorldSession::entryStatus() const {
+    auto const state = mEntry.snapshot();
+    auto const now = GetTickCount64();
+    auto const error = mEntryProbeError.load();
+    return {{"entry_id", state.id},
+            {"phase", state.phase == WorldEntryModel::Phase::Idle ? "idle"
+                    : state.phase == WorldEntryModel::Phase::Starting ? "starting" : "quarantined"},
+            {"remaining_ms", state.phase == WorldEntryModel::Phase::Starting && state.deadline > now
+                            ? state.deadline - now : 0},
+            {"probe_errors", mEntryProbeErrors.load()},
+            {"last_probe_error", error ? error : ""}};
+}
+
+void WorldSession::pollEntry() {
+    auto const now = GetTickCount64();
+    // This deadline runs independently of both world ticks and the UI queue.
+    emitEntryCompletion(mEntry.expire(now));
+    auto const state = mEntry.snapshot();
+    if (state.phase == WorldEntryModel::Phase::Idle || now < mNextEntryProbeMs.load()) return;
+    std::uint64_t empty = 0;
+    if (!mEntryProbeQueued.compare_exchange_strong(empty, state.id)) return;
+    mNextEntryProbeMs = now + 100;
+    auto const epoch = mEpoch.load();
+    try {
+        if (mOwner.queueClientTask([this, epoch, id = state.id] {
+            try {
+                if (mEpoch.load() == epoch) probeEntryOnClient(id);
+            } catch (...) {
+                ++mEntryProbeErrors;
+                mEntryProbeError = "probe_callback_failed";
+            }
+            auto expected = id;
+            mEntryProbeQueued.compare_exchange_strong(expected, 0);
+        })) return;
+        mEntryProbeError = "queue_unavailable";
+    } catch (...) {
+        mEntryProbeError = "queue_failed";
+    }
+    ++mEntryProbeErrors;
+    auto expected = state.id;
+    mEntryProbeQueued.compare_exchange_strong(expected, 0);
+}
 
 char const* WorldSession::phaseName() const {
     switch (mPhase.load(std::memory_order_relaxed)) {

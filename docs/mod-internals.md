@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **284/284**，现场 **322/322**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **287/287**，现场 **324/324**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -205,6 +205,32 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   LL 默认 `ClientThreadExecutor` 只随世界 tick 执行，主菜单不能使用。
   join 结果用 `enter_world_settled` 通知，超时/取消回 `ok=false` 和原因。
 - `leave_world`：`IGameServerShutdown::requestLeaveGame(true, true)`。
+- **进入看门狗**：`WorldEntryModel` 为每次真实启动分配 `entry_id`，回执和
+  `enter_world_settled` 均带同一编号。spool 每 25 ms 检查启动后的 30 秒截止，
+  不依赖世界 tick/UI 回调；到期唯一终结为 `entry_timeout`，保留隔离准入。
+  隔离期间 `enter_world` 回 `ok=false/reason=entry_recovering`，`worlds.ready=false`；
+  起始阶段的重复请求仍回 `ok=true/already_starting`，并带原编号。
+  平台队列每约 100 ms 探测一次，最多挂一个观察回调；旧编号/调度代次失效。
+  玩家存在且 HUD 就绪时可补回缺失 join 事件的成功结果 `player_observed`；
+  若已超时则只恢复实际 Playing 状态，不再发送第二次终结。
+  只有无玩家、主菜单就绪、两侧 leave-done、can-start 且 ServerInstance 不存在，
+  连续确认 500 ms 才解除隔离。加载卡住且未满足这些门时不会强行清标志或再开服务端。
+  启动调用与观察使用局部 SEH，C++/SEH 失败仍保留状态并继续观察；
+  `status.world_entry` / `worlds.entry` 暴露编号、阶段、剩余时间及观察错误。
+  Python `enter_world_ready` 按回执编号匹配终结，兼容不带编号的旧 mod。
+  测试专用 `_selftest` 字段受 `allow_selftest_stress` 门控；短超时测试使用 700 ms，
+  并模拟 2 秒恢复阻挡，不把它称为真实服务端启动卡死测试。
+- 看门狗验收：`driver/selftest.py --entry-lifecycle-world "超平坦测试"` **30/30**；
+  离线 **287/287**，完整现场 **324/324**（无跳过），构建/ruff/mypy/profile 检查通过。
+  native 覆盖 30 秒边界、恢复连续窗口、取消/迟到成功、旧编号无效及 1000 次加入/超时竞争。
+  现场覆盖同编号重复请求、隔离拒绝、恢复、探测 SEH 后继续观察、启动 SEH 与真实缺失 join。
+  安装与构建 DLL SHA-256 相同；最终受控故障无新增 crash 文件。
+  首次完整回归暴露 `selftest_task_fault` 的局部 SEH 缺少归属标记，已补
+  `guardedTaskTick` 与 `task_handled_fault_no_dump`。曾出现一次 `use_failed`，原坐标三次诊断
+  未复现；放置自检改为导航后回位、连续站稳并重新避让实体，调整后三轮 **42/42**，
+  再跑完整套件通过。不能据此宣称已解决所有 `use_failed` 或所有场景干扰。
+  日志：`out/reliability-world-entry-{unit,live,full-live,build,restart}.log`，
+  诊断与失败记录保留在同前缀的 `*-place-diagnostic*` / `*-before-fixture.log`。
 - 世界事件：`ClientStartJoinLevelEvent` → `world_joining`，`ClientJoinLevelEvent` →
   `world_entered`，`ClientExitLevelEvent` → `world_left`，`ClientCancelJoinLevelEvent` →
   `world_join_cancelled`。
@@ -675,8 +701,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **322/322**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **284/284**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **324/324**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **287/287**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

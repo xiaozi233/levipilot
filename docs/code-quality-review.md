@@ -17,7 +17,7 @@
 | --- | --- | --- | --- |
 | 1 | P1 / 部分修复，其余立即处理 | `ProbeMod.cpp::onPlayerTick/afterPlayerTick`、`Entities.cpp`、快捷栏选择等 | tick 外层只有 C++ try/catch；在 `/EHs` 下不能隔离访问违例。state/buttons/inventory/blocks/scan 已加局部 SEH 并通过受控故障恢复；其他游戏读取仍需逐一收进局部边界，不能把五类查询通过推广为整个 tick 安全。禁止直接包住持有 mutex 的整个 tick，以免跳过析构。 |
 | 2 | P2 / 已修复 | `MacroRecordModel.h`、`Macro.cpp::recordMacroTick`、`CommandRecording.cpp` 的 `macro_rec_start` | 原默认 0/超上限会在满 200000 条后仍保持 recording=true。现统一有效上限，到顶停止并保留缓冲，只报告一次 limit；冷侧预留容量，追加不增长 vector。原生模型跑完整 200000 条，覆盖 0/超上限/边界/停止后不再追加；现场专项 17/17 验证配置、唯一终结、保存及无效参数不破坏已有数据。 |
-| 3 | P2 / 可靠性修复 | `World.cpp::enterOnClient`、`WorldSession.cpp::enter/finishEntry` | 登录有截止时间，真正发起 startLocalServerAsync 后却仅靠加入/取消/退出事件清除 mEntryInFlight。若回调故障或事件没有到达，后续请求持续返回 already_starting。增加代次绑定的观察与超时诊断；只在确认已回菜单、服务端停止后恢复可进入状态，禁止简单清标志再启动第二个服务端。 |
+| 3 | P2 / 已修复 | `WorldEntryModel.h`、`World.cpp::enterOnClient/probeEntryOnClient`、`WorldSession.cpp::pollEntry` | 已增加独立进入编号、30 秒截止、唯一终结及主线程实际状态观察；超时保留隔离，无玩家/安全菜单/服务端消失连续确认 500 ms 才恢复准入，避免重叠启动。Python 按编号匹配结果；native 验证截止/旧编号/竞争，专项现场 30/30 验证模拟超时、启动/观察 SEH 与真实缺失 join 后恢复。 |
 | 4 | P2 / 部分重构 | `Inventory.cpp::applySlotRequest`、`ProbeMod.cpp::emitLegacyTickJson/tickParkourEvents`、`Macro.cpp::recordMacroTick`、`Transport.cpp::enqueue` | 五类查询的自有 JSON/格式化/传输已迁出 tick，其 SDK owning-string 名称访问器仍可能分配。快捷栏回执/legacy/事件/宏等路径仍构造 JSON/string、增长 vector 或进入传输锁，可能制造抖动。继续用定长载荷交给消费者，分别验证游戏读取与生命周期；不能仅凭代码声称性能提高多少。 |
 | 5 | P2 / 本批完成 | `State.cpp::captureScan`、`QueryModel.h::advanceScan` | 原实现缺少每 tick 预算，过滤 air 时小 limit 也读完整区域。现每 tick 最多 512 格，带取消/超时、tick 跨度和截断原因；native 验证顺序/边界/零分配，现场 32768 格为 64 批，重连和退出取消通过。扫描跨 tick，不能当成同 tick 的原子世界快照。 |
 | 6 | P2 / 重构 | `ProbeMod.h` 宏/输入字段、`ProbeMod.cpp::startMacroIfRequested/tickMacroPlayback`、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | ProbeMod 仍负责多领域状态；宏状态跨多个 TU、多个原子与两把锁，修改一个会话契约容易遗漏另一条 reset/stop 路径。按 MacroSession/InputSession 封装状态和操作，明确线程所有权与锁顺序，先迁移宏；保留 Internal.h 作为统一共享入口的仓库约定。 |
@@ -54,6 +54,12 @@ SHA-256 相同。日志与复现入口见 `reliability-repairs.md`。
 构建、静态检查与安装产物一致性通过。原生模型实际跑到 200000 条；现场只验证限值配置和
 3 tick 的真实终结/保存路径，未做 200000 tick 的长时录制。宏会话封装及其余 tick 治理仍未完成。
 
-下一步继续补其余游戏读取边界，处理世界进入等待恢复及 Overhead 原子载荷，
+世界进入看门狗补修：离线 **287/287**、专项现场 **30/30**、完整现场 **324/324**
+（无跳过），构建、静态检查、安装产物一致性通过，最终受控故障无新增 crash 文件。
+同批补齐任务局部 SEH 的异常归属，防止已处理故障误写 dump；收紧导航后放置的站稳和
+实体避让前提。一次 `use_failed` 未稳定复现，仍保留诊断证据；未把有限现场验收推广为
+所有放置场景稳定，原第 12/15 项仍未完成。
+
+下一步继续补其余游戏读取边界，处理 Overhead 原子载荷，
 再迁其余 tick 格式化与拆分子系统，最后统一类型命名及文档。每批以 native 回归、
 离线检查、完整构建和适用的现场回归独立验收，避免把未验证的行为变更混为一个大提交。

@@ -79,6 +79,9 @@ class ModModelTests(unittest.TestCase):
     def test_macro_recording_hard_limit_and_unique_stop(self) -> None:
         self.run_native("macro_record_model")
 
+    def test_world_entry_timeout_quarantine_and_obsolete_completion(self) -> None:
+        self.run_native("world_entry_model")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipes required")
     def test_pipe_cancellation_and_nonreading_client(self) -> None:
         self.run_native("pipe_channel")

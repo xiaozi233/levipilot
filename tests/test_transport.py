@@ -439,6 +439,27 @@ class EnterWorldRetryTests(unittest.TestCase):
         client._session.lines.put({"event": "enter_world_settled", "ok": True})
         self.assertTrue(client.wait_enter_settled(0.5)["ok"])
 
+    def test_wait_enter_settled_filters_late_previous_entry(self) -> None:
+        client = FakeClient()
+        client._session.lines.put({"event": "enter_world_settled", "entry_id": 1, "ok": True})
+        client._session.lines.put({"event": "enter_world_settled", "entry_id": 2, "ok": False})
+        self.assertFalse(client.wait_enter_settled(0.5, entry_id=2)["ok"])
+        self.assertEqual(client.readline(0.5)["entry_id"], 1)
+
+    def test_enter_ready_matches_acknowledged_entry(self) -> None:
+        class TaggedClient(FakeClient):
+            def enter_world(self, name=None, **kwargs):  # type: ignore[override]
+                self._session.lines.put(
+                    {"event": "enter_world_settled", "entry_id": 10, "ok": False}
+                )
+                self._session.lines.put(
+                    {"event": "enter_world_settled", "entry_id": 11, "ok": True}
+                )
+                return {"event": "enter_world_result", "entry_id": 11, "ok": True}
+
+        result = TaggedClient().enter_world_ready("world", attempts=1)
+        self.assertEqual(result["entry_id"], 11)
+
 
 class HarnessForwardingTests(unittest.TestCase):
     def test_walk_to_forwards_keyword_arguments(self) -> None:

@@ -80,11 +80,28 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"missing_world"})");
             return true;
         }
-        enterWorld(
+        EntryTest test = EntryTest::None;
+        auto const testMode = j.value("_selftest", std::string{});
+        if (!testMode.empty()) {
+            if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {
+                enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+                return true;
+            }
+            if (testMode == "timeout") test = EntryTest::Timeout;
+            else if (testMode == "probe_fault") test = EntryTest::ProbeFault;
+            else if (testMode == "start_fault") test = EntryTest::StartFault;
+            else if (testMode == "missing_join") test = EntryTest::MissingJoin;
+            else {
+                enqueue(R"({"event":"error","reason":"bad_entry_test"})");
+                return true;
+            }
+        }
+        mWorld.enter(
             name,
             id,
             std::clamp(j.value("intent", 0), 0, 16),
-            j.value("force", false)
+            j.value("force", false),
+            test
         );
         return true;
     }

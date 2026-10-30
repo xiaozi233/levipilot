@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mod/WorldEntryModel.h"
+
 #include "ll/api/data/CancellableCallback.h"
 #include "ll/api/event/Listener.h"
 
@@ -8,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <nlohmann/json_fwd.hpp>
 
 namespace probe {
 class ProbeMod;
@@ -28,7 +31,10 @@ public:
         }
     }
     void setSignInWaitMs(int milliseconds) { mSignInWaitMs.store(milliseconds); }
-    void enter(std::string name, std::string id, int intent, bool force);
+    void enter(std::string name, std::string id, int intent, bool force,
+               detail::EntryTest test = detail::EntryTest::None);
+    void pollEntry(); // Spool wall-clock deadline; game inspection is queued.
+    nlohmann::json entryStatus() const;
     void leave();
     void list();
     void signIn();
@@ -42,7 +48,8 @@ private:
         int                intent,
         bool               force,
         bool               automatic,
-        std::uint64_t      deadline
+        std::uint64_t      deadline,
+        detail::EntryTest   test = detail::EntryTest::None
     );
     void leaveOnClient();
     void listOnClient();
@@ -50,7 +57,11 @@ private:
     void autoEnterOnClient(std::string const& name, std::string const& options, int delayMs, std::uint64_t deadline);
     void post(std::function<void()> task);
     std::shared_ptr<ll::data::CancellableCallback> after(std::function<void()> task, int milliseconds);
-    void finishEntry();
+    void settleEntry(bool ok, char const* reason);
+    void emitEntryCompletion(std::optional<detail::WorldEntryModel::Completion> const& completion);
+    bool replyEntryBusy();
+    void probeEntryOnClient(std::uint64_t id);
+    bool menuReadyOnClient() const;
     [[nodiscard]] char const* phaseName() const;
 
     ProbeMod&                                                   mOwner;
@@ -59,7 +70,14 @@ private:
     // One local-server start at a time. Both the explicit enter command and
     // auto_enter go through it; a second start while the first is still
     // loading corrupts the UI transition and crashes the client.
-    std::atomic_bool                                            mEntryInFlight{false};
+    detail::WorldEntryModel                                     mEntry;
+    std::atomic<std::uint64_t>                                  mNextEntryProbeMs{0};
+    std::atomic<std::uint64_t>                                  mEntryProbeQueued{0};
+    std::atomic<std::uint32_t>                                  mEntryProbeErrors{0};
+    std::atomic<char const*>                                    mEntryProbeError{nullptr};
+    std::atomic<detail::EntryTest>                               mEntryTest{detail::EntryTest::None};
+    std::atomic_bool                                            mEntryProbeFault{false};
+    std::atomic<std::uint64_t>                                  mEntryUnsafeUntil{0};
     std::atomic<int>                                            mSignInWaitMs{15000};
     std::atomic<std::uint64_t>                                  mEpoch{0};
     std::atomic<std::shared_ptr<ll::data::CancellableCallback>> mSignInRetry;

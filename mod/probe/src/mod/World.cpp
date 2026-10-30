@@ -22,20 +22,71 @@ bool isMenuScreen(std::string const& screen) {
 
 } // namespace
 
+bool WorldSession::menuReadyOnClient() const {
+    auto client = ll::service::getClientInstance();
+    if (!client) return false;
+    auto& game = client->getMinecraftGame();
+    return client->getLocalPlayer() == nullptr && isMenuScreen(client->getScreenName())
+        && game.isLeaveGameDone() && client->isLeaveGameDone()
+        && game.canStartLocalServer() && game.getServerInstance() == nullptr;
+}
+
+void WorldSession::probeEntryOnClient(std::uint64_t id) {
+    auto const state = mEntry.snapshot();
+    if (state.id != id || state.phase == WorldEntryModel::Phase::Idle) return;
+    bool safeMenu = false, playerReady = false;
+    std::string screen;
+    try {
+        bool const readOk = guardedGameRead([&] {
+            if (mEntryProbeFault.exchange(false)) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+            auto client = ll::service::getClientInstance();
+            if (!client) return;
+            screen = client->getScreenName();
+            playerReady = client->getLocalPlayer() != nullptr && screen == "hud_screen";
+            auto& game = client->getMinecraftGame();
+            safeMenu = client->getLocalPlayer() == nullptr && isMenuScreen(screen)
+                && game.isLeaveGameDone() && client->isLeaveGameDone()
+                && game.canStartLocalServer() && game.getServerInstance() == nullptr;
+        });
+        if (!readOk) {
+            ++mEntryProbeErrors;
+            mEntryProbeError = "probe_seh";
+            // Faulted output is never evidence that the old server has stopped.
+            safeMenu = playerReady = false;
+        }
+    } catch (...) {
+        ++mEntryProbeErrors;
+        mEntryProbeError = "probe_exception";
+        safeMenu = playerReady = false;
+    }
+    auto const now = GetTickCount64();
+    if (playerReady) {
+        mInWorld = true;
+        mPhase = Phase::Playing;
+        emitEntryCompletion(mEntry.settle(id, true, "player_observed"));
+        mEntryTest = EntryTest::None;
+        return;
+    }
+    if (now < mEntryUnsafeUntil.load()) safeMenu = false;
+    if (mEntry.recover(id, now, safeMenu)) {
+        mEntryTest = EntryTest::None;
+        mInWorld = false;
+        mPhase = Phase::Menu;
+        mOwner.enqueue(nlohmann::json{{"event", "enter_world_recovered"}, {"entry_id", id}}.dump());
+    }
+}
+
 void WorldSession::enterOnClient(
     std::string const& name,
     std::string const& id,
     int                intent,
     bool               force,
     bool               automatic,
-    std::uint64_t      deadline
+    std::uint64_t      deadline,
+    EntryTest           test
 ) {
-    if (mEntryInFlight.load(std::memory_order_acquire)) {
-        if (!automatic) {
-            mOwner.enqueue(
-                R"({"event":"enter_world_result","ok":true,"reason":"already_starting"})"
-            );
-        }
+    if (mEntry.snapshot().phase != WorldEntryModel::Phase::Idle) {
+        if (!automatic) replyEntryBusy();
         return;
     }
     if (mInWorld.load(std::memory_order_relaxed)) {
@@ -56,12 +107,8 @@ void WorldSession::enterOnClient(
     // a null UI model that crashes on the next transition.
     auto& game = client->getMinecraftGame();
     std::string const screen = client->getScreenName();
-    bool const menuReady = isMenuScreen(screen);
-    bool const leaving   = mPhase.load() == Phase::Leaving;
-    bool const leaveDone = !leaving
-                        || (game.isLeaveGameDone() && client->isLeaveGameDone()
-                            && game.canStartLocalServer());
-    if (!menuReady || !leaveDone) {
+    bool const leaveDone = menuReadyOnClient();
+    if (!leaveDone) {
         if (GetTickCount64() >= deadline) {
             if (auto old = mSignInRetry.exchange({})) old->cancel();
             mOwner.bootLog(
@@ -71,8 +118,8 @@ void WorldSession::enterOnClient(
             mOwner.enqueue(R"({"event":"enter_world_result","ok":false,"reason":"world_busy"})");
             return;
         }
-        auto pending = after([this, name, id, intent, force, automatic, deadline] {
-            enterOnClient(name, id, intent, force, automatic, deadline);
+        auto pending = after([this, name, id, intent, force, automatic, deadline, test] {
+            enterOnClient(name, id, intent, force, automatic, deadline, test);
         }, 100);
         if (auto old = mSignInRetry.exchange(std::move(pending))) old->cancel();
         return;
@@ -86,14 +133,15 @@ void WorldSession::enterOnClient(
     bool signedIn = false;
     bool signInKnown = detail::queryXblSignedIn(signedIn);
     if (signInKnown && !signedIn && GetTickCount64() < deadline) {
-        auto pending = after([this, name, id, intent, force, automatic, deadline] {
-            enterOnClient(name, id, intent, force, automatic, deadline);
+        auto pending = after([this, name, id, intent, force, automatic, deadline, test] {
+            enterOnClient(name, id, intent, force, automatic, deadline, test);
         }, 250);
         if (auto old = mSignInRetry.exchange(std::move(pending))) old->cancel();
         return;
     }
     if (auto old = mSignInRetry.exchange({})) old->cancel();
 
+    std::uint64_t entryId = 0;
     try {
         auto& cache = game.getLevelListCache();
 
@@ -137,7 +185,6 @@ void WorldSession::enterOnClient(
             mOwner.enqueue(result.dump());
             return;
         }
-        mOwner.enqueue(result.dump());
         mOwner.bootLog(
             "enter_world: start phase=" + std::string{phaseName()} + " screen=" + client->getScreenName()
             + " leave_done=" + (game.isLeaveGameDone() ? "1" : "0")
@@ -145,22 +192,41 @@ void WorldSession::enterOnClient(
             + " can_start=" + (game.canStartLocalServer() ? "1" : "0")
         );
 
-        mEntryInFlight.store(true, std::memory_order_release);
+        mEntryTest = test;
+        mEntryProbeErrors = 0;
+        mEntryProbeError = nullptr;
+        mEntryProbeFault = test == EntryTest::ProbeFault;
+        mEntryUnsafeUntil = test == EntryTest::Timeout || test == EntryTest::ProbeFault
+                         ? GetTickCount64() + 2000 : 0;
+        mNextEntryProbeMs = GetTickCount64() + (test == EntryTest::MissingJoin ? 1000 : 100);
+        entryId = mEntry.begin(GetTickCount64(),
+            test == EntryTest::Timeout || test == EntryTest::ProbeFault ? 700 : WorldEntryModel::TimeoutMs);
+        if (!entryId) {
+            replyEntryBusy();
+            return;
+        }
         mPhase = Phase::Entering;
+        result["entry_id"] = entryId;
+        mOwner.enqueue(result.dump());
+        if (test == EntryTest::Timeout || test == EntryTest::ProbeFault) return;
         // startLocalServerAsyncFromSummary is not exported by LeviLamina's
         // import library; the pure-virtual overload is reachable through the
         // vtable and takes the same data explicitly.
-        game.startLocalServerAsync(
-            std::string{copy.mId},
-            std::string{copy.mName},
-            copy.mPremiumTemplateContentIdentity,
-            settings,
-            static_cast<StartIntent>(intent)
-        );
+        std::string const worldId{copy.mId}, worldName{copy.mName};
+        // Keep argument owners outside the raw SEH frame. An uncertain start
+        // is quarantined; catching an AV must never admit a second server.
+        bool const started = guardedGameRead([&] {
+            if (test == EntryTest::StartFault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+            game.startLocalServerAsync(worldId, worldName,
+                copy.mPremiumTemplateContentIdentity, settings, static_cast<StartIntent>(intent));
+        });
+        if (!started) emitEntryCompletion(mEntry.settle(entryId, false, "start_fault"));
     } catch (std::exception const& e) {
-        finishEntry();
-        mPhase = Phase::Menu;
         mOwner.bootLog(std::string{"enter_world: exception "} + e.what());
+        if (entryId) {
+            emitEntryCompletion(mEntry.settle(entryId, false, "start_exception"));
+            return;
+        }
         mOwner.enqueue(
             nlohmann::json{
                 {"event",   "enter_world_result"},
@@ -170,10 +236,15 @@ void WorldSession::enterOnClient(
         }
                 .dump()
         );
+    } catch (...) {
+        if (entryId) emitEntryCompletion(mEntry.settle(entryId, false, "start_exception"));
+        else mOwner.enqueue(R"({"event":"enter_world_result","ok":false,"reason":"exception"})");
     }
 }
 
 void WorldSession::leaveOnClient() {
+    if (auto old = mSignInRetry.exchange({})) old->cancel();
+    if (auto old = mAutoRetry.exchange({})) old->cancel();
     auto client = ll::service::getClientInstance();
     if (!client) {
         mOwner.enqueue(R"({"event":"leave_world_result","ok":false,"reason":"no_client"})");
@@ -212,9 +283,8 @@ void WorldSession::listOnClient() {
 
         nlohmann::json out{
             {"event",  "worlds"               },
-            {"ready", !mInWorld.load() && isMenuScreen(client->getScreenName())
-                && client->getMinecraftGame().isLeaveGameDone() && client->isLeaveGameDone()
-                && client->getMinecraftGame().canStartLocalServer()},
+            {"ready", mEntry.snapshot().phase == WorldEntryModel::Phase::Idle && menuReadyOnClient()},
+            {"entry", entryStatus()},
             {"worlds", nlohmann::json::array()}
         };
         for (auto const& summary : list) {

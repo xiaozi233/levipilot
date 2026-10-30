@@ -12,7 +12,7 @@ TaskStep taskTickWithSeh(Advance&& advance) {
     __try {
         step = advance();
     } __except (
-        GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
+        isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
     ) {
         // Catch inside the controller's lock scope, so an AV cannot strand
         // the task mutex under /EHsc. The next idle tick releases inputs.
@@ -20,6 +20,15 @@ TaskStep taskTickWithSeh(Advance&& advance) {
         step.outcome.reason = "task_fault";
     }
     return step;
+}
+
+template <typename Advance>
+TaskStep guardedTaskTick(Advance&& advance) {
+    // Ownership must surround the raw SEH frame, while the caller's task lock
+    // stays outside it. The first-chance VEH then leaves this handled fault to
+    // its local boundary, without generating a misleading process crash dump.
+    HandledSehScope owner;
+    return taskTickWithSeh(std::forward<Advance>(advance));
 }
 
 bool isAirName(std::string_view name) {
@@ -180,7 +189,7 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
     bool const active   = mTasks.tick(
         [&](TaskState& state, std::uint64_t id) {
             advanced = true;
-            return taskTickWithSeh([&] {
+            return guardedTaskTick([&] {
                 auto faultId = id;
                 if (mTaskFaultId.compare_exchange_strong(faultId, 0)) {
                     RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
@@ -215,7 +224,7 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
         [] { return GetTickCount64(); }
     );
     if (active && !advanced) {
-        auto const stopped = taskTickWithSeh([&] {
+        auto const stopped = guardedTaskTick([&] {
             applyControls(client, player, ControlState{});
             return TaskStep{};
         });

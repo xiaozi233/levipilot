@@ -37,6 +37,7 @@ scenario DSL / LLM / shell
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `Server.cpp` | 服务端权威传送 |
 | `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
+| `WorldEntryModel.h` | 独立进入编号、启动截止、唯一终结与安全菜单恢复；不依赖游戏 SDK |
 | `World.cpp` | 世界列表、进入与退出的主线程实现 |
 | `ClientDispatch.cpp` | 游戏平台主线程投递与 SEH/C++ 异常隔离；主菜单也能执行 |
 | `SignIn.cpp` | 主菜单 Xbox Live 登录态查询（OreUI → MainMenuScreenModel） |
@@ -89,6 +90,8 @@ scenario DSL / LLM / shell
   登录与自动进入的延迟用 wall-clock timer 计时，再排回主线程；`WorldSession::stop`
   取消计时器并更新代次，使过期回调失效。聊天快照同样走平台主线程队列；LL 默认
   `ClientThreadExecutor` 仅在世界 tick 执行，不能用于任何需要主菜单响应的请求。
+  世界启动的 30 秒截止由 spool 的 wall-clock 检查推进；实际玩家/HUD 与菜单/服务端探测
+  排回客户端线程。超时先进入隔离状态，菜单和旧服务端停止连续确认 500 ms 才恢复准入。
 - **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
   `spool-<pid>.jsonl`；`world_left` / `panic` / `stop` / `disable` 会强制刷盘。
   该线程也消费任务事件与聊天/查询定长快照、格式化响应并调度 `use` 的服务端工作。

@@ -373,7 +373,7 @@ private:
     ll::mod::NativeMod& mSelf;
     WorldSession mWorld{*this};
     PacketTap    mPackets;
-    void queueClientTask(std::function<void()> task);
+    bool queueClientTask(std::function<void()> task);
 
     ll::event::ListenerPtr mMouseListener;
     ll::event::ListenerPtr mServerCommandListener;

@@ -35,7 +35,9 @@ class WorldCommands(PipeConnection):
 
         The mod waits for Xbox Live sign-in first (unless ``force``), replies
         ``enter_world_result``, then emits ``enter_world_settled`` once the join
-        succeeds or is cancelled. The default timeout stays explicit: the
+        succeeds, is cancelled, or exceeds the mod's startup deadline. Accepted
+        starts include an ``entry_id`` for matching the terminal event. The
+        default timeout stays explicit: the
         sign-in wait alone can take tens of seconds.
         """
         if not name and not world_id:
@@ -49,9 +51,15 @@ class WorldCommands(PipeConnection):
             message["force"] = True
         return self.request(message, "enter_world_result", timeout=timeout)
 
-    def wait_enter_settled(self, timeout: float = 45.0) -> dict[str, Any]:
-        """Wait for the join outcome of the most recent ``enter_world``."""
-        return self.wait_event("enter_world_settled", timeout)
+    def wait_enter_settled(
+        self, timeout: float = 45.0, *, entry_id: int | None = None
+    ) -> dict[str, Any]:
+        """Wait for a join outcome; optionally match the acknowledged entry ID."""
+        return self.wait_event(
+            "enter_world_settled",
+            timeout,
+            predicate=None if entry_id is None else lambda row: row.get("entry_id") == entry_id,
+        )
 
     def enter_world_ready(
         self,
@@ -91,7 +99,12 @@ class WorldCommands(PipeConnection):
                 last = result
             else:
                 try:
-                    last = self.wait_enter_settled(timeout=settled_timeout)
+                    if "entry_id" in result:
+                        last = self.wait_enter_settled(
+                            timeout=settled_timeout, entry_id=int(result["entry_id"])
+                        )
+                    else:
+                        last = self.wait_enter_settled(timeout=settled_timeout)
                 except ModTimeout:
                     last = {"ok": False, "reason": "settled_timeout"}
                 if last.get("ok"):

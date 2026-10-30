@@ -49,6 +49,7 @@ void ProbeMod::spoolThreadLoop() {
     while (mRunning.load(std::memory_order_relaxed)) {
         Sleep(25);
         try {
+            mWorld.pollEntry();
             drainTaskEvents();
             drainChatHistory();
             drainQueries();

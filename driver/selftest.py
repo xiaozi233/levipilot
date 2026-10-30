@@ -10,6 +10,7 @@
     py -3.11 driver/selftest.py --query-capture-only  # snapshot faults and scan budget
     py -3.11 driver/selftest.py --macro-limit-only  # bounded recording and retained rows
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
+    py -3.11 driver/selftest.py --entry-lifecycle-world "超平坦测试"  # startup watchdog/recovery
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -428,6 +429,8 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
             and client.ping().get("event") == "pong",
         )
 
+    mod_dir = Path(str(client.status()["spool"])).parent
+    before_fault = {(p.name, p.stat().st_mtime_ns) for p in mod_dir.glob("crash-*")}
     fault = client.request({"cmd": "selftest_task_fault"}, ("task_fault_started", "error"))
     if fault.get("event") == "error":
         checks.check("task_fault_gate", fault.get("reason") == "selftest_stress_disabled")
@@ -445,6 +448,10 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
             and not result.get("ok")
             and client.task_status().get("active") is None
             and int(client.status().get("tick", 0)) > start,
+        )
+        checks.check(
+            "task_handled_fault_no_dump",
+            {(p.name, p.stat().st_mtime_ns) for p in mod_dir.glob("crash-*")} == before_fault,
         )
 
     check_use_lifecycle(client, checks)
@@ -743,6 +750,113 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
         checks.check("query_lifecycle_world_recovery", recovered.get("visited") == 1)
 
 
+def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
+    """Exercise the real deadline/probe pipeline, then restore the saved world."""
+    original = client.state()
+    if not checks.check("entry_lifecycle_in_world", original.get("in_world") is True):
+        return
+
+    def menu_ready() -> dict[str, Any]:
+        deadline = time.monotonic() + 60
+        while True:
+            result = client.worlds()
+            if result.get("ready"):
+                return result
+            if time.monotonic() >= deadline:
+                raise ModTimeout(f"entry lifecycle: menu not ready: {result.get('entry')}")
+            time.sleep(0.1)
+
+    def no_duplicate(entry_id: int) -> bool:
+        with contextlib.suppress(ModTimeout):
+            client.wait_enter_settled(0.3, entry_id=entry_id)
+            return False
+        return True
+
+    try:
+        left = client.leave_world()
+        checks.check("entry_lifecycle_leave", left.get("ok") is True)
+        client.wait_event("world_left", 45)
+        checks.check("entry_lifecycle_menu", menu_ready().get("ready") is True)
+        last_id = 0
+        for mode in ("timeout", "probe_fault", "start_fault"):
+            accepted = client.request(
+                {"cmd": "enter_world", "name": world, "_selftest": mode},
+                ("enter_world_result", "error"),
+                timeout=40,
+            )
+            if accepted.get("reason") == "selftest_stress_disabled":
+                checks.check("entry_lifecycle_fault_gate", False, "enable allow_selftest_stress")
+                return
+            entry_id = int(accepted.get("entry_id", 0))
+            checks.check(f"entry_{mode}_accepted", accepted.get("ok") and entry_id > last_id)
+            last_id = entry_id
+            if mode != "start_fault":
+                busy = client.enter_world(world)
+                checks.check(
+                    f"entry_{mode}_single_start",
+                    busy.get("reason") == "already_starting" and busy.get("entry_id") == entry_id,
+                    str(busy),
+                )
+            terminal = client.wait_enter_settled(5, entry_id=entry_id)
+            checks.check(
+                f"entry_{mode}_terminal",
+                terminal.get("ok") is False
+                and terminal.get("reason")
+                == ("start_fault" if mode == "start_fault" else "entry_timeout"),
+                str(terminal),
+            )
+            if mode != "start_fault":
+                refused = client.enter_world(world)
+                checks.check(
+                    f"entry_{mode}_quarantine",
+                    refused.get("ok") is False and refused.get("reason") == "entry_recovering",
+                    str(refused),
+                )
+                checks.check(f"entry_{mode}_not_ready", client.worlds().get("ready") is False)
+            if mode == "probe_fault":
+                status = client.status()["world_entry"]
+                checks.check(
+                    "entry_probe_fault_diagnosed",
+                    int(status.get("probe_errors", 0)) >= 1
+                    and status.get("last_probe_error") == "probe_seh",
+                    str(status),
+                )
+            checks.check(f"entry_{mode}_recovers", menu_ready().get("ready") is True)
+            checks.check(f"entry_{mode}_unique_terminal", no_duplicate(entry_id))
+            checks.check(f"entry_{mode}_pipe_alive", client.ping().get("event") == "pong")
+
+        # Start a real server but suppress its join listener. The watchdog must
+        # infer readiness from a local player + HUD and settle this same entry.
+        accepted = client.request(
+            {"cmd": "enter_world", "name": world, "_selftest": "missing_join"},
+            "enter_world_result",
+            timeout=40,
+        )
+        entry_id = int(accepted.get("entry_id", 0))
+        checks.check("entry_missing_join_accepted", accepted.get("ok") and entry_id > last_id)
+        joined = client.wait_enter_settled(40, entry_id=entry_id)
+        checks.check(
+            "entry_missing_join_observed",
+            joined.get("ok") is True and joined.get("reason") == "player_observed",
+            str(joined),
+        )
+        checks.check("entry_missing_join_unique_terminal", no_duplicate(entry_id))
+        checks.check("entry_missing_join_idle", client.status()["world_entry"]["phase"] == "idle")
+    finally:
+        if not client.state().get("in_world"):
+            menu_ready()
+            joined = client.enter_world_ready(world)
+            checks.check("entry_lifecycle_restore_join", joined.get("ok") is True, str(joined))
+        client.wait_in_world(timeout=60)
+        client.reset(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        wait_ticks(client, 8)
+        checks.check("entry_lifecycle_world_recovery", client.state().get("in_world") is True)
+
+
 def check_task_operations(client: ModClient, checks: Checks) -> None:
     """Verify real navigation and place/mine effects on a temporary air cell."""
     original = client.state()
@@ -757,18 +871,32 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
         None,
     )
     x, y, z = math.floor(pose[0]), math.floor(pose[1]), math.floor(pose[2])
-    target = None
-    for dx, dz in ((2, 0), (-2, 0), (0, 2), (0, -2)):
-        cell = [x + dx, y, z + dz]
-        rows = client.blocks([cell, [cell[0], y - 1, cell[2]]])["blocks"]
-        if rows[0].get("name") == "minecraft:air" and rows[1].get("name") in {
-            "minecraft:stone",
-            "minecraft:dirt",
-            "minecraft:grass_block",
-            "minecraft:bedrock",
-        }:
-            target = cell
-            break
+
+    def find_target() -> list[int] | None:
+        # A moving actor can make useItemOn reject an otherwise valid air cell.
+        # Re-evaluate immediately before placing, after the navigation tests.
+        actors = client.entities(radius=8, limit=128).get("entities", [])
+        for dx, dz in ((2, 0), (-2, 0), (0, 2), (0, -2)):
+            cell = [x + dx, y, z + dz]
+            rows = client.blocks([cell, [cell[0], y - 1, cell[2]]])["blocks"]
+            if rows[0].get("name") != "minecraft:air" or rows[1].get("name") not in {
+                "minecraft:stone",
+                "minecraft:dirt",
+                "minecraft:grass_block",
+                "minecraft:bedrock",
+            }:
+                continue
+            if any(
+                abs(float(actor["y"]) - y) < 3
+                and math.hypot(float(actor["x"]) - cell[0] - 0.5, float(actor["z"]) - cell[2] - 0.5)
+                < 2
+                for actor in actors
+            ):
+                continue
+            return cell
+        return None
+
+    target = find_target()
     if target is None or slot is None:
         checks.note(
             "task_operations",
@@ -815,6 +943,19 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
                     < 0.25,
                     str(result),
                 )
+        # Navigation returns as soon as it reaches tolerance; release residual
+        # movement and restore the fixture pose before testing item placement.
+        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+        ready = settle(client, ticks=3, in_water=False)
+        fresh_target = find_target()
+        if not checks.check(
+            "task_place_ready",
+            ready.get("ok") and fresh_target is not None,
+            str({"settled": ready.get("ok"), "target": fresh_target}),
+        ):
+            return
+        assert fresh_target is not None
+        target = fresh_target
         # Aim through the command channel first: the camera is written back
         # every frame, so a task-internal aim can be stomped by the real mouse.
         pose_now = client.state()
@@ -1238,6 +1379,11 @@ def main(argv: list[str] | None = None) -> int:
         help="check scan cancellation on reconnect/exit, then re-enter WORLD",
     )
     modes.add_argument(
+        "--entry-lifecycle-world",
+        metavar="WORLD",
+        help="save/leave, check entry timeout/quarantine and missing join recovery, then restore WORLD",
+    )
+    modes.add_argument(
         "--macro-limit-only",
         action="store_true",
         help="check recording limit normalization, unique termination and buffered data preservation",
@@ -1296,10 +1442,17 @@ def main(argv: list[str] | None = None) -> int:
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
 
-    if args.query_capture_only or args.query_lifecycle_world or args.macro_limit_only:
+    if (
+        args.query_capture_only
+        or args.query_lifecycle_world
+        or args.macro_limit_only
+        or args.entry_lifecycle_world
+    ):
         try:
             client.input_lock(True)
-            if args.macro_limit_only:
+            if args.entry_lifecycle_world:
+                check_entry_lifecycle(client, checks, args.entry_lifecycle_world)
+            elif args.macro_limit_only:
                 check_macro_record_limits(client, checks)
             elif args.query_lifecycle_world:
                 check_query_lifecycle(client, checks, args.query_lifecycle_world)

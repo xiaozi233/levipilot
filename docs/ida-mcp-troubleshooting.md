@@ -3,16 +3,19 @@
 ## 架构
 
 ZCode 的 `ida-pro-mcp` 不是直连 IDA，而是启动一个**长驻的 stdio 代理子进程**
-（`ida_pro_mcp/server.py`），由它用 HTTP 转发到 `127.0.0.1:13337` 的 supervisor。
+（`ida_pro_mcp/server.py`），由它用 HTTP 转发到一个 supervisor。代理自己默认
+`127.0.0.1:13337`，而 supervisor 的默认端口是 **8745**（配置还能改），所以两边经常对不上——
+仓库里的 `driver/ida.py` 不假设端口，而是从自己写的 `out/ida-supervisor.log` 里发现端点。
 
 ## 症状与处理
 
 工具调用报「Did you run Edit -> Plugins -> MCP?」时，报错其实是那个**代理子进程**自己
 生成的（异常发生在 `http.client` 里），后端往往是好的。按顺序检查：
 
-1. 直连 supervisor（`POST http://127.0.0.1:13337/mcp`）正常，说明后端没挂。
+1. 直连 supervisor（`py -3.11 driver/ida.py status`，不要手写端口）正常，说明后端没挂。
 2. 杀掉卡住的代理子进程（`taskkill /PID <pid> /F`）后 ZCode 会自动拉起新的，MCP 立刻恢复。
-3. 代理子进程**只在启动时**解析一次目标端口（默认 13337），端口变了它不会跟。
+3. 代理子进程**只在启动时**解析一次目标端口（默认 13337），supervisor 换了端口它不会跟；
+   这种时候走 `driver/ida.py`，不要指望 ZCode 面板里的工具。
 4. 另一类失败是 supervisor 侧的**会话空闲回收**（worker 约 10 分钟无人访问就退出）：
   之后 `idb_list` 会显示 0 个会话，带库的工具报 `database is required` 或
   `Session not found`。重新 `idb_open`（`run_auto_analysis: false`）即可，

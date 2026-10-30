@@ -23,7 +23,8 @@ py -3.11 driver/dev.py run --world "超平坦测试"
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
-# 需要游戏已进存档
+# 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
+# 结果是 210/210 而不是 224/224
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）

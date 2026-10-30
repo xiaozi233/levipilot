@@ -27,8 +27,8 @@
 
 ## 2. 无符号、无 RTTI 时怎么定位（按成功率排序）
 
-IDA 会话用本 skill 的薄封装（只读、超时、会话默认）；先确认 ida-pro-mcp supervisor
-已在 `127.0.0.1:13337` 运行，本工具不负责拉起 IDA 或申请许可：
+IDA 会话用本 skill 的薄封装（参数兼容层，实现在 `driver/ida.py`）。`serve` 会替你
+拉起 supervisor 并代传超时；`open` 会复用缓存会话，后端不在时才需要先 `serve`：
 
 ```bash
 py -3.11 skills/bedrock-re/tools/ida.py open --version <version> --session mcbr

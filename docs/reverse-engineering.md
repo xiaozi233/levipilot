@@ -45,13 +45,15 @@
 
 ## 2. 工具链
 
-- **IDA Pro 9.4 + IDA MCP**（idalib 模式，`127.0.0.1:13337`，会话名如 `mcbr`）。
+- **IDA Pro 9.4 + idalib**：用仓库里的 `driver/ida.py`（端口自动发现、`idb_open`
+  丢回复会轮询、会话缓存、失败时回传 supervisor 日志）。超级用户级细节与排障见
+  [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md)。
   关键工具：`decompile`、`disasm`、`xrefs_to`、`callees`、`insn_query`、`get_bytes`、
   `py_eval`、`find(type="string")`。
 - 反编译结果尽量**落文件**离线读：大函数会被工具截断，屏幕上看不全。
-- **MCP 不在时**（面板显示“服务器连接失败”，它只是 13337 的代理，需要 IDA 侧
-  idalib server 在跑）：用 `idat.exe -A -S<script.py> -L<log> <db.i64>` 定点反编译，
-  搜索改走 capstone。两个坑：
+- **后端不可用时**（`driver/ida.py status` 报 down，或打开库报
+  `internal error 1228`）：先用 `idat.exe -A -S<script.py> -L<log> <db.i64>` 定点反编译；
+  若是库坏了，只能 `idat -A <exe>` 重建。搜索改走 capstone。两个坑：
   - `ida_bytes.bin_search(start, end, patt, None, flags)` 在 9.4 上会抛异常
     （mask 不能是 `None`），用 `idc.find_binary` 或干脆不用 IDA 搜索；
   - 一次性把 240 MB `.text` 交给 `md.disasm()` 会让 Python 端吃 8 GB 内存；

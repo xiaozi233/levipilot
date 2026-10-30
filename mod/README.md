@@ -99,7 +99,10 @@ xmake -j4 -y
 `*_started`、完成事件、`task_status` 均带 `task_id`；取消发
 `task_cancelled {task_id,task,ok:false,reason}`，reason 包括 `replaced/stopped/panic/reset/world_left/disabled/internal_error`。
 新 Python 任务方法要求配套更新 mod，通过 ID 等待结果，取消抛 `ModTaskCancelled`。
-`use` 等待服务端完成期间仍为 active，`phase=server_pending`；已取消的回调不消费物品。
+`use` 等待服务端完成期间仍为 active，`phase=server_pending`，`server_timeout_ms=5000`。
+预算从进入该阶段开始计时；超时回 `item_used {ok:false,reason:"server_timeout",task_id}`
+并释放任务槽。取消、替换或超时后的迟到回调不会操作物品；已经进入游戏调用的回调不能被超时抢占。
+投递失败回 `server_task_queue_failed`，回调异常回 `server_task_failed` 或 `server_task_fault`，均为同 ID 的唯一终结事件。
 模式拼写错误、路线超过 64 点、非对象 waypoint、expected 超过 255 UTF-8 字节均明确拒绝，
 不会改动当前任务。事件队列拥塞报 `task_backpressure`，消费端每 25 ms 处理定长任务记录。
 
@@ -187,10 +190,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **237/237**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **253/253**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话和聊天超时检查）、
+`allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天与服务端物品使用超时检查）、
 离线单测 **282/282**。常用实测数字：
+
+2026-10-31 服务端任务等待修复：`py -3.11 driver/selftest.py --use-lifecycle-only`
+专项 **16/16**，覆盖超时、投递失败、回调 C++/SEH、物品操作内部 SEH、唯一终结和恢复；
+受控已捕获故障没有新增 crash 文件。完整构建通过，安装 DLL 与构建产物 SHA-256 一致。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步
 采参数指向的短命缓冲）；`ecs_components` 改为逐 storage 探测，坏条目进 `skipped`

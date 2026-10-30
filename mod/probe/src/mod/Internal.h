@@ -134,13 +134,24 @@ class Vec3;
 
 namespace probe {
 
-// Set while a pipe command is being dispatched; the crash VEH uses it to tell
-// a per-request fault from a genuine process crash.
+// Set only while a harness SEH boundary owns the current exception. The crash
+// VEH runs before __except and must not report a handled fault as a crash.
 extern thread_local bool gDispatchSehActive;
 
 } // namespace probe
 
 namespace probe::detail {
+
+// Keep this guard outside functions containing __try (/EHsc). Restore nested
+// ownership on both normal return and C++ unwinding; the inner SEH frame handles
+// structured exceptions before control returns to the guard's scope.
+struct HandledSehScope {
+    bool const previous = gDispatchSehActive;
+    HandledSehScope() { gDispatchSehActive = true; }
+    ~HandledSehScope() { gDispatchSehActive = previous; }
+    HandledSehScope(HandledSehScope const&)            = delete;
+    HandledSehScope& operator=(HandledSehScope const&) = delete;
+};
 
 // SEH codes that mean "this request touched something invalid". C++ exceptions
 // are deliberately excluded.

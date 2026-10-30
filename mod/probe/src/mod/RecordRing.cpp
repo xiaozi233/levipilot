@@ -274,11 +274,7 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
     pathCount(PathCounter::Record);
     if (!capture.sampleDue()) return;
 
-    struct CaptureSehFlag {
-        bool previous = gDispatchSehActive;
-        CaptureSehFlag() { gDispatchSehActive = true; }
-        ~CaptureSehFlag() { gDispatchSehActive = previous; }
-    } captureFlag;
+    HandledSehScope captureFlag;
     RecordEntry entry;
     if (!captureEntryWithSeh(player, client, tick, jumpEdge, entry)) {
         gSampleFault.store(true, std::memory_order_release);

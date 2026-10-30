@@ -4,9 +4,7 @@ using namespace probe::detail;
 
 namespace probe {
 
-// True while dispatchWithSeh owns the current exception. The crash VEH checks
-// this so a deliberately faulting request is handled as an internal_error
-// instead of producing a minidump.
+// Shared by request/capture/client/server SEH boundaries and the crash VEH.
 thread_local bool gDispatchSehActive = false;
 
 void ProbeMod::recordCommand(std::string const& line) {
@@ -40,11 +38,7 @@ void ProbeMod::handleLine(std::string const& line) {
     // Any structured exception raised while handling this command belongs to
     // the request, not to the process. The flag must be visible to the crash
     // VEH, which runs before the __except filter below.
-    struct DispatchFlag {
-        bool previous = gDispatchSehActive;
-        DispatchFlag() { gDispatchSehActive = true; }
-        ~DispatchFlag() { gDispatchSehActive = previous; }
-    } dispatchFlag;
+    HandledSehScope dispatchFlag;
     // nlohmann throws on type mismatches, and a bad line from a script must not
     // kill the pipe thread (which would make the whole harness unreachable).
     try {

@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **282/282**，现场 **237/237**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **282/282**，现场 **253/253**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -619,7 +619,7 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **237/237**
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **253/253**
 （`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **282/282**。
 
 ### 客户端 I/O（2026-10-28；离线）
@@ -774,6 +774,17 @@ mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 W
 - 任务生命周期：单活动槽、ID 关联、统一取消；`TaskModel.h` 定长状态、tick 只填
   `TaskStep`、spool 线程格式化事件。自检入口 `check_task_lifecycle`；受控故障入口
   `selftest_task_fault` 需要 `allow_selftest_stress`。
+- `use` 服务端等待：进入 `server_pending` 时在任务锁内记录 5 秒截止时间；spool 线程按
+  wall-clock 超时回 `item_used {ok:false,reason:"server_timeout",task_id}`，即使客户端 tick
+  暂停也能释放任务槽。服务端回调取得锁后采样当前时间，禁止迟到的物品副作用；已经执行
+  的游戏调用不被强行抢占。投递失败与回调异常通过拥有者失败回调终结同一任务，旧 ID 不能
+  改写后继任务。`selftest_use_failure`（需 `allow_selftest_stress`）覆盖丢失回调、投递失败、
+  外层 SEH/C++ 异常及锁内物品操作 SEH；专项入口 `driver/selftest.py --use-lifecycle-only`。
+  请求/采样/客户端/服务端 SEH 边界共享嵌套安全的线程局部归属标记，first-chance VEH
+  不为已捕获故障写 crash 文件。原生模型覆盖截止边界、锁等待、迟到拒绝、取消/替换/失败
+  竞争的唯一终结和超时路径零分配。2026-10-31 专项现场 **16/16**、完整现场 **253/253**
+  （无跳过）、离线全量 **282/282**；完整构建及安装 DLL SHA-256 一致性检查通过。
+  原始日志在 `out/reliability-use-{unit,live,full-live,build,restart}.log`。
 - Python 会话：旧读线程与新会话隔离；请求保留异步事件，缓冲有界并显式报溢出。
 - `chat_history`：客户端线程定长快照（最多 64 条、每条 2047 UTF-8 字节、截断显式
   标记），后台格式化。不是永久日志，重启或游戏清理的历史无法追回。

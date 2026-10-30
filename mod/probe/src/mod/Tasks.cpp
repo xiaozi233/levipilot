@@ -177,40 +177,43 @@ void ProbeMod::beginTask() {
 
 bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
     bool       advanced = false;
-    bool const active   = mTasks.tick([&](TaskState& state, std::uint64_t id) {
-        advanced = true;
-        return taskTickWithSeh([&] {
-            auto faultId = id;
-            if (mTaskFaultId.compare_exchange_strong(faultId, 0)) {
-                RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
-            }
-            if (mMacroStopRequested.exchange(false)) releaseMacroInputs();
-            if (mSeenTaskId != id) {
-                mSeenTaskId = id;
-                applyControls(client, player, ControlState{});
-            }
-            TaskStep step;
-            step.finished = std::visit(
-                [&](auto& task) -> bool {
-                    using T = std::decay_t<decltype(task)>;
-                    if constexpr (std::is_same_v<T, NavigateTask>) return tickNavigate(client, player, task, step);
-                    else if constexpr (std::is_same_v<T, JumpTask>) return tickJump(client, player, task, step);
-                    else if constexpr (std::is_same_v<T, RouteTask>) return tickRoute(client, player, task, step);
-                    else if constexpr (std::is_same_v<T, MineTask>) return tickMine(player, task, step);
-                    else if constexpr (std::is_same_v<T, PlaceTask>) return tickPlace(player, task, step);
-                    else if constexpr (std::is_same_v<T, UseTask>) return tickUse(player, task, step);
-                    else return false;
-                },
-                state
-            );
-            if (step.finished) {
-                // Keep a successful jump pressed until origin consumes this tick.
-                bool const keepJumpPress = std::holds_alternative<JumpTask>(state) && step.outcome.ok;
-                if (!keepJumpPress) applyControls(client, player, ControlState{});
-            }
-            return step;
-        });
-    });
+    bool const active   = mTasks.tick(
+        [&](TaskState& state, std::uint64_t id) {
+            advanced = true;
+            return taskTickWithSeh([&] {
+                auto faultId = id;
+                if (mTaskFaultId.compare_exchange_strong(faultId, 0)) {
+                    RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+                }
+                if (mMacroStopRequested.exchange(false)) releaseMacroInputs();
+                if (mSeenTaskId != id) {
+                    mSeenTaskId = id;
+                    applyControls(client, player, ControlState{});
+                }
+                TaskStep step;
+                step.finished = std::visit(
+                    [&](auto& task) -> bool {
+                        using T = std::decay_t<decltype(task)>;
+                        if constexpr (std::is_same_v<T, NavigateTask>) return tickNavigate(client, player, task, step);
+                        else if constexpr (std::is_same_v<T, JumpTask>) return tickJump(client, player, task, step);
+                        else if constexpr (std::is_same_v<T, RouteTask>) return tickRoute(client, player, task, step);
+                        else if constexpr (std::is_same_v<T, MineTask>) return tickMine(player, task, step);
+                        else if constexpr (std::is_same_v<T, PlaceTask>) return tickPlace(player, task, step);
+                        else if constexpr (std::is_same_v<T, UseTask>) return tickUse(player, task, step);
+                        else return false;
+                    },
+                    state
+                );
+                if (step.finished) {
+                    // Keep a successful jump pressed until origin consumes this tick.
+                    bool const keepJumpPress = std::holds_alternative<JumpTask>(state) && step.outcome.ok;
+                    if (!keepJumpPress) applyControls(client, player, ControlState{});
+                }
+                return step;
+            });
+        },
+        [] { return GetTickCount64(); }
+    );
     if (active && !advanced) {
         auto const stopped = taskTickWithSeh([&] {
             applyControls(client, player, ControlState{});

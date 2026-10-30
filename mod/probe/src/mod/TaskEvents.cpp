@@ -5,7 +5,8 @@ using namespace probe::detail;
 namespace probe {
 
 namespace {
-TaskOutcome useOnServerImpl(std::string const& name) {
+TaskOutcome useOnServerImpl(std::string const& name, UseTask::TestMode testMode) {
+    if (testMode == UseTask::TestMode::EffectSeh) RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, nullptr);
     TaskOutcome result;
     result.reason    = "player_not_found";
     auto   minecraft = ll::service::bedrock::getMinecraft();
@@ -32,13 +33,11 @@ TaskOutcome useOnServerImpl(std::string const& name) {
     return result;
 }
 
-TaskOutcome useOnServer(std::string const& name) {
+TaskOutcome useOnServer(std::string const& name, UseTask::TestMode testMode) {
     TaskOutcome result;
     __try {
-        result = useOnServerImpl(name);
-    } __except (
-        GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
-    ) {
+        result = useOnServerImpl(name, testMode);
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         result.reason = "server_task_fault";
     }
     return result;
@@ -62,6 +61,7 @@ nlohmann::json ProbeMod::taskStatusJson() {
                 if constexpr (std::is_same_v<T, UseTask>) {
                     out["ticks"] = task.ticks;
                     out["phase"] = task.dispatched ? "server_pending" : "waiting";
+                    out["server_timeout_ms"] = task.serverTimeoutMs;
                 } else if constexpr (std::is_same_v<T, RouteTask>) {
                     out["waypoint"]  = task.index;
                     out["waypoints"] = task.count;
@@ -90,6 +90,8 @@ nlohmann::json ProbeMod::taskStatusJson() {
 }
 
 void ProbeMod::drainTaskEvents() {
+    // Wall-clock recovery also runs when client/world ticks are paused.
+    mTasks.expireUse(GetTickCount64());
     TaskEvent event;
     // Bound each pass so sustained command traffic cannot starve spool flushes.
     for (std::size_t n = 0; n < TaskController::EventCapacity && mTasks.pop(event); ++n) {
@@ -197,20 +199,28 @@ void ProbeMod::drainTaskEvents() {
 
 void ProbeMod::dispatchUseTask(std::uint64_t id) {
     // Scheduling/formatting happens on the event consumer, never in tickUse.
+    auto const  snapshot = mTasks.snapshot();
+    auto const* use      = std::get_if<UseTask>(&snapshot.state);
+    if (snapshot.id != id || !use || !use->dispatched) return;
+    auto const testMode = use->testMode;
+    if (testMode == UseTask::TestMode::DropCallback) return;
     std::string name;
     {
         std::lock_guard lock(mPlayerNameMutex);
         name = mLocalPlayerName;
     }
-    if (!ll::service::bedrock::getServerInstance()) {
-        mTasks.completeUse(id, [] {
-            TaskOutcome result;
-            result.reason = "no_server_instance";
-            return result;
-        });
-        return;
-    }
-    queueServerTask([this, id, name] { mTasks.completeUse(id, [&] { return useOnServer(name); }); });
+    queueServerTask(
+        [this, id, name, testMode] {
+            // Fault before the task lock: the transport failure callback must
+            // still publish exactly one task-specific terminal event.
+            if (testMode == UseTask::TestMode::CallbackSeh)
+                RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, nullptr);
+            if (testMode == UseTask::TestMode::CallbackCpp) throw std::runtime_error("selftest server callback");
+            mTasks.completeUse(id, [] { return GetTickCount64(); }, [&] { return useOnServer(name, testMode); });
+        },
+        [this, id](char const* reason) { mTasks.failUse(id, reason); },
+        testMode == UseTask::TestMode::QueueFailure
+    );
 }
 
 } // namespace probe

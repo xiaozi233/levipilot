@@ -13,6 +13,11 @@ bool runServerTaskWithSeh(std::function<void()> const& task) {
         return false;
     }
 }
+
+bool runGuardedServerTask(std::function<void()> const& task) {
+    probe::detail::HandledSehScope sehOwner;
+    return runServerTaskWithSeh(task);
+}
 } // namespace
 
 namespace probe {
@@ -194,31 +199,54 @@ void ProbeMod::bootLog(std::string const& text) {
     out << stamp << text << '\n';
 }
 
-void ProbeMod::queueServerTask(std::function<void()> fn) {
+void ProbeMod::queueServerTask(
+    std::function<void()>            fn,
+    std::function<void(char const*)> onFailure,
+    bool                             rejectQueueForSelftest
+) {
+    auto fail = [this, onFailure](char const* reason, char const* message = "") {
+        if (onFailure) {
+            onFailure(reason);
+        } else {
+            nlohmann::json error{
+                {"event",  "error"},
+                {"reason", reason }
+            };
+            if (*message) error["message"] = message;
+            enqueue(error.dump());
+        }
+    };
     auto server = ll::service::bedrock::getServerInstance();
     if (!server) {
-        enqueue(R"({"event":"error","reason":"no_server_instance"})");
+        fail("no_server_instance");
         return;
     }
-    server->queueForServerThread([this, fn = std::move(fn)] {
+    std::function<void()> task = [fn = std::move(fn), fail] {
         gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
         try {
-            if (!runServerTaskWithSeh(fn)) {
-                enqueue(R"({"event":"error","reason":"server_task_failed","message":"seh"})");
+            if (!runGuardedServerTask(fn)) {
+                fail("server_task_failed", "seh");
             }
         } catch (std::exception const& e) {
-            enqueue(
-                nlohmann::json{
-                    {"event",   "error"             },
-                    {"reason",  "server_task_failed"},
-                    {"message", e.what()              },
-            }
-                    .dump()
-            );
+            fail("server_task_failed", e.what());
         } catch (...) {
-            enqueue(R"({"event":"error","reason":"server_task_failed"})");
+            fail("server_task_failed");
         }
-    });
+    };
+    // The submission itself may fail during world teardown. Give an owning
+    // task the same failure path as a callback fault, without leaking a second
+    // uncorrelated protocol error or leaving its active slot occupied.
+    std::function<void()> submit = [&] {
+        if (rejectQueueForSelftest) throw std::runtime_error("selftest queue rejection");
+        server->queueForServerThread(task);
+    };
+    try {
+        if (!runGuardedServerTask(submit)) fail("server_task_queue_failed", "seh");
+    } catch (std::exception const& e) {
+        fail("server_task_queue_failed", e.what());
+    } catch (...) {
+        fail("server_task_queue_failed");
+    }
 }
 
 void ProbeMod::serverLoop() {

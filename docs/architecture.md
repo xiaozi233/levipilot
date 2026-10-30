@@ -93,7 +93,8 @@ scenario DSL / LLM / shell
   启动时同 PID 的旧文件会改名为 `spool-<pid>-<n>.jsonl`，单文件超过 64 MiB 也会轮转；
   swap 与写文件由 `mSpoolWriteMutex` 串行化。它只碰文件和缓冲区，不碰任何游戏对象。
 - **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
-  结构化异常由 `dispatchWithSeh` 转成 `internal_error`，不会写 minidump。
+  结构化异常由 `dispatchWithSeh` 转成 `internal_error`。请求、录制采样及客户端/服务端回调的
+  SEH 边界在当前线程标记异常归属，已处理故障不会被 first-chance VEH 误记为进程崩溃。
 
 输入、视角、传送合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
 载荷按 64 位原子字读写，tick 有界校验序号，竞争时保留上一份已验证快照，不等待写者。
@@ -110,7 +111,10 @@ scenario DSL / LLM / shell
 3. 完成、失败、取消写入预分配事件队列。spool 线程的 `drainTaskEvents` 格式化并发送，
    因此事件可能晚一个 25 ms 消费周期到达；按 ID 关联，不能依赖与命令回复的相邻顺序。
 4. `use` 达到 tick 数后进入 `server_pending`，仍占有活动槽。消费线程调度服务端回调；
-   回调在任务锁内核对 ID，取消/替换后的旧回调不会操作物品。使用失败、异常也产生终结事件。
+   从该阶段起有 5 秒 wall-clock 预算，spool 线程在世界 tick 暂停时也能终结超时任务。
+   回调取得任务锁后重新核对 ID 和当前时间，取消/替换/超时后的旧回调不会操作物品。
+   使用失败、投递失败、异常都产生同 ID 的唯一终结事件。游戏调用仍在任务锁内执行，
+   已开始的游戏调用不承诺超时抢占；内层 SEH 在返回控制器前处理故障，以保证锁正常释放。
 5. `task_stop`、panic、reset、world_left、disable 统一取消；正常终结与取消互斥。
 
 任务文字使用 256 字节固定缓冲，`expected` 最长 255 UTF-8 字节，报告中的方块/物品名称

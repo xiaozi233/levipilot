@@ -5,6 +5,42 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_use_failure") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        UseTask    task;
+        if (mode == "timeout") task.testMode = UseTask::TestMode::DropCallback;
+        else if (mode == "queue") task.testMode = UseTask::TestMode::QueueFailure;
+        else if (mode == "seh") task.testMode = UseTask::TestMode::CallbackSeh;
+        else if (mode == "cpp") task.testMode = UseTask::TestMode::CallbackCpp;
+        else if (mode == "effect_seh") task.testMode = UseTask::TestMode::EffectSeh;
+        else {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
+        // Shorter than production, so deterministic live checks stay bounded.
+        task.serverTimeoutMs = 250;
+        auto const id        = startTask(task);
+        if (!id) {
+            enqueue(R"({"event":"error","reason":"task_backpressure"})");
+            return true;
+        }
+        enqueue(
+            nlohmann::json{
+                {"event",   "use_started"},
+                {"task_id", id           },
+                {"ticks",   task.ticks   }
+        }.dump()
+        );
+        return true;
+    }
     if (cmd == "selftest_task_fault") {
         if (!mAllowSelftestStress.load()) {
             enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");

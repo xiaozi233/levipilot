@@ -10,6 +10,11 @@ bool runClientTaskWithSeh(std::function<void()> const& task) {
         return false;
     }
 }
+
+bool runGuardedClientTask(std::function<void()> const& task) {
+    detail::HandledSehScope sehOwner;
+    return runClientTaskWithSeh(task);
+}
 } // namespace
 
 void ProbeMod::queueClientTask(std::function<void()> task) {
@@ -23,7 +28,7 @@ void ProbeMod::queueClientTask(std::function<void()> task) {
     platform->queueForMainThread_DEPRECATED([this, task = std::move(task)] {
         if (!mRunning.load(std::memory_order_acquire)) return;
         try {
-            if (!runClientTaskWithSeh(task)) {
+            if (!runGuardedClientTask(task)) {
                 enqueue(R"({"event":"error","reason":"internal_error","phase":"client_task","message":"seh"})");
             }
         } catch (std::exception const& error) {

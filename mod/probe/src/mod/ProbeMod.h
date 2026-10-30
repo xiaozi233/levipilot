@@ -257,7 +257,11 @@ private:
     void               writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
     void               recordCommand(std::string const& line);
     // Runs a callback on the integrated server thread with exception isolation.
-    void queueServerTask(std::function<void()> fn);
+    void queueServerTask(
+        std::function<void()>            fn,
+        std::function<void(char const*)> onFailure              = {},
+        bool                             rejectQueueForSelftest = false
+    );
 
     // Tick isolation: a bug in one of our hooks must not take the game down.
     void safeTickPre(LocalPlayer& player);

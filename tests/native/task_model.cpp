@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <future>
 #include <memory>
@@ -25,6 +26,168 @@ void operator delete(void* p, std::size_t) noexcept {
 
 using namespace probe;
 using namespace probe::detail;
+
+std::uint64_t zeroClock() {
+    return 0;
+}
+
+void dispatchUse(TaskController& tasks, std::uint64_t now) {
+    assert(tasks.tick(
+        [](TaskState& state, std::uint64_t) {
+            std::get<UseTask>(state).dispatched = true;
+            TaskStep step;
+            step.useReady = true;
+            return step;
+        },
+        [=] { return now; }));
+    TaskEvent event;
+    assert(tasks.pop(event) && event.kind == TaskEvent::Kind::UseReady);
+    assert(!tasks.pop(event));
+}
+
+void expectUseFailure(TaskController& tasks, std::uint64_t id, std::string_view reason) {
+    TaskEvent event;
+    assert(tasks.pop(event) && event.id == id && event.kind == TaskEvent::Kind::Completed);
+    assert(!event.outcome.ok && event.outcome.reason == reason);
+    assert(tasks.snapshot().id == 0 && !tasks.pop(event));
+}
+
+void useTimeouts() {
+    auto owner = std::make_unique<TaskController>();
+    auto& tasks = *owner;
+    auto id = tasks.start(UseTask{});
+    assert(!tasks.expireUse(100000)); // Waiting ticks do not spend the server budget.
+    dispatchUse(tasks, 1000);
+    assert(std::get<UseTask>(tasks.snapshot().state).serverDeadlineMs == 6000);
+    assert(!tasks.expireUse(5999));
+    assert(tasks.expireUse(6000)); // Inclusive deadline, independent of game ticks.
+    assert(!tasks.expireUse(6001));
+    expectUseFailure(tasks, id, "server_timeout");
+    bool effect = false;
+    auto complete = [&] {
+        effect = true;
+        TaskOutcome result;
+        result.ok = true;
+        return result;
+    };
+    assert(!tasks.completeUse(id, [] { return 6001; }, complete) && !effect);
+    assert(!tasks.failUse(id, "server_task_failed"));
+
+    id = tasks.start(UseTask{});
+    dispatchUse(tasks, 1000);
+    assert(!tasks.completeUse(id, [] { return 6000; }, complete) && !effect);
+    expectUseFailure(tasks, id, "server_timeout"); // Callback enforces deadline without a poll.
+
+    id = tasks.start(UseTask{});
+    dispatchUse(tasks, 1000);
+    assert(tasks.completeUse(id, [] { return 5999; }, complete) && effect);
+    assert(!tasks.expireUse(6000));
+    TaskEvent event;
+    assert(tasks.pop(event) && event.id == id && event.outcome.ok);
+    assert(!tasks.pop(event));
+
+    id = tasks.start(UseTask{});
+    dispatchUse(tasks, 1000);
+    assert(tasks.failUse(id, "server_task_queue_failed"));
+    assert(!tasks.failUse(id, "server_task_queue_failed"));
+    assert(!tasks.completeUse(id, zeroClock, complete));
+    expectUseFailure(tasks, id, "server_task_queue_failed");
+    auto const next = tasks.start(JumpTask{});
+    assert(next > id && !tasks.completeUse(id, zeroClock, complete));
+    assert(!tasks.failUse(id, "server_task_failed"));
+    assert(!tasks.expireUse(100000) && tasks.snapshot().id == next);
+    tasks.cancel("stopped");
+    assert(tasks.pop(event) && event.id == next && !tasks.pop(event));
+
+    // An expiry check must sample the clock after waiting for the task lock.
+    id = tasks.start(UseTask{});
+    dispatchUse(tasks, 1000);
+    std::promise<void> entered, release, attempted;
+    auto gate = release.get_future();
+    std::thread ticker([&] {
+        tasks.tick([&](TaskState&, std::uint64_t) {
+            entered.set_value();
+            gate.wait();
+            return TaskStep{};
+        });
+    });
+    entered.get_future().wait();
+    std::promise<void> sampled;
+    auto clockSample = sampled.get_future();
+    std::atomic<std::uint64_t> now{5999};
+    effect = false;
+    std::thread callback([&] {
+        attempted.set_value();
+        assert(!tasks.completeUse(
+            id,
+            [&] {
+                sampled.set_value();
+                return now.load();
+            },
+            complete));
+    });
+    attempted.get_future().wait();
+    assert(clockSample.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout);
+    now.store(6000);
+    release.set_value();
+    ticker.join();
+    callback.join();
+    assert(!effect);
+    expectUseFailure(tasks, id, "server_timeout");
+
+    // Expiry, completion, cancellation, replacement and queue failure contend
+    // for the same owner. Every ordering must publish just one terminal.
+    for (int iteration = 0; iteration < 150; ++iteration) {
+        id = tasks.start(UseTask{});
+        dispatchUse(tasks, 1000);
+        std::promise<void> start;
+        auto go = start.get_future().share();
+        std::thread expiry([&] {
+            go.wait();
+            tasks.expireUse(6000);
+        });
+        std::thread finish([&] {
+            go.wait();
+            tasks.completeUse(id, [] { return 6000; }, complete);
+        });
+        std::thread cancel([&] {
+            go.wait();
+            tasks.cancel("stopped");
+        });
+        std::thread replace([&] {
+            go.wait();
+            assert(tasks.start(JumpTask{}));
+        });
+        std::thread failure([&] {
+            go.wait();
+            tasks.failUse(id, "server_task_failed");
+        });
+        start.set_value();
+        expiry.join();
+        finish.join();
+        cancel.join();
+        replace.join();
+        failure.join();
+        tasks.cancel("stopped");
+        unsigned terminals = 0, replacements = 0;
+        while (tasks.pop(event)) {
+            assert(event.kind == TaskEvent::Kind::Completed ||
+                   event.kind == TaskEvent::Kind::Cancelled);
+            if (event.id == id)
+                ++terminals;
+            else
+                ++replacements;
+        }
+        assert(terminals == 1 && replacements == 1 && !effect);
+    }
+
+    auto const baseline = allocations.load();
+    id = tasks.start(UseTask{});
+    dispatchUse(tasks, 0);
+    assert(tasks.expireUse(UseTask::ServerTimeoutMs));
+    expectUseFailure(tasks, id, "server_timeout");
+    assert(allocations.load() == baseline);
+}
 
 void stressLifecycle() {
     constexpr std::size_t cycles = 2500;
@@ -57,14 +220,15 @@ void stressLifecycle() {
             });
             auto const id = tasks.snapshot().id;
             if (id) {
-                tasks.completeUse(id, [&] {
+                tasks.completeUse(id, zeroClock, [&] {
                     ++effects[id];
                     return TaskOutcome{};
                 });
-                if (id > 1) tasks.completeUse(id - 1, [] {
-                    assert(false && "stale server callback executed");
-                    return TaskOutcome{};
-                });
+                if (id > 1)
+                    tasks.completeUse(id - 1, zeroClock, [] {
+                        assert(false && "stale server callback executed");
+                        return TaskOutcome{};
+                    });
             }
         }
     });
@@ -96,6 +260,7 @@ void stressLifecycle() {
 }
 
 int main() {
+    useTimeouts();
     stressLifecycle();
     {
         FixedText<5> text;
@@ -142,7 +307,7 @@ int main() {
         assert(tasks.snapshot().id == id); // Pending server work still owns the task.
         tasks.cancel("stopped");
         bool executed = false;
-        assert(!tasks.completeUse(id, [&] {
+        assert(!tasks.completeUse(id, zeroClock, [&] {
             executed = true;
             return TaskOutcome{};
         }));
@@ -158,8 +323,8 @@ int main() {
             s.useReady = true;
             return s;
         });
-        assert(tasks.completeUse(id, [] { return TaskOutcome{}; }));
-        assert(!tasks.completeUse(id, [] {
+        assert(tasks.completeUse(id, zeroClock, [] { return TaskOutcome{}; }));
+        assert(!tasks.completeUse(id, zeroClock, [] {
             assert(false);
             return TaskOutcome{};
         }));
@@ -175,7 +340,7 @@ int main() {
             step.useReady = true;
             return step;
         });
-        assert(tasks.completeUse(id, []() -> TaskOutcome { throw 42; }));
+        assert(tasks.completeUse(id, zeroClock, []() -> TaskOutcome { throw 42; }));
         TaskEvent event;
         assert(tasks.pop(event) && event.kind == TaskEvent::Kind::UseReady);
         assert(tasks.pop(event) && event.id == id && !event.outcome.ok);

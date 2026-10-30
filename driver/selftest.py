@@ -6,6 +6,7 @@
     py -3.11 driver/selftest.py --client-io-only  # offline; never connects to the game
     py -3.11 driver/selftest.py --mod-core-only   # offline native mod checks
     py -3.11 driver/selftest.py --mod-core-live-only  # pipe/recording; no RE commands
+    py -3.11 driver/selftest.py --use-lifecycle-only  # bounded server failure/recovery checks
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -442,6 +443,56 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
             and client.task_status().get("active") is None
             and int(client.status().get("tick", 0)) > start,
         )
+
+    check_use_lifecycle(client, checks)
+
+
+def check_use_lifecycle(client: ModClient, checks: Checks) -> None:
+    """Inject bounded failures before any item effect; verify one terminal and recovery."""
+    mod_dir = Path(str(client.status()["spool"])).parent
+
+    def crash_artifacts() -> set[tuple[str, int]]:
+        return {(path.name, path.stat().st_mtime_ns) for path in mod_dir.glob("crash-*")}
+
+    before = crash_artifacts()
+    for mode, reason in (
+        ("timeout", "server_timeout"),
+        ("queue", "server_task_queue_failed"),
+        ("seh", "server_task_failed"),
+        ("cpp", "server_task_failed"),
+        ("effect_seh", "server_task_fault"),
+    ):
+        started = client.request(
+            {"cmd": "selftest_use_failure", "mode": mode}, ("use_started", "error")
+        )
+        if started.get("event") == "error":
+            checks.check("use_failure_gate", started.get("reason") == "selftest_stress_disabled")
+            checks.note("use_failure_recovery", "skipped: allow_selftest_stress is disabled")
+            return
+        task_id = int(started["task_id"])
+        result = client.wait_event(
+            "item_used", 3, predicate=lambda row, task_id=task_id: row.get("task_id") == task_id
+        )
+        checks.check(
+            f"use_{mode}_terminal",
+            result.get("reason") == reason
+            and result.get("ok") is False
+            and client.task_status().get("active") is None,
+            str(result),
+        )
+        duplicate = None
+        with contextlib.suppress(ModTimeout):
+            duplicate = client.wait_event(
+                ("item_used", "task_cancelled", "error"),
+                0.15,
+                predicate=lambda row, task_id=task_id: (
+                    row.get("task_id") == task_id or row.get("event") == "error"
+                ),
+            )
+        checks.check(f"use_{mode}_unique", duplicate is None, str(duplicate or ""))
+        advanced = wait_ticks(client, 3)
+        checks.check(f"use_{mode}_recovery", advanced >= 3 and client.ping().get("event") == "pong")
+    checks.check("use_handled_fault_no_dump", crash_artifacts() == before)
 
 
 def check_task_operations(client: ModClient, checks: Checks) -> None:
@@ -929,6 +980,11 @@ def main(argv: list[str] | None = None) -> int:
         help="save/leave, check chat cancellation and main menu recovery, then re-enter WORLD",
     )
     modes.add_argument(
+        "--use-lifecycle-only",
+        action="store_true",
+        help="inject missing/failed server work and verify task termination/recovery in a world",
+    )
+    modes.add_argument(
         "--mod-core-live-only",
         action="store_true",
         help="check installed pipe/recording only; no RE, input injection or world edits",
@@ -976,6 +1032,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
+
+    if args.use_lifecycle_only:
+        try:
+            check_use_lifecycle(client, checks)
+        except (ModPipeError, OSError, ValueError) as exc:
+            checks.check("use_lifecycle_error", False, str(exc))
+        finally:
+            client.close()
+        return checks.finish()
 
     if args.mod_core_live_only:
         try:

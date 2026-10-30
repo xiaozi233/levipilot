@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace probe {
@@ -97,8 +98,13 @@ struct PlaceTask {
 };
 
 struct UseTask {
+    static constexpr std::uint64_t ServerTimeoutMs = 5000;
+    enum class TestMode { None, DropCallback, QueueFailure, CallbackSeh, CallbackCpp, EffectSeh };
     int  ticks = 1, elapsed = 0;
     bool dispatched = false;
+    std::uint64_t serverDeadlineMs = 0;
+    std::uint64_t serverTimeoutMs  = ServerTimeoutMs;
+    TestMode      testMode         = TestMode::None; // Only installed by gated selftests.
 };
 
 using TaskState = std::variant<std::monostate, NavigateTask, JumpTask, RouteTask, MineTask, PlaceTask, UseTask>;
@@ -195,6 +201,11 @@ public:
 
     template <typename Advance>
     bool tick(Advance&& advance) {
+        return tick(std::forward<Advance>(advance), [] { return std::uint64_t{0}; });
+    }
+
+    template <typename Advance, typename Now>
+    bool tick(Advance&& advance, Now&& now) {
         std::lock_guard lock(mMutex);
         if (mActive.state.index() == 0) {
             return false;
@@ -209,6 +220,9 @@ public:
             push(TaskEvent::Kind::Waypoint, step.outcome);
         }
         if (step.useReady) {
+            if (auto* use = std::get_if<UseTask>(&mActive.state)) {
+                use->serverDeadlineMs = now() + use->serverTimeoutMs;
+            }
             push(TaskEvent::Kind::UseReady, step.outcome);
         }
         if (step.finished) {
@@ -218,13 +232,16 @@ public:
         return true;
     }
 
-    template <typename Complete>
-    bool completeUse(std::uint64_t id, Complete&& complete) {
+    template <typename Now, typename Complete>
+    bool completeUse(std::uint64_t id, Now&& now, Complete&& complete) {
         std::lock_guard lock(mMutex);
         auto const*     use = std::get_if<UseTask>(&mActive.state);
         if (mActive.id != id || !use || !use->dispatched) {
             return false; // Cancelled/replaced queued server work has no effect.
         }
+        // Sample after acquiring the lock: time spent waiting for a tick must
+        // not let an already-expired callback perform a game side effect.
+        if (expireUseLocked(now())) return false;
         TaskOutcome outcome;
         try {
             outcome = complete();
@@ -234,6 +251,19 @@ public:
         push(TaskEvent::Kind::Completed, outcome);
         mActive = {};
         return true;
+    }
+
+    bool failUse(std::uint64_t id, char const* reason) {
+        std::lock_guard lock(mMutex);
+        auto const*     use = std::get_if<UseTask>(&mActive.state);
+        if (mActive.id != id || !use || !use->dispatched) return false;
+        finishUseLocked(reason);
+        return true;
+    }
+
+    bool expireUse(std::uint64_t nowMs) {
+        std::lock_guard lock(mMutex);
+        return expireUseLocked(nowMs);
     }
 
     bool pop(TaskEvent& event) {
@@ -246,6 +276,18 @@ public:
     }
 
 private:
+    bool expireUseLocked(std::uint64_t nowMs) {
+        auto const* use = std::get_if<UseTask>(&mActive.state);
+        if (!use || !use->dispatched || nowMs < use->serverDeadlineMs) return false;
+        finishUseLocked("server_timeout");
+        return true;
+    }
+    void finishUseLocked(char const* reason) {
+        TaskOutcome outcome;
+        outcome.reason = reason;
+        push(TaskEvent::Kind::Completed, outcome);
+        mActive = {};
+    }
     std::size_t freeEvents() const { return EventCapacity - (mWrite - mRead); }
     void        push(TaskEvent::Kind kind, TaskOutcome const& outcome) {
         mEvents[mWrite++ % EventCapacity] = {kind, mActive.id, mActive.state, outcome};

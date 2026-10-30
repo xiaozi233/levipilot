@@ -22,7 +22,6 @@ using SetJumpPendingScaleFn = void (*)(EntityContext&, float);
 using GenericFn             = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 
 struct HookHit {
-    std::atomic<std::uint64_t> seq{0};
     std::uint32_t              hookId     = 0;
     std::uint32_t              tid        = 0;
     std::uint64_t              tick       = 0;
@@ -67,8 +66,8 @@ struct HookSlot {
     std::atomic<SetJumpPendingScaleFn> originTyped{nullptr};
 };
 
-std::unique_ptr<HookHit[]>          gRing;
-std::atomic<std::uint64_t>          gRingHead{0};
+using HookRing = AtomicRing<HookHit, kHookRingCapacity>;
+std::unique_ptr<HookRing>           gRing;
 std::atomic<std::uint32_t>          gNextId{1};
 HookSlot                            gSlots[kHookSlots];
 std::atomic<GenericFn>              gGenericOrigins[kHookSlots]{};
@@ -112,7 +111,10 @@ nlohmann::json errorJson(char const* reason) {
 
 void ensureRing() {
     if (!gRing) {
-        gRing = std::unique_ptr<HookHit[]>(new (std::nothrow) HookHit[kHookRingCapacity]());
+        auto ring = std::unique_ptr<HookRing>(new (std::nothrow) HookRing());
+        if (ring && ring->initialize()) {
+            gRing = std::move(ring);
+        }
     }
 }
 
@@ -127,16 +129,16 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
     if (sample > 1 && (hit % sample) != 0) {
         return;
     }
-    std::uint64_t const index = gRingHead.fetch_add(1, std::memory_order_acq_rel);
-    HookHit&            record = gRing[index % kHookRingCapacity];
-    record.hookId              = watch.id.load(std::memory_order_relaxed);
-    record.tid                 = GetCurrentThreadId();
-    record.tick                = gWatchTick.load(std::memory_order_relaxed);
-    record.a                   = a;
-    record.b                   = b;
-    record.c                   = c;
-    record.d                   = d;
-    record.ret                 = reinterpret_cast<std::uint64_t>(_ReturnAddress());
+    auto reservation = gRing->reserve();
+    HookHit record{};
+    record.hookId = watch.id.load(std::memory_order_relaxed);
+    record.tid    = GetCurrentThreadId();
+    record.tick   = gWatchTick.load(std::memory_order_relaxed);
+    record.a      = a;
+    record.b      = b;
+    record.c      = c;
+    record.d      = d;
+    record.ret    = reinterpret_cast<std::uint64_t>(_ReturnAddress());
     record.frameCount          = static_cast<std::uint32_t>(
         RtlCaptureStackBackTrace(0, kHookMaxFrames, reinterpret_cast<PVOID*>(record.frames), nullptr)
     );
@@ -163,7 +165,7 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
         record.memAddr = target;
         record.memOk   = target != 0 && readMemory(target, record.mem, memLen) ? 1u : 0u;
     }
-    record.seq.store(index + 1, std::memory_order_release);
+    reservation.publish(record);
     watch.captured.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -510,7 +512,7 @@ nlohmann::json hookListJson() {
     nlohmann::json out;
     out["event"]  = "hook_list";
     out["hooks"]  = nlohmann::json::array();
-    out["head"]   = gRingHead.load(std::memory_order_acquire);
+    out["head"]   = gRing ? gRing->head() : 0;
     std::uint64_t const head = out["head"].get<std::uint64_t>();
     out["dropped"] = head > kHookRingCapacity ? head - kHookRingCapacity : 0;
     for (std::size_t slot = 0; slot < kHookSlots; ++slot) {
@@ -539,7 +541,7 @@ nlohmann::json hookListJson() {
 
 nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
     std::lock_guard     lock(gHookMutex);
-    std::uint64_t const head   = gRingHead.load(std::memory_order_acquire);
+    std::uint64_t const head   = gRing ? gRing->head() : 0;
     std::uint64_t const oldest = head > kHookRingCapacity ? head - kHookRingCapacity : 0;
     std::uint64_t       start  = since;
     std::uint64_t       lost   = 0;
@@ -554,11 +556,24 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
         limit = 4096;
     }
     std::uint64_t const end   = std::min(head, start + limit);
+    std::uint64_t       cursor = start;
     nlohmann::json      hits  = nlohmann::json::array();
     for (std::uint64_t index = start; index < end; ++index) {
-        HookHit const& record = gRing[index % kHookRingCapacity];
-        if (record.seq.load(std::memory_order_acquire) != index + 1) {
+        HookHit record{};
+        auto const read = gRing ? gRing->read(index, record) : HookRing::ReadResult::pending;
+        if (read == HookRing::ReadResult::pending) {
+            cursor = index;
             break;
+        }
+        if (read == HookRing::ReadResult::overwritten) {
+            ++lost;
+            cursor = index + 1;
+            continue;
+        }
+        if (read == HookRing::ReadResult::dropped) {
+            ++lost;
+            cursor = index + 1;
+            continue;
         }
         std::string tag;
         bool        deref = false;
@@ -605,12 +620,13 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
             row["mem"] = std::move(mem);
         }
         hits.push_back(std::move(row));
+        cursor = index + 1;
     }
 
     nlohmann::json out;
     out["event"] = "hook_hits";
     out["since"] = since;
-    out["next"]  = start + static_cast<std::uint64_t>(hits.size());
+    out["next"]  = cursor;
     out["head"]  = head;
     out["lost"]  = lost;
     out["hits"]  = std::move(hits);

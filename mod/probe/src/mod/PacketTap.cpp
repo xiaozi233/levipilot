@@ -197,6 +197,10 @@ void PacketTap::peerTick() {
 }
 
 void PacketTap::onSent(Packet& packet, std::uint64_t tick) {
+    detail::CallbackGate::Guard scope{mWriters};
+    if (!scope) {
+        return;
+    }
     if (!mCapture.load(std::memory_order_relaxed) ||
         !mSendEnabled.load(std::memory_order_relaxed)) {
         return;
@@ -205,6 +209,10 @@ void PacketTap::onSent(Packet& packet, std::uint64_t tick) {
 }
 
 void PacketTap::onReceived(Packet const& packet, std::size_t anchor, std::uint64_t tick) {
+    detail::CallbackGate::Guard scope{mWriters};
+    if (!scope) {
+        return;
+    }
     if (anchor < kRecvAnchorCount) {
         mRecvHits[anchor].fetch_add(1, std::memory_order_relaxed);
     }
@@ -254,20 +262,18 @@ void PacketTap::recordPacket(Packet const& packet, std::uint8_t dir, std::uint64
     if (sample > 1 && (order % sample) != 0) {
         return;
     }
-    auto const* ring = mRing.get();
-    if (ring == nullptr) {
+    if (!mRing) {
         return;
     }
-    std::uint64_t const index = mHead.fetch_add(1, std::memory_order_acq_rel);
-    PacketRecord&       record = mRing[index % kRing];
+    auto reservation = mRing->reserve();
+    PacketRecord record{};
     record.order    = order;
     record.tick     = tick;
     record.id       = id;
     record.tid      = GetCurrentThreadId();
-    record.dir                 = dir;
+    record.dir      = dir;
     record.injected = 0;
-    std::atomic_thread_fence(std::memory_order_release);
-    record.seq.store(index + 1, std::memory_order_release);
+    reservation.publish(record);
 
     // B3: serialize only the explicitly whitelisted ids. This is the one place
     // the hook allocates (the first call grows a thread-local buffer), which is
@@ -286,19 +292,18 @@ void PacketTap::recordPacket(Packet const& packet, std::uint8_t dir, std::uint64
     buffer.clear();
     BinaryStream stream{buffer};
     packet.write(stream);
-    std::uint64_t const byteIndex = mByteHead.fetch_add(1, std::memory_order_acq_rel);
-    PacketBytes&        bytes     = mByteRing[byteIndex % kByteRing];
+    auto byteReservation = mByteRing->reserve();
+    PacketBytes bytes{};
     bytes.order = order;
     bytes.id    = static_cast<std::uint32_t>(id);
     bytes.size  = static_cast<std::uint32_t>(buffer.size());
     bytes.tid   = record.tid;
-    bytes.dir                     = dir;
+    bytes.dir   = dir;
     std::size_t const copy = std::min<std::size_t>(buffer.size(), sizeof(bytes.data));
     if (copy > 0) {
         std::memcpy(bytes.data, buffer.data(), copy);
     }
-    std::atomic_thread_fence(std::memory_order_release);
-    bytes.seq.store(byteIndex + 1, std::memory_order_release);
+    byteReservation.publish(bytes);
 }
 
 nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
@@ -408,8 +413,8 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
 
     stop();
     if (!mRing) {
-        mRing = std::unique_ptr<PacketRecord[]>(new (std::nothrow) PacketRecord[kRing]());
-        if (!mRing) {
+        mRing = std::unique_ptr<RecordRing>(new (std::nothrow) RecordRing());
+        if (!mRing || !mRing->initialize()) {
             return nlohmann::json{
                 {"event",  "error"    },
                 {"reason", "no_memory"}
@@ -417,15 +422,15 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
         }
     }
     if (serializeCount > 0 && !mByteRing) {
-        mByteRing = std::unique_ptr<PacketBytes[]>(new (std::nothrow) PacketBytes[kByteRing]());
-        if (!mByteRing) {
+        mByteRing = std::unique_ptr<ByteRing>(new (std::nothrow) ByteRing());
+        if (!mByteRing || !mByteRing->initialize()) {
             return nlohmann::json{
                 {"event",  "error"    },
                 {"reason", "no_memory"}
             };
         }
     }
-    mHead.store(0, std::memory_order_relaxed);
+    mRing->reset();
     mSeq.store(0, std::memory_order_relaxed);
     mPeerCount.store(0, std::memory_order_relaxed);
     mDenied.store(0, std::memory_order_relaxed);
@@ -433,7 +438,9 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     mIdCount  = idCount;
     mSerializeIds   = serializeIds;
     mSerializeCount = serializeCount;
-    mByteHead.store(0, std::memory_order_relaxed);
+    if (mByteRing) {
+        mByteRing->reset();
+    }
     mSample.store(sample, std::memory_order_relaxed);
     mRecvRecords.store(0, std::memory_order_relaxed);
     for (auto& hits : mRecvHits) {
@@ -497,6 +504,7 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     // during local play (loopback bypasses the serialized peer layer).
     bool const peerHooked = false;
     mPeerHooked.store(false, std::memory_order_release);
+    mWriters.open();
     mCapture.store(true, std::memory_order_release);
 
     nlohmann::json recvAnchors = nlohmann::json::object();
@@ -530,6 +538,7 @@ void PacketTap::stop() {
     mCapture.store(false, std::memory_order_release);
     mSendEnabled.store(false, std::memory_order_release);
     mRecvEnabled.store(false, std::memory_order_release);
+    mWriters.closeAndWait();
     if (mSendHooked.exchange(false, std::memory_order_acq_rel)) {
         ProbePacketSendHook::unhook();
     }
@@ -551,7 +560,7 @@ void PacketTap::stop() {
 }
 
 nlohmann::json PacketTap::status() {
-    std::uint64_t const head = mHead.load(std::memory_order_acquire);
+    std::uint64_t const head = mRing ? mRing->head() : 0;
     nlohmann::json      ids  = nlohmann::json::array();
     for (std::size_t index = 0; index < mIdCount; ++index) {
         ids.push_back(mIds[index]);
@@ -589,7 +598,7 @@ nlohmann::json PacketTap::status() {
 }
 
 nlohmann::json PacketTap::drain(std::uint64_t since, std::size_t limit) {
-    std::uint64_t const head   = mHead.load(std::memory_order_acquire);
+    std::uint64_t const head   = mRing ? mRing->head() : 0;
     std::uint64_t const oldest = head > kRing ? head - kRing : 0;
     std::uint64_t       start  = since;
     std::uint64_t       lost   = 0;
@@ -603,16 +612,28 @@ nlohmann::json PacketTap::drain(std::uint64_t since, std::size_t limit) {
     if (limit == 0) {
         limit = 4096;
     }
-    std::uint64_t const end   = std::min(head, start + limit);
     nlohmann::json      rows  = nlohmann::json::array();
     std::size_t         count = 0;
     if (!mRing) {
         return nlohmann::json{{"event", "packet_drain"}, {"hits", nlohmann::json::array()}, {"count", 0}};
     }
-    for (std::uint64_t index = start; index < end; ++index) {
-        PacketRecord const& record = mRing[index % kRing];
-        if (record.seq.load(std::memory_order_acquire) != index + 1) {
-            continue; // reserved by another writer, not published yet
+    std::uint64_t cursor = start;
+    for (std::uint64_t index = start; index < head && count < limit; ++index) {
+        PacketRecord record{};
+        auto const read = mRing->read(index, record);
+        if (read == RecordRing::ReadResult::pending) {
+            cursor = index;
+            break;
+        }
+        if (read == RecordRing::ReadResult::overwritten) {
+            ++lost;
+            cursor = index + 1;
+            continue;
+        }
+        if (read == RecordRing::ReadResult::dropped) {
+            ++lost;
+            cursor = index + 1;
+            continue;
         }
         rows.push_back({
             {"index",    index + 1        },
@@ -624,11 +645,12 @@ nlohmann::json PacketTap::drain(std::uint64_t since, std::size_t limit) {
             {"injected", record.injected != 0},
         });
         ++count;
+        cursor = index + 1;
     }
     return nlohmann::json{
         {"event", "packet_drain"               },
         {"since", since                        },
-        {"next",  end                          },
+        {"next",  cursor                       },
         {"head",  head                         },
         {"lost",  lost                         },
         {"hits",  std::move(rows)              },
@@ -637,7 +659,7 @@ nlohmann::json PacketTap::drain(std::uint64_t since, std::size_t limit) {
 }
 
 nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
-    std::uint64_t const head   = mByteHead.load(std::memory_order_acquire);
+    std::uint64_t const head   = mByteRing ? mByteRing->head() : 0;
     std::uint64_t const oldest = head > kByteRing ? head - kByteRing : 0;
     std::uint64_t       start  = since;
     std::uint64_t       lost   = 0;
@@ -651,15 +673,27 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
     if (limit == 0) {
         limit = 1024;
     }
-    std::uint64_t const end   = std::min(head, start + limit);
     nlohmann::json      rows  = nlohmann::json::array();
     std::size_t         count = 0;
     if (!mByteRing) {
         return nlohmann::json{{"event", "packet_bytes"}, {"hits", std::move(rows)}, {"count", 0}};
     }
-    for (std::uint64_t index = start; index < end; ++index) {
-        PacketBytes const& record = mByteRing[index % kByteRing];
-        if (record.seq.load(std::memory_order_acquire) != index + 1) {
+    std::uint64_t cursor = start;
+    for (std::uint64_t index = start; index < head && count < limit; ++index) {
+        PacketBytes record{};
+        auto const read = mByteRing->read(index, record);
+        if (read == ByteRing::ReadResult::pending) {
+            cursor = index;
+            break;
+        }
+        if (read == ByteRing::ReadResult::overwritten) {
+            ++lost;
+            cursor = index + 1;
+            continue;
+        }
+        if (read == ByteRing::ReadResult::dropped) {
+            ++lost;
+            cursor = index + 1;
             continue;
         }
         std::size_t const shown = std::min<std::size_t>(record.size, sizeof(record.data));
@@ -674,11 +708,12 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
             {"serialized", true          },
         });
         ++count;
+        cursor = index + 1;
     }
     return nlohmann::json{
         {"event", "packet_bytes"},
         {"since", since         },
-        {"next",  end           },
+        {"next",  cursor        },
         {"head",  head          },
         {"lost",  lost          },
         {"count", count         },

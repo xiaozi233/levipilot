@@ -8,6 +8,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "mod/AtomicRing.h"
+#include "mod/CallbackGate.h"
+
 class Packet;
 
 namespace probe {
@@ -57,7 +60,7 @@ public:
         return mRecvEnabled.load(std::memory_order_relaxed);
     }
     [[nodiscard]] std::uint64_t records() const {
-        return mHead.load(std::memory_order_relaxed);
+        return mRing ? mRing->head() : 0;
     }
     [[nodiscard]] std::uint64_t recvRecords() const {
         return mRecvRecords.load(std::memory_order_relaxed);
@@ -68,7 +71,6 @@ public:
 
 private:
     struct PacketRecord {
-        std::atomic<std::uint64_t> seq{0};
         std::uint64_t              order    = 0;
         std::uint64_t              tick     = 0;
         std::int32_t               id       = 0;
@@ -78,7 +80,6 @@ private:
         std::uint8_t               pad[2]{};
     };
     struct PacketBytes {
-        std::atomic<std::uint64_t> seq{0};
         std::uint64_t              order = 0;
         std::uint32_t              id    = 0;
         std::uint32_t              size  = 0;
@@ -91,14 +92,17 @@ private:
 
     static constexpr std::size_t kRing     = 1u << 14;
     static constexpr std::size_t kByteRing = 1u << 12;
-    std::unique_ptr<PacketRecord[]> mRing;
-    std::unique_ptr<PacketBytes[]>  mByteRing;
-    std::atomic<std::uint64_t>      mHead{0};
-    std::atomic<std::uint64_t>      mByteHead{0};
+    using RecordRing = detail::AtomicRing<PacketRecord, kRing>;
+    using ByteRing   = detail::AtomicRing<PacketBytes, kByteRing>;
+    std::unique_ptr<RecordRing>      mRing;
+    std::unique_ptr<ByteRing>        mByteRing;
     std::atomic<std::uint64_t>      mSeq{0};
     std::atomic<std::uint64_t>      mPeerCount{0};
     std::atomic<std::uint64_t>      mDenied{0};
     std::atomic<std::uint64_t>      mRecvRecords{0};
+    // Stop closes callback entry before waiting, so it cannot miss a callback
+    // paused between entry and an ordinary in-flight counter increment.
+    detail::CallbackGate            mWriters;
     std::atomic_bool                mCapture{false};
     std::atomic_bool                mSendHooked{false};
     std::atomic_bool                mPeerHooked{false};

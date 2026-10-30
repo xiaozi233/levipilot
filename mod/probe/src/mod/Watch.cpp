@@ -74,7 +74,6 @@ struct Watch {
 };
 
 struct HitRecord {
-    std::atomic<std::uint64_t> seq{0}; // index + 1 once the record is complete
     std::uint32_t              watchId    = 0;
     std::uint32_t              tid        = 0;
     std::uint64_t              tick       = 0;
@@ -85,8 +84,8 @@ struct HitRecord {
 };
 
 std::unique_ptr<Watch>              gWatches[kSlotCount];
-std::unique_ptr<HitRecord[]>        gRing;
-std::atomic<std::uint64_t>          gHead{0};
+using WatchRing = AtomicRing<HitRecord, kRingCapacity>;
+std::unique_ptr<WatchRing>           gRing;
 std::atomic<std::uint64_t>          gTotalHits{0};
 std::atomic<std::uint64_t>          gForeignHits{0};
 std::atomic<std::uint32_t>          gNextId{1};
@@ -257,18 +256,18 @@ void storeHit(int slot, CONTEXT& context) {
         return;
     }
     pathCount(PathCounter::Watch);
-    std::uint64_t const index = gHead.fetch_add(1, std::memory_order_acq_rel);
-    HitRecord&          record = gRing[index % kRingCapacity];
-    record.watchId             = gWatches[slot] ? gWatches[slot]->id.load(std::memory_order_relaxed) : 0;
-    record.tid                 = GetCurrentThreadId();
-    record.tick                = gWatchTick.load(std::memory_order_relaxed);
-    record.rip                 = context.Rip;
+    auto reservation = gRing->reserve();
+    HitRecord record{};
+    record.watchId = gWatches[slot] ? gWatches[slot]->id.load(std::memory_order_relaxed) : 0;
+    record.tid     = GetCurrentThreadId();
+    record.tick    = gWatchTick.load(std::memory_order_relaxed);
+    record.rip     = context.Rip;
     std::size_t const depth =
         gWatches[slot] ? static_cast<std::size_t>(gWatches[slot]->depth) : kDefaultFrames;
     record.frameCount = static_cast<std::uint32_t>(
         RtlCaptureStackBackTrace(0, depth, reinterpret_cast<PVOID*>(record.frames), nullptr)
     );
-    record.seq.store(index + 1, std::memory_order_release);
+    reservation.publish(record);
     if (gWatches[slot]) {
         gWatches[slot]->hits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -338,7 +337,10 @@ void watchInit() {
         return;
     }
     if (!gRing) {
-        gRing = std::unique_ptr<HitRecord[]>(new (std::nothrow) HitRecord[kRingCapacity]());
+        auto ring = std::unique_ptr<WatchRing>(new (std::nothrow) WatchRing());
+        if (ring && ring->initialize()) {
+            gRing = std::move(ring);
+        }
     }
     gVehHandle = AddVectoredExceptionHandler(1, &watchVeh);
 }
@@ -349,8 +351,8 @@ void watchShutdown() {
         RemoveVectoredExceptionHandler(gVehHandle);
         gVehHandle = nullptr;
     }
-    gRing.reset();
-    gHead.store(0, std::memory_order_relaxed);
+    // Keep the allocation and sequence alive across mod reinitialization. A
+    // VEH callback already in flight must not race deallocation or head reset.
     gTotalHits.store(0, std::memory_order_relaxed);
     gForeignHits.store(0, std::memory_order_relaxed);
     gInitialized.store(false, std::memory_order_release);
@@ -566,12 +568,12 @@ nlohmann::json watchListJson() {
     out["hits"]    = gTotalHits.load(std::memory_order_relaxed);
     out["foreign_hits"] = gForeignHits.load(std::memory_order_relaxed);
     out["dropped"] = watchDroppedHits();
-    out["head"]    = gHead.load(std::memory_order_acquire);
+    out["head"]    = gRing ? gRing->head() : 0;
     return out;
 }
 
 nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
-    std::uint64_t const head   = gHead.load(std::memory_order_acquire);
+    std::uint64_t const head   = gRing ? gRing->head() : 0;
     std::uint64_t const oldest = head > kRingCapacity ? head - kRingCapacity : 0;
     std::uint64_t       start  = since;
     std::uint64_t       lost   = 0;
@@ -587,11 +589,24 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
     }
 
     nlohmann::json hits = nlohmann::json::array();
-    std::size_t    count = 0;
+    std::size_t    count  = 0;
+    std::uint64_t  cursor = start;
     for (std::uint64_t index = start; index < head && count < limit; ++index) {
-        HitRecord const& record = gRing[index % kRingCapacity];
-        if (record.seq.load(std::memory_order_acquire) != index + 1) {
-            break; // writer reserved this slot but has not published it yet
+        HitRecord record{};
+        auto const read = gRing ? gRing->read(index, record) : WatchRing::ReadResult::pending;
+        if (read == WatchRing::ReadResult::pending) {
+            cursor = index; // preserve this reservation for the next drain
+            break;
+        }
+        if (read == WatchRing::ReadResult::overwritten) {
+            ++lost;
+            cursor = index + 1;
+            continue;
+        }
+        if (read == WatchRing::ReadResult::dropped) {
+            ++lost;
+            cursor = index + 1;
+            continue;
         }
         std::string tag;
         for (std::size_t slot = 0; slot < kSlotCount; ++slot) {
@@ -623,12 +638,13 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
         }
         hits.push_back(std::move(row));
         ++count;
+        cursor = index + 1;
     }
 
     nlohmann::json out;
     out["event"] = "watch_hits";
     out["since"] = since;
-    out["next"]  = start + count;
+    out["next"]  = cursor;
     out["head"]  = head;
     out["lost"]  = lost;
     out["rip_semantics"] = "next_instruction";
@@ -649,7 +665,7 @@ std::size_t watchCount() {
 std::uint64_t watchTotalHits() { return gTotalHits.load(std::memory_order_relaxed); }
 
 std::uint64_t watchDroppedHits() {
-    std::uint64_t const head = gHead.load(std::memory_order_acquire);
+    std::uint64_t const head = gRing ? gRing->head() : 0;
     return head > kRingCapacity ? head - kRingCapacity : 0;
 }
 

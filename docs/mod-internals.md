@@ -244,6 +244,8 @@
   失败返回 `hook_failed` + code，不会留下半装状态。
 - 命中环固定 4096 条：每次命中只写 `{hookId,tid,tick,四个参数,返回地址,4 帧栈}`，
   按 `sample` 降采样；`hook_drain` 在管道线程序列化，`b_float` 把第二参数按 float 解释。
+  记录由 `AtomicRing` 的原子 64 位载荷发布，多个 detour 线程不会写普通字段造成数据竞争；
+  drain 遇到延迟提交会保留当前 `next`，遇到环绕覆写会累加 `lost`。
 - `hook_call` 只是为了验证：tick 线程调用 `MobJump::setJumpPendingScale(ctx, scale)`，
   该调用会穿过 detour，因此能确定性地产生一条命中。
 
@@ -478,8 +480,12 @@
   `docs/offsets/1.26.51.01.json` 的 `packets.sendToServer`；24 B 签名待补）。
 - 钩子体只做四件事：`packet.getId()`（虚函数，返回 `MinecraftPacketIds`，无分配）、
   `mPacketSeq.fetch_add`、`mTick`、`GetCurrentThreadId()`；写进 16384 条 MPSC 环，
-  每条用自己的 `seq` 发布。**不调用 `getName()`**（返回 `std::string_view`，但约定是
+  通过 `AtomicRing` 逐槽原子载荷发布。**不调用 `getName()`**（返回 `std::string_view`，但约定是
   身份层不碰字符串）。
+- 身份环和字节环的 drain 都保持 reservation 顺序：未提交槽位不会被跳过，已覆写槽位会推进
+  `next` 并计入 `lost`，避免消费者游标悄悄越过缺口。
+- 停止捕获时先关闭回调入口并等待已进入的采集回调退出，再卸钩；共享门闩把“是否关闭”与
+  在途计数放在同一原子值，防止停止线程漏掉刚开始的回调。
 - 环记录：`{order, tick, id, tid, injected}`；`injected=false` 预留给 H2。
 - denylist（硬挡，任何 `ids` 参数都无效）：KeepAlive 0、Login 1、PlayStatus 2、
   Handshake 3/4、Disconnect 5、ResourcePack 6/7/8/82/83/84、Transfer 85、

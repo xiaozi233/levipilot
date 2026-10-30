@@ -4,6 +4,17 @@
 
 using namespace probe::detail;
 
+namespace {
+bool runServerTaskWithSeh(std::function<void()> const& task) {
+    __try {
+        task();
+        return true;
+    } __except (probe::detail::isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+} // namespace
+
 namespace probe {
 
 void ProbeMod::enqueue(std::string line) {
@@ -192,13 +203,15 @@ void ProbeMod::queueServerTask(std::function<void()> fn) {
     server->queueForServerThread([this, fn = std::move(fn)] {
         gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
         try {
-            fn();
+            if (!runServerTaskWithSeh(fn)) {
+                enqueue(R"({"event":"error","reason":"server_task_failed","message":"seh"})");
+            }
         } catch (std::exception const& e) {
             enqueue(
                 nlohmann::json{
                     {"event",   "error"             },
                     {"reason",  "server_task_failed"},
-                    {"message", e.what()            },
+                    {"message", e.what()              },
             }
                     .dump()
             );

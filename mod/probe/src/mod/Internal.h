@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mod/AtomicRing.h"
 #include "mod/ProbeMod.h"
 
 #include "ll/api/event/EventBus.h"

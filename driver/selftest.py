@@ -7,6 +7,8 @@
     py -3.11 driver/selftest.py --mod-core-only   # offline native mod checks
     py -3.11 driver/selftest.py --mod-core-live-only  # pipe/recording; no RE commands
     py -3.11 driver/selftest.py --use-lifecycle-only  # bounded server failure/recovery checks
+    py -3.11 driver/selftest.py --query-capture-only  # snapshot faults and scan budget
+    py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -495,6 +497,157 @@ def check_use_lifecycle(client: ModClient, checks: Checks) -> None:
     checks.check("use_handled_fault_no_dump", crash_artifacts() == before)
 
 
+def check_query_capture(client: ModClient, checks: Checks) -> None:
+    """Exercise the real fixed snapshot/SEH/consumer path, including bounded scans."""
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    for target in ("state", "buttons", "blocks", "scan"):
+        for mode, reason in (
+            ("seh", f"{target}_fault"),
+            ("cpp", "capture_failed"),
+            ("timeout", "capture_timeout"),
+        ):
+            result = client.request(
+                {"cmd": "selftest_query_failure", "target": target, "mode": mode},
+                (target, "error"),
+            )
+            if result.get("reason") == "selftest_stress_disabled":
+                checks.note("query_fault_recovery", "skipped: allow_selftest_stress is disabled")
+                return
+            checks.check(
+                f"query_{target}_{mode}_terminal",
+                result.get("event") == "error"
+                and result.get("reason") == reason
+                and result.get("phase") == target,
+                str(result),
+            )
+            duplicate = None
+            with contextlib.suppress(ModTimeout):
+                duplicate = client.wait_event((target, "error"), 0.03)
+            checks.check(f"query_{target}_{mode}_unique", duplicate is None, str(duplicate or ""))
+            if target == "state":
+                recovered = client.state()
+            elif target == "buttons":
+                recovered = client.request({"cmd": "buttons"}, "buttons")
+            elif target == "blocks":
+                recovered = client.blocks([])
+            else:
+                recovered = client.scan([0, -60, 0], [0, -60, 0], include_air=True)
+            checks.check(
+                f"query_{target}_{mode}_recovery",
+                recovered.get("event") == target and wait_ticks(client, 2) >= 2,
+            )
+    partial = client.request(
+        {"cmd": "selftest_query_failure", "target": "state", "mode": "partial"}, "state"
+    )
+    checks.check(
+        "query_partial_state",
+        partial.get("partial") is True
+        and partial.get("warnings") == ["state_blocks_fault"]
+        and "block_feet" not in partial
+        and "block_below" in partial,
+    )
+    checks.check("query_partial_recovers", client.state().get("partial") is False)
+
+    # 32768 air cells with limit=1 still require all 64 bounded batches.
+    pose = client.state()
+    x, y, z = [math.floor(float(pose[f"feet_{axis}"])) for axis in "xyz"]
+    low, high = [x, y + 8, z], [x + 31, y + 39, z + 31]
+    scan = client.scan(high, low, include_air=False, limit=1)
+    checks.check(
+        "query_scan_budget",
+        scan.get("visited") == 32768
+        and scan.get("batches") == 64
+        and scan.get("batch_limit") == 512
+        and int(scan.get("last_tick", 0)) - int(scan.get("first_tick", 0)) >= 63
+        and scan.get("from") == low
+        and scan.get("to") == high,
+        f"visited={scan.get('visited')} batches={scan.get('batches')} max_batch_us={scan.get('max_batch_us')}",
+    )
+    limited = client.scan(low, [x + 2, y + 8, z], include_air=True, limit=2)
+    checks.check(
+        "query_scan_limit",
+        limited.get("count") == 2
+        and limited.get("truncated") is True
+        and limited.get("truncated_reason") == "result_limit"
+        and [row["x"] for row in limited["blocks"]] == [x, x + 1],
+    )
+    # An occupied snapshot slot must reject a second request explicitly.
+    with client.exchange():
+        client.send({"cmd": "scan", "from": low, "to": high, "limit": 1})
+        client.send({"cmd": "scan", "from": low, "to": low})
+        rejected = client.wait_event("error", 3)
+        completed = client.wait_event("scan", 10)
+    checks.check(
+        "query_scan_busy",
+        rejected.get("reason") == "scan_busy" and completed.get("visited") == 32768,
+    )
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("query_handled_fault_no_dump", after == before)
+
+
+def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
+    """Cancel a real batched scan on disconnect/exit, then verify fresh queries."""
+    original = client.state()
+    if not checks.check("query_lifecycle_in_world", original.get("in_world") is True):
+        return
+    x, y, z = [math.floor(float(original[f"feet_{axis}"])) for axis in "xyz"]
+    low, high = [x, y + 8, z], [x + 31, y + 39, z + 31]
+    scan = {"cmd": "scan", "from": low, "to": high, "limit": 1}
+    client.send(scan)
+    client.ping()  # Ensure submission reached the mod before closing the pipe.
+    client.reconnect()
+    # Already queued rows are intentionally replayed; they precede new work.
+    for _ in range(int(client.hello.get("replay_rows", 0))):
+        client.readline(timeout=5)
+    client.input_lock(True)
+    fresh = client.scan(low, low, include_air=True)
+    checks.check(
+        "query_lifecycle_reconnect",
+        fresh.get("from") == low and fresh.get("visited") == 1 and fresh.get("count") == 1,
+        str(fresh),
+    )
+    late = None
+    with contextlib.suppress(ModTimeout):
+        late = client.wait_event(("scan", "error"), 0.2)
+    checks.check("query_lifecycle_no_stale_scan", late is None, str(late or ""))
+
+    try:
+        with client.exchange():
+            client.send(scan)
+            left = client.leave_world()
+            checks.check("query_lifecycle_leave", left.get("ok") is True, str(left))
+            client.wait_event("world_left", 45)
+            cancelled = client.wait_event(("scan", "error"), 5)
+        checks.check(
+            "query_lifecycle_world_cancel",
+            cancelled.get("event") == "error"
+            and cancelled.get("reason") == "world_left"
+            and cancelled.get("phase") == "scan",
+            str(cancelled),
+        )
+        deadline = time.monotonic() + 45
+        while not client.worlds().get("ready"):
+            if time.monotonic() >= deadline:
+                raise ModTimeout("query lifecycle: main menu did not become ready")
+            time.sleep(0.1)
+        checks.check("query_lifecycle_menu_state", client.state().get("in_world") is False)
+        refused = client.request(scan, ("scan", "error"))
+        checks.check("query_lifecycle_menu_scan", refused.get("reason") == "not_in_world")
+    finally:
+        joined = client.enter_world_ready(world)
+        checks.check("query_lifecycle_rejoin", joined.get("ok") is True, str(joined))
+        client.wait_in_world(timeout=60)
+        client.reset(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        wait_ticks(client, 8)
+        recovered = client.scan(low, low, include_air=True)
+        checks.check("query_lifecycle_world_recovery", recovered.get("visited") == 1)
+
+
 def check_task_operations(client: ModClient, checks: Checks) -> None:
     """Verify real navigation and place/mine effects on a temporary air cell."""
     original = client.state()
@@ -980,6 +1133,16 @@ def main(argv: list[str] | None = None) -> int:
         help="save/leave, check chat cancellation and main menu recovery, then re-enter WORLD",
     )
     modes.add_argument(
+        "--query-capture-only",
+        action="store_true",
+        help="check fixed query snapshots, SEH/timeout recovery and per-tick scan budget",
+    )
+    modes.add_argument(
+        "--query-lifecycle-world",
+        metavar="WORLD",
+        help="check scan cancellation on reconnect/exit, then re-enter WORLD",
+    )
+    modes.add_argument(
         "--use-lifecycle-only",
         action="store_true",
         help="inject missing/failed server work and verify task termination/recovery in a world",
@@ -1032,6 +1195,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
+
+    if args.query_capture_only or args.query_lifecycle_world:
+        try:
+            client.input_lock(True)
+            if args.query_lifecycle_world:
+                check_query_lifecycle(client, checks, args.query_lifecycle_world)
+            else:
+                check_query_capture(client, checks)
+        except (ModPipeError, OSError, ValueError) as exc:
+            checks.check("query_capture_error", False, str(exc))
+        finally:
+            with contextlib.suppress(ModPipeError):
+                client.input_lock(False)
+            client.close()
+        return checks.finish()
 
     if args.use_lifecycle_only:
         try:
@@ -1106,6 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
         check_dispatch_compatibility(client, checks)
         check_request_recovery(client, checks)
         check_task_lifecycle(client, checks)
+        check_query_capture(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

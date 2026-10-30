@@ -73,6 +73,9 @@ class ModModelTests(unittest.TestCase):
     def test_chat_timeout_cancellation_and_late_completion(self) -> None:
         self.run_native("chat_model")
 
+    def test_query_publication_cancellation_and_scan_budget(self) -> None:
+        self.run_native("query_model")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipes required")
     def test_pipe_cancellation_and_nonreading_client(self) -> None:
         self.run_native("pipe_channel")

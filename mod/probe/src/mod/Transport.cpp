@@ -51,6 +51,7 @@ void ProbeMod::spoolThreadLoop() {
         try {
             drainTaskEvents();
             drainChatHistory();
+            drainQueries();
             reportRecordFault();
             flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
             faultReported = false;
@@ -79,6 +80,7 @@ void ProbeMod::spoolThreadLoop() {
     try {
         drainTaskEvents();
         drainChatHistory();
+        drainQueries();
         reportRecordFault();
     } catch (...) {
     }
@@ -286,6 +288,7 @@ void ProbeMod::serverLoop() {
 
             if (!connected) {
                 mChatCapture.reset();
+                resetQueries();
                 bool const ok = pipe.connect(mRunning);
                 if (!mRunning.load(std::memory_order_relaxed)) {
                     break;

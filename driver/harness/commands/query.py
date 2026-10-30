@@ -36,7 +36,11 @@ class QueryCommands(PipeConnection):
         limit: int = 4096,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        """Scan an inclusive block region on the next tick (max 32768 cells)."""
+        """Scan up to 32768 cells in batches of at most 512 per game tick.
+
+        The result includes the first/last sampling tick; a moving world can
+        change during the scan. The mod ends an unfinished scan after 10 s.
+        """
         return self.request(
             {
                 "cmd": "scan",

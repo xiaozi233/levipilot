@@ -337,7 +337,9 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "buttons") {
-        mButtonsRequested = true;
+        if (!mWorld.inWorld()) enqueue(R"({"event":"error","reason":"not_in_world"})");
+        else if (!mButtonCapture.begin({}, GetTickCount64(), 2000))
+            enqueue(R"({"event":"error","reason":"buttons_busy"})");
         return true;
     }
     if (cmd == "click") {

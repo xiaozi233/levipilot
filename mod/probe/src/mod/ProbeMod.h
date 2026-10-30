@@ -1,10 +1,11 @@
 #pragma once
 
-#include "mod/TaskModel.h"
-#include "mod/PacketTap.h"
-#include "mod/WorldSession.h"
-#include "mod/RequestModel.h"
 #include "mod/ChatModel.h"
+#include "mod/PacketTap.h"
+#include "mod/QueryModel.h"
+#include "mod/RequestModel.h"
+#include "mod/TaskModel.h"
+#include "mod/WorldSession.h"
 
 #include "ll/api/event/Listener.h"
 #include "ll/api/mod/NativeMod.h"
@@ -70,23 +71,6 @@ struct ControlState {
     bool  active     = false;
     float yawDelta   = 0.0f;
     float pitchDelta = 0.0f;
-};
-
-struct BlockQuery {
-    int x = 0;
-    int y = 0;
-    int z = 0;
-};
-
-struct ScanRequest {
-    int  x1         = 0;
-    int  y1         = 0;
-    int  z1         = 0;
-    int  x2         = 0;
-    int  y2         = 0;
-    int  z2         = 0;
-    bool includeAir = false;
-    int  limit      = 4096;
 };
 
 struct Checkpoint {
@@ -337,7 +321,12 @@ private:
     void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
     void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
     void applySlotRequest(LocalPlayer& player, int slot);
-    void captureState(ClientInstance& client, LocalPlayer& player);
+    void captureState(
+        ClientInstance&               client,
+        LocalPlayer&                  player,
+        detail::CaptureRequest const& request,
+        detail::StateSnapshot&        out
+    );
     void captureInventory(LocalPlayer& player);
     void applyEntityAction(LocalPlayer& player, EntityAction const& action);
     void applyEcs(LocalPlayer& player, EcsRequest const& request);
@@ -352,8 +341,11 @@ private:
     void queueGive(std::string const& item, int count, int aux);
     void queueClearInventory();
     void captureEntities(LocalPlayer& player);
-    void captureBlocks(LocalPlayer& player);
-    void captureScan(LocalPlayer& player, ScanRequest const& request);
+    void captureBlocks(LocalPlayer& player, detail::BlockRequest const& request, detail::BlockSnapshot& out);
+    bool captureScan(LocalPlayer& player, detail::ScanQuery const& request, detail::ScanSnapshot& out);
+    void drainQueries();
+    void resetQueries();
+    void cancelQueries(char const* reason);
 
     // Named checkpoints persisted in <modDir>/checkpoints.json.
     std::filesystem::path checkpointsPath() const;
@@ -363,7 +355,7 @@ private:
     void                  checkpointLoad(std::string const& name);
     void                  checkpointList();
     void                  checkpointDelete(std::string const& name);
-    void                  captureButtons(ClientInstance& client);
+    void captureButtons(ClientInstance& client, detail::CaptureRequest const& request, detail::ButtonSnapshot& out);
     void                  performClick(LocalPlayer& player, int button);
     void                  recordMacroTick(ClientInstance& client, LocalPlayer& player);
     void                  latchActionClicks(LocalPlayer& player);
@@ -527,7 +519,10 @@ private:
 
     // Look requests live in RequestBlock above (mLookMutex removed in T9).
 
-    std::atomic_bool mStateRequested{false};
+    detail::StateCapture  mStateCapture;
+    detail::ButtonCapture mButtonCapture;
+    detail::BlockCapture  mBlockCapture;
+    detail::ScanCapture   mScanCapture;
     // UI work owns a bounded snapshot; the spool consumer owns timeout and JSON.
     detail::ChatCapture mChatCapture;
     std::atomic_bool            mInventoryRequested{false};
@@ -556,20 +551,12 @@ private:
     // bit 1 = LocalPlayer::jumpFromGround, bit 2 = MobJump::setJumpPendingScale.
     // Non-zero is accepted by input_cfg only with force=true.
     std::atomic<int> mJumpImpulseMode{0};
-    std::atomic_bool mButtonsRequested{false};
 
     std::mutex mEntityMutex;
     bool       mEntitiesRequested = false;
     float      mEntityRadius      = 16.0f;
     int        mEntityLimit       = 64;
 
-    std::mutex              mBlockMutex;
-    bool                    mBlocksRequested = false;
-    std::vector<BlockQuery> mBlockQueries;
-
-    std::mutex  mScanMutex;
-    bool        mScanRequested = false;
-    ScanRequest mScanRequest;
 
     std::mutex                        mCheckpointMutex;
     std::map<std::string, Checkpoint> mCheckpoints;

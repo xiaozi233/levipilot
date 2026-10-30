@@ -3,253 +3,421 @@
 using namespace probe::detail;
 
 namespace probe {
+namespace {
 
-void ProbeMod::captureState(ClientInstance& client, LocalPlayer& player) {
-    auto const& pos = player.getPosition();
-    auto        vel = player.getVelocity();
-    auto const  rot = player.getRotation();
-    auto        in  = readInput(client);
-
-    bool actionSprint = false;
-    if (auto action = player.getEntityContext().tryGetComponent<PlayerActionComponent>()) {
-        actionSprint = action->mPlayerActions->test(PlayerActionStartSprinting);
+template <class Capture>
+__declspec(noinline) bool queryWithSeh(Capture const& capture) {
+    __try {
+        capture();
+        return true;
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
     }
+}
 
-    nlohmann::json j;
-    j["event"]         = "state";
-    j["in_world"]      = true;
-    j["tick"]          = mTick.load();
-    j["x"]             = finiteOrZero(static_cast<float>(pos.x));
-    j["y"]             = finiteOrZero(static_cast<float>(pos.y));
-    j["z"]             = finiteOrZero(static_cast<float>(pos.z));
-    auto const feet    = player.getFeetPos();
-    auto const head    = player.getHeadPos();
-    j["feet_x"]        = finiteOrZero(static_cast<float>(feet.x));
-    j["feet_y"]        = finiteOrZero(static_cast<float>(feet.y));
-    j["feet_z"]        = finiteOrZero(static_cast<float>(feet.z));
-    j["head_x"]        = finiteOrZero(static_cast<float>(head.x));
-    j["head_y"]        = finiteOrZero(static_cast<float>(head.y));
-    j["head_z"]        = finiteOrZero(static_cast<float>(head.z));
-    j["vx"]            = finiteOrZero(static_cast<float>(vel.x));
-    j["vy"]            = finiteOrZero(static_cast<float>(vel.y));
-    j["vz"]            = finiteOrZero(static_cast<float>(vel.z));
-    j["yaw"]           = finiteOrZero(rot.y);
-    j["pitch"]         = finiteOrZero(rot.x);
-    j["on_ground"]     = player.isOnGround();
-    j["sprinting"]     = player.isSprinting();
-    j["sneaking"]      = player.isSneaking();
-    j["swimming"]      = player.isSwimming();
-    j["flying"]        = player.isFlying();
-    j["mayfly"]        = player.getAbilities().getBool(AbilitiesIndex::MayFly);
-    j["in_water"]      = player.isInWater();
-    j["alive"]         = player.isAlive();
-    j["health"]        = player.getHealth();
-    j["max_health"]    = player.getMaxHealth();
-    j["gamemode"]      = static_cast<int>(player.getPlayerGameType());
-    j["dimension"]     = static_cast<int>(player.getDimensionId());
-    j["name"]          = player.getRealName();
-    j["uuid"]          = player.getUuid().asString();
-    j["runtime_id"]    = static_cast<std::uint64_t>(player.getRuntimeID());
-    j["context"]       = reinterpret_cast<std::uint64_t>(&player.getEntityContext());
-    j["selected_slot"] = player.getSelectedItemSlot();
+template <class Capture>
+bool guardedQuery(Capture const& capture) {
+    HandledSehScope sehOwner;
+    return queryWithSeh(capture);
+}
 
-    auto attrValue = [&](Attribute const& attribute) -> std::optional<float> {
-        auto instance = player.getAttribute(attribute);
-        if (!instance.mPtr) {
-            return std::nullopt;
-        }
-        return instance.mPtr->mCurrentValue;
+void injectQueryFault(CaptureTest test) {
+    if (test == CaptureTest::Fault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    if (test == CaptureTest::Cpp) throw std::runtime_error("selftest query capture");
+}
+
+template <std::size_t N>
+void copyText(FixedText<N>& out, std::string_view text, bool& truncated) {
+    out.assign(text);
+    truncated = truncated || out.view().size() != text.size();
+}
+
+StateSnapshot::Vec vectorSnapshot(Vec3 const& value) {
+    return {finiteOrZero(value.x), finiteOrZero(value.y), finiteOrZero(value.z)};
+}
+
+bool readBlock(LocalPlayer& player, BlockRow& row, bool& truncated, bool fault = false) {
+    return guardedQuery([&] {
+        if (fault) injectQueryFault(CaptureTest::Fault);
+        auto const& block = player.getDimensionBlockSourceConst().getBlock(BlockPos{row.pos.x, row.pos.y, row.pos.z});
+        copyText(row.name, block.getTypeName(), truncated);
+        row.address = reinterpret_cast<std::uint64_t>(&block);
+    });
+}
+
+nlohmann::json stateJson(StateSnapshot const& s) {
+    auto const&    in   = s.input;
+    auto const&    keys = s.bindings;
+    nlohmann::json out{
+        {"event",          "state"                               },
+        {"in_world",       true                                  },
+        {"ok",             true                                  },
+        {"tick",           s.tick                                },
+        {"x",              s.pos.x                               },
+        {"y",              s.pos.y                               },
+        {"z",              s.pos.z                               },
+        {"feet_x",         s.feet.x                              },
+        {"feet_y",         s.feet.y                              },
+        {"feet_z",         s.feet.z                              },
+        {"head_x",         s.head.x                              },
+        {"head_y",         s.head.y                              },
+        {"head_z",         s.head.z                              },
+        {"vx",             s.velocity.x                          },
+        {"vy",             s.velocity.y                          },
+        {"vz",             s.velocity.z                          },
+        {"yaw",            s.yaw                                 },
+        {"pitch",          s.pitch                               },
+        {"on_ground",      s.onGround                            },
+        {"sprinting",      s.sprinting                           },
+        {"sneaking",       s.sneaking                            },
+        {"swimming",       s.swimming                            },
+        {"flying",         s.flying                              },
+        {"mayfly",         s.mayfly                              },
+        {"in_water",       s.inWater                             },
+        {"alive",          s.alive                               },
+        {"health",         s.health                              },
+        {"max_health",     s.maxHealth                           },
+        {"gamemode",       s.gamemode                            },
+        {"dimension",      s.dimension                           },
+        {"name",           s.name.c_str()                        },
+        {"uuid",           mce::UUID{s.uuidA, s.uuidB}.asString()},
+        {"runtime_id",     s.runtimeId                           },
+        {"context",        s.context                             },
+        {"selected_slot",  s.selectedSlot                        },
+        {"item_use_ticks", s.itemUseTicks                        },
+        {"input",
+         {{"w", in.w},
+          {"a", in.a},
+          {"s", in.s},
+          {"d", in.d},
+          {"sprint", in.sprint},
+          {"sneak", in.sneak},
+          {"jump", in.jump},
+          {"move_x", in.moveX},
+          {"move_y", in.moveY},
+          {"action_sprint", in.actionSprint},
+          {"locked", in.locked}}                                 },
+        {"bindings",
+         {{"forward", keys.forward},
+          {"back", keys.back},
+          {"left", keys.left},
+          {"right", keys.right},
+          {"sneak", keys.sneak},
+          {"jump", keys.jump},
+          {"sprint", keys.sprint}}                               },
+        {"item",           nullptr                               },
+        {"effects",        nlohmann::json::array()               },
+        {"partial",        s.warning != nullptr || s.truncated   },
+        {"truncated",      s.truncated                           },
+        {"sample_us",      s.sampleUs                            }
     };
-    if (auto value = attrValue(Player::HUNGER())) {
-        j["hunger"] = finiteOrZero(*value);
-    }
-    if (auto value = attrValue(Player::SATURATION())) {
-        j["saturation"] = finiteOrZero(*value);
-    }
-    if (auto value = attrValue(Player::EXHAUSTION())) {
-        j["exhaustion"] = finiteOrZero(*value);
-    }
-    if (auto value = attrValue(Player::LEVEL())) {
-        j["xp_level"] = finiteOrZero(*value);
-    }
-    if (auto value = attrValue(Player::EXPERIENCE())) {
-        j["xp_progress"] = finiteOrZero(*value);
-    }
-
-    j["input"] = {
-        {"w",             in.w                  },
-        {"a",             in.a                  },
-        {"s",             in.s                  },
-        {"d",             in.d                  },
-        {"sprint",        in.sprint             },
-        {"sneak",         in.sneak              },
-        {"jump",          in.jump               },
-        {"move_x",        finiteOrZero(in.moveX)},
-        {"move_y",        finiteOrZero(in.moveY)},
-        {"action_sprint", actionSprint          },
-        {"locked",        hardwareInputLocked() },
-    };
-
-    refreshBindings(false);
-    j["bindings"] = {
-        {"forward", mBindings.forward},
-        {"back",    mBindings.back   },
-        {"left",    mBindings.left   },
-        {"right",   mBindings.right  },
-        {"sneak",   mBindings.sneak  },
-        {"jump",    mBindings.jump   },
-        {"sprint",  mBindings.sprint },
-    };
-
-    auto const& item = player.getSelectedItem();
-    if (!item.isNull()) {
-        j["item"] = {
-            {"type",  item.getTypeName()              },
-            {"name",  item.getName()                  },
-            {"count", static_cast<int>(item.mCount)   },
-            {"aux",   static_cast<int>(item.mAuxValue)},
+    constexpr char const* attributes[] = {"hunger", "saturation", "exhaustion", "xp_level", "xp_progress"};
+    for (std::size_t i = 0; i < s.attributes.size(); ++i)
+        if (s.haveAttribute[i]) out[attributes[i]] = s.attributes[i];
+    if (s.item.present)
+        out["item"] = {
+            {"type",  s.item.type.c_str()},
+            {"name",  s.item.name.c_str()},
+            {"count", s.item.count       },
+            {"aux",   s.item.aux         }
         };
-    } else {
-        j["item"] = nullptr;
-    }
-    // Non-zero while food/bow use is in progress; useful for verifying `use`.
-    j["item_use_ticks"] = player.getItemUseDuration();
-
-    // Active effects matter for parkour verification (speed/jump boost).
-    j["effects"] = nlohmann::json::array();
-    auto const emptyEffectId = static_cast<uint>(MobEffectInstance::NO_EFFECT().mId);
-    for (auto const& effect : player.getAllEffects()) {
-        // getAllEffects retains NO_EFFECT slots after clear/expiry. These are
-        // storage tombstones, not active effects. Keep infinite durations intact.
-        if (static_cast<uint>(effect.mId) == emptyEffectId) continue;
-        j["effects"].push_back({
-            {"id",        static_cast<int>(effect.mId)          },
-            {"duration",  static_cast<int>(effect.mDuration->mValue)},
-            {"amplifier", static_cast<int>(effect.mAmplifier)   },
-            {"ambient",   static_cast<bool>(effect.mAmbient)    },
+    for (std::size_t i = 0; i < s.effectCount; ++i) {
+        auto const& effect = s.effects[i];
+        out["effects"].push_back({
+            {"id",        effect.id       },
+            {"duration",  effect.duration },
+            {"amplifier", effect.amplifier},
+            {"ambient",   effect.ambient  }
         });
     }
-
-    try {
-        auto const& source = player.getDimensionBlockSourceConst();
-        int const   bx     = static_cast<int>(std::floor(feet.x));
-        int const   by     = static_cast<int>(std::floor(feet.y));
-        int const   bz     = static_cast<int>(std::floor(feet.z));
-        int const   hx     = static_cast<int>(std::floor(head.x));
-        int const   hy     = static_cast<int>(std::floor(head.y));
-        int const   hz     = static_cast<int>(std::floor(head.z));
-        j["block_feet"]    = blockName(source, bx, by, bz);
-        j["block_below"]   = blockName(source, bx, by - 1, bz);
-        j["block_head"]    = blockName(source, hx, hy, hz);
-        j["block_above"]   = blockName(source, hx, hy + 1, hz);
-    } catch (...) {
-        // A block query can fail while chunks are unloading; state still remains useful.
-    }
-
-    enqueue(j.dump());
+    constexpr char const* blocks[] = {"block_feet", "block_below", "block_head", "block_above"};
+    for (std::size_t i = 0; i < s.blocks.size(); ++i)
+        if (s.haveBlock[i]) out[blocks[i]] = s.blocks[i].c_str();
+    if (s.warning) out["warnings"] = {s.warning};
+    return out;
 }
 
+} // namespace
 
-void ProbeMod::captureScan(LocalPlayer& player, ScanRequest const& request) {
-    int const x1 = std::min(request.x1, request.x2);
-    int const x2 = std::max(request.x1, request.x2);
-    int const y1 = std::min(request.y1, request.y2);
-    int const y2 = std::max(request.y1, request.y2);
-    int const z1 = std::min(request.z1, request.z2);
-    int const z2 = std::max(request.z1, request.z2);
-    int const dx = x2 - x1 + 1;
-    int const dy = y2 - y1 + 1;
-    int const dz = z2 - z1 + 1;
-
-    auto const& source = player.getDimensionBlockSourceConst();
-    auto        isAir  = [](std::string const& name) {
-        return name == "minecraft:air" || name == "minecraft:cave_air"
-            || name == "minecraft:void_air";
-    };
-
-    nlohmann::json out;
-    out["event"]     = "scan";
-    out["from"]      = {x1, y1, z1};
-    out["to"]        = {x2, y2, z2};
-    out["blocks"]    = nlohmann::json::array();
-    out["truncated"] = false;
-
-    std::int64_t const total = static_cast<std::int64_t>(dx) * dy * dz;
-    for (std::int64_t index = 0; index < total; ++index) {
-        int const x = x1 + static_cast<int>(index % dx);
-        int const y = y1 + static_cast<int>((index / dx) % dy);
-        int const z = z1 + static_cast<int>(index / (static_cast<std::int64_t>(dx) * dy));
-        std::string const& name = source.getBlock(BlockPos{x, y, z}).getTypeName();
-        if (!request.includeAir && isAir(name)) {
-            continue;
+void ProbeMod::captureState(
+    ClientInstance&       client,
+    LocalPlayer&          player,
+    CaptureRequest const& request,
+    StateSnapshot&        out
+) {
+    auto const start = qpcNow();
+    auto const ok    = guardedQuery([&] {
+        injectQueryFault(request.test);
+        out.tick       = mTick.load(std::memory_order_relaxed);
+        out.pos        = vectorSnapshot(player.getPosition());
+        out.feet       = vectorSnapshot(player.getFeetPos());
+        out.head       = vectorSnapshot(player.getHeadPos());
+        out.velocity   = vectorSnapshot(player.getVelocity());
+        auto const rot = player.getRotation();
+        out.yaw        = finiteOrZero(rot.y);
+        out.pitch      = finiteOrZero(rot.x);
+        auto const in  = readInput(client);
+        out.input      = {
+            in.w,
+            in.a,
+            in.s,
+            in.d,
+            in.jump,
+            in.sprint,
+            in.sneak,
+            false,
+            hardwareInputLocked(),
+            finiteOrZero(in.moveX),
+            finiteOrZero(in.moveY)
+        };
+        if (auto action = player.getEntityContext().tryGetComponent<PlayerActionComponent>())
+            out.input.actionSprint = action->mPlayerActions->test(PlayerActionStartSprinting);
+        out.onGround  = player.isOnGround();
+        out.sprinting = player.isSprinting();
+        out.sneaking  = player.isSneaking();
+        out.swimming  = player.isSwimming();
+        out.flying    = player.isFlying();
+        out.mayfly    = player.getAbilities().getBool(AbilitiesIndex::MayFly);
+        out.inWater   = player.isInWater();
+        out.alive     = player.isAlive();
+        out.health    = player.getHealth();
+        out.maxHealth = player.getMaxHealth();
+        out.gamemode  = static_cast<int>(player.getPlayerGameType());
+        out.dimension = static_cast<int>(player.getDimensionId());
+        // These SDK accessors return owning strings. Bound their copies on the
+        // owning thread; never move an ItemStack/Player pointer to the consumer.
+        copyText(out.name, player.getRealName(), out.truncated);
+        auto const uuid  = player.getUuid();
+        out.uuidA        = uuid.a;
+        out.uuidB        = uuid.b;
+        out.runtimeId    = static_cast<std::uint64_t>(player.getRuntimeID());
+        out.context      = reinterpret_cast<std::uint64_t>(&player.getEntityContext());
+        out.selectedSlot = player.getSelectedItemSlot();
+        Attribute const* attributes[] =
+            {&Player::HUNGER(), &Player::SATURATION(), &Player::EXHAUSTION(), &Player::LEVEL(), &Player::EXPERIENCE()};
+        for (std::size_t i = 0; i < out.attributes.size(); ++i) {
+            auto instance = player.getAttribute(*attributes[i]);
+            if (instance.mPtr) {
+                out.haveAttribute[i] = true;
+                out.attributes[i]    = finiteOrZero(instance.mPtr->mCurrentValue);
+            }
         }
-        if (static_cast<int>(out["blocks"].size()) >= request.limit) {
-            out["truncated"] = true;
-            break;
+        refreshBindings(false);
+        out.bindings = {
+            mBindings.forward,
+            mBindings.back,
+            mBindings.left,
+            mBindings.right,
+            mBindings.sneak,
+            mBindings.jump,
+            mBindings.sprint
+        };
+        auto const& item = player.getSelectedItem();
+        if (!item.isNull()) {
+            out.item.present = true;
+            copyText(out.item.type, item.getTypeName(), out.truncated);
+            copyText(out.item.name, item.getName(), out.truncated);
+            out.item.count = static_cast<int>(item.mCount);
+            out.item.aux   = static_cast<int>(item.mAuxValue);
         }
-        out["blocks"].push_back({
-            {"x", x},
-            {"y", y},
-            {"z", z},
-            {"name", name},
-        });
-    }
-    out["count"] = out["blocks"].size();
-    enqueue(out.dump());
+        out.itemUseTicks = player.getItemUseDuration();
+        auto const empty = static_cast<uint>(MobEffectInstance::NO_EFFECT().mId);
+        for (auto const& effect : player.getAllEffects()) {
+            if (static_cast<uint>(effect.mId) == empty) continue;
+            if (out.effectCount == out.effects.size()) {
+                out.truncated = true;
+                break;
+            }
+            auto& row = out.effects[out.effectCount++];
+            row       = {
+                static_cast<int>(effect.mId),
+                static_cast<int>(effect.mDuration->mValue),
+                static_cast<int>(effect.mAmplifier),
+                static_cast<bool>(effect.mAmbient)
+            };
+        }
+        BlockPoint positions[] = {
+            {static_cast<int>(std::floor(out.feet.x)),
+             static_cast<int>(std::floor(out.feet.y)),
+             static_cast<int>(std::floor(out.feet.z))},
+            {static_cast<int>(std::floor(out.feet.x)),
+             static_cast<int>(std::floor(out.feet.y)) - 1,
+             static_cast<int>(std::floor(out.feet.z))},
+            {static_cast<int>(std::floor(out.head.x)),
+             static_cast<int>(std::floor(out.head.y)),
+             static_cast<int>(std::floor(out.head.z))},
+            {static_cast<int>(std::floor(out.head.x)),
+             static_cast<int>(std::floor(out.head.y)) + 1,
+             static_cast<int>(std::floor(out.head.z))}
+        };
+        for (std::size_t i = 0; i < out.blocks.size(); ++i) {
+            BlockRow row;
+            row.pos          = positions[i];
+            out.haveBlock[i] = readBlock(player, row, out.truncated, request.test == CaptureTest::Partial && i == 0);
+            if (out.haveBlock[i]) out.blocks[i] = row.name;
+            else out.warning = "state_blocks_fault";
+        }
+    });
+    if (!ok) out.error = "state_fault";
+    out.sampleUs = static_cast<std::uint32_t>(std::min<std::uint64_t>(qpcElapsedUs(start, qpcNow()), UINT32_MAX));
 }
 
-void ProbeMod::captureButtons(ClientInstance& client) {
-    nlohmann::json out;
-    out["event"]        = "buttons";
-    out["ids"]          = nlohmann::json::array();
-    auto minecraftInput = client.getMinecraftInput();
-    if (minecraftInput) {
-        auto* handler = minecraftInput->mInputHandler.get();
-        if (handler) {
-            for (auto const& [id, handlerPair] : *handler->mButtonDownHandlerMap) {
-                (void)handlerPair;
-                out["ids"].push_back(id);
-                if (out["ids"].size() >= 512) {
+void ProbeMod::captureButtons(ClientInstance& client, CaptureRequest const& request, ButtonSnapshot& out) {
+    if (!guardedQuery([&] {
+            injectQueryFault(request.test);
+            auto  input   = client.getMinecraftInput();
+            auto* handler = input ? input->mInputHandler.get() : nullptr;
+            if (!handler) return;
+            out.haveQueue = true;
+            out.queue     = handler->mInputEventQueue.get() != nullptr;
+            for (auto const& entry : *handler->mButtonDownHandlerMap) {
+                if (out.count == out.ids.size()) {
+                    out.truncated = true;
                     break;
                 }
+                out.ids[out.count++] = entry.first;
             }
-            out["queue"] = handler->mInputEventQueue.get() != nullptr;
+        }))
+        out.error = "buttons_fault";
+}
+
+void ProbeMod::captureBlocks(LocalPlayer& player, BlockRequest const& request, BlockSnapshot& out) {
+    if (!guardedQuery([&] {
+            injectQueryFault(request.test);
+            for (std::size_t i = 0; i < request.count; ++i) {
+                auto& row = out.rows[out.count];
+                row.pos   = request.positions[i];
+                if (!readBlock(player, row, out.truncated)) {
+                    out.error = "blocks_fault";
+                    break;
+                }
+                ++out.count;
+            }
+        }))
+        out.error = "blocks_fault";
+}
+
+bool ProbeMod::captureScan(LocalPlayer& player, ScanQuery const& request, ScanSnapshot& out) {
+    auto const start = qpcNow();
+    bool       done  = true;
+    if (!guardedQuery([&] {
+            injectQueryFault(request.test);
+            done = advanceScan(request, out, mTick.load(std::memory_order_relaxed), [&](BlockRow& row) {
+                return readBlock(player, row, out.namesTruncated);
+            });
+        }))
+        out.error = "scan_fault";
+    out.maxBatchUs = std::max(
+        out.maxBatchUs,
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(qpcElapsedUs(start, qpcNow()), UINT32_MAX))
+    );
+    return done || out.error != nullptr;
+}
+
+void ProbeMod::resetQueries() {
+    mStateCapture.reset();
+    mButtonCapture.reset();
+    mBlockCapture.reset();
+    mScanCapture.reset();
+}
+void ProbeMod::cancelQueries(char const* reason) {
+    mStateCapture.cancel(reason);
+    mButtonCapture.cancel(reason);
+    mBlockCapture.cancel(reason);
+    mScanCapture.cancel(reason);
+}
+
+void ProbeMod::drainQueries() {
+    auto const now     = GetTickCount64();
+    auto       publish = [&](auto& done, nlohmann::json out) {
+        auto line = out.dump();
+        // A fast client may submit again as soon as enqueue exposes the line.
+        // Release the snapshot before making its response visible.
+        if (done.release()) enqueue(std::move(line));
+    };
+    auto emitFailure = [&](auto& done, char const* phase, char const* error) {
+        publish(
+            done,
+            nlohmann::json{
+                {"event",  "error"},
+                {"reason", error  },
+                {"phase",  phase  }
+        }
+        );
+    };
+    if (auto done = mStateCapture.take(now)) {
+        auto const& s = done.snapshot();
+        if (auto error = done.error ? done.error : s.error) emitFailure(done, "state", error);
+        else publish(done, stateJson(s));
+    }
+    if (auto done = mButtonCapture.take(now)) {
+        auto const& s = done.snapshot();
+        if (auto error = done.error ? done.error : s.error) emitFailure(done, "buttons", error);
+        else {
+            nlohmann::json out{
+                {"event",     "buttons"              },
+                {"ids",       nlohmann::json::array()},
+                {"truncated", s.truncated            }
+            };
+            for (std::size_t i = 0; i < s.count; ++i) out["ids"].push_back(s.ids[i]);
+            if (s.haveQueue) out["queue"] = s.queue;
+            publish(done, std::move(out));
         }
     }
-    enqueue(out.dump());
+    if (auto done = mBlockCapture.take(now)) {
+        auto const& s = done.snapshot();
+        if (auto error = done.error ? done.error : s.error) emitFailure(done, "blocks", error);
+        else {
+            nlohmann::json out{
+                {"event",     "blocks"               },
+                {"blocks",    nlohmann::json::array()},
+                {"truncated", s.truncated            }
+            };
+            for (std::size_t i = 0; i < s.count; ++i) {
+                auto const& row = s.rows[i];
+                out["blocks"].push_back({
+                    {"x",    row.pos.x       },
+                    {"y",    row.pos.y       },
+                    {"z",    row.pos.z       },
+                    {"name", row.name.c_str()},
+                    {"addr", row.address     }
+                });
+            }
+            publish(done, std::move(out));
+        }
+    }
+    if (auto done = mScanCapture.take(now)) {
+        auto const& s = done.snapshot();
+        if (auto error = done.error ? done.error : s.error) emitFailure(done, "scan", error);
+        else {
+            nlohmann::json out{
+                {"event",           "scan"                        },
+                {"from",            {s.from.x, s.from.y, s.from.z}},
+                {"to",              {s.to.x, s.to.y, s.to.z}      },
+                {"blocks",          nlohmann::json::array()       },
+                {"count",           s.count                       },
+                {"truncated",       s.truncated                   },
+                {"names_truncated", s.namesTruncated              },
+                {"visited",         s.visited                     },
+                {"batches",         s.batches                     },
+                {"batch_limit",     ScanSnapshot::BatchSize       },
+                {"max_batch_us",    s.maxBatchUs                  },
+                {"first_tick",      s.firstTick                   },
+                {"last_tick",       s.lastTick                    }
+            };
+            if (s.truncated) out["truncated_reason"] = "result_limit";
+            for (std::size_t i = 0; i < s.count; ++i) {
+                auto const& row = s.rows[i];
+                out["blocks"].push_back({
+                    {"x",    row.pos.x       },
+                    {"y",    row.pos.y       },
+                    {"z",    row.pos.z       },
+                    {"name", row.name.c_str()}
+                });
+            }
+            publish(done, std::move(out));
+        }
+    }
 }
-
-void ProbeMod::captureBlocks(LocalPlayer& player) {
-    std::vector<BlockQuery> queries;
-    {
-        std::lock_guard lock(mBlockMutex);
-        queries.swap(mBlockQueries);
-    }
-    if (queries.empty()) {
-        enqueue(R"({"event":"blocks","blocks":[]})");
-        return;
-    }
-
-    auto const&    source = player.getDimensionBlockSourceConst();
-    nlohmann::json out;
-    out["event"]  = "blocks";
-    out["blocks"] = nlohmann::json::array();
-    for (auto const& query : queries) {
-        BlockPos const pos{query.x, query.y, query.z};
-        auto const&    block = source.getBlock(pos);
-        out["blocks"].push_back({
-            {"x", query.x},
-            {"y", query.y},
-            {"z", query.z},
-            {"name", block.getTypeName()},
-            // T2 anchor: lets probe(kind=block/legacy) work on a live object
-            // without a separate "address of" command.
-            {"addr",
-             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&block))},
-        });
-    }
-    enqueue(out.dump());
-}
-
 
 } // namespace probe

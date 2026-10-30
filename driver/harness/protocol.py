@@ -46,6 +46,11 @@ class StateEvent(TypedDict):
     health: NotRequired[float]
     context: NotRequired[int]
     effects: NotRequired[list[dict[str, float | str]]]
+    ok: NotRequired[bool]
+    partial: NotRequired[bool]
+    truncated: NotRequired[bool]
+    warnings: NotRequired[list[str]]
+    sample_us: NotRequired[int]
 
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)

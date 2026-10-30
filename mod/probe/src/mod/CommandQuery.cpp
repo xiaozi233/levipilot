@@ -5,6 +5,45 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_query_failure") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        auto const  mode = j.value("mode", std::string{});
+        CaptureTest test;
+        if (mode == "seh") test = CaptureTest::Fault;
+        else if (mode == "cpp") test = CaptureTest::Cpp;
+        else if (mode == "partial") test = CaptureTest::Partial;
+        else if (mode == "timeout") test = CaptureTest::Deferred;
+        else {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
+        auto const target   = j.value("target", std::string{"state"});
+        auto const now      = GetTickCount64();
+        bool       accepted = false;
+        if (target == "state") accepted = mStateCapture.begin({test}, now, 250);
+        else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, 250);
+        else if (target == "blocks") {
+            BlockRequest request;
+            request.test = test;
+            accepted     = mBlockCapture.begin(request, now, 250);
+        } else if (target == "scan") {
+            ScanQuery request;
+            request.test = test;
+            accepted     = mScanCapture.begin(request, now, 250);
+        } else {
+            enqueue(R"({"event":"error","reason":"bad_test_target"})");
+            return true;
+        }
+        if (!accepted) enqueue(R"({"event":"error","reason":"capture_busy"})");
+        return true;
+    }
     if (cmd == "chat_history") {
         requestChatHistory(std::clamp(j.value("limit", 32), 1, 64));
         return true;
@@ -14,7 +53,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         if (!mWorld.inWorld() || (mLastTickMs.load() != 0 && now - mLastTickMs.load() > 1000)) {
             enqueue(R"({"event":"state","in_world":false})");
         } else {
-            mStateRequested = true;
+            if (!mStateCapture.begin({}, now, 2000)) enqueue(R"({"event":"error","reason":"state_busy"})");
         }
         return true;
     }
@@ -36,7 +75,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
             return true;
         }
-        std::vector<BlockQuery> queries;
+        BlockRequest request;
         if (j.contains("positions") && j["positions"].is_array()) {
             for (auto const& pos : j["positions"]) {
                 if (!pos.is_array() || pos.size() != 3) {
@@ -50,23 +89,18 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
                     || !numberValue(pos[2], -CoordHorizonLimit, CoordHorizonLimit, z)) {
                     continue;
                 }
-                queries.push_back(
-                    BlockQuery{
-                        static_cast<int>(std::floor(x)),
-                        static_cast<int>(std::floor(y)),
-                        static_cast<int>(std::floor(z)),
-                    }
-                );
-                if (queries.size() >= 256) {
+                request.positions[request.count++] = BlockPoint{
+                    static_cast<int>(std::floor(x)),
+                    static_cast<int>(std::floor(y)),
+                    static_cast<int>(std::floor(z)),
+                };
+                if (request.count >= request.positions.size()) {
                     break;
                 }
             }
         }
-        {
-            std::lock_guard lock(mBlockMutex);
-            mBlockQueries    = std::move(queries);
-            mBlocksRequested = true;
-        }
+        if (!mBlockCapture.begin(request, GetTickCount64(), 2000))
+            enqueue(R"({"event":"error","reason":"blocks_busy"})");
         return true;
     }
     if (cmd == "scan") {
@@ -89,26 +123,22 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             z = static_cast<int>(std::floor(cz));
             return true;
         };
-        ScanRequest request;
-        if (!readCorner("from", request.x1, request.y1, request.z1)
-            || !readCorner("to", request.x2, request.y2, request.z2)) {
+        ScanQuery request;
+        if (!readCorner("from", request.from.x, request.from.y, request.from.z)
+            || !readCorner("to", request.to.x, request.to.y, request.to.z)) {
             enqueue(R"({"event":"error","reason":"bad_region"})");
             return true;
         }
-        std::int64_t const dx = std::llabs(static_cast<std::int64_t>(request.x2) - request.x1) + 1;
-        std::int64_t const dy = std::llabs(static_cast<std::int64_t>(request.y2) - request.y1) + 1;
-        std::int64_t const dz = std::llabs(static_cast<std::int64_t>(request.z2) - request.z1) + 1;
+        std::int64_t const dx = std::llabs(static_cast<std::int64_t>(request.to.x) - request.from.x) + 1;
+        std::int64_t const dy = std::llabs(static_cast<std::int64_t>(request.to.y) - request.from.y) + 1;
+        std::int64_t const dz = std::llabs(static_cast<std::int64_t>(request.to.z) - request.from.z) + 1;
         if (dx * dy * dz > 32768) {
             enqueue(R"({"event":"error","reason":"region_too_large","limit":32768})");
             return true;
         }
         request.includeAir = j.value("include_air", false);
         request.limit      = std::clamp(j.value("limit", 4096), 1, 16384);
-        {
-            std::lock_guard lock(mScanMutex);
-            mScanRequest   = request;
-            mScanRequested = true;
-        }
+        if (!mScanCapture.begin(request, GetTickCount64(), 10000)) enqueue(R"({"event":"error","reason":"scan_busy"})");
         return true;
     }
     if (cmd == "select_slot") {

@@ -85,7 +85,7 @@ xmake -j4 -y
 | `interact_entity` | `runtime_id`；转向实体并注入主手使用输入（best effort） |
 | `look_at_entity` | `runtime_id`；把视角转向实体 |
 | `blocks` | `positions:[[x,y,z],...]`，方块名和 `addr`（`Block*`，供 `probe` 使用） |
-| `scan` | `from:[x,y,z],to:[x,y,z],include_air?,limit?`；区域方块扫描（最多 32768 格） |
+| `scan` | `from:[x,y,z],to:[x,y,z],include_air?,limit?`；最多 32768 格，每 tick 最多读取 512 格 |
 | `checkpoint_save` / `checkpoint_load` / `checkpoint_list` / `checkpoint_delete` | 命名脚部坐标存档，持久化到 `mods/probe/checkpoints.json`；`checkpoint_load` 只恢复位置+朝向，不清药水效果 |
 | `navigate` | `x,z,tolerance,max_ticks,sprint`；`jump=auto/distance/edge/never` + `jump_distance`，mod 内逐 tick 闭环修正朝向 |
 | `jump_when` | `mode=now/tick/distance/edge`；`distance,forward,sprint,yaw,after_ticks,max_ticks`；在 tick 内精确起跳 |
@@ -190,10 +190,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **253/253**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **295/295**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天与服务端物品使用超时检查）、
-离线单测 **282/282**。常用实测数字：
+`allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
+离线单测 **283/283**。常用实测数字：
+
+2026-10-31 查询采样改造：`--query-capture-only` **42/42**，
+`--query-lifecycle-world "超平坦测试"` **9/9**；真实扫描在重连/退出时取消、主菜单拒绝、
+重进恢复，受控采样 SEH/C++/超时只终结一次且无新增 crash 文件。
+完整构建通过，安装 DLL 与构建产物 SHA-256 一致。
 
 2026-10-31 服务端任务等待修复：`py -3.11 driver/selftest.py --use-lifecycle-only`
 专项 **16/16**，覆盖超时、投递失败、回调 C++/SEH、物品操作内部 SEH、唯一终结和恢复；
@@ -235,6 +240,14 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   见 [`../docs/mod-internals.md`](../docs/mod-internals.md) 的「实测数字速查」。
 
 ## 限制
+
+- `state/buttons/blocks/scan` 各有一个独占快照槽；重复在途请求返回对应 `*_busy`。
+  前三者采样截止为 2 秒，扫描为 10 秒，超时回 `error/capture_timeout`；退出世界取消请求
+  （`error/world_left`），断连丢弃旧的在途快照。`state` 保留既有字段并增加
+  `partial/truncated/warnings/sample_us`；局部方块读取失败会明确标记部分结果。
+  `scan` 增加 `visited/batches/batch_limit/max_batch_us/first_tick/last_tick`，结果数量
+  截断时标记 `truncated_reason=result_limit`。扫描跨多个 tick，期间世界可能变化；
+  格式化移出游戏线程不等于所有 SDK 名称读取和其他采样路径都已零分配。
 
 - `chat_history` 使用平台主线程队列；主菜单回 `ok=false,reason=no_player`，等待超过
   2 秒回 `chat_history_timeout` 并自动恢复。退出世界会取消在途请求（`world_left`），

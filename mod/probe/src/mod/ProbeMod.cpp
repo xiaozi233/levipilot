@@ -32,6 +32,7 @@ bool ProbeMod::enable() {
     }
     bootLog("enable: begin");
     mChatCapture.reset();
+    resetQueries();
 
     mMouseListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::input::MouseInputEvent>([this](auto& event) {
@@ -134,6 +135,7 @@ bool ProbeMod::disable() {
 
     cancelTasks("disabled");
     mChatCapture.cancel("disabled");
+    cancelQueries("disabled");
     {
         std::lock_guard lock(mMacroSessionMutex);
         mMacroRecording = false;
@@ -653,12 +655,16 @@ void ProbeMod::recordTickPose(LocalPlayer& player) {
 }
 
 void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
-    if (mStateRequested.exchange(false)) {
-        captureState(client, player);
-    }
-    if (mButtonsRequested.exchange(false)) {
-        captureButtons(client);
-    }
+    mStateCapture.advance([&](auto const& request, auto& out) {
+        if (request.test == CaptureTest::Deferred) return false;
+        captureState(client, player, request, out);
+        return true;
+    });
+    mButtonCapture.advance([&](auto const& request, auto& out) {
+        if (request.test == CaptureTest::Deferred) return false;
+        captureButtons(client, request, out);
+        return true;
+    });
     if (mInventoryRequested.exchange(false)) {
         captureInventory(player);
     }
@@ -695,33 +701,14 @@ void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
         }
     }
 
-    {
-        bool requested = false;
-        {
-            std::lock_guard lock(mBlockMutex);
-            requested        = mBlocksRequested;
-            mBlocksRequested = false;
-        }
-        if (requested) {
-            captureBlocks(player);
-        }
-    }
-
-    {
-        bool        requested = false;
-        ScanRequest request;
-        {
-            std::lock_guard lock(mScanMutex);
-            requested      = mScanRequested;
-            mScanRequested = false;
-            if (requested) {
-                request = mScanRequest;
-            }
-        }
-        if (requested) {
-            captureScan(player, request);
-        }
-    }
+    mBlockCapture.advance([&](auto const& request, auto& out) {
+        if (request.test == CaptureTest::Deferred) return false;
+        captureBlocks(player, request, out);
+        return true;
+    });
+    mScanCapture.advance([&](auto const& request, auto& out) {
+        return request.test != CaptureTest::Deferred && captureScan(player, request, out);
+    });
 }
 
 void ProbeMod::tickParkourEvents(LocalPlayer& player) {

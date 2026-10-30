@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **282/282**，现场 **253/253**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **283/283**，现场 **295/295**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -29,6 +29,39 @@
   实测 20 tick 前进 4.316 格，潜行 1.295 格（约 0.30x 速度）。
 - 状态：`LocalPlayer` + `MoveInputComponent` + `PlayerActionComponent` + 属性 +
   `BlockSource` + `Level`。
+
+## 查询采样（2026-10-31）
+
+`State.cpp` 的 `state/buttons/blocks/scan` 使用 `QueryModel.h` 定长载荷与
+`SnapshotMailbox.h` 单槽所有权。管道提交不再增长方块查询 vector；tick 用 CAS 推进，
+只采样固定存储；spool 每 25 ms 消费、生成 JSON 并送入传输队列。消费格式化期间仍独占
+快照，发送前释放槽，避免快速客户端收到完成事件后立即重提却误报 busy。
+取消/重连不会覆盖仍运行的批次或仍在格式化的快照。
+
+- 请求不合并：同一领域在途时回 `*_busy`。state/buttons/blocks 2 秒、scan 10 秒 wall-clock
+  截止；无游戏 tick 时 spool 仍可终结等待，但不会抢占已经运行的有界采样批次。
+- 危险读取在局部 `__try/__except` 返回之后才释放拥有者；受控异常由线程归属标记避免
+  first-chance VEH 误报 dump。整条采样失败回 `error`，带 `reason` 和目标 `phase`。
+  state 方块部分失败仍回状态，标记 `partial=true/warnings`，正常后续采样恢复。
+- 文本按 UTF-8 边界截断：玩家名 1023 字节、物品类型/方块名 255 字节、物品显示名
+  4095 字节；effects 最多 128 条、buttons 最多 512 条、blocks 最多 256 条，均显式报告截断。
+  SDK `getRealName/getTypeName/getName` 返回 owning string，仍可能分配；本批只迁移
+  自有 JSON/传输工作，未宣称所有游戏访问器零分配，也未覆盖 inventory/legacy/宏等路径。
+- scan 每次最多访问 512 格，即使过滤 air 且 limit 很小也遵守预算。保持 x 最快、再 y、
+  再 z；32768 格最多 64 批。仅发现第 limit+1 个匹配项才报告结果截断，恰好 limit 条
+  不误报。固定结果区约 4.4 MiB，不在游戏栈上构造多 MiB 临时量；后台清零和格式化。
+  `first_tick/last_tick` 表示采样跨度，无法保证期间世界未变化。
+
+复现：`driver/selftest.py --query-capture-only`（故障、唯一终结、恢复、预算），以及
+`--query-lifecycle-world "超平坦测试"`（真实扫描重连取消、退出取消、主菜单与重进恢复）。
+
+本批专项 **42/42**、生命周期 **9/9**、完整现场 **295/295**（无跳过），离线 **283/283**；
+ruff check/format、mypy、profile 一致性及完整 C++ 构建通过。安装 DLL 与构建产物
+SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC44`。
+同一空中 32768 格区域实测 64 批、跨度 63 tick，单批最大 3160 µs；连续 30 次 state
+采样中位数 148.5 µs、最大 209 µs。这里只记录本机这轮采样值，不代表稳定上界或性能提升倍率。
+`Overhead.cpp` 旧统计环仍有普通字段并发读写，改前后窗口也非同一批样本，不用其分位数
+宣称重构收益；该并发问题已记入后续修复。日志与原始数字在 `out/reliability-query-*`。
 
 ## 服务端权威操作
 
@@ -225,8 +258,8 @@
 
 ## 跑酷辅助（P2）
 
-- `scan`：管道线程只存 `ScanRequest`，tick 线程在 `safeTickPost` 遍历区域并回 `scan`。
-  体积上限 32768 格、结果上限 16384，避免拖慢 tick；默认跳过空气。
+- `scan`：管道线程提交 `ScanQuery`，tick 每次最多读 512 格，spool 格式化完成快照。
+  体积上限 32768 格、结果上限 16384，默认跳过空气；生命周期及跨 tick 语义见“查询采样”。
 - 存档点：tick 线程每 tick 把脚部坐标/朝向写进原子量；`checkpoint_save` 在管道线程读这些
   原子量并写 `checkpoints.json`（`.tmp` + `MoveFileExW` 原子替换），所以文件 I/O 不进 tick。
   `checkpoint_load` 复用 `resetPlayer`，和 `reset` 一样清任务/输入，但**不清药水效果**
@@ -619,8 +652,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **253/253**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **282/282**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **295/295**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **283/283**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

@@ -47,7 +47,20 @@ XMAKE_PATH = r"D:\Tools\LLVM22\bin;D:\Tools\xmake"
 
 
 def log(message: str) -> None:
-    print(message, flush=True)
+    """Print a progress line, tolerating a console that cannot encode it.
+
+    Windows CI runs the unit tests under a cp1252 console while these messages
+    are Chinese, so a bare ``print`` raises UnicodeEncodeError and fails the
+    run. Fall back to UTF-8 bytes on the underlying buffer.
+    """
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        buffer = getattr(getattr(sys, "stdout", None), "buffer", None)
+        if buffer is None:
+            raise
+        buffer.write((message + "\n").encode("utf-8", "replace"))
+        buffer.flush()
 
 
 def kill_game() -> None:

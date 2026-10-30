@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Thin, read-only IDA MCP client with sane defaults.
+"""Skill-side entry point for the IDA MCP client.
 
-This is the replacement for the per-case ``mcp.py`` / ``open_db.py`` copies.
-It never copies or re-analyzes a database; ``open`` reuses an existing ``.i64``.
-
-Examples::
+The implementation lives in [`driver/ida.py`](../../../driver/ida.py): endpoint
+discovery, the supervisor spawn, retrying a lost ``idb_open`` reply, the session
+cache under ``out/`` and the log tail in errors. This file only keeps the
+command names the skill's references use:
 
     py -3.11 skills/bedrock-re/tools/ida.py health
     py -3.11 skills/bedrock-re/tools/ida.py tools
-    py -3.11 skills/bedrock-re/tools/ida.py open --version 1.26.51.01 --session mcbr
-    py -3.11 skills/bedrock-re/tools/ida.py call decompile --args '{"address":"0x..."}'
+    py -3.11 skills/bedrock-re/tools/ida.py serve --tool-timeout 1800
+    py -3.11 skills/bedrock-re/tools/ida.py open --version 1.26.51.01
+    py -3.11 skills/bedrock-re/tools/ida.py call decompile --args '{"addr": "0x1431C2F50"}'
+    py -3.11 skills/bedrock-re/tools/ida.py decompile 0x1431C2F50
+
+``open --session <name>`` is accepted for compatibility: the backend assigns the
+session id and the client caches it, so the name itself is not used.
 """
 
 from __future__ import annotations
@@ -18,150 +23,143 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
-from typing import Any
 
-DEFAULT_URL = "http://127.0.0.1:13337/mcp"
-DEFAULT_TIMEOUT = 900.0
-OPEN_TIMEOUT = 3500.0
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 
-
-def appdata() -> Path:
-    return Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+from driver import ida  # noqa: E402
 
 
-def default_db(version: str) -> Path:
-    return (
-        appdata()
-        / "levilauncher.exe"
-        / "versions"
-        / version
-        / "Minecraft.Windows.exe.i64"
+def database_for(version: str | None) -> Path:
+    """``<APPDATA>/levilauncher.exe/versions/<version>/Minecraft.Windows.exe.i64``."""
+    if version is None:
+        return ida.default_i64()
+    appdata = Path(os.environ.get("APPDATA", ""))
+    return appdata / "levilauncher.exe" / "versions" / version / "Minecraft.Windows.exe.i64"
+
+
+def health() -> int:
+    url = ida.discover_url()
+    alive = ida.endpoint_alive(url)
+    print(json.dumps({"event": "status", "url": url, "alive": alive}))
+    if not alive:
+        return 1
+    client = ida.Mcp(url)
+    client.initialize(timeout=30.0)
+    for session in client.list_sessions():
+        print(json.dumps({"event": "session", **session}, ensure_ascii=False))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the request instead of sending it"
     )
+    commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("health", help="report the endpoint and its sessions")
+    commands.add_parser("tools", help="list the backend's tools")
 
-def rpc(url: str, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
-    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read().decode("utf-8", "replace")
-    if raw.startswith("event:") or "\ndata:" in raw:
-        for line in raw.splitlines():
-            if line.startswith("data:"):
-                raw = line[5:].strip()
-                break
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError("MCP reply is not a JSON object")
-    return data
+    serve = commands.add_parser("serve", help="start the supervisor and wait for it")
+    serve.add_argument("--tool-timeout", type=float, default=1800.0)
+    serve.add_argument("--port", type=int, default=ida.PORT)
+    serve.add_argument("--wait", type=float, default=600.0)
+    serve.add_argument("--log", type=Path, default=None)
+    serve.add_argument("--version", default=None, help="game version directory name")
 
+    open_cmd = commands.add_parser("open", help="open (or reuse) a session")
+    open_cmd.add_argument("--version", default=None, help="game version directory name")
+    open_cmd.add_argument("--session", default=None, help="accepted for compatibility")
+    open_cmd.add_argument("--wait", type=float, default=900.0)
 
-def call_tool(
-    url: str, name: str, arguments: dict[str, Any], timeout: float
-) -> Any:
-    reply = rpc(url, "tools/call", {"name": name, "arguments": arguments}, timeout)
-    if "error" in reply:
-        raise RuntimeError(json.dumps(reply["error"], ensure_ascii=False))
-    result = reply.get("result", {})
-    structured = result.get("structuredContent")
-    if structured is not None:
-        return structured
-    texts = [
-        item.get("text", "")
-        for item in result.get("content", [])
-        if isinstance(item, dict) and item.get("type") == "text"
-    ]
-    joined = "\n".join(texts)
-    if texts:
-        try:
-            return json.loads(joined)
-        except json.JSONDecodeError:
-            return joined
-    return result
+    call = commands.add_parser("call", help="call a backend tool directly")
+    call.add_argument("tool")
+    call.add_argument("--args", default="{}")
 
+    for name in ("decompile", "disasm", "xrefs"):
+        single = commands.add_parser(name, help=f"{name} one address")
+        single.add_argument("address")
 
-def print_result(value: Any) -> None:
-    if isinstance(value, str):
-        print(value)
-    else:
-        print(json.dumps(value, ensure_ascii=False, indent=1))
+    args = parser.parse_args()
 
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=os.environ.get("IDA_MCP_URL", DEFAULT_URL))
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
-    parser.add_argument("--dry-run", action="store_true")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    p_health = sub.add_parser("health", help="call server_health")
-    p_health.add_argument("--session", default="mcbr")
-
-    sub.add_parser("tools", help="list MCP tools")
-
-    p_open = sub.add_parser("open", help="open an existing .i64 read-only")
-    p_open.add_argument("--version", default="1.26.51.01")
-    p_open.add_argument("--db", type=Path)
-    p_open.add_argument("--session", default="mcbr")
-
-    p_call = sub.add_parser("call", help="call a tool by name")
-    p_call.add_argument("tool")
-    p_call.add_argument("--args", default="{}")
-    args = parser.parse_args(argv)
-
-    try:
-        if args.command == "health":
-            if args.dry_run:
-                print(json.dumps({"tool": "server_health", "args": {"database": args.session}}))
-                return 0
-            print_result(call_tool(args.url, "server_health", {"database": args.session}, args.timeout))
+    if args.command == "health":
+        if args.dry_run:
+            print(json.dumps({"method": "tools/list", "note": "dry run"}))
             return 0
-        if args.command == "tools":
-            if args.dry_run:
-                print(json.dumps({"method": "tools/list"}))
-                return 0
-            reply = rpc(args.url, "tools/list", {}, args.timeout)
-            for tool in reply.get("result", {}).get("tools", []):
-                print(tool.get("name"))
+        return health()
+
+    if args.command == "tools":
+        if args.dry_run:
+            print(json.dumps({"method": "tools/list"}))
             return 0
-        if args.command == "open":
-            db = args.db or default_db(args.version)
-            arguments = {
-                "input_path": str(db),
-                "run_auto_analysis": False,
-                "preferred_session_id": args.session,
-                "mode": "prefer_headless",
-            }
-            if args.dry_run:
-                print(json.dumps({"tool": "idb_open", "args": arguments}, ensure_ascii=False))
-                return 0
-            if not db.exists():
-                print(f"ida: database not found: {db}", file=sys.stderr)
-                return 1
-            print_result(call_tool(args.url, "idb_open", arguments, OPEN_TIMEOUT))
+        client = ida.Mcp(ida.discover_url())
+        client.initialize(timeout=30.0)
+        print("\n".join(client.tools()))
+        return 0
+
+    if args.command == "serve":
+        if args.dry_run:
+            print(
+                json.dumps(
+                    {
+                        "method": "idalib_supervisor",
+                        "input_path": str(database_for(args.version)),
+                        "tool_timeout": args.tool_timeout,
+                    }
+                )
+            )
             return 0
+        # The supervisor reads this at startup; the worker's first open runs
+        # under it, and a multi-GB database needs minutes.
+        ida.CALL_TIMEOUT = args.tool_timeout
+        ida.PORT = args.port
+        ida.start_supervisor(database_for(args.version), log=args.log, wait=args.wait)
+        url = ida.discover_url()
+        ok = ida.endpoint_alive(url)
+        print(json.dumps({"event": "served" if ok else "pending", "url": url}))
+        return 0 if ok else 1
+
+    if args.command == "open":
+        if args.dry_run:
+            print(json.dumps({"method": "idb_open", "input_path": str(database_for(args.version))}))
+            return 0
+        client = ida.Mcp(ida.discover_url())
+        if not ida.endpoint_alive(client.url):
+            raise SystemExit("start the supervisor first: ida.py serve")
+        client.initialize(timeout=30.0)
+        session = ida.open_session(client, database_for(args.version), wait=args.wait)
+        print(json.dumps({"event": "opened", "database": session}))
+        return 0
+
+    if args.command == "call":
         arguments = json.loads(args.args)
-        if not isinstance(arguments, dict):
-            print("ida: --args must be a JSON object", file=sys.stderr)
-            return 2
+        # The older skill text used `address`; the MCP tools want `addr`
+        # (`addrs` for xrefs_to).
+        if "address" in arguments:
+            key = "addrs" if args.tool == "xrefs_to" else "addr"
+            arguments.setdefault(key, arguments.pop("address"))
         if args.dry_run:
             print(json.dumps({"tool": args.tool, "args": arguments}, ensure_ascii=False))
             return 0
-        print_result(call_tool(args.url, args.tool, arguments, args.timeout))
+        result = ida.call(args.tool, **arguments)
+        print(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False))
         return 0
-    except urllib.error.URLError as exc:
-        print(f"ida: cannot reach {args.url}: {exc}", file=sys.stderr)
-        return 1
-    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        print(f"ida: {exc}", file=sys.stderr)
-        return 1
+
+    address = args.address if args.address.startswith("0x") else hex(int(args.address, 0))
+    if args.dry_run:
+        print(json.dumps({"tool": args.command, "addr": address}))
+        return 0
+    if args.command == "decompile":
+        result = ida.call("decompile", addr=address, include_addresses=False)
+    elif args.command == "disasm":
+        result = ida.call("disasm", addr=address)
+    else:
+        result = ida.call("xrefs_to", addrs=[address])
+    text = result.get("code", result) if isinstance(result, dict) else result
+    print(text if isinstance(text, str) else json.dumps(text, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":

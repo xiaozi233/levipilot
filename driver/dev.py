@@ -7,6 +7,11 @@ This replaces the LeviLauncher + menu + CUA path for day-to-day iteration:
 The game is started from ``Minecraft.Windows.exe`` directly, the mod's
 ``enter_world`` command starts the named world, and ``wait_in_world`` blocks
 until the player is actually in game. No window automation is involved.
+
+``run`` rebuilds automatically when the built DLL is older than ``mod/probe``
+sources (``--no-build`` keeps the current binary), waits until the player is
+on the ground and still, and explains the version-isolated data root when the
+requested world is not in the world list.
 """
 
 from __future__ import annotations
@@ -92,9 +97,85 @@ def build_mod() -> None:
     env["PATH"] = XMAKE_PATH + ";" + env.get("PATH", "")
     env.update(XMAKE_ENV)
     log(f"building {MOD_BUILD} ...")
-    result = subprocess.run(["xmake", "-y"], cwd=MOD_BUILD, env=env)
+    result = subprocess.run(["xmake", "-j4", "-y"], cwd=MOD_BUILD, env=env)
     if result.returncode != 0:
         raise SystemExit(f"xmake failed with exit code {result.returncode}")
+
+
+def probe_is_stale() -> tuple[bool, float, float]:
+    """Return (stale, newest_source_mtime, dll_mtime).
+
+    ``dev.py run`` installs the *built* DLL, so a source edit without a rebuild
+    silently ships the previous binary.  A plain ``in_world``/selftest run then
+    fails in confusing ways (missing fields, stale input path).
+    """
+    dll = MOD_BUILD / "bin" / "probe" / "probe.dll"
+    if not dll.exists():
+        return (True, 0.0, 0.0)
+    newest = dll.stat().st_mtime
+    candidates = [MOD_BUILD / "xmake.lua", MOD_BUILD / "src"]
+    for candidate in candidates:
+        if candidate.is_file():
+            newest = max(newest, candidate.stat().st_mtime)
+        elif candidate.is_dir():
+            for path in candidate.rglob("*"):
+                if path.is_file():
+                    newest = max(newest, path.stat().st_mtime)
+    dll_mtime = dll.stat().st_mtime
+    return (newest > dll_mtime + 1.0, newest, dll_mtime)
+
+
+def find_isolated_worlds(version_dir: Path, name: str) -> list[Path]:
+    """Worlds with ``name`` under the version-isolated data root."""
+    root = version_dir / "Minecraft Bedrock" / "Users"
+    found: list[Path] = []
+    if not root.is_dir():
+        return found
+    for levelname in root.glob("*/games/com.mojang/minecraftWorlds/*/levelname.txt"):
+        try:
+            if levelname.read_text(encoding="utf-8", errors="replace").strip() == name:
+                found.append(levelname.parent)
+        except OSError:
+            continue
+    return found
+
+
+def wait_settled(client: ModClient, timeout: float = 15.0) -> bool:
+    """Wait until the player is in a world, on the ground and still.
+
+    The first selftest run right after entering a cold world used to fail a
+    cluster of teleport/scan/jump checks because the baseline feet were taken
+    while the player was still falling.  Dev runs now return only once the
+    player is playable.
+    """
+    deadline = time.monotonic() + timeout
+    stable = 0
+    last_tick: int | None = None
+    while time.monotonic() < deadline:
+        try:
+            state = client.state()
+        except (ModPipeError, ModTimeout):
+            time.sleep(0.1)
+            continue
+        if not state.get("in_world"):
+            time.sleep(0.2)
+            continue
+        tick = int(state.get("tick", -1))
+        if tick == last_tick:
+            time.sleep(0.02)
+            continue
+        last_tick = tick
+        still = (
+            bool(state.get("on_ground"))
+            and abs(float(state.get("vx", 0.0))) < 1e-3
+            and abs(float(state.get("vz", 0.0))) < 1e-3
+            and abs(float(state.get("vy", 0.0))) < 1e-3
+        )
+        stable = stable + 1 if still else 0
+        if stable >= 5:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def install_mod(version_dir: Path) -> None:
@@ -196,8 +277,18 @@ def run(args: argparse.Namespace) -> int:
     if not exe.exists():
         raise SystemExit(f"找不到游戏 exe：{exe}")
 
+    stale, newest, dll_mtime = probe_is_stale()
     if args.build:
         build_mod()
+    elif stale and not args.no_build:
+        log(
+            "probe.dll is older than the mod sources "
+            f"({time.strftime('%H:%M:%S', time.localtime(dll_mtime))} < "
+            f"{time.strftime('%H:%M:%S', time.localtime(newest))}); rebuilding"
+        )
+        build_mod()
+    elif stale:
+        log("warning: probe.dll is older than the mod sources; run without --no-build to rebuild")
     kill_game()
     time.sleep(1.0)
     install_mod(version_dir)
@@ -254,8 +345,17 @@ def run(args: argparse.Namespace) -> int:
         if args.world:
             names = {w.get("name") for w in worlds}
             if args.world not in names:
+                hint = ""
+                isolated = find_isolated_worlds(version_dir, args.world)
+                if isolated:
+                    hint = (
+                        "\n提示：这个版本开着数据隔离，世界在 "
+                        f"{isolated[0].parents[5]}；直接启动 exe 用的是全局数据根。"
+                        " 用 LeviLauncher 启动该实例，或把世界目录复制到 "
+                        "%APPDATA%\\Minecraft Bedrock\\Users\\<id>\\games\\com.mojang\\minecraftWorlds。"
+                    )
                 raise SystemExit(
-                    f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}"
+                    f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}{hint}"
                 )
             if not args.no_focus:
                 focus_game(process.pid, timeout=3.0)
@@ -273,6 +373,10 @@ def run(args: argparse.Namespace) -> int:
                     **state
                 )
             )
+            if wait_settled(client):
+                log("player settled (on ground, still)")
+            else:
+                log("warning: player did not settle before the timeout; selftest may be flaky")
         return 0
     finally:
         client.close()
@@ -285,6 +389,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = sub.add_parser("run", help="build (optional), restart, enter a world")
     run_parser.add_argument("--world", help="world name to enter")
     run_parser.add_argument("--build", action="store_true", help="run xmake before installing")
+    run_parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="never rebuild, even if the built DLL is older than the mod sources",
+    )
     run_parser.add_argument("--options", action="append", default=[], metavar="KEY=VALUE")
     run_parser.add_argument(
         "--allow",

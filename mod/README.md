@@ -321,6 +321,10 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 - `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。
 - 管道单次批量/大行写入预算为 **5 s**；超时会断开当前客户端，计数见
   `status.pipe_write_timeouts`，客户端可重连。输入行完整或分片都受 **1 MiB** 上限约束。
+- 已知边界：长时间高频批量查询（约 600 次以上）后偶尔出现“连不上、只能重启”。
+  当前只做诊断，**不做** mod 侧看门狗：回收卡住的管道要在另一个线程 `CloseHandle`，
+  这与 `PipeChannel` 的阻塞/overlapped I/O 生命周期竞争（历史坑），在稳定复现前不动。
+  规避：分批查询、脚本结束前 `close()`；卡住时重启游戏。
 - 二进制环固定 **524288 条 × 64 B = 32 MiB payload**，加约 4 MiB 发布序号，单写者
   （tick 线程）；start/stop 等待已准入的采样完成，dump 不会读取被覆写到一半的行。
   `record_dump` 默认

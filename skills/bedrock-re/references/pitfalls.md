@@ -74,3 +74,15 @@
 - 三种静态策略都定不到：写 `unresolved`，列已排除假设，停下来问。
 - 静态与动态冲突：以静态为准，记录冲突现象与复现条件；不要为了让数字好看改结论。
 - 需要猜地址才能继续：停；宁可让下游报“未知”，也不能给错地址。
+
+## F. 工作区/工具链（2026-10-28）
+
+| 坑 | 后果 | 守卫 / 归属 |
+| --- | --- | --- |
+| `dev.py run` 没带 `--build` 却装了旧 `probe.dll` | 新字段/输入路径缺失，selftest 在 `key_event_*` / `state` 上失败 | guard: `dev.py` 比较源码与 DLL mtime，自动重建；`--no-build` 可跳过 |
+| 冷世界进入后立刻跑 selftest | 第一批 `teleport`/`scan`/`jump` 因玩家还在下落/区块未热而失败 | guard: `dev.py` 进入后等 `on_ground` 且三轴速度≈0 连续 5 tick；冷世界失败先重跑一遍 |
+| 直接启动 exe 与 LeviLauncher 隔离的数据根不同 | 世界列表里找不到测试世界 | guard: `dev.py` 找不到世界时扫描版本隔离目录并给出复制/启动提示 |
+| IDA MCP 默认 60 s per-tool 超时 | 大库冷开被杀（本机重建后 5.9 GB，要 2 分钟），worker 回收 | guard: `tools/ida.py serve --tool-timeout 1800`（代传 `IDA_MCP_TOOL_TIMEOUT_SEC`） |
+| **对正在打开的 IDA/idalib 进程 `taskkill /F`** | `.i64` 被写坏，之后无论 idalib 还是 `idat -A` 都报 `internal error 1228`，只能重建 | guard: 先 `idb_close(save=true)`；坏库改名 `.i64.corrupt`，用 `idat -A <exe>` 重建（本机约 1 小时） |
+| 在整库跑 `search_text` | 单 worker 队列被 listing 扫描堵死，后续全部超时 | guard: 用 `find_bytes`/`insn_query` 限 `segment/start/end/func`；堵了先 `idb_close` 再重开，别杀进程 |
+| 管道高频批量查询约 600 次后“连不上” | 只能重启游戏；跨线程 `CloseHandle` 会与阻塞 I/O 竞争 | guard: 分批 + 结束前 `close()`；**不做**看门狗，等待稳定复现 |

@@ -15,8 +15,9 @@ Python 客户端（`driver/harness/`）。目标是让脚本/LLM 读状态、控
 # C++ mod（本机 xmake + LLVM22，见 docs/mod-build-environment.md）
 cd mod/probe && xmake -j4 -y   # -j4 限制 CPU 占用
 
-# 开发循环：编译 → 重启 exe → 等主菜单 → 直接进世界（不用点 UI）
-py -3.11 driver/dev.py run --world "超平坦测试" --build
+# 开发循环：按需编译 → 重启 exe → 等主菜单 → 直接进世界 → 等玩家站稳（不用点 UI）
+# 源码比 probe.dll 新时会自动重建；--no-build 可跳过，--build 强制
+py -3.11 driver/dev.py run --world "超平坦测试"
 
 # 无游戏单测 / 静态检查
 py -3.11 -m unittest discover -s tests -v
@@ -202,6 +203,10 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
   再走 `ecs_context`。不要在 tick 线程枚举客户端 registry。
 - `xmake` 默认吃满所有核心，构建用 `xmake -j4`；只改 `.cpp` 是增量，改 `Internal.h`/`ProbeMod.h`
   会全量重编（约 2–3 分钟）。
+- **不要对正在打开的 IDA/idalib 进程 `taskkill /F`**：会把 `.i64` 写坏（之后 idalib 和
+  `idat -A` 都报 `internal error 1228`，只能从 exe 重建，本机约 1 小时）。停后端用
+  `idb_close(save=true)`；坏库留 `.i64.corrupt` 后再重建。地址→函数用
+  `driver/pe_map.py`，IDA 客户端用 `driver/ida.py`（会代传 `IDA_MCP_TOOL_TIMEOUT_SEC`）。
 
 ## 当前状态
 

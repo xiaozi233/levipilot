@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **283/283**，现场 **305/305**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **284/284**，现场 **322/322**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -122,6 +122,19 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   复制完整快照并保存；保存完成后按录制代次清理，避免并发新会话的数据被旧保存操作清除。
   达到 `max_ticks` 后也保留缓冲供 `macro_rec_stop` 保存。重复录制、
   播放时录制、录制时播放都会返回明确错误，避免两个会话同时改写按键状态。
+- `MacroRecordModel` 统一限长策略：省略/0/超大 `max_ticks` 均归一到 200000，较小正数
+  使用原值；每次追加按有效上限判断并且只在活动 → 停止时报告一次 limit。不会出现
+  满 200000 条后仍 recording=true、静默丢后续帧的状态。开始回执带实际 max_ticks/hard_limit，
+  status 带 record_limit。开始前验证非负整数并预留容量，再清空旧会话，失败保留旧数据。
+  帧存储追加零分配不代表整个宏 tick 无分配/无锁：原有会话锁、游戏读取与事件投递仍待治理。
+- 宏硬上限验收：`driver/selftest.py --macro-limit-only` **17/17**，完整现场 **322/322**
+  （无跳过），离线 **284/284**。原生模型实际追加 200000 条，覆盖省略/0/上限/超上限/
+  uint64 最大值、达到上限后不再追加、唯一终结、保留完整数据及预留后零分配；现场验证
+  参数归一、3 tick 的真实唯一终结、保存和重复停止，负数/字符串/小数被拒绝且保留缓冲。
+  现场未连续录制 200000 tick，硬上限由同一生产模板的原生回归证明。
+  完整构建、静态检查和安装产物一致性通过，最终 DLL SHA-256：
+  `D918884AE393D2CD9C070E193E930C5CD1AEB47D386DFA77B6A0569333AA0B4D`。
+  日志：`out/reliability-macro-limit-{unit,live,full-live,build,restart}.log`。
 - 事件级播放停止后在下一客户端 tick 释放按住的 HID 按键和鼠标；卸载路径关闭录制状态并
   提交同一释放请求。
 
@@ -662,8 +675,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **305/305**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **283/283**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **322/322**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **284/284**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

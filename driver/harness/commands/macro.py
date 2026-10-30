@@ -42,6 +42,10 @@ class MacroCommands(PipeConnection):
         return self.request({"cmd": "macro_list"}, "macro_list")
 
     def macro_record_start(self, max_ticks: int = 0) -> dict[str, Any]:
+        """Record up to max_ticks; zero and larger values use the 200000 tick cap.
+
+        The limit stops recording and retains rows for ``macro_record_stop``.
+        """
         return self.request(
             {"cmd": "macro_rec_start", "max_ticks": int(max_ticks)}, "macro_rec_started"
         )

@@ -1,12 +1,9 @@
 #include "mod/Internal.h"
+#include "mod/MacroRecordModel.h"
 
 using namespace probe::detail;
 
 namespace probe {
-
-namespace {
-constexpr std::uint64_t MaxRecordedTicks = 200000;
-} // namespace
 
 void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
     auto in  = readInput(client);
@@ -41,17 +38,9 @@ void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
         // The pipe thread closes recording under the same mutex before taking
         // its snapshot. Re-checking here prevents a tick that observed the
         // old flag from appending after macro_rec_stop has begun.
-        if (!mMacroRecording.load(std::memory_order_relaxed)) {
-            return;
-        }
-        if (mRecordedMacro.size() < MaxRecordedTicks) {
-            mRecordedMacro.push_back(row);
-        }
-        auto max = mMacroRecordMax.load(std::memory_order_relaxed);
-        if (max != 0 && mRecordedMacro.size() >= max) {
-            mMacroRecording = false;
-            limitReached    = true;
-        }
+        limitReached = appendMacroRecording(
+            mRecordedMacro, row, mMacroRecordMax.load(std::memory_order_relaxed), mMacroRecording
+        );
     }
     if (limitReached) {
         enqueue(R"({"event":"macro_rec_limit"})");

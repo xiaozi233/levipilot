@@ -126,7 +126,7 @@ xmake -j4 -y
 | `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试（只有它会清效果） |
 | `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
-| `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存 |
+| `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存；有效上限最多 200000 tick，达到上限停止并保留数据 |
 
 `state` 关键字段：`x,y,z`（LocalPlayer 眼睛位置）、`feet_*`、`head_*`、`vx/vy/vz`、
 `yaw/pitch`、`on_ground`、`sprinting/sneaking/swimming/flying/mayfly/in_water/alive`、
@@ -190,10 +190,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **305/305**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **322/322**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **283/283**。常用实测数字：
+离线单测 **284/284**。常用实测数字：
+
+2026-10-31 宏硬上限修复：`--macro-limit-only` **17/17**，完整现场 **322/322**（无跳过），
+离线 **284/284**；原生模型覆盖真实 200000 条上限及零分配追加，现场验证配置、唯一终结、
+保存和错误参数保留缓冲。构建、静态检查与安装 DLL 一致性通过。
 
 2026-10-31 背包采样迁移：查询专项扩展为 **52/52**，完整现场 **305/305**（无跳过），
 新增背包 SEH/C++/超时的唯一终结、恢复和 busy 检查。离线、静态检查、完整构建通过，
@@ -244,6 +248,11 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   见 [`../docs/mod-internals.md`](../docs/mod-internals.md) 的「实测数字速查」。
 
 ## 限制
+
+- 宏录制 `max_ticks` 须为非负整数，省略/0/超过 200000 均使用 200000 tick 上限。
+  `macro_rec_started.max_ticks/hard_limit` 和 `macro_status.record_limit` 可查看实际限制；
+  到顶只发一次 `macro_rec_limit`，`recording=false`，之后仍可保存。参数验证与容量预留
+  先于替换录制数据，失败时保留原缓冲；录制帧追加不再增长 vector 容量。
 
 - `state/buttons/inventory/blocks/scan` 各有一个独占快照槽；重复在途请求返回对应 `*_busy`。
   除扫描外采样截止为 2 秒，扫描为 10 秒，超时回 `error/capture_timeout`；退出世界取消请求

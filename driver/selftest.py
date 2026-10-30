@@ -8,6 +8,7 @@
     py -3.11 driver/selftest.py --mod-core-live-only  # pipe/recording; no RE commands
     py -3.11 driver/selftest.py --use-lifecycle-only  # bounded server failure/recovery checks
     py -3.11 driver/selftest.py --query-capture-only  # snapshot faults and scan budget
+    py -3.11 driver/selftest.py --macro-limit-only  # bounded recording and retained rows
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
@@ -602,6 +603,84 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
     checks.check("query_handled_fault_no_dump", after == before)
 
 
+def check_macro_record_limits(client: ModClient, checks: Checks) -> None:
+    """Verify effective bounds and retained data without recording for hours."""
+    mod_dir = Path(str(client.status()["spool"])).parent
+    prefix = f"selftest_record_limit_{time.monotonic_ns()}"
+    paths: set[Path] = set()
+
+    def save(suffix: str) -> dict[str, Any]:
+        name = f"{prefix}_{suffix}"
+        paths.add(mod_dir / "macros" / f"{name}.json")
+        return client.macro_record_stop(name)
+
+    try:
+        for label, requested in (
+            ("omitted", None),
+            ("zero", 0),
+            ("boundary", 200000),
+            ("above", 200001),
+            ("uint64", (1 << 64) - 1),
+        ):
+            message: dict[str, Any] = {"cmd": "macro_rec_start"}
+            if requested is not None:
+                message["max_ticks"] = requested
+            started = client.request(message, "macro_rec_started")
+            status = client.macro_status()
+            checks.check(
+                f"macro_bound_{label}",
+                started.get("max_ticks") == 200000
+                and started.get("hard_limit") == 200000
+                and status.get("record_limit") == 200000
+                and status.get("recording") is True,
+            )
+            wait_ticks(client, 2)
+            saved = save(label)
+            checks.check(
+                f"macro_bound_{label}_save",
+                0 < int(saved.get("ticks", 0)) < 200000
+                and client.macro_status().get("recorded_ticks") == 0,
+            )
+
+        client.macro_record_start(3)
+        client.wait_event("macro_rec_limit", 3)
+        wait_ticks(client, 2)
+        status = client.macro_status()
+        checks.check(
+            "macro_bound_terminal",
+            status.get("recording") is False
+            and status.get("recorded_ticks") == 3
+            and status.get("record_limit") == 3,
+        )
+        duplicate = None
+        with contextlib.suppress(ModTimeout):
+            duplicate = client.wait_event("macro_rec_limit", 0.1)
+        checks.check("macro_bound_unique", duplicate is None)
+        for label, invalid in (("negative", -1), ("string", "bad"), ("fraction", 1.5)):
+            rejected = client.request({"cmd": "macro_rec_start", "max_ticks": invalid}, "error")
+            status = client.macro_status()
+            checks.check(
+                f"macro_bound_reject_{label}",
+                rejected.get("reason") == "bad_param"
+                and rejected.get("field") == "max_ticks"
+                and status.get("recorded_ticks") == 3
+                and status.get("recording") is False,
+            )
+        saved = save("terminal")
+        checks.check(
+            "macro_bound_terminal_save",
+            saved.get("ticks") == 3 and client.macro_status().get("recorded_ticks") == 0,
+        )
+        repeated = client.request({"cmd": "macro_rec_stop"}, "error")
+        checks.check("macro_bound_repeated_stop", repeated.get("reason") == "no_recorded_ticks")
+    finally:
+        with contextlib.suppress(ModPipeError):
+            if client.macro_status().get("recording"):
+                save("cleanup")
+        for path in paths:
+            path.unlink(missing_ok=True)
+
+
 def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
     """Cancel a real batched scan on disconnect/exit, then verify fresh queries."""
     original = client.state()
@@ -1159,6 +1238,11 @@ def main(argv: list[str] | None = None) -> int:
         help="check scan cancellation on reconnect/exit, then re-enter WORLD",
     )
     modes.add_argument(
+        "--macro-limit-only",
+        action="store_true",
+        help="check recording limit normalization, unique termination and buffered data preservation",
+    )
+    modes.add_argument(
         "--use-lifecycle-only",
         action="store_true",
         help="inject missing/failed server work and verify task termination/recovery in a world",
@@ -1212,15 +1296,18 @@ def main(argv: list[str] | None = None) -> int:
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
 
-    if args.query_capture_only or args.query_lifecycle_world:
+    if args.query_capture_only or args.query_lifecycle_world or args.macro_limit_only:
         try:
             client.input_lock(True)
-            if args.query_lifecycle_world:
+            if args.macro_limit_only:
+                check_macro_record_limits(client, checks)
+            elif args.query_lifecycle_world:
                 check_query_lifecycle(client, checks, args.query_lifecycle_world)
             else:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
-            checks.check("query_capture_error", False, str(exc))
+            name = "macro_limit_error" if args.macro_limit_only else "query_capture_error"
+            checks.check(name, False, str(exc))
         finally:
             with contextlib.suppress(ModPipeError):
                 client.input_lock(False)
@@ -1301,6 +1388,7 @@ def main(argv: list[str] | None = None) -> int:
         check_request_recovery(client, checks)
         check_task_lifecycle(client, checks)
         check_query_capture(client, checks)
+        check_macro_record_limits(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

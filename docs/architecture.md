@@ -43,6 +43,7 @@ scenario DSL / LLM / shell
 | `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
+| `MacroRecordModel.h` | 宏录制有效上限与唯一限长终结；不依赖游戏 SDK |
 | `Commands.cpp` | 单次 JSON 解析、领域分发、未知命令、请求级 SEH/异常隔离 |
 | `CommandDiagnostics.cpp` | 心跳、状态、版本诊断、panic、spool 与故障/开销自检命令 |
 | `CommandInspection.cpp` | 内存、watch、hook 命令的校验与分发 |

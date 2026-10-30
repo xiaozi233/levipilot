@@ -1,4 +1,5 @@
 #include "mod/Internal.h"
+#include "mod/MacroRecordModel.h"
 
 using namespace probe::detail;
 
@@ -192,6 +193,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         {
             std::lock_guard lock(mMacroSessionMutex);
             out["recorded_ticks"] = mRecordedMacro.size();
+            out["record_limit"] = macroRecordingLimit(mMacroRecordMax.load(std::memory_order_relaxed));
         }
         enqueue(out.dump());
         return true;
@@ -210,6 +212,15 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         return true;
     }
     if (cmd == "macro_rec_start") {
+        // Validate and reserve before replacing a buffered session. A bad
+        // parameter/allocation must not silently discard its recorded rows.
+        auto const value = j.value("max_ticks", nlohmann::json(0));
+        if (!value.is_number_integer()
+            || (!value.is_number_unsigned() && value.get<std::int64_t>() < 0)) {
+            enqueue(R"({"event":"error","reason":"bad_param","field":"max_ticks"})");
+            return true;
+        }
+        auto const limit = macroRecordingLimit(value.get<std::uint64_t>());
         {
             std::lock_guard lock(mMacroSessionMutex);
             if (mMacroRecording.load(std::memory_order_relaxed)) {
@@ -221,9 +232,10 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
                 enqueue(R"({"event":"error","reason":"macro_playing"})");
                 return true;
             }
+            mRecordedMacro.reserve(static_cast<std::size_t>(limit));
             mRecordedMacro.clear();
             ++mMacroRecordGeneration;
-            mMacroRecordMax = j.value("max_ticks", std::uint64_t{0});
+            mMacroRecordMax = limit;
             mHavePrevRotation = false;
             mMouseLeftLatch   = false;
             mMouseRightLatch  = false;
@@ -233,7 +245,9 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             mPrevActionRmb    = false;
             mMacroRecording   = true;
         }
-        enqueue(R"({"event":"macro_rec_started"})");
+        enqueue(nlohmann::json{
+            {"event", "macro_rec_started"}, {"max_ticks", limit}, {"hard_limit", MaxMacroRecordedTicks}
+        }.dump());
         return true;
     }
     if (cmd == "macro_rec_stop") {

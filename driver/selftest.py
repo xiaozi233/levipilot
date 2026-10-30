@@ -501,7 +501,7 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
     """Exercise the real fixed snapshot/SEH/consumer path, including bounded scans."""
     directory = Path(str(client.status()["spool"])).parent
     before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
-    for target in ("state", "buttons", "blocks", "scan"):
+    for target in ("state", "buttons", "inventory", "blocks", "scan"):
         for mode, reason in (
             ("seh", f"{target}_fault"),
             ("cpp", "capture_failed"),
@@ -529,6 +529,8 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
                 recovered = client.state()
             elif target == "buttons":
                 recovered = client.request({"cmd": "buttons"}, "buttons")
+            elif target == "inventory":
+                recovered = client.inventory()
             elif target == "blocks":
                 recovered = client.blocks([])
             else:
@@ -548,6 +550,20 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
         and "block_below" in partial,
     )
     checks.check("query_partial_recovers", client.state().get("partial") is False)
+
+    # Reserve the inventory slot long enough to verify explicit backpressure.
+    with client.exchange():
+        client.send({"cmd": "selftest_query_failure", "target": "inventory", "mode": "timeout"})
+        client.send({"cmd": "inventory"})
+        busy = client.wait_event("error", 3)
+        terminal = client.wait_event("error", 3)
+    checks.check(
+        "query_inventory_busy",
+        busy.get("reason") == "inventory_busy"
+        and terminal.get("reason") == "capture_timeout"
+        and terminal.get("phase") == "inventory"
+        and client.inventory().get("event") == "inventory",
+    )
 
     # 32768 air cells with limit=1 still require all 64 bounded batches.
     pose = client.state()

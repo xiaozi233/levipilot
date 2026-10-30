@@ -75,7 +75,11 @@ class QueryCommands(PipeConnection):
         return self.request({"cmd": "select_slot", "slot": int(slot)}, "select_slot_ok")
 
     def inventory(self) -> dict[str, Any]:
-        """Full inventory snapshot: slots, armor, offhand, selected slot."""
+        """Inventory snapshot: slots, armor, offhand and selected slot.
+
+        Up to 256 inventory slots; ``truncated`` reports text/slot limits.
+        The mod ends unserviced requests after 2 s and rejects a busy slot.
+        """
         return self.request({"cmd": "inventory"}, "inventory")
 
     def set_item(

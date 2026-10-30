@@ -169,6 +169,29 @@ inline bool isFatalSehCode(DWORD code) {
     }
 }
 
+// Only wrap lock-free, bounded game reads. Keep owning scopes outside this
+// raw SEH frame so /EHs never skips their destruction on an access violation.
+template <class Read>
+__declspec(noinline) bool gameReadWithSeh(Read const& read) {
+    __try {
+        read();
+        return true;
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
+template <class Read>
+bool guardedGameRead(Read const& read) {
+    HandledSehScope owner;
+    return gameReadWithSeh(read);
+}
+
+inline void injectCaptureFault(CaptureTest test) {
+    if (test == CaptureTest::Fault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    if (test == CaptureTest::Cpp) throw std::runtime_error("selftest query capture");
+}
+
 inline constexpr wchar_t PipeName[] = L"\\\\.\\pipe\\mcbe-harness";
 inline constexpr DWORD   PipeBuffer = 1 << 16;
 
@@ -216,6 +239,9 @@ bool        parseFloat(std::string const& text, float& out);
 std::string formatFloat(float value);
 
 nlohmann::json itemJson(ItemStack const& item);
+// Snapshot copying runs on the item's owning thread; formatting is cold-side.
+void captureItem(ItemStack const& item, ItemSnapshot& out, bool& truncated);
+nlohmann::json itemJson(ItemSnapshot const& item);
 bool makeItemStack(Level& level, std::string const& name, int count, int aux, ItemStack& out, std::string& error);
 
 std::string blockName(BlockSource const& source, int x, int y, int z);

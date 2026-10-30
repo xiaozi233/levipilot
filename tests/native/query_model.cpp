@@ -166,6 +166,37 @@ void scans() {
     assert(std::string_view(out.error) == "bad_region");
 }
 
+void inventoryPublication() {
+    auto capture = std::make_unique<InventoryCapture>();
+    auto const baseline = allocations.load();
+    assert(capture->begin({}, 0, 2000));
+    capture->advance([](auto const&, InventorySnapshot& out) {
+        out.size = static_cast<int>(InventorySnapshot::Capacity);
+        out.count = InventorySnapshot::Capacity;
+        out.slots.back().present = true;
+        out.slots.back().type.assign("minecraft:stone");
+        out.slots.back().name.assign("stone");
+        out.slots.back().count = 64;
+        out.offhand.present = true;
+        out.offhand.type.assign("minecraft:shield");
+        return true;
+    });
+    {
+        auto done = capture->take(1);
+        assert(done && !done.error);
+        auto const& out = done.snapshot();
+        assert(out.count == InventorySnapshot::Capacity && out.slots.back().count == 64);
+        assert(!out.slots.front().present && out.offhand.type.view() == "minecraft:shield");
+    }
+    assert(capture->begin({}, 2, 2000));
+    capture->advance([](auto const&, InventorySnapshot& out) {
+        assert(out.count == 0 && !out.slots.back().present && !out.offhand.present);
+        return true;
+    });
+    assert(capture->take(3));
+    assert(allocations.load() == baseline);
+}
+
 void publication() {
     StateCapture capture;
     std::atomic_bool stop{false};
@@ -212,5 +243,6 @@ int main() {
     runningCancellation(false);
     runningCancellation(true);
     scans();
+    inventoryPublication();
     publication();
 }

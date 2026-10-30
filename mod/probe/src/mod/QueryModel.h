@@ -10,6 +10,13 @@ struct CaptureRequest {
     CaptureTest test = CaptureTest::None;
 };
 
+struct ItemSnapshot {
+    FixedText<256>  type;
+    FixedText<4096> name;
+    int             count = 0, aux = 0;
+    bool            present = false;
+};
+
 struct StateSnapshot {
     struct Vec {
         float x = 0, y = 0, z = 0;
@@ -26,12 +33,7 @@ struct StateSnapshot {
         int  id = 0, duration = 0, amplifier = 0;
         bool ambient = false;
     };
-    struct Item {
-        FixedText<256>  type;
-        FixedText<4096> name;
-        int             count = 0, aux = 0;
-        bool            present = false;
-    } item;
+    ItemSnapshot                  item;
     std::array<Effect, 128>       effects{};
     std::size_t                   effectCount = 0;
     FixedText<1024>               name;
@@ -55,6 +57,18 @@ struct ButtonSnapshot {
     std::size_t                    count     = 0;
     bool                           haveQueue = false, queue = false, truncated = false;
     char const*                    error = nullptr;
+};
+
+struct InventorySnapshot {
+    static constexpr std::size_t       Capacity = 256;
+    std::array<ItemSnapshot, Capacity> slots{};
+    std::array<ItemSnapshot, 8>        armor{};
+    ItemSnapshot                       offhand;
+    std::size_t                        count = 0, armorCount = 0;
+    int                                size = 0, selectedSlot = 0;
+    bool                               truncated = false;
+    char const*                        error     = nullptr;
+    std::uint32_t                      sampleUs  = 0;
 };
 
 struct BlockPoint {
@@ -147,9 +161,10 @@ bool advanceScan(ScanQuery const& request, ScanSnapshot& out, std::uint64_t tick
     return out.visited == total;
 }
 
-using StateCapture  = SnapshotMailbox<CaptureRequest, StateSnapshot>;
-using ButtonCapture = SnapshotMailbox<CaptureRequest, ButtonSnapshot>;
-using BlockCapture  = SnapshotMailbox<BlockRequest, BlockSnapshot>;
-using ScanCapture   = SnapshotMailbox<ScanQuery, ScanSnapshot>;
+using StateCapture     = SnapshotMailbox<CaptureRequest, StateSnapshot>;
+using ButtonCapture    = SnapshotMailbox<CaptureRequest, ButtonSnapshot>;
+using InventoryCapture = SnapshotMailbox<CaptureRequest, InventorySnapshot>;
+using BlockCapture     = SnapshotMailbox<BlockRequest, BlockSnapshot>;
+using ScanCapture      = SnapshotMailbox<ScanQuery, ScanSnapshot>;
 
 } // namespace probe::detail

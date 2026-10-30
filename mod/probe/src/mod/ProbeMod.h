@@ -327,7 +327,7 @@ private:
         detail::CaptureRequest const& request,
         detail::StateSnapshot&        out
     );
-    void captureInventory(LocalPlayer& player);
+    void captureInventory(LocalPlayer& player, detail::CaptureRequest const& request, detail::InventorySnapshot& out);
     void applyEntityAction(LocalPlayer& player, EntityAction const& action);
     void applyEcs(LocalPlayer& player, EcsRequest const& request);
     // Runtime-id ECS requests resolve server-side actors; they run on the
@@ -523,9 +523,9 @@ private:
     detail::ButtonCapture mButtonCapture;
     detail::BlockCapture  mBlockCapture;
     detail::ScanCapture   mScanCapture;
+    detail::InventoryCapture mInventoryCapture;
     // UI work owns a bounded snapshot; the spool consumer owns timeout and JSON.
     detail::ChatCapture mChatCapture;
-    std::atomic_bool            mInventoryRequested{false};
     std::mutex                  mEntityActionMutex;
     std::optional<EntityAction> mEntityAction;
     std::mutex                  mEcsMutex;

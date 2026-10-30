@@ -24,7 +24,7 @@ py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 跳过项会减少执行数；2026-10-31 完整基线是 295/295
+# 跳过项会减少执行数；2026-10-31 完整基线是 305/305
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
@@ -214,7 +214,7 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **295/295**
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **305/305**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-31 全套，无跳过）、
 离线单测 **283/283**、ruff/mypy（driver+tests）全绿。审阅修复进度见
 [`docs/reliability-repairs.md`](docs/reliability-repairs.md)，其余项目仍待推进。
@@ -235,7 +235,7 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 
 - ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化
   （下一个候选：宏管理器 `mMacro*`，跨 5 个 TU）
-- 查询快照已覆盖 state/buttons/blocks/scan；inventory/legacy JSON/跑酷事件/宏等 tick 路径仍待治理
+- 查询快照已覆盖 state/buttons/inventory/blocks/scan；实体前置读取/快捷栏回执/legacy JSON/跑酷事件/宏等 tick 路径仍待治理
 - `Overhead.cpp` 统计环的普通字段并发读写迁成原子载荷后再用于性能比较
 - `mEntryInFlight` 看门狗（UseTask 5 秒截止、chat_history 2 秒超时已完成并现场验收）
 - `mButtonStates/mHandlerStates` 数组的跨线程写（并入 RequestBlock 或走 client 任务）

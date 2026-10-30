@@ -29,6 +29,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         bool       accepted = false;
         if (target == "state") accepted = mStateCapture.begin({test}, now, 250);
         else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, 250);
+        else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, 250);
         else if (target == "blocks") {
             BlockRequest request;
             request.test = test;
@@ -150,7 +151,8 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
         } else {
-            mInventoryRequested = true;
+            if (!mInventoryCapture.begin({}, GetTickCount64(), 2000))
+                enqueue(R"({"event":"error","reason":"inventory_busy"})");
         }
         return true;
     }

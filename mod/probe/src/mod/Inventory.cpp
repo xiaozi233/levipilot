@@ -34,32 +34,34 @@ void ProbeMod::applySlotRequest(LocalPlayer& player, int slot) {
 }
 
 
-void ProbeMod::captureInventory(LocalPlayer& player) {
-    nlohmann::json out;
-    out["event"]         = "inventory";
-    out["selected_slot"] = player.getSelectedItemSlot();
-
-    auto& inventory = player.getInventory();
-    int   size      = inventory.getContainerSize();
-    out["size"]     = size;
-    out["slots"]    = nlohmann::json::array();
-    for (int i = 0; i < size; ++i) {
-        out["slots"].push_back({
-            {"slot", i                             },
-            {"item", itemJson(inventory.getItem(i))},
-        });
-    }
-
-    out["armor"] = nlohmann::json::array();
-    for (int i = 0; i < static_cast<int>(SharedTypes::Legacy::ArmorSlot::HumanoidCount); ++i) {
-        out["armor"].push_back({
-            {"slot", i                                                                        },
-            {"item", itemJson(player.getArmor(static_cast<SharedTypes::Legacy::ArmorSlot>(i)))},
-        });
-    }
-    out["offhand"] = itemJson(player.getOffhandSlot());
-
-    enqueue(out.dump());
+void ProbeMod::captureInventory(LocalPlayer& player, CaptureRequest const& request, InventorySnapshot& out) {
+    auto const start = qpcNow();
+    if (!guardedGameRead([&] {
+            injectCaptureFault(request.test);
+            out.selectedSlot = player.getSelectedItemSlot();
+            auto& inventory  = player.getInventory();
+            out.size         = inventory.getContainerSize();
+            if (out.size < 0) {
+                out.error = "inventory_size_invalid";
+                return;
+            }
+            out.count     = std::min(static_cast<std::size_t>(out.size), out.slots.size());
+            out.truncated = out.count != static_cast<std::size_t>(out.size);
+            for (std::size_t i = 0; i < out.count; ++i)
+                captureItem(inventory.getItem(static_cast<int>(i)), out.slots[i], out.truncated);
+            constexpr auto armorCount = static_cast<std::size_t>(SharedTypes::Legacy::ArmorSlot::HumanoidCount);
+            static_assert(armorCount <= std::tuple_size_v<decltype(out.armor)>);
+            out.armorCount = armorCount;
+            for (std::size_t i = 0; i < out.armorCount; ++i)
+                captureItem(
+                    player.getArmor(static_cast<SharedTypes::Legacy::ArmorSlot>(i)),
+                    out.armor[i],
+                    out.truncated
+                );
+            captureItem(player.getOffhandSlot(), out.offhand, out.truncated);
+        }))
+        out.error = "inventory_fault";
+    out.sampleUs = static_cast<std::uint32_t>(std::min<std::uint64_t>(qpcElapsedUs(start, qpcNow()), UINT32_MAX));
 }
 
 
@@ -188,7 +190,7 @@ void ProbeMod::queueEquip(std::string const& target, int slot) {
         } else if (target != "offhand") {
             enqueue(
                 nlohmann::json{
-                    {"event",  "error"},
+                    {"event",  "error"           },
                     {"reason", "bad_equip_target"},
             }
                     .dump()
@@ -206,10 +208,10 @@ void ProbeMod::queueEquip(std::string const& target, int slot) {
 
         enqueue(
             nlohmann::json{
-                {"event",  "equip_done"     },
-                {"target", target           },
-                {"slot",   srcSlot          },
-                {"item",   itemJson(stack)  },
+                {"event",  "equip_done"   },
+                {"target", target         },
+                {"slot",   srcSlot        },
+                {"item",   itemJson(stack)},
         }
                 .dump()
         );

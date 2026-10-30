@@ -190,10 +190,14 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **295/295**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **305/305**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
 离线单测 **283/283**。常用实测数字：
+
+2026-10-31 背包采样迁移：查询专项扩展为 **52/52**，完整现场 **305/305**（无跳过），
+新增背包 SEH/C++/超时的唯一终结、恢复和 busy 检查。离线、静态检查、完整构建通过，
+安装 DLL 与构建产物 SHA-256 一致。
 
 2026-10-31 查询采样改造：`--query-capture-only` **42/42**，
 `--query-lifecycle-world "超平坦测试"` **9/9**；真实扫描在重连/退出时取消、主菜单拒绝、
@@ -241,13 +245,15 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 
 ## 限制
 
-- `state/buttons/blocks/scan` 各有一个独占快照槽；重复在途请求返回对应 `*_busy`。
-  前三者采样截止为 2 秒，扫描为 10 秒，超时回 `error/capture_timeout`；退出世界取消请求
+- `state/buttons/inventory/blocks/scan` 各有一个独占快照槽；重复在途请求返回对应 `*_busy`。
+  除扫描外采样截止为 2 秒，扫描为 10 秒，超时回 `error/capture_timeout`；退出世界取消请求
   （`error/world_left`），断连丢弃旧的在途快照。`state` 保留既有字段并增加
   `partial/truncated/warnings/sample_us`；局部方块读取失败会明确标记部分结果。
   `scan` 增加 `visited/batches/batch_limit/max_batch_us/first_tick/last_tick`，结果数量
   截断时标记 `truncated_reason=result_limit`。扫描跨多个 tick，期间世界可能变化；
   格式化移出游戏线程不等于所有 SDK 名称读取和其他采样路径都已零分配。
+  `inventory` 保留原字段，背包槽最多返回 256 个；槽位或文本截断时标记 `truncated`，
+  另带 `sample_us`。普通 36 格背包完整返回；快照固定约 1.1 MiB。
 
 - `chat_history` 使用平台主线程队列；主菜单回 `ok=false,reason=no_player`，等待超过
   2 秒回 `chat_history_timeout` 并自动恢复。退出世界会取消在途请求（`world_left`），

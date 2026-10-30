@@ -5,27 +5,6 @@ using namespace probe::detail;
 namespace probe {
 namespace {
 
-template <class Capture>
-__declspec(noinline) bool queryWithSeh(Capture const& capture) {
-    __try {
-        capture();
-        return true;
-    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-        return false;
-    }
-}
-
-template <class Capture>
-bool guardedQuery(Capture const& capture) {
-    HandledSehScope sehOwner;
-    return queryWithSeh(capture);
-}
-
-void injectQueryFault(CaptureTest test) {
-    if (test == CaptureTest::Fault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
-    if (test == CaptureTest::Cpp) throw std::runtime_error("selftest query capture");
-}
-
 template <std::size_t N>
 void copyText(FixedText<N>& out, std::string_view text, bool& truncated) {
     out.assign(text);
@@ -37,8 +16,8 @@ StateSnapshot::Vec vectorSnapshot(Vec3 const& value) {
 }
 
 bool readBlock(LocalPlayer& player, BlockRow& row, bool& truncated, bool fault = false) {
-    return guardedQuery([&] {
-        if (fault) injectQueryFault(CaptureTest::Fault);
+    return guardedGameRead([&] {
+        if (fault) injectCaptureFault(CaptureTest::Fault);
         auto const& block = player.getDimensionBlockSourceConst().getBlock(BlockPos{row.pos.x, row.pos.y, row.pos.z});
         copyText(row.name, block.getTypeName(), truncated);
         row.address = reinterpret_cast<std::uint64_t>(&block);
@@ -114,13 +93,7 @@ nlohmann::json stateJson(StateSnapshot const& s) {
     constexpr char const* attributes[] = {"hunger", "saturation", "exhaustion", "xp_level", "xp_progress"};
     for (std::size_t i = 0; i < s.attributes.size(); ++i)
         if (s.haveAttribute[i]) out[attributes[i]] = s.attributes[i];
-    if (s.item.present)
-        out["item"] = {
-            {"type",  s.item.type.c_str()},
-            {"name",  s.item.name.c_str()},
-            {"count", s.item.count       },
-            {"aux",   s.item.aux         }
-        };
+    out["item"] = itemJson(s.item);
     for (std::size_t i = 0; i < s.effectCount; ++i) {
         auto const& effect = s.effects[i];
         out["effects"].push_back({
@@ -146,8 +119,8 @@ void ProbeMod::captureState(
     StateSnapshot&        out
 ) {
     auto const start = qpcNow();
-    auto const ok    = guardedQuery([&] {
-        injectQueryFault(request.test);
+    auto const ok    = guardedGameRead([&] {
+        injectCaptureFault(request.test);
         out.tick       = mTick.load(std::memory_order_relaxed);
         out.pos        = vectorSnapshot(player.getPosition());
         out.feet       = vectorSnapshot(player.getFeetPos());
@@ -212,14 +185,7 @@ void ProbeMod::captureState(
             mBindings.jump,
             mBindings.sprint
         };
-        auto const& item = player.getSelectedItem();
-        if (!item.isNull()) {
-            out.item.present = true;
-            copyText(out.item.type, item.getTypeName(), out.truncated);
-            copyText(out.item.name, item.getName(), out.truncated);
-            out.item.count = static_cast<int>(item.mCount);
-            out.item.aux   = static_cast<int>(item.mAuxValue);
-        }
+        captureItem(player.getSelectedItem(), out.item, out.truncated);
         out.itemUseTicks = player.getItemUseDuration();
         auto const empty = static_cast<uint>(MobEffectInstance::NO_EFFECT().mId);
         for (auto const& effect : player.getAllEffects()) {
@@ -263,8 +229,8 @@ void ProbeMod::captureState(
 }
 
 void ProbeMod::captureButtons(ClientInstance& client, CaptureRequest const& request, ButtonSnapshot& out) {
-    if (!guardedQuery([&] {
-            injectQueryFault(request.test);
+    if (!guardedGameRead([&] {
+            injectCaptureFault(request.test);
             auto  input   = client.getMinecraftInput();
             auto* handler = input ? input->mInputHandler.get() : nullptr;
             if (!handler) return;
@@ -282,8 +248,8 @@ void ProbeMod::captureButtons(ClientInstance& client, CaptureRequest const& requ
 }
 
 void ProbeMod::captureBlocks(LocalPlayer& player, BlockRequest const& request, BlockSnapshot& out) {
-    if (!guardedQuery([&] {
-            injectQueryFault(request.test);
+    if (!guardedGameRead([&] {
+            injectCaptureFault(request.test);
             for (std::size_t i = 0; i < request.count; ++i) {
                 auto& row = out.rows[out.count];
                 row.pos   = request.positions[i];
@@ -300,8 +266,8 @@ void ProbeMod::captureBlocks(LocalPlayer& player, BlockRequest const& request, B
 bool ProbeMod::captureScan(LocalPlayer& player, ScanQuery const& request, ScanSnapshot& out) {
     auto const start = qpcNow();
     bool       done  = true;
-    if (!guardedQuery([&] {
-            injectQueryFault(request.test);
+    if (!guardedGameRead([&] {
+            injectCaptureFault(request.test);
             done = advanceScan(request, out, mTick.load(std::memory_order_relaxed), [&](BlockRow& row) {
                 return readBlock(player, row, out.namesTruncated);
             });
@@ -319,12 +285,14 @@ void ProbeMod::resetQueries() {
     mButtonCapture.reset();
     mBlockCapture.reset();
     mScanCapture.reset();
+    mInventoryCapture.reset();
 }
 void ProbeMod::cancelQueries(char const* reason) {
     mStateCapture.cancel(reason);
     mButtonCapture.cancel(reason);
     mBlockCapture.cancel(reason);
     mScanCapture.cancel(reason);
+    mInventoryCapture.cancel(reason);
 }
 
 void ProbeMod::drainQueries() {
@@ -361,6 +329,33 @@ void ProbeMod::drainQueries() {
             };
             for (std::size_t i = 0; i < s.count; ++i) out["ids"].push_back(s.ids[i]);
             if (s.haveQueue) out["queue"] = s.queue;
+            publish(done, std::move(out));
+        }
+    }
+    if (auto done = mInventoryCapture.take(now)) {
+        auto const& s = done.snapshot();
+        if (auto error = done.error ? done.error : s.error) emitFailure(done, "inventory", error);
+        else {
+            nlohmann::json out{
+                {"event",         "inventory"            },
+                {"selected_slot", s.selectedSlot         },
+                {"size",          s.size                 },
+                {"slots",         nlohmann::json::array()},
+                {"armor",         nlohmann::json::array()},
+                {"offhand",       itemJson(s.offhand)    },
+                {"truncated",     s.truncated            },
+                {"sample_us",     s.sampleUs             }
+            };
+            for (std::size_t i = 0; i < s.count; ++i)
+                out["slots"].push_back({
+                    {"slot", i                   },
+                    {"item", itemJson(s.slots[i])}
+                });
+            for (std::size_t i = 0; i < s.armorCount; ++i)
+                out["armor"].push_back({
+                    {"slot", i                   },
+                    {"item", itemJson(s.armor[i])}
+                });
             publish(done, std::move(out));
         }
     }

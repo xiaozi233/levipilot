@@ -120,6 +120,23 @@ nlohmann::json itemJson(ItemStack const& item) {
     };
 }
 
+void captureItem(ItemStack const& item, ItemSnapshot& out, bool& truncated) {
+    if (item.isNull()) return;
+    out.present = true;
+    auto const& type = item.getTypeName();
+    auto const& name = item.getName();
+    out.type.assign(type);
+    out.name.assign(name);
+    out.count = static_cast<int>(item.mCount);
+    out.aux = static_cast<int>(item.mAuxValue);
+    truncated = truncated || out.type.view().size() != type.size() || out.name.view().size() != name.size();
+}
+
+nlohmann::json itemJson(ItemSnapshot const& item) {
+    if (!item.present) return nullptr;
+    return {{"type", item.type.c_str()}, {"name", item.name.c_str()}, {"count", item.count}, {"aux", item.aux}};
+}
+
 bool makeItemStack(Level& level, std::string const& name, int count, int aux, ItemStack& out, std::string& error) {
     if (count <= 0) {
         out = ItemStack{};

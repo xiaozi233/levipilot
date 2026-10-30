@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **283/283**，现场 **295/295**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **283/283**，现场 **305/305**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -32,13 +32,13 @@
 
 ## 查询采样（2026-10-31）
 
-`State.cpp` 的 `state/buttons/blocks/scan` 使用 `QueryModel.h` 定长载荷与
+`state/buttons/inventory/blocks/scan` 使用 `QueryModel.h` 定长载荷与
 `SnapshotMailbox.h` 单槽所有权。管道提交不再增长方块查询 vector；tick 用 CAS 推进，
 只采样固定存储；spool 每 25 ms 消费、生成 JSON 并送入传输队列。消费格式化期间仍独占
 快照，发送前释放槽，避免快速客户端收到完成事件后立即重提却误报 busy。
 取消/重连不会覆盖仍运行的批次或仍在格式化的快照。
 
-- 请求不合并：同一领域在途时回 `*_busy`。state/buttons/blocks 2 秒、scan 10 秒 wall-clock
+- 请求不合并：同一领域在途时回 `*_busy`。state/buttons/inventory/blocks 2 秒、scan 10 秒 wall-clock
   截止；无游戏 tick 时 spool 仍可终结等待，但不会抢占已经运行的有界采样批次。
 - 危险读取在局部 `__try/__except` 返回之后才释放拥有者；受控异常由线程归属标记避免
   first-chance VEH 误报 dump。整条采样失败回 `error`，带 `reason` 和目标 `phase`。
@@ -46,7 +46,7 @@
 - 文本按 UTF-8 边界截断：玩家名 1023 字节、物品类型/方块名 255 字节、物品显示名
   4095 字节；effects 最多 128 条、buttons 最多 512 条、blocks 最多 256 条，均显式报告截断。
   SDK `getRealName/getTypeName/getName` 返回 owning string，仍可能分配；本批只迁移
-  自有 JSON/传输工作，未宣称所有游戏访问器零分配，也未覆盖 inventory/legacy/宏等路径。
+  自有 JSON/传输工作，未宣称所有游戏访问器零分配，也未覆盖快捷栏回执/legacy/宏等路径。
 - scan 每次最多访问 512 格，即使过滤 air 且 limit 很小也遵守预算。保持 x 最快、再 y、
   再 z；32768 格最多 64 批。仅发现第 limit+1 个匹配项才报告结果截断，恰好 limit 条
   不误报。固定结果区约 4.4 MiB，不在游戏栈上构造多 MiB 临时量；后台清零和格式化。
@@ -77,7 +77,17 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 ## 物品栏
 
 - 读：客户端 `LocalPlayer` 的 `Inventory`（slots）、`getArmor(ArmorSlot)`、`getOffhandSlot()`，
-  在 tick 之后采样。
+  在 tick 之后采样到定长快照，spool 格式化。请求独占槽位，超时/取消和其余查询一致。
+  容量为 256 个背包槽及固定盔甲/副手，约 1.1 MiB；保留真实 `size`，槽位或文字超出
+  容量时显式 `truncated=true`。普通 36 格背包完整返回，增加 `sample_us`。
+  状态/背包共用 `ItemSnapshot` 复制与冷侧 JSON 格式化；游戏对象不会交给消费者。
+  快捷栏选择回执仍走旧路径，本次迁移不包含它。
+- 背包后续验收：查询专项 **52/52**，完整现场 **305/305**（无跳过），离线 **283/283**；
+  覆盖五类查询的 SEH/C++/超时、唯一终结、恢复，另有背包占用拒绝。原生模型验证
+  256 个槽位中的首/尾和副手发布、下一请求清空旧物品及基础设施零分配。
+  完整构建、ruff check/format、mypy、profile 一致性通过。安装与构建 DLL SHA-256 均为
+  `5642ED2CEDBE5BBDD49A1958B7DAB153D515BA72FD77C907667A9FDA2159A8E2`。
+  日志：`out/reliability-inventory-{unit,live,full-live,build,restart}.log`。
 - 写：服务器线程拿到服务端 `Player`，用 `Inventory::setItem` / `Player::setArmor` /
   `setOffhandSlot` 修改，再 `sendInventory(true)` 同步回客户端。
 - 物品解析：`Level::getItemRegistry().lookupByName(aux, name)` →
@@ -652,7 +662,7 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **295/295**
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **305/305**
 （`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **283/283**。
 
 ### 客户端 I/O（2026-10-28；离线）

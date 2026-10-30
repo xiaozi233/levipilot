@@ -33,7 +33,7 @@ scenario DSL / LLM / shell
 | `Chat.cpp` | 客户端线程聊天快照、定长 mailbox 与后台 JSON 格式化 |
 | `SnapshotMailbox.h` / `QueryModel.h` | 请求独享的定长查询快照、取消/超时和分批扫描模型；不依赖游戏 SDK |
 | `State.cpp` | `state`、`buttons`、`blocks`、`scan` 的游戏线程采样与后台 JSON 格式化 |
-| `Inventory.cpp` | 背包快照与写入、give/clear、快捷栏选择 |
+| `Inventory.cpp` | 背包定长采样与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `Server.cpp` | 服务端权威传送 |
 | `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
@@ -104,19 +104,22 @@ scenario DSL / LLM / shell
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
 重入控制器；游戏调用不得同步等待另一个需要任务锁的线程。
 
-`state/buttons/blocks/scan` 各有一个预分配 `SnapshotMailbox`，生命周期为
+`state/buttons/inventory/blocks/scan` 各有一个预分配 `SnapshotMailbox`，生命周期为
 `Idle → Pending → Capturing → Ready → Consuming → Idle`。管道线程提交，游戏线程用 CAS
 取得独占快照并采样，spool 线程取得完成快照后格式化；采样不取得控制锁，也不访问传输队列。
 控制锁只串行化提交、取消、超时及消费回收；取消/断连不会复用仍在采样或格式化的存储。
-重复请求返回对应 `*_busy`，`state/buttons/blocks` 有 2 秒截止，`scan` 为 10 秒。
+重复请求返回对应 `*_busy`，`state/buttons/inventory/blocks` 有 2 秒截止，`scan` 为 10 秒。
 退出世界取消未完成请求；新连接丢弃旧的在途快照，已进入传输队列的历史行仍遵循原 replay 契约。
 
 危险的游戏读取由局部 SEH 边界转成失败结果，C++ 异常由 mailbox 转成 `capture_failed`；
 不把 SEH 包在持锁的整个 tick 外层。`state` 的方块字段失败以 `partial/warnings` 表示。
 `scan` 按 x/y/z 顺序每 tick 至多读 512 格，总量 32768 格、结果最多 16384 条；响应标明
 `first_tick/last_tick`，因此它是跨 tick 扫描，不能用于证明同一 tick 的原子世界快照。
-扫描存储固定占约 4.4 MiB；游戏 SDK 的玩家/物品名称访问器仍可能分配，背包与 legacy JSON
-等其他路径也尚未迁移，不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
+扫描存储固定占约 4.4 MiB，背包快照约 1.1 MiB。背包保留 slots/armor/offhand/selected_slot
+字段，最多采样 256 个背包槽，文本/槽位截断时标记 `truncated`。物品复制与格式化共用
+`ItemSnapshot`，其中只有复制可触碰游戏对象；`guardedGameRead` 统一局部 SEH 规则。
+游戏 SDK 的玩家/物品名称访问器仍可能分配，快捷栏回执、实体前置读取、legacy JSON 等
+其他路径也尚未迁移，不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
 
 ## 任务生命周期
 

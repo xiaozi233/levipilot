@@ -665,9 +665,11 @@ void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
         captureButtons(client, request, out);
         return true;
     });
-    if (mInventoryRequested.exchange(false)) {
-        captureInventory(player);
-    }
+    mInventoryCapture.advance([&](auto const& request, auto& out) {
+        if (request.test == CaptureTest::Deferred) return false;
+        captureInventory(player, request, out);
+        return true;
+    });
     {
         std::optional<EntityAction> action;
         {

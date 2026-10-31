@@ -69,20 +69,16 @@ void ProbeMod::queueInventoryWrite(
         enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
         return;
     }
-    std::string name;
-    {
-        std::lock_guard lock(mPlayerNameMutex);
-        name = mLocalPlayerName;
-    }
-    if (name.empty()) {
+    auto const identity = localPlayerIdentity();
+    if (!identity.valid) {
         enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
         return;
     }
 
-    queueServerTask([this, name, container, slot, itemName, count, aux] {
-        auto    minecraft = ll::service::bedrock::getMinecraft();
-        Level*  level     = minecraft ? minecraft->getLevel() : nullptr;
-        Player* player    = (level != nullptr) ? level->getPlayer(name) : nullptr;
+    queueServerTask([this, identity, container, slot, itemName, count, aux] {
+        auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
+        auto* level = context.level;
+        auto* player = context.player;
         if (player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
@@ -139,20 +135,15 @@ void ProbeMod::queueEquip(std::string const& target, int slot) {
         enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
         return;
     }
-    std::string name;
-    {
-        std::lock_guard lock(mPlayerNameMutex);
-        name = mLocalPlayerName;
-    }
-    if (name.empty()) {
+    auto const identity = localPlayerIdentity();
+    if (!identity.valid) {
         enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
         return;
     }
 
-    queueServerTask([this, name, target, slot] {
-        auto    minecraft = ll::service::bedrock::getMinecraft();
-        Level*  level     = minecraft ? minecraft->getLevel() : nullptr;
-        Player* player    = (level != nullptr) ? level->getPlayer(name) : nullptr;
+    queueServerTask([this, identity, target, slot] {
+        auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
+        auto* player = context.player;
         if (player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
@@ -216,20 +207,16 @@ void ProbeMod::queueGive(std::string const& itemName, int count, int aux) {
         enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
         return;
     }
-    std::string name;
-    {
-        std::lock_guard lock(mPlayerNameMutex);
-        name = mLocalPlayerName;
-    }
-    if (name.empty()) {
+    auto const identity = localPlayerIdentity();
+    if (!identity.valid) {
         enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
         return;
     }
 
-    queueServerTask([this, name, itemName, count, aux] {
-        auto    minecraft = ll::service::bedrock::getMinecraft();
-        Level*  level     = minecraft ? minecraft->getLevel() : nullptr;
-        Player* player    = (level != nullptr) ? level->getPlayer(name) : nullptr;
+    queueServerTask([this, identity, itemName, count, aux] {
+        auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
+        auto* level = context.level;
+        auto* player = context.player;
         if (player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
@@ -268,20 +255,15 @@ void ProbeMod::queueClearInventory() {
         enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
         return;
     }
-    std::string name;
-    {
-        std::lock_guard lock(mPlayerNameMutex);
-        name = mLocalPlayerName;
-    }
-    if (name.empty()) {
+    auto const identity = localPlayerIdentity();
+    if (!identity.valid) {
         enqueue(R"({"event":"error","reason":"inventory_player_unknown"})");
         return;
     }
 
-    queueServerTask([this, name] {
-        auto    minecraft = ll::service::bedrock::getMinecraft();
-        Level*  level     = minecraft ? minecraft->getLevel() : nullptr;
-        Player* player    = (level != nullptr) ? level->getPlayer(name) : nullptr;
+    queueServerTask([this, identity] {
+        auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
+        auto* player = context.player;
         if (player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;

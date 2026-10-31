@@ -174,10 +174,46 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         );
         return true;
     }
+    if (cmd == "selftest_player_identity") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        if (mode == "remember") {
+            auto const identity = localPlayerIdentity();
+            if (!identity.valid) { enqueue(R"({"event":"error","reason":"identity_unavailable"})"); return true; }
+            mPlayerIdentityRemembered = identity;
+            enqueue(nlohmann::json{{"event", "identity_remembered"}, {"epoch", identity.epoch}}.dump());
+        } else if (mode == "resolve") {
+            auto const identity = mPlayerIdentityRemembered;
+            queueServerTask([this, identity] {
+                auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
+                enqueue(nlohmann::json{{"event", "identity_resolved"}, {"ok", context.player != nullptr},
+                    {"epoch", identity.epoch}, {"current_epoch", mPoseEpoch.load()}}.dump());
+            });
+        } else {
+            if (!mWorld.inWorld()) { enqueue(R"({"event":"error","reason":"not_in_world"})"); return true; }
+            CaptureTest test;
+            if (mode == "seh") test = CaptureTest::Fault;
+            else if (mode == "cpp") test = CaptureTest::Cpp;
+            else if (mode == "zero") test = CaptureTest::Partial;
+            else if (mode == "off") test = CaptureTest::None;
+            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            mPlayerIdentityTest = test;
+            enqueue(R"({"event":"identity_test_armed"})");
+        }
+        return true;
+    }
     if (cmd == "status") {
         nlohmann::json out;
         out["event"]           = "status";
         out["in_world"]        = mWorld.inWorld();
+        auto const identity = localPlayerIdentity();
+        auto const identityFailures = mPlayerIdentity.failures();
+        out["player_identity"] = {{"valid", identity.valid != 0}, {"epoch", mPoseEpoch.load()},
+            {"sample_tick", identity.tick}, {"uuid_a", identity.uuidA}, {"uuid_b", identity.uuidB},
+            {"faults", identityFailures.fault}, {"failures", identityFailures.cpp}, {"empty", identityFailures.empty}};
         out["world_entry"]     = mWorld.entryStatus();
         out["recording"]       = mLegacyStream.active();
         out["tick"]                  = mTick.load();

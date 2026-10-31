@@ -124,7 +124,7 @@ xmake -j4 -y
 | `input_lock` | `on`；锁住真实硬件键鼠与相机转向（注入照常），见「限制」 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威；**不动药水效果** |
 | `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试（只有它会清效果） |
-| `command` | `command`（可带 `/`）；服务器线程执行，保留 `@s`/`~` |
+| `command` | `command`（可带 `/`）、`player?`；服务端线程以本地 UUID 或显式完整玩家名执行，保留 `@s`/`~`；身份未知/玩家不存在明确失败，不改用控制台 |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
 | `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存；有效上限最多 200000 tick，达到上限停止并保留数据 |
 
@@ -197,10 +197,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **663/663**（跑之前先 `clear @s` 清空快捷栏，否则
+当前基线：live selftest **698/698**（跑之前先 `clear @s` 清空快捷栏，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **314/314**。常用实测数字：
+离线单测 **315/315**。本轮完整自检后的清理出现世界退出，主菜单 `ready=false`，
+原因待查，最终姿态未恢复；这不计入上述自检通过数。常用实测数字：
+
+2026-10-31 玩家身份：`--player-identity-world "超平坦测试"` **41/41**，完整现场
+**698/698**（无跳过）、离线 **315/315**。UUID/世界代次快照替代每 tick 玩家名分配与锁；
+命令、背包写入、权限及物品使用共用服务端解析。身份失败明确拒绝，命令不再回退控制台；
+真实重连、退出/重进及旧代次拒绝通过。安装/构建/打包哈希一致，113 个既有 crash 文件
+无新增/修改。收尾退出异常、恢复尝试与验收边界见 `docs/reliability-repairs.md`。
 
 2026-10-31 飞行请求：`--flight-world "超平坦测试"` **50/50**，完整现场 **663/663**
 （无跳过）、离线 **314/314**。两侧分阶段应用、局部 SEH/C++、忙/截止/唯一终结、

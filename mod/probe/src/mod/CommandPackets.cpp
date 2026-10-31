@@ -15,15 +15,10 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             return true;
         }
         int const level = std::clamp(j.value("level", 4), 0, 4);
-        std::string name;
-        {
-            std::lock_guard lock(mPlayerNameMutex);
-            name = mLocalPlayerName;
-        }
-        queueServerTask([this, name, level] {
-            auto minecraft = ll::service::bedrock::getMinecraft();
-            Level* lvl     = minecraft ? minecraft->getLevel() : nullptr;
-            Player* target = (lvl != nullptr && !name.empty()) ? lvl->getPlayer(name) : nullptr;
+        auto const identity = localPlayerIdentity();
+        queueServerTask([this, identity, level] {
+            auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
+            auto* target = context.player;
             if (target == nullptr) {
                 enqueue(R"({"event":"error","reason":"player_not_found"})");
                 return;
@@ -34,7 +29,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
                     {"event", "op_self"},
                     {"ok",    true    },
                     {"level", level   },
-                    {"name",  name    },
+                    {"name",  target->getRealName()},
                 }
                     .dump()
             );

@@ -1531,6 +1531,150 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
 
 
+def check_player_identity(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Verify UUID-only local resolution, failed samples and world retirement."""
+    original = client.state()
+    if not checks.check("identity_in_world", original.get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    client.input_lock(True)
+
+    def identity_ready(valid: bool) -> dict[str, Any]:
+        deadline = time.monotonic() + 3
+        while True:
+            row: dict[str, Any] = client.status().get("player_identity", {})
+            if row.get("valid") is valid or time.monotonic() >= deadline:
+                return row
+            time.sleep(0.01)
+
+    def arm(mode: str) -> None:
+        client.request({"cmd": "selftest_player_identity", "mode": mode}, "identity_test_armed")
+
+    def inventory_items(row: dict[str, Any]) -> dict[str, Any]:
+        return {key: row.get(key) for key in ("slots", "armor", "offhand", "selected_slot")}
+
+    try:
+        first = identity_ready(True)
+        checks.check(
+            "identity_snapshot_valid",
+            first.get("valid") is True
+            and bool(first.get("uuid_a") or first.get("uuid_b"))
+            and int(first.get("sample_tick", -1)) >= 0,
+            str(first),
+        )
+        checks.check("identity_local_origin", client.command("testfor @s").get("success") is True)
+        checks.check(
+            "identity_explicit_origin",
+            client.command("testfor @s", player=str(original["name"])).get("success") is True,
+        )
+        missing = client.request(
+            {
+                "cmd": "command",
+                "command": "say identity must not use console",
+                "player": "__no_player__",
+            },
+            "error",
+        )
+        checks.check(
+            "identity_missing_player_no_console",
+            missing.get("reason") == "command_player_not_found",
+        )
+        for mode, counter in (("seh", "faults"), ("cpp", "failures"), ("zero", "empty")):
+            old = client.status()["player_identity"]
+            inventory = inventory_items(client.inventory())
+            arm(mode)
+            invalid = identity_ready(False)
+            checks.check(
+                f"identity_{mode}_invalidates",
+                invalid.get("valid") is False
+                and int(invalid.get(counter, 0)) > int(old.get(counter, 0)),
+                str(invalid),
+            )
+            refused = client.request({"cmd": "command", "command": "testfor @s"}, "error")
+            checks.check(
+                f"identity_{mode}_command_rejected",
+                refused.get("reason") == "command_player_unknown",
+            )
+            for command in (
+                {"cmd": "give", "item": "minecraft:stick"},
+                {"cmd": "set_item", "slot": 8, "item": "minecraft:stone"},
+                {"cmd": "equip", "target": "offhand", "slot": 8},
+                {"cmd": "clear_inventory"},
+            ):
+                refused = client.request(command, "error")
+                checks.check(
+                    f"identity_{mode}_{command['cmd']}_rejected",
+                    refused.get("reason") == "inventory_player_unknown",
+                )
+            checks.check(
+                f"identity_{mode}_inventory_intact",
+                inventory_items(client.inventory()) == inventory,
+            )
+            checks.check(
+                f"identity_{mode}_tick_alive",
+                bool(client.ping()) and client.state().get("in_world") is True,
+            )
+            arm("off")
+            recovered = identity_ready(True)
+            checks.check(
+                f"identity_{mode}_recovery",
+                recovered.get("valid") is True
+                and client.command("testfor @s").get("success") is True,
+            )
+
+        remembered = client.request(
+            {"cmd": "selftest_player_identity", "mode": "remember"}, "identity_remembered"
+        )
+        current = client.request(
+            {"cmd": "selftest_player_identity", "mode": "resolve"}, "identity_resolved"
+        )
+        checks.check("identity_current_server_resolves", current.get("ok") is True)
+        client.close()
+        client.connect()
+        client.input_lock(True)
+        checks.check(
+            "identity_reconnect_keeps_current",
+            identity_ready(True).get("epoch") == remembered["epoch"]
+            and client.command("testfor @s").get("success") is True,
+        )
+        if world:
+            try:
+                client.leave_world()
+                client.wait_event("world_left", 45)
+                absent = client.status()["player_identity"]
+                checks.check("identity_menu_invalid", absent.get("valid") is False, str(absent))
+                checks.check("identity_menu_new_epoch", absent.get("epoch") != remembered["epoch"])
+            finally:
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+            recovered = identity_ready(True)
+            checks.check(
+                "identity_new_world_recovers",
+                recovered.get("valid") is True and recovered.get("epoch") != remembered["epoch"],
+            )
+            obsolete = client.request(
+                {"cmd": "selftest_player_identity", "mode": "resolve"}, "identity_resolved"
+            )
+            checks.check("identity_old_world_rejected", obsolete.get("ok") is False, str(obsolete))
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            checks.check("identity_world_restores_ground", settle(client, on_ground=True)["ok"])
+            checks.check(
+                "identity_new_world_local_origin",
+                client.command("testfor @s").get("success") is True,
+            )
+    finally:
+        if client.status().get("in_world"):
+            arm("off")
+            identity_ready(True)
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("identity_handled_fault_no_dump", after == before)
+
+
 def check_flight(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Verify staged abilities, bounded tick assertion, failures and retirement."""
     original = client.state()
@@ -3292,6 +3436,16 @@ def main(argv: list[str] | None = None) -> int:
         "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
     )
     modes.add_argument(
+        "--player-identity-only",
+        action="store_true",
+        help="check local UUID sampling and server resolution",
+    )
+    modes.add_argument(
+        "--player-identity-world",
+        metavar="WORLD",
+        help="also reject identities retained across worlds",
+    )
+    modes.add_argument(
         "--flight-only", action="store_true", help="check staged flight and tick assertions"
     )
     modes.add_argument(
@@ -3379,7 +3533,9 @@ def main(argv: list[str] | None = None) -> int:
         return checks.finish()
 
     if (
-        args.flight_only
+        args.player_identity_only
+        or args.player_identity_world
+        or args.flight_only
         or args.flight_world
         or args.input_events_only
         or args.input_events_world
@@ -3402,7 +3558,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.flight_only or args.flight_world:
+            if args.player_identity_only or args.player_identity_world:
+                check_player_identity(client, checks, args.player_identity_world)
+            elif args.flight_only or args.flight_world:
                 check_flight(client, checks, args.flight_world)
             elif args.input_events_only or args.input_events_world:
                 check_input_events(client, checks, args.input_events_world)
@@ -3428,7 +3586,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "flight_error"
+                "identity_error"
+                if args.player_identity_only or args.player_identity_world
+                else "flight_error"
                 if args.flight_only or args.flight_world
                 else "input_events_error"
                 if args.input_events_only or args.input_events_world
@@ -3536,6 +3696,7 @@ def main(argv: list[str] | None = None) -> int:
         check_ecs_capture(client, checks)
         check_input_events(client, checks)
         check_flight(client, checks)
+        check_player_identity(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

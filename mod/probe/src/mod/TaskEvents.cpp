@@ -5,13 +5,13 @@ using namespace probe::detail;
 namespace probe {
 
 namespace {
-TaskOutcome useOnServerImpl(std::string const& name, UseTask::TestMode testMode) {
+TaskOutcome useOnServerImpl(PlayerIdentity const& identity, std::uint64_t epoch, bool inWorld, UseTask::TestMode testMode) {
     if (testMode == UseTask::TestMode::EffectSeh) RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, nullptr);
     TaskOutcome result;
     result.reason    = "player_not_found";
-    auto   minecraft = ll::service::bedrock::getMinecraft();
-    Level* level     = minecraft ? minecraft->getLevel() : nullptr;
-    auto*  player    = level && !name.empty() ? level->getPlayer(name) : nullptr;
+    auto const context = serverPlayerContext(identity, epoch, inWorld);
+    auto* level = context.level;
+    auto* player = context.player;
     if (!player) return result;
     auto& inventory = player->getInventory();
     auto  stack     = inventory.getItemNonConst(player->getSelectedItemSlot());
@@ -33,10 +33,10 @@ TaskOutcome useOnServerImpl(std::string const& name, UseTask::TestMode testMode)
     return result;
 }
 
-TaskOutcome useOnServer(std::string const& name, UseTask::TestMode testMode) {
+TaskOutcome useOnServer(PlayerIdentity const& identity, std::uint64_t epoch, bool inWorld, UseTask::TestMode testMode) {
     TaskOutcome result;
     __try {
-        result = useOnServerImpl(name, testMode);
+        result = useOnServerImpl(identity, epoch, inWorld, testMode);
     } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         result.reason = "server_task_fault";
     }
@@ -204,19 +204,17 @@ void ProbeMod::dispatchUseTask(std::uint64_t id) {
     if (snapshot.id != id || !use || !use->dispatched) return;
     auto const testMode = use->testMode;
     if (testMode == UseTask::TestMode::DropCallback) return;
-    std::string name;
-    {
-        std::lock_guard lock(mPlayerNameMutex);
-        name = mLocalPlayerName;
-    }
+    auto const identity = localPlayerIdentity();
     queueServerTask(
-        [this, id, name, testMode] {
+        [this, id, identity, testMode] {
             // Fault before the task lock: the transport failure callback must
             // still publish exactly one task-specific terminal event.
             if (testMode == UseTask::TestMode::CallbackSeh)
                 RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, nullptr);
             if (testMode == UseTask::TestMode::CallbackCpp) throw std::runtime_error("selftest server callback");
-            mTasks.completeUse(id, [] { return GetTickCount64(); }, [&] { return useOnServer(name, testMode); });
+            mTasks.completeUse(id, [] { return GetTickCount64(); }, [&] {
+                return useOnServer(identity, mPoseEpoch.load(), mWorld.inWorld(), testMode);
+            });
         },
         [this, id](char const* reason) { mTasks.failUse(id, reason); },
         testMode == UseTask::TestMode::QueueFailure

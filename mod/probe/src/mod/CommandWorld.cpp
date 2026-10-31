@@ -19,34 +19,29 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"command_no_server_instance"})");
             return true;
         }
-        std::string name = j.value("player", std::string{});
-        if (name.empty()) {
-            std::lock_guard lock(mPlayerNameMutex);
-            name = mLocalPlayerName;
+        auto const identity = localPlayerIdentity();
+        if (!identity.valid) {
+            enqueue(R"({"event":"error","reason":"command_player_unknown"})");
+            return true;
         }
-        queueServerTask([this, command, name] {
-            auto   minecraft = ll::service::bedrock::getMinecraft();
-            Level* level     = minecraft ? minecraft->getLevel() : nullptr;
+        std::string const name = j.value("player", std::string{});
+        queueServerTask([this, command, name, identity] {
+            auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld(), &name);
+            auto* minecraft = context.minecraft;
+            auto* level = context.level;
             if (level == nullptr || !minecraft->mCommands) {
                 enqueue(R"({"event":"error","reason":"command_no_server_level"})");
                 return;
             }
-            // A player origin keeps @s / ~ / rotation semantics intact; the
-            // console origin is only a fallback when the name is unknown.
-            std::unique_ptr<CommandOrigin> origin;
-            Player*                        serverPlayer = name.empty() ? nullptr : level->getPlayer(name);
-            if (serverPlayer != nullptr) {
-                origin = std::make_unique<PlayerCommandOrigin>(*level, serverPlayer->getOrCreateUniqueID());
-            } else {
-                origin = std::make_unique<ServerCommandOrigin>(
-                    "harness",
-                    level->asServer(),
-                    CommandPermissionLevel::Owner,
-                    DimensionType{0}
-                );
+            // Preserve @s / ~ / rotation semantics. Missing identity must not
+            // silently execute a different command as the owner-level console.
+            if (!context.player) {
+                enqueue(R"({"event":"error","reason":"command_player_not_found"})");
+                return;
             }
-            CommandContext context(command, std::move(origin), static_cast<int>(CurrentCmdVersion::Latest));
-            auto           result = minecraft->mCommands->executeCommand(context, true);
+            auto origin = std::make_unique<PlayerCommandOrigin>(*level, context.player->getOrCreateUniqueID());
+            CommandContext commandContext(command, std::move(origin), static_cast<int>(CurrentCmdVersion::Latest));
+            auto           result = minecraft->mCommands->executeCommand(commandContext, true);
 
             nlohmann::json out;
             out["event"]   = "command_done";

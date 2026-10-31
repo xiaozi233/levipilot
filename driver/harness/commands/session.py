@@ -74,7 +74,10 @@ class SessionCommands(PipeConnection):
         return current - start
 
     def command(self, command: str, player: str | None = None) -> dict[str, Any]:
-        """Run a server command (``/fill``, ``/tp`` ...) on the integrated server."""
+        """Run on the integrated server as the local or explicitly named player.
+
+        An unavailable player raises an error; it never falls back to console.
+        """
         message: dict[str, Any] = {"cmd": "command", "command": command}
         if player:
             message["player"] = player

@@ -274,13 +274,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     mWorld.observePlayer(true);
     mLastTickMs = GetTickCount64();
 
-    {
-        auto const&     name = player.getRealName();
-        std::lock_guard lock(mPlayerNameMutex);
-        if (mLocalPlayerName != name) {
-            mLocalPlayerName = name;
-        }
-    }
+    capturePlayerIdentity(player);
 
     latchActionClicks(player);
     // G1/G2: drain queued event-level input into the game's own queues before

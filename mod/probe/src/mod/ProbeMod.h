@@ -7,6 +7,7 @@
 #include "mod/InputEventModel.h"
 #include "mod/MacroPlaybackModel.h"
 #include "mod/PacketTap.h"
+#include "mod/PlayerIdentityModel.h"
 #include "mod/PoseModel.h"
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
@@ -557,10 +558,13 @@ private:
     std::uint64_t              mSeenTaskId = 0; // Game-thread input ownership generation.
     std::atomic<std::uint64_t> mTaskFaultId{0}; // Explicitly gated fault injection.
 
-    // Updated on the client tick; the pipe thread uses it to resolve the
-    // matching server-side player for commands and teleports.
-    std::mutex  mPlayerNameMutex;
-    std::string mLocalPlayerName;
+    // Tick publishes UUID values only; cold callbacks validate the world epoch
+    // again before resolving the matching server-side player.
+    detail::PlayerIdentityStore mPlayerIdentity;
+    std::atomic<detail::CaptureTest> mPlayerIdentityTest{detail::CaptureTest::None};
+    detail::PlayerIdentity mPlayerIdentityRemembered; // Pipe-only selftest data.
+    detail::PlayerIdentity localPlayerIdentity() const;
+    void capturePlayerIdentity(LocalPlayer& player);
 
     // Playback owns immutable frames; only the cold session lock mutates them.
     detail::MacroPlayback            mMacroPlayback;

@@ -82,6 +82,9 @@ class ModModelTests(unittest.TestCase):
     def test_pose_snapshots_faults_and_concurrent_publication(self) -> None:
         self.run_native("pose_model")
 
+    def test_player_identity_invalidation_epoch_and_concurrent_publication(self) -> None:
+        self.run_native("player_identity_model")
+
     def test_entity_stage_timeout_cancellation_and_slot_snapshot(self) -> None:
         self.run_native("entity_model")
 

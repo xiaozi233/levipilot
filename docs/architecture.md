@@ -40,7 +40,7 @@ scenario DSL / LLM / shell
 | `EntityModel.h` | 实体请求独享的定长快照、分阶段调度、超时与迟到回调隔离；不依赖游戏 SDK |
 | `StagedCapture.h` | 实体、ECS 与飞行共用的请求独享分阶段生命周期、截止/取消、唯一消费与重连隔离 |
 | `EcsModel.h` / `Ecs.cpp` | ECS 定长快照、有界逐 storage 探测、所属线程读取与后台协议格式化 |
-| `Server.cpp` | 服务端权威传送 |
+| `Server.cpp` | 服务端权威传送与仅在服务端线程解析的 `ServerPlayerContext` |
 | `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
 | `WorldEntryModel.h` | 独立进入编号、启动截止、唯一终结与安全菜单恢复；不依赖游戏 SDK |
 | `World.cpp` | 世界列表、进入与退出的主线程实现 |
@@ -48,6 +48,7 @@ scenario DSL / LLM / shell
 | `SignIn.cpp` | 主菜单 Xbox Live 登录态查询（OreUI → MainMenuScreenModel） |
 | `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
 | `PoseModel.h` | 单 tick 姿态原子载荷快照、有界一致读取、世界代次隔离与故障计数 |
+| `PlayerIdentityModel.h` / `PlayerIdentity.cpp` | 无字符串/锁的 UUID 身份快照、局部采样边界与世界代次校验；冷侧读者不访问客户端玩家 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
@@ -131,6 +132,16 @@ UI 查询槽。两类请求均有截止、取消与重连隔离，旧成功字�
 执行能力写入和固定队列发布，不取冷侧锁、不读玩家名、不投递任务或格式化。请求编号的
 原子准入阻止已取消回调重新启动重断言，后续失败发独立 `flight_assertion_failed`。
 失败保守标记 `partial=true`；已开始的游戏调用不能抢占，也不会回滚已生效的能力。
+
+客户端 tick 用 `PlayerIdentityStore` 发布 UUID、tick 和世界 epoch；不调用返回 owning
+字符串的 `getRealName()`，也不取得玩家名锁。采样受局部 SEH/C++ 保护，失败/空 UUID
+发布无效快照；有界读失败不沿用上次身份。主菜单或 epoch 变化使旧快照不可用，重连
+同一世界保留当前身份。`status.player_identity` 暴露有效性、采样 tick/epoch 和故障计数。
+背包四组写入、管道命令、权限与服务端物品使用捕获值身份，在服务端回调内用共用
+`serverPlayerContext` 再验证 epoch 并解析 UUID；不在请求中保留 Player/Level 指针。
+命令可显式指定完整玩家名；默认使用本地 UUID。玩家未知/找不到时明确拒绝，不再
+自动改为控制台 origin，避免改变 `@s`/`~` 语义或改用 Owner 权限。传送/实体/飞行
+现有独立解析仍是后续范围；这里不宣称已开始的服务端调用能被退出或截止抢占。
 
 任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止

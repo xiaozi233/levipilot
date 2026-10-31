@@ -144,6 +144,18 @@ extern thread_local bool gDispatchSehActive;
 
 namespace probe::detail {
 
+// Server-thread values with call-scoped lifetime. Resolve only after validating
+// the client snapshot's world epoch; never retain these pointers in a request.
+struct ServerPlayerContext {
+    Minecraft* minecraft = nullptr;
+    Level* level = nullptr;
+    Player* player = nullptr;
+};
+ServerPlayerContext serverPlayerContext(
+    PlayerIdentity const& identity, std::uint64_t currentEpoch, bool inWorld,
+    std::string const* explicitName = nullptr
+);
+
 // Keep this guard outside functions containing __try (/EHsc). Restore nested
 // ownership on both normal return and C++ unwinding; the inner SEH frame handles
 // structured exceptions before control returns to the guard's scope.

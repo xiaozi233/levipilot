@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **314/314**，现场 **663/663**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **315/315**，现场 **698/698**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -70,7 +70,9 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 - **飞行**：客户端和服务端玩家同时 `setAbility(MayFly/Flying)`；只写客户端时，传送后
   服务端 abilities 会把 `flying` 同步回来。
 - **命令**：服务器线程 + `PlayerCommandOrigin` + `MinecraftCommands::executeCommand`，
-  保留 `@s` / `~` 语义。方块类命令是 deferred，`success=false` 只表示“已提交/延迟执行”。
+  默认按带世界代次的本地 UUID 解析，可显式指定完整玩家名；身份未知或玩家不存在时
+  明确拒绝，不再改用控制台 origin。保留 `@s` / `~` 语义。方块类命令是 deferred，
+  `success=false` 只表示“已提交/延迟执行”。
 - **快捷栏**：在 tick 之后调用 `PlayerInventory::selectSlot(slot, ContainerID::Inventory)`；
   放在 tick 之前会被原 tick 覆盖。用户请求使用独占的 `SlotCapture`，立即返回
   `select_slot_ok`，应用后固定快照交由 spool 格式化 `select_slot_done`，保留
@@ -79,6 +81,23 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   闭环任务的内部槽切换仍走原 tick 时机，不再产生用户选择回执。
 
 ## 物品栏
+
+2026-10-31：背包四组服务端写入、命令、权限和服务端物品使用已移除共享玩家名缓存。
+`PlayerIdentityStore` 在 tick 只复制 UUID/epoch/tick，原子载荷 + 有界序号校验，局部
+SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继续被返回。`ServerPlayerContext`
+只在服务端回调内取得 Minecraft/Level/Player，先验证请求 epoch 与世界状态，再按 UUID
+解析；显式命令玩家名只在冷侧查找。tick 不再为身份调用返回 owning string 的 getRealName
+或取玩家名锁。`status.player_identity` 提供当前快照与累计故障计数；复用姿态的世界 epoch，
+退出/卸载推进 epoch 即可阻止旧身份用于后续世界。重连同一世界不使当前身份失效。
+已开始的游戏调用仍不能抢占；传送/实体/飞行独立解析尚未统一。
+
+身份专项 **41/41**、native 模型专项 **18/18**、离线 **315/315**、完整现场 **698/698**
+（无跳过）。覆盖四读者/20 万次发布、零自有分配、三类故障下命令与背包写入拒绝及恢复，
+真实重连/退出/重进和同 UUID 旧 epoch 拒绝。完整套件通过后，清理期间出现 world_left，
+主菜单 ready 持续为 false；正常退出与带安全门的重进未恢复，原因未确定，最终姿态未恢复。
+任务/两种录制/宏已停止，已请求解锁，113 个既有 crash 文件无新增/修改。
+三份 DLL SHA-256 一致：`1B0BDDD6BE2CD44410D4D18E2B09A780FAD4E851DBFD540B4EA37D705DBD8468`。
+复现入口和退出异常的证据边界见 `reliability-repairs.md`；不宣称退出问题或性能提升已验证。
 
 - 读：客户端 `LocalPlayer` 的 `Inventory`（slots）、`getArmor(ArmorSlot)`、`getOffhandSlot()`，
   在 tick 之后采样到定长快照，spool 格式化。请求独占槽位，超时/取消和其余查询一致。
@@ -903,8 +922,14 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **663/663**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **314/314**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **698/698**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **315/315**。
+完整套件之后的退出收尾异常仍待复核，见“物品栏”与 `reliability-repairs.md`。
+
+### 玩家身份快照（2026-10-31）
+
+- `--player-identity-world "超平坦测试"` **41/41**，完整现场 **698/698**（无跳过），
+  离线 **315/315**；native 模型专项 **18/18**。设计、故障范围和退出收尾限制见“物品栏”。
 
 ### 飞行请求与重断言（2026-10-31）
 

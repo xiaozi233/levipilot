@@ -125,6 +125,7 @@ void WorldSession::start() {
         mInWorld = false;
         mOwner.mPoseEpoch.fetch_add(1);
         mOwner.mPoseTest = CaptureTest::None;
+        mOwner.mPlayerIdentityTest = CaptureTest::None;
         hookCancelCalls("world_left");
         recordCancel(RecordEnd::WorldLeft);
         mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);

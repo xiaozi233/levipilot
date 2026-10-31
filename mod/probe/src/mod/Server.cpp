@@ -2,6 +2,24 @@
 
 using namespace probe::detail;
 
+namespace probe::detail {
+
+ServerPlayerContext serverPlayerContext(
+    PlayerIdentity const& identity, std::uint64_t currentEpoch, bool inWorld,
+    std::string const* explicitName
+) {
+    if (!identity.matches(currentEpoch, inWorld)) return {};
+    auto minecraft = ll::service::bedrock::getMinecraft();
+    if (!minecraft) return {};
+    ServerPlayerContext context{&*minecraft, minecraft->getLevel()};
+    if (context.level) context.player = explicitName && !explicitName->empty()
+        ? context.level->getPlayer(*explicitName)
+        : context.level->getPlayer(mce::UUID{identity.uuidA, identity.uuidB});
+    return context;
+}
+
+} // namespace probe::detail
+
 namespace probe {
 
 void ProbeMod::requestServerTeleport(LocalPlayer& player, TeleportRequest const& request) {

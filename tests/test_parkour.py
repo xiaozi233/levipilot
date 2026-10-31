@@ -117,6 +117,24 @@ class JumpSegmentationTests(unittest.TestCase):
 
 
 class RecordingTests(unittest.TestCase):
+    def test_playback_failure_drains_samples_and_ignores_old_run(self) -> None:
+        client = FakeClient()
+        stale = {"event": "macro_done", "run_id": 4, "ok": False, "reason": "world_left"}
+        for event in (
+            stale,
+            {"event": "tick", "record_id": 3, "tick": 1},
+            {"event": "macro_done", "run_id": 5, "ok": False, "reason": "playback_fault"},
+            {"event": "tick", "record_id": 3, "tick": 2},
+            {"event": "stopped", "record_id": 3, "ok": True},
+        ):
+            client._session.lines.put(event)
+        rows = []
+        with self.assertRaisesRegex(ModProtocolError, "macro playback: playback_fault"):
+            read_until_run_end(client, 8, record_id=3, run_id=5, samples=rows)
+        self.assertEqual([row["tick"] for row in rows], [1, 2])
+        self.assertEqual(client.sent, [{"cmd": "stop"}])
+        self.assertEqual(client.readline(), stale)
+
     def test_macro_stop_drains_until_recording_receipt(self) -> None:
         client = FakeClient()
         for event in (

@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **305/305**，现场 **484/484**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **307/307**，现场 **536/536**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -167,7 +167,34 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 - 文件格式与 dmf-mpk 一致：每 tick 9 或 11 个字符串
   （`W,A,S,D,Sprint,Sneak,Jump,RMB,LMB,Yaw,Pitch`），保存时角度用 `%.9g`。
 - 播放：每 tick 一行；按键按边沿；RMB/LMB 在行边沿直接走
-  `traceRay + GameMode`（左键破坏、右键放置）。
+  `traceRay + GameMode`（左键破坏、右键放置）；`event_level=true` 则生成鼠标事件，
+  移动在两种模式下都默认走当前绑定的 Hardware HID 按键。
+- `MacroPlayback` 独占帧与名字，冷侧会话锁串行 load/begin/stop 和完成消费。tick 仅一次
+  有界 CAS 获取 lease，无会话锁、shared_ptr 复制或 JSON；换帧/启动先关闭准入，再等待
+  已准入操作结束。索引和首次应用基线由 tick 推进；区间末帧后的下一 tick 才自然结束，
+  循环仍回到 start。坏文件先解析失败，不破坏原播放；成功换帧先停止旧运行。
+- 播放/释放分别有局部 SEH 和 C++ 边界；部分应用失败也请求清理，释放失败保留请求，
+  下次 tick 重试，新一轮首帧前同样先清理。键位改变时旧绑定未释放成功则保留它供重试。
+  run_id 关联唯一终结；macro_done 保留 name/reason/index，增加 ok/run_id。失败原因是
+  playback_fault/playback_failed/release_fault/release_failed/world_left/disabled。
+  普通 stop/load/task 的取消已有相应回执，不额外发正常 macro_done；手动停止回执后若
+  释放失败，仍由 macro_release_diagnostic 的 faults/exceptions 计数报告。
+  macro_stopped/status 暴露 release_pending，不把接受停止等同于按键已经释放。
+- 直接点击与旧式宏点击只在 tick 内写 128 项定长 ClickResult 队列，后台生成原
+  click_result 字段并增加 ok/reason；局部 SEH/C++ 故障分别为 click_fault/click_failed，
+  溢出有 click_diagnostic/buffer_full/lost。游戏 API 是否接受交互仍需回读世界，
+  ok=true 仅表示调用未触发捕获的异常。SDK 内部操作不在自有模型的零分配保证之内。
+- Python 跑酷录制与多次尝试按 run_id 过滤旧终结；收到播放失败先停止状态采样并排完
+  已有 tick，再抛出明确错误，单次录制仍保留部分 JSONL。
+- 宏播放/点击验收：`--macro-playback-world "超平坦测试"` **56/56**，完整现场
+  **536/536**（无跳过）、离线 **307/307**。native 覆盖 200000 帧零分配、范围/循环/
+  首帧、在途停止保留帧存储、失败优先与 5000 次并发停止/换帧/重启；现场覆盖两种回放
+  的 SEH/C++ 失败、唯一终结/按键释放/重试、短宏替换、任务接管、点击故障与真实退出/
+  重进恢复。静态/profile 与构建通过；最终站稳、输入解锁且任务/两种状态录制/宏停止，
+  无新增/修改 crash 文件。安装/构建 DLL SHA-256 均为
+  `6E461B3FD8E1034F6C1A1C367C7B108F5B44A55FDDE047AB349AC1E253D1D1FC`。
+  日志 `out/reliability-macro-playback-*`。卸载分支由 native 覆盖，未现场热卸载；
+  未做性能提升对照，不能推广为整个 tick 零分配或第 12/13 项全部完成。
 - 录制：WASD/Sprint/Sneak/Jump 来自输入状态，Yaw/Pitch 由 `ActorRotation` 差分；
   RMB/LMB 由 `MouseInputEvent` 记录。
 - 录制和播放的冷侧命令共享 `mMacroSessionMutex` 管理准入。录制采样由
@@ -829,8 +856,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **484/484**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **305/305**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **536/536**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **307/307**。
 
 ### 客户端 I/O（2026-10-28；离线）
 
@@ -1006,8 +1033,8 @@ mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 W
   `wrapDegrees` 另有非有限兜底。
 - `ecs_context` 对外部指针先 `readableRange` 预检、访问链整体 SEH；坏地址回 `bad_addr`
   而不是崩游戏。
-- 宏安全：回放中 `macro_load` 先停回放（回执带 `stopped`）并按当前宏尺寸校验循环
-  重启点；`macro_stop` 同时清掉 pending start。
+- 宏安全：回放中 `macro_load` 先停止并等待在途帧退出（回执带 `stopped`），再更换帧；
+  `macro_stop` 关闭准入并请求下个 tick 释放输入。新一轮按新宏尺寸校验范围。
 - Watch：VEH 无锁读 armed 线程表；挂起窗口内不做任何分配；`thread="all"` 回
   `thread_all_unsupported`；`rw` 观察点不要求目标页可写。
 - spool 打开/写失败回灌重试并计数；spool 线程整体异常隔离；`hook_va` 安装留 bootLog

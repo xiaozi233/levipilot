@@ -120,7 +120,8 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             path = macroPath(name).string();
         }
         std::string error;
-        if (!loadMacroFrom(path, name, error)) {
+        bool        wasPlaying = false;
+        if (!loadMacroFrom(path, name, error, wasPlaying)) {
             enqueue(
                 nlohmann::json{
                     {"event",  "error"},
@@ -129,24 +130,10 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             );
             return true;
         }
-        // Swapping the macro under a running (or just-requested) playback
-        // would leave index/end pointing past the new, possibly much shorter
-        // buffer. Clear a pending start too: the tick consumes it after this
-        // returns and would restart playback on the new macro otherwise.
-        bool wasPlaying = false;
-        bool wasPending = false;
+        std::size_t count = 0;
         {
-            std::lock_guard sessionLock(mMacroSessionMutex);
-            wasPlaying = mMacroPlaying.exchange(false);
-            wasPending = mMacroStartRequested.exchange(false);
-            if (wasPlaying) {
-                mMacroStopRequested = true;
-            }
-        }
-        size_t count = 0;
-        {
-            std::lock_guard lock(mMacroMutex);
-            count = mMacro ? mMacro->size() : 0;
+            std::lock_guard lock(mMacroSessionMutex);
+            count = mMacroPlayback.size();
         }
         enqueue(
             nlohmann::json{
@@ -154,93 +141,120 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
                 {"name",    name          },
                 {"ticks",   count         },
                 {"path",    path          },
-                {"stopped", wasPlaying || wasPending},
-        }
-            .dump()
-        );
-        return true;
-    }
-    if (cmd == "macro_run") {
-        std::shared_ptr<Macro> macro;
-        {
-            std::lock_guard lock(mMacroMutex);
-            macro = mMacro;
-        }
-        if (!macro || macro->empty()) {
-            enqueue(R"({"event":"error","reason":"no_macro_loaded"})");
-            return true;
-        }
-        int start = std::clamp(j.value("start", 0), 0, static_cast<int>(macro->size()) - 1);
-        int end   = j.value("end", static_cast<int>(macro->size()));
-        end       = std::clamp(end, start + 1, static_cast<int>(macro->size()));
-        bool recording = false;
-        bool playing   = false;
-        {
-            std::lock_guard sessionLock(mMacroSessionMutex);
-            recording = mMacroRecording.active();
-            playing   = mMacroPlaying.load(std::memory_order_relaxed)
-                     || mMacroStartRequested.load(std::memory_order_relaxed);
-            if (!recording && !playing) {
-                mMacroStart.store(start);
-                mMacroEnd.store(end);
-                mMacroIndex.store(start);
-                mMacroLoop.store(j.value("loop", false));
-                mMacroEventLevel   = j.value("event_level", false);
-                mHavePrevMacroTick = false;
-                mMacroStartRequested.store(true, std::memory_order_release);
-            }
-        }
-        if (recording || playing) {
-            enqueue(recording ? R"({"event":"error","reason":"macro_recording_active"})"
-                              : R"({"event":"error","reason":"macro_already_playing"})");
-            return true;
-        }
-        enqueue(
-            nlohmann::json{
-                {"event",       "macro_started"},
-                {"start",       start          },
-                {"end",         end            },
-                {"ticks",       end - start    },
-                {"loop",        mMacroLoop.load()},
-                {"event_level", mMacroEventLevel.load()},
+                {"stopped", wasPlaying    },
         }
                 .dump()
         );
         return true;
     }
-    if (cmd == "macro_stop") {
-        // Also drop a pending start so a stop that races macro_run cannot be
-        // overwritten by the start block re-enabling playback next tick.
-        {
-            std::lock_guard sessionLock(mMacroSessionMutex);
-            mMacroStartRequested = false;
-            mMacroPlaying        = false;
-            mMacroStopRequested  = true;
+    if (cmd == "macro_run") {
+        auto const worldEpoch = mPoseEpoch.load();
+        if (!mWorld.inWorld() || !hooksAllowed()) {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"                                               },
+                    {"reason", mWorld.inWorld() ? "version_mismatch" : "not_in_world"}
+            }
+                    .dump()
+            );
+            return true;
         }
-        enqueue(R"({"event":"macro_stopped","reason":"client"})");
+        // Parse before touching session state; bad input preserves the old run.
+        int const       requestedStart = j.value("start", 0);
+        int const       requestedEnd   = j.value("end", -1);
+        bool const      loop           = j.value("loop", false);
+        bool const      eventLevel     = j.value("event_level", false);
+        std::lock_guard lock(mMacroSessionMutex);
+        drainMacroPlaybackLocked(true);
+        int const size = static_cast<int>(mMacroPlayback.size());
+        if (!size) enqueue(R"({"event":"error","reason":"no_macro_loaded"})");
+        else if (mMacroRecording.active()) enqueue(R"({"event":"error","reason":"macro_recording_active"})");
+        else if (mMacroPlayback.active()) enqueue(R"({"event":"error","reason":"macro_already_playing"})");
+        else {
+            int const start    = std::clamp(requestedStart, 0, size - 1);
+            int const end      = std::clamp(j.contains("end") ? requestedEnd : size, start + 1, size);
+            mMacroPlaybackTest = mMacroReleaseTest = CaptureTest::None;
+            mMacroPlayback.begin(start, end, loop, eventLevel);
+            if (!mWorld.inWorld() || mPoseEpoch.load() != worldEpoch) mMacroPlayback.cancel(MacroEnd::WorldLeft);
+            enqueue(
+                nlohmann::json{
+                    {"event",       "macro_started"       },
+                    {"start",       start                 },
+                    {"end",         end                   },
+                    {"ticks",       end - start           },
+                    {"loop",        loop                  },
+                    {"event_level", eventLevel            },
+                    {"run_id",      mMacroPlayback.runId()}
+            }.dump()
+            );
+        }
+        return true;
+    }
+    if (cmd == "macro_stop") {
+        std::lock_guard lock(mMacroSessionMutex);
+        mMacroPlayback.stop(MacroEnd::Client);
+        drainMacroPlaybackLocked(true);
+        enqueue(
+            nlohmann::json{
+                {"event",           "macro_stopped"                },
+                {"reason",          "client"                       },
+                {"run_id",          mMacroPlayback.runId()         },
+                {"release_pending", mMacroPlayback.releasePending()}
+        }.dump()
+        );
         return true;
     }
     if (cmd == "macro_status") {
-        nlohmann::json out;
-        out["event"]          = "macro_status";
-        out["in_world"]       = mWorld.inWorld();
-        out["playing"]        = mMacroPlaying.load();
-        out["index"]          = mMacroIndex.load();
-        out["recording"]      = mMacroRecording.active();
-        out["recorded_ticks"] = 0;
-        {
-            std::lock_guard lock(mMacroMutex);
-            out["loaded"] = static_cast<bool>(mMacro);
-            out["name"]   = mMacroName;
-            out["ticks"]  = mMacro ? mMacro->size() : 0;
+        std::lock_guard lock(mMacroSessionMutex);
+        enqueue(
+            nlohmann::json{
+                {"event",           "macro_status"                 },
+                {"in_world",        mWorld.inWorld()               },
+                {"playing",         mMacroPlayback.active()        },
+                {"index",           mMacroPlayback.index()         },
+                {"loaded",          mMacroPlayback.size() != 0     },
+                {"name",            mMacroPlayback.name()          },
+                {"ticks",           mMacroPlayback.size()          },
+                {"run_id",          mMacroPlayback.runId()         },
+                {"release_pending", mMacroPlayback.releasePending()},
+                {"recording",       mMacroRecording.active()       },
+                {"recorded_ticks",  mMacroRecording.rows()         },
+                {"record_limit",    mMacroRecording.limit()        },
+                {"record_id",       mMacroRecording.recordId()     }
+        }.dump()
+        );
+        return true;
+    }
+    if (cmd == "selftest_click_capture") {
+        if (!mAllowSelftestStress.load()) enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+        else {
+            auto const mode = j.value("mode", std::string{});
+            if (mode != "seh" && mode != "cpp") enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            else {
+                mClickCaptureTest = mode == "seh" ? CaptureTest::Fault : CaptureTest::Cpp;
+                enqueue(R"({"event":"click_capture_test_armed"})");
+            }
         }
-        {
-            std::lock_guard lock(mMacroSessionMutex);
-            out["recorded_ticks"] = mMacroRecording.rows();
-            out["record_limit"]   = mMacroRecording.limit();
-            out["record_id"]      = mMacroRecording.recordId();
+        return true;
+    }
+    if (cmd == "selftest_macro_playback") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
         }
-        enqueue(out.dump());
+        auto const mode   = j.value("mode", std::string{});
+        auto const target = j.value("target", std::string{"apply"});
+        if ((mode != "seh" && mode != "cpp") || (target != "apply" && target != "release")) {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
+        std::lock_guard lock(mMacroSessionMutex);
+        if (!mMacroPlayback.active()) enqueue(R"({"event":"error","reason":"not_playing"})");
+        else {
+            (target == "apply" ? mMacroPlaybackTest : mMacroReleaseTest) =
+                mode == "seh" ? CaptureTest::Fault : CaptureTest::Cpp;
+            enqueue(R"({"event":"macro_playback_test_armed"})");
+        }
         return true;
     }
     if (cmd == "macro_list") {
@@ -301,8 +315,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
                 enqueue(R"({"event":"error","reason":"macro_already_recording"})");
                 return true;
             }
-            if (mMacroPlaying.load(std::memory_order_acquire)
-                || mMacroStartRequested.load(std::memory_order_acquire)) {
+            if (mMacroPlayback.active()) {
                 enqueue(R"({"event":"error","reason":"macro_playing"})");
                 return true;
             }

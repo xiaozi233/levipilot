@@ -50,34 +50,84 @@ void ProbeMod::drainMacroRecording() {
     drainMacroRecordingLocked();
 }
 
-void ProbeMod::finishMacro(std::string reason) {
-    {
-        std::lock_guard sessionLock(mMacroSessionMutex);
-        if (!mMacroPlaying.exchange(false)) {
-            return;
+void ProbeMod::drainMacroPlaybackLocked(bool wait) {
+    auto const errors = mMacroPlayback.takeReleaseErrors();
+    if (errors.fault || errors.cpp)
+        enqueue(
+            nlohmann::json{
+                {"event",      "macro_release_diagnostic"},
+                {"faults",     errors.fault              },
+                {"exceptions", errors.cpp                }
+        }.dump()
+        );
+    if (auto done = mMacroPlayback.takeCompletion(wait)) {
+        // These cancellations already have their command/task receipt.
+        if (done->ok() && done->reason != MacroEnd::End) return;
+        enqueue(
+            nlohmann::json{
+                {"event",  "macro_done"              },
+                {"name",   mMacroPlayback.name()     },
+                {"reason", macroEndName(done->reason)},
+                {"index",  done->index               },
+                {"run_id", done->runId               },
+                {"ok",     done->ok()                }
+        }.dump()
+        );
+    }
+}
+
+void ProbeMod::drainMacroPlayback() {
+    std::lock_guard lock(mMacroSessionMutex);
+    drainMacroPlaybackLocked();
+}
+
+void ProbeMod::releaseMacroIfRequested() {
+    mMacroPlayback.releaseRequested([&] {
+        bool released = false;
+        return guardedGameRead([&] {
+                   injectCaptureFault(mMacroReleaseTest.exchange(CaptureTest::None));
+                   released = releaseMacroInputs();
+               })
+            && released;
+    });
+    // SEH can bypass injection guards inside game APIs. Restore the harness
+    // flags after returning through the local boundary, including failed releases.
+    mInjectingInput = false;
+    mInjectingClick = false;
+}
+
+void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
+    mMacroPlayback.tick(
+        [&](MacroTick const& row, bool eventLevel, bool first) {
+            if (first) {
+                mPrevSprint = mPrevSneak = mPrevMacroRmb = mPrevMacroLmb = false;
+                mInjected                                                = false;
+            }
+            bool applied = false;
+            return guardedGameRead([&] {
+                       injectCaptureFault(mMacroPlaybackTest.exchange(CaptureTest::None));
+                       applied = applyMacroTick(client, player, row, eventLevel);
+                   })
+                && applied;
+        },
+        [&] {
+            bool released = false;
+            return guardedGameRead([&] {
+                       injectCaptureFault(mMacroReleaseTest.exchange(CaptureTest::None));
+                       released = releaseMacroInputs();
+                   })
+                && released;
         }
-    }
-    if (mMacroEventLevel) {
-        releaseMacroInputs();
-    }
-    std::string name;
-    {
-        std::lock_guard lock(mMacroMutex);
-        name = mMacroName;
-    }
-    nlohmann::json j;
-    j["event"]  = "macro_done";
-    j["name"]   = name;
-    j["reason"] = std::move(reason);
-    j["index"]  = mMacroIndex.load();
-    enqueue(j.dump());
+    );
+    mInjectingInput = false;
+    mInjectingClick = false;
 }
 
 std::filesystem::path ProbeMod::macroDir() const { return getSelf().getModDir() / "macros"; }
 
 std::filesystem::path ProbeMod::macroPath(std::string const& name) const { return macroDir() / (name + ".json"); }
 
-bool ProbeMod::loadMacroFrom(std::string const& path, std::string const& name, std::string& error) {
+bool ProbeMod::loadMacroFrom(std::string const& path, std::string const& name, std::string& error, bool& stopped) {
     Macro macro;
     auto  file = std::filesystem::path{path};
     if (!std::filesystem::exists(file)) {
@@ -95,9 +145,12 @@ bool ProbeMod::loadMacroFrom(std::string const& path, std::string const& name, s
         return false;
     }
 
-    std::lock_guard lock(mMacroMutex);
-    mMacro     = std::make_shared<Macro>(std::move(macro));
-    mMacroName = name.empty() ? file.stem().string() : name;
+    auto            loadedName = name.empty() ? file.stem().string() : name;
+    std::lock_guard lock(mMacroSessionMutex);
+    stopped = mMacroPlayback.active();
+    mMacroPlayback.stop(MacroEnd::Loaded);
+    drainMacroPlaybackLocked(true);
+    mMacroPlayback.load(std::move(macro), std::move(loadedName));
     return true;
 }
 

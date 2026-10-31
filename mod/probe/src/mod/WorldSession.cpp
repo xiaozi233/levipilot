@@ -130,6 +130,7 @@ void WorldSession::start() {
         mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);
         mOwner.mLegacyWorldLeft.store(true, std::memory_order_release);
         mOwner.mMacroRecordWorldLeft.store(true, std::memory_order_release);
+        mOwner.mMacroPlayback.cancel(MacroEnd::WorldLeft);
         mOwner.mChatCapture.cancel("world_left");
         mOwner.cancelQueries("world_left");
         mOwner.cancelTasks("world_left");

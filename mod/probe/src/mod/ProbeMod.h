@@ -2,7 +2,7 @@
 
 #include "mod/ChatModel.h"
 #include "mod/EntityModel.h"
-#include "mod/MacroRecordModel.h"
+#include "mod/MacroPlaybackModel.h"
 #include "mod/PacketTap.h"
 #include "mod/PoseModel.h"
 #include "mod/QueryModel.h"
@@ -125,6 +125,7 @@ public:
     std::atomic<std::uint32_t>                   mInjectTail{0};
     bool                                         queueInputInjection(InputInjection const& item);
     void                                         tickInputInjection();
+    char const*                                  hidKeyEdge(int code, bool down, bool hardware);
     bool                                         hidKeyEvent(int code, bool down, bool hardware, std::string& error);
 
     // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
@@ -275,8 +276,8 @@ private:
     // Real-input path: translate the desired digital key state into Hardware
     // HID key edges. Legacy flag/queue/handler/impulse paths are gated behind
     // input_cfg force.
-    void applyRealInput(LocalPlayer& player, ControlState const& state);
-    void releaseRealInput();
+    bool applyRealInput(LocalPlayer& player, ControlState const& state);
+    bool releaseRealInput();
     // Reads the guest's current keyboard remapping (IOptionRegistry →
     // KeyboardRemappingLayout → key.* actions). Returns true when valid.
     bool refreshBindings(bool releaseOnChange);
@@ -296,7 +297,7 @@ private:
         float           jumpDistance,
         float           edgeLookahead
     );
-    void applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick);
+    bool applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick, bool eventLevel);
     void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
     void applySlotRequest(LocalPlayer& player, detail::SlotQuery const& request, detail::SlotSnapshot& out);
     void captureState(
@@ -335,14 +336,16 @@ private:
     void                  checkpointList();
     void                  checkpointDelete(std::string const& name);
     void captureButtons(ClientInstance& client, detail::CaptureRequest const& request, detail::ButtonSnapshot& out);
-    void                  performClick(LocalPlayer& player, int button);
-    void                  recordMacroTick(ClientInstance& client, LocalPlayer& player);
-    void                  latchActionClicks(LocalPlayer& player);
-    void                  finishMacro(std::string reason);
+    bool performClick(LocalPlayer& player, int button);
+    void drainClicks();
+    void recordMacroTick(ClientInstance& client, LocalPlayer& player);
+    void latchActionClicks(LocalPlayer& player);
+    void drainMacroPlaybackLocked(bool wait = false);
+    void drainMacroPlayback();
 
     std::filesystem::path macroDir() const;
     std::filesystem::path macroPath(std::string const& name) const;
-    bool                  loadMacroFrom(std::string const& path, std::string const& name, std::string& error);
+    bool loadMacroFrom(std::string const& path, std::string const& name, std::string& error, bool& stopped);
 
     static bool parseMacroJson(nlohmann::json const& value, Macro& out, std::string& error);
     static bool macroToJson(Macro const& macro, nlohmann::json& out, std::string& error);
@@ -423,7 +426,7 @@ private:
     void consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests);
     void applyFlyRequest(LocalPlayer& player);
     void applyToggleFlyRequest(LocalPlayer& player);
-    void startMacroIfRequested();
+    void releaseMacroIfRequested();
     void tickMacroPlayback(ClientInstance& client, LocalPlayer& player);
     void consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests);
     void consumeLookRequests(LocalPlayer& player, RequestBlock const& requests);
@@ -532,7 +535,16 @@ private:
     // client ability right after we set it; re-assert it for a few ticks.
     std::atomic<bool>           mToggleFlyTarget{false};
     std::atomic<int>            mToggleFlyAssertTicks{0};
-    std::atomic<int>            mClickRequest{-1};
+    struct ClickResult {
+        int         button = 0, hitType = 0, x = 0, y = 0, z = 0, face = 0;
+        float       hitX = 0, hitY = 0, hitZ = 0;
+        bool        gameMode = false, hitValid = false;
+        char const* error = nullptr;
+    };
+    detail::TickQueue<ClickResult, 128> mClickResults;
+    std::atomic<std::uint64_t>          mClickResultsLost{0};
+    std::atomic<detail::CaptureTest>    mClickCaptureTest{detail::CaptureTest::None};
+    std::atomic<int>                    mClickRequest{-1};
     std::atomic<float>          mClickReach{5.5f};
     std::atomic<int>            mSlotRequest{-1};
     // 0 = real physical input (default). Legacy diagnostics:
@@ -564,23 +576,12 @@ private:
     std::mutex  mPlayerNameMutex;
     std::string mLocalPlayerName;
 
-    // Macro manager.
-    std::mutex             mMacroMutex;
-    std::shared_ptr<Macro> mMacro;
-    std::string            mMacroName;
-    std::atomic_bool       mMacroPlaying{false};
-    std::atomic_bool       mMacroStartRequested{false};
-    std::atomic_bool       mMacroLoop{false};
-    // G4: replay through the event layer; off keeps the legacy GameMode path.
-    std::atomic_bool mMacroEventLevel{false};
-    MacroTick        mPrevMacroTick{};
-    std::atomic_bool mHavePrevMacroTick{false};
-    void             applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
-    void             releaseMacroInputs();
-    std::atomic<int> mMacroIndex{0};
-    std::atomic<int> mMacroStart{0};
-    std::atomic<int> mMacroEnd{0};
-    std::atomic_bool mMacroStopRequested{false};
+    // Playback owns immutable frames; only the cold session lock mutates them.
+    detail::MacroPlayback            mMacroPlayback;
+    std::atomic<detail::CaptureTest> mMacroPlaybackTest{detail::CaptureTest::None};
+    std::atomic<detail::CaptureTest> mMacroReleaseTest{detail::CaptureTest::None};
+    bool                             applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
+    bool                             releaseMacroInputs();
 
     // Macro recorder.
     detail::MacroRecordSession       mMacroRecording;

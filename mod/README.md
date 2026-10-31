@@ -197,10 +197,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **484/484**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **536/536**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **305/305**。常用实测数字：
+离线单测 **307/307**。常用实测数字：
+
+2026-10-31 宏播放/点击：`--macro-playback-world "超平坦测试"` **56/56**，完整现场
+**536/536**（无跳过）、离线 **307/307**。覆盖两种回放的 SEH/C++ 唯一失败、释放重试、
+短宏替换/快速重启、任务接管、点击异常恢复及真实退出/重进。安装/构建哈希一致，
+无新增/修改 crash 文件。tick 播放模型无自有分配/锁/JSON；SDK 内部及 ECS/输入等其余
+游戏路径仍待治理，未现场热卸载或做性能提升对照。
 
 2026-10-31 二进制录制失败传播：`--binary-capture-world "超平坦测试"` **33/33**，完整现场
 **484/484**（无跳过）、离线 **305/305**。覆盖 SEH/C++ 唯一失败、部分帧与重复停止、
@@ -387,6 +393,12 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   `GameMode::interact` 会在空物品上下文里崩溃，因此改为转向 + 输入注入；是否产生实际交互
   取决于手持物和瞄准。
 - `smoothMacro` / `frameBasedRotation` 未复刻，保持逐 tick。
+- 宏播放的启动/状态/停止回执增加 run_id，macro_done 增加 ok；播放或释放输入异常会
+  明确终结失败，退出世界同样报告 world_left。停止回执的 release_pending 表示输入尚待
+  游戏 tick 释放；释放失败会重试，macro_release_diagnostic 报告故障/异常计数。
+  新播放先清理旧输入；主菜单拒绝启动。坏宏文件不会打断当前播放，成功换宏会停止旧播放。
+- click_result 增加 ok/reason；click_fault/click_failed 表示隔离的 SEH/C++ 故障，
+  click_diagnostic/buffer_full 表示结果队列溢出。调用成功不代替方块/实体效果回读。
 - 鼠标录制只认 raw input；后台合成点击只有移动事件。事件级回放（`macro_run event_level=true`）
   用 G1/G2 注入，已经覆盖按键/鼠标边沿；录制端仍然依赖真实 raw input。
 - `mouse_event` 的按键只到 `MouseInputEvent` 层：计数会涨，但在 1.26.51.01 上不会触发世界攻击；

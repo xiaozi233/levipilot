@@ -29,7 +29,7 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from driver.harness import ModClient, ModPipeError
+from driver.harness import ModClient, ModPipeError, ModProtocolError
 
 TICKS_PER_SECOND = 20.0
 
@@ -303,26 +303,35 @@ def read_until_run_end(
     max_ticks: int,
     *,
     record_id: int | None = None,
+    run_id: int | None = None,
     samples: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """On macro completion, close recording and collect through its final receipt."""
     timeout = max(5.0, max_ticks / TICKS_PER_SECOND + 10.0)
     ticks = [] if samples is None else samples
     stop_sent = False
+    failure: str | None = None
     while True:
         message = client.wait_event(
             ("tick", "macro_done", "macro_stopped", "stopped"),
             timeout=timeout,
-            predicate=lambda row: record_id is None or row.get("record_id", record_id) == record_id,
+            predicate=lambda row: (
+                (record_id is None or row.get("record_id", record_id) == record_id)
+                and (run_id is None or row.get("run_id", run_id) == run_id)
+            ),
         )
         event = message.get("event")
         if event == "tick":
             ticks.append(message)
         elif event in {"macro_done", "macro_stopped"} and not stop_sent:
+            if message.get("ok") is False:
+                failure = str(message.get("reason", "failed"))
             client.send({"cmd": "stop"})
             stop_sent = True
         elif event == "stopped":
             client.check_recording_result(message)
+            if failure is not None:
+                raise ModProtocolError(f"macro playback: {failure}")
             return ticks
 
 
@@ -343,8 +352,14 @@ def record_macro(
             client.reset(*start, yaw=yaw, pitch=pitch)
             time.sleep(0.2)
         started = client.start(max_ticks)
-        client.send({"cmd": "macro_run", "loop": False})
-        read_until_run_end(client, max_ticks, record_id=started.get("record_id"), samples=rows)
+        playback = client.macro_run(loop=False)
+        read_until_run_end(
+            client,
+            max_ticks,
+            record_id=started.get("record_id"),
+            run_id=playback.get("run_id"),
+            samples=rows,
+        )
     finally:
         # Flush whatever was collected before closing: a disconnect or a mod
         # error mid-run must not discard the rows that already arrived.
@@ -398,8 +413,13 @@ def run_attempts(
             client.reset(*start, yaw=yaw, pitch=pitch)
             time.sleep(0.2)
             started = client.start(max_ticks)
-            client.send({"cmd": "macro_run", "loop": False})
-            rows = read_until_run_end(client, max_ticks, record_id=started.get("record_id"))
+            playback = client.macro_run(loop=False)
+            rows = read_until_run_end(
+                client,
+                max_ticks,
+                record_id=started.get("record_id"),
+                run_id=playback.get("run_id"),
+            )
             time.sleep(0.1)
             state = client.state()
 

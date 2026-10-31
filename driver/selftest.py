@@ -15,6 +15,8 @@
     py -3.11 driver/selftest.py --tick-safety-world "超平坦测试"  # plus menu cancellation/pose invalidation
     py -3.11 driver/selftest.py --binary-capture-only  # binary recording failures and retained rows
     py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
+    py -3.11 driver/selftest.py --macro-playback-only  # guarded replay, release and frame ownership
+    py -3.11 driver/selftest.py --macro-playback-world "超平坦测试"  # plus cancellation on world exit
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
     py -3.11 driver/selftest.py --entry-lifecycle-world "超平坦测试"  # startup watchdog/recovery
     py -3.11 driver/selftest.py --overhead-only  # read concurrently across a full sample-ring wrap
@@ -1524,6 +1526,234 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
 
 
+def check_macro_playback(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Exercise real replay faults, release/restart, and cold frame replacement."""
+    original = client.state()
+    if not checks.check("playback_in_world", original.get("in_world") is True):
+        return
+    name = f"selftest_playback_{time.monotonic_ns()}"
+    mod_dir = Path(str(client.status()["spool"])).parent
+    path = mod_dir / "macros" / f"{name}.json"
+    frame = ["true", *["false"] * 8]
+    empty = ["false"] * 9
+
+    def done(started: dict[str, Any]) -> dict[str, Any]:
+        return client.wait_event(
+            "macro_done", 4, predicate=lambda row: row.get("run_id") == started["run_id"]
+        )
+
+    def no_duplicate(started: dict[str, Any]) -> bool:
+        try:
+            client.wait_event(
+                "macro_done", 0.2, predicate=lambda row: row.get("run_id") == started["run_id"]
+            )
+        except ModTimeout:
+            return True
+        return False
+
+    def released() -> bool:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if not client.macro_status().get("release_pending"):
+                inputs = client.state()["input"]
+                if not any(inputs.get(key) for key in ("w", "a", "s", "d", "jump", "sneak")):
+                    return True
+            time.sleep(0.02)
+        return False
+
+    try:
+        client.stop_move()
+        client.task_stop()
+        client.macro_stop()
+        client.macro_save(name, [empty] * 5)
+        client.macro_load(name)
+        rejected = client.request({"cmd": "selftest_macro_playback", "mode": "seh"}, "error")
+        if not checks.check(
+            "playback_fault_gate", rejected.get("reason") == "not_playing", str(rejected)
+        ):
+            return
+        started = client.macro_run(start=1, end=4, event_level=True)
+        finished = done(started)
+        checks.check(
+            "playback_range_terminal",
+            finished.get("ok") is True
+            and finished.get("reason") == "end"
+            and finished.get("index") == 4
+            and finished.get("name") == name,
+            str(finished),
+        )
+        checks.check("playback_range_unique", no_duplicate(started))
+        for events in (False, True):
+            for mode, reason in (("seh", "playback_fault"), ("cpp", "playback_failed")):
+                client.macro_save(name, [frame] * 4)
+                client.macro_load(name)
+                started = client.macro_run(loop=True, event_level=events)
+                wait_ticks(client, 3)
+                checks.check(
+                    f"playback_{events}_{mode}_held", client.state()["input"].get("w") is True
+                )
+                client.request(
+                    {"cmd": "selftest_macro_playback", "mode": mode}, "macro_playback_test_armed"
+                )
+                finished = done(started)
+                checks.check(
+                    f"playback_{events}_{mode}_terminal",
+                    finished.get("ok") is False and finished.get("reason") == reason,
+                    str(finished),
+                )
+                checks.check(f"playback_{events}_{mode}_released", released())
+                checks.check(f"playback_{events}_{mode}_unique", no_duplicate(started))
+                again = client.macro_run(event_level=events)
+                checks.check(f"playback_{events}_{mode}_recovery", done(again).get("ok") is True)
+
+        for mode in ("seh", "cpp"):
+            started = client.macro_run(loop=True, event_level=True)
+            wait_ticks(client, 3)
+            client.request(
+                {"cmd": "selftest_macro_playback", "target": "release", "mode": mode},
+                "macro_playback_test_armed",
+            )
+            client.macro_stop()
+            diagnostic = client.wait_event("macro_release_diagnostic", 3)
+            checks.check(
+                f"playback_release_{mode}_visible",
+                int(diagnostic.get("faults" if mode == "seh" else "exceptions", 0)) >= 1,
+                str(diagnostic),
+            )
+            checks.check(f"playback_release_{mode}_retry", released())
+            again = client.macro_run(event_level=True)
+            checks.check(f"playback_release_{mode}_recovery", done(again).get("ok") is True)
+
+        started = client.macro_run(loop=True, event_level=True)
+        wait_ticks(client, 3)
+        rejected = client.request({"cmd": "macro_run", "loop": True}, "error")
+        checks.check(
+            "playback_busy_preserves_run",
+            rejected.get("reason") == "macro_already_playing"
+            and client.macro_status().get("run_id") == started["run_id"],
+        )
+        rejected = client.request({"cmd": "macro_run", "start": "bad"}, "error")
+        checks.check(
+            "playback_bad_param_preserves_run",
+            rejected.get("event") == "error" and client.macro_status().get("playing") is True,
+        )
+        client.macro_save(name, [empty])
+        loaded = client.macro_load(name)
+        checks.check(
+            "playback_load_shorter_stops",
+            loaded.get("stopped") is True
+            and loaded.get("ticks") == 1
+            and not client.macro_status().get("playing"),
+        )
+        checks.check("playback_load_releases", released())
+        for index in range(3):
+            started = client.macro_run(event_level=True)
+            checks.check(f"playback_short_restart_{index}", done(started).get("index") == 1)
+
+        client.macro_save(name, [frame] * 4)
+        client.macro_load(name)
+        started = client.macro_run(loop=True, event_level=True)
+        wait_ticks(client, 3)
+        position = client.state()
+        task = client.navigate(float(position["feet_x"]), float(position["feet_z"]), tolerance=1)
+        checks.check(
+            "playback_task_takes_ownership",
+            task.get("ok") is True and client.macro_status().get("playing") is False,
+        )
+        checks.check("playback_task_releases", released())
+
+        # Direct clicks retain their reply fields after formatting moved off tick.
+        client.look(yaw=0, pitch=-80, relative=False)
+        wait_ticks(client, 2)
+        clicked = client.click("left")
+        checks.check(
+            "playback_click_cold_receipt",
+            clicked.get("ok") is True
+            and clicked.get("button") == "left"
+            and clicked.get("game_mode") is True
+            and all(key in clicked for key in ("hit_type", "block", "face", "hit_pos")),
+            str(clicked),
+        )
+        for mode, reason in (("seh", "click_fault"), ("cpp", "click_failed")):
+            client.request(
+                {"cmd": "selftest_click_capture", "mode": mode}, "click_capture_test_armed"
+            )
+            failed = client.click("left")
+            checks.check(
+                f"playback_click_{mode}_isolated",
+                failed.get("ok") is False and failed.get("reason") == reason,
+                str(failed),
+            )
+            checks.check(f"playback_click_{mode}_recovery", client.click("left").get("ok") is True)
+        click_frame = [*empty[:-1], "true"]
+        client.macro_save(name, [click_frame, empty, empty])
+        client.macro_load(name)
+        started = client.macro_run(event_level=False)
+        clicked = client.wait_event("click_result", 3)
+        checks.check(
+            "playback_legacy_click_receipt",
+            clicked.get("ok") is True
+            and clicked.get("button") == "left"
+            and done(started).get("ok") is True,
+        )
+
+        for mode, reason in (("seh", "release_fault"), ("cpp", "release_failed")):
+            client.macro_save(name, [frame] * 20)
+            client.macro_load(name)
+            started = client.macro_run(event_level=True)
+            wait_ticks(client, 3)
+            client.request(
+                {"cmd": "selftest_macro_playback", "target": "release", "mode": mode},
+                "macro_playback_test_armed",
+            )
+            finished = done(started)
+            checks.check(
+                f"playback_end_release_{mode}_terminal",
+                finished.get("ok") is False and finished.get("reason") == reason,
+                str(finished),
+            )
+            client.wait_event("macro_release_diagnostic", 3)
+            checks.check(f"playback_end_release_{mode}_retry", released())
+            checks.check(f"playback_end_release_{mode}_unique", no_duplicate(started))
+
+        if world:
+            started = client.macro_run(loop=True, event_level=True)
+            try:
+                wait_ticks(client, 3)
+                client.leave_world()
+                client.wait_event("world_left", 45)
+                finished = done(started)
+                checks.check(
+                    "playback_world_cancel",
+                    finished.get("ok") is False and finished.get("reason") == "world_left",
+                    str(finished),
+                )
+                checks.check("playback_world_unique", no_duplicate(started))
+                deadline = time.monotonic() + 45
+                while not client.worlds().get("ready"):
+                    if time.monotonic() >= deadline:
+                        raise ModTimeout("macro playback: menu did not become ready")
+                    time.sleep(0.1)
+                rejected = client.request({"cmd": "macro_run"}, "error")
+                checks.check("playback_menu_rejects", rejected.get("reason") == "not_in_world")
+            finally:
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+            again = client.macro_run(event_level=True)
+            checks.check("playback_world_recovery", done(again).get("ok") is True)
+    finally:
+        client.macro_stop()
+        client.stop_move()
+        client.reset(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        wait_ticks(client, 5)
+        checks.check("playback_final_settle", settle(client, on_ground=True)["ok"])
+        path.unlink(missing_ok=True)
+
+
 def check_binary_capture(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """A failed binary session must stop, retain rows and stay visibly failed."""
     original = client.state()
@@ -2458,6 +2688,12 @@ def main(argv: list[str] | None = None) -> int:
         "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
     )
     modes.add_argument(
+        "--macro-playback-only", action="store_true", help="check replay faults and frame ownership"
+    )
+    modes.add_argument(
+        "--macro-playback-world", metavar="WORLD", help="also check playback across leave/rejoin"
+    )
+    modes.add_argument(
         "--use-lifecycle-only",
         action="store_true",
         help="inject missing/failed server work and verify task termination/recovery in a world",
@@ -2533,10 +2769,14 @@ def main(argv: list[str] | None = None) -> int:
         or args.tick_safety_world
         or args.binary_capture_only
         or args.binary_capture_world
+        or args.macro_playback_only
+        or args.macro_playback_world
     ):
         try:
             client.input_lock(True)
-            if args.binary_capture_only or args.binary_capture_world:
+            if args.macro_playback_only or args.macro_playback_world:
+                check_macro_playback(client, checks, args.macro_playback_world)
+            elif args.binary_capture_only or args.binary_capture_world:
                 check_binary_capture(client, checks, args.binary_capture_world)
             elif args.tick_safety_only or args.tick_safety_world:
                 check_tick_safety(client, checks, args.tick_safety_world)
@@ -2554,7 +2794,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "binary_capture_error"
+                "macro_playback_error"
+                if args.macro_playback_only or args.macro_playback_world
+                else "binary_capture_error"
                 if args.binary_capture_only or args.binary_capture_world
                 else "tick_safety_error"
                 if args.tick_safety_only or args.tick_safety_world
@@ -2650,6 +2892,7 @@ def main(argv: list[str] | None = None) -> int:
         check_tick_safety(client, checks)
         check_tick_streams(client, checks)
         check_binary_capture(client, checks)
+        check_macro_playback(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

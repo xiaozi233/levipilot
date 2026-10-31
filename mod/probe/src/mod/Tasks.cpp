@@ -179,9 +179,7 @@ void ProbeMod::beginTask() {
         request.lookTicks = 0;
         ++request.lookSeq;
     });
-    mMacroStartRequested = false;
-    mMacroPlaying        = false;
-    mMacroStopRequested  = true;
+    mMacroPlayback.cancel(MacroEnd::Task);
 }
 
 bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
@@ -194,7 +192,7 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
                 if (mTaskFaultId.compare_exchange_strong(faultId, 0)) {
                     RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
                 }
-                if (mMacroStopRequested.exchange(false)) releaseMacroInputs();
+                releaseMacroIfRequested();
                 if (mSeenTaskId != id) {
                     mSeenTaskId = id;
                     applyControls(client, player, ControlState{});

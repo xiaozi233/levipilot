@@ -85,6 +85,9 @@ class ModModelTests(unittest.TestCase):
     def test_entity_stage_timeout_cancellation_and_slot_snapshot(self) -> None:
         self.run_native("entity_model")
 
+    def test_macro_playback_ownership_failures_and_restart(self) -> None:
+        self.run_native("macro_playback_model")
+
     def test_macro_recording_hard_limit_and_unique_stop(self) -> None:
         self.run_native("macro_record_model")
 

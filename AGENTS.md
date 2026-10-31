@@ -214,9 +214,9 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **484/484**
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **536/536**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-31 全套，无跳过）、
-离线单测 **305/305**、ruff/mypy（driver+tests）全绿。审阅修复进度见
+离线单测 **307/307**、ruff/mypy（driver+tests）全绿。审阅修复进度见
 [`docs/reliability-repairs.md`](docs/reliability-repairs.md)，其余项目仍待推进。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
@@ -233,9 +233,9 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 
 后续修复与结构改善（优先级以 `docs/code-quality-review.md` 为准）：
 
-- ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化
-  （下一个候选：宏管理器 `mMacro*`，跨 5 个 TU）
-- 查询快照已覆盖 state/buttons/inventory/blocks/scan/select_slot；实体已迁分阶段会话，JSON 录制/跑酷事件已迁固定队列与后台格式化；宏录制已迁预初始化帧与局部 SEH，hook_call 已迁独占请求/后台回执，姿态已迁一致快照；二进制录制已补唯一失败与部分导出；宏播放/ECS/输入等路径及 SDK 分配仍待治理
+- ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化；宏播放已迁
+  `MacroPlayback`，宏录制/输入的整体会话所有权仍在第 13 项
+- 查询快照已覆盖 state/buttons/inventory/blocks/scan/select_slot；实体已迁分阶段会话，JSON 录制/跑酷事件已迁固定队列与后台格式化；宏录制已迁预初始化帧与局部 SEH，hook_call 已迁独占请求/后台回执，姿态已迁一致快照；二进制录制已补唯一失败与部分导出；宏播放已迁无锁准入/后台终结、点击已迁固定队列；ECS/输入等其余路径及 SDK 分配仍待治理
 - Overhead 统计环已迁原子载荷并通过 1100 tick 现场环绕；性能比较仍需受控对照
 - 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成，专项 30/30；
   UseTask 5 秒截止、chat_history 2 秒超时也已现场验收

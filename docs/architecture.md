@@ -47,6 +47,7 @@ scenario DSL / LLM / shell
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
+| `MacroPlaybackModel.h` | 宏播放帧所有权、无锁 tick 准入、范围/循环、运行编号与停止/失败/释放重试；不依赖游戏 SDK |
 | `Commands.cpp` | 单次 JSON 解析、领域分发、未知命令、请求级 SEH/异常隔离 |
 | `CommandDiagnostics.cpp` | 心跳、状态、版本诊断、panic、spool 与故障/开销自检命令 |
 | `CommandInspection.cpp` | 内存、watch、hook 命令的校验与分发 |
@@ -144,7 +145,12 @@ JSON 逐 tick 录制（内部名 legacy）与跑酷事件已迁到固定队列�
 失败及部分帧。Python 默认拒绝失败或丢行，显式部分导出仍校验代次，实验会话保留原异常。
 宏录制由 `MacroRecordSession` 冷侧一次初始化帧存储，tick 只写已准入的固定槽位；
 停止等待在途采样结束，后台报告唯一终结，保存使用停止后的独享快照。
-游戏 SDK 的玩家/物品名称访问器仍可能分配，宏播放、其他钩子与游戏读取仍待治理，
+宏播放由 `MacroPlayback` 独占冷侧加载的帧；tick 单次 CAS 准入，不取会话锁、不复制
+shared_ptr，也不生成 JSON。冷侧换帧/启动用 Writing 门等待已准入操作退出，后台消费
+带 run_id 的唯一终结。播放与按键释放分别有局部 SEH/C++ 边界，失败保留释放请求供后续
+tick 重试；新播放先完成旧输入清理。世界退出取消与启动前后世界代次检查共同隔离旧运行。
+点击结果写 128 项定长队列，由 spool 格式化；故障和队列溢出有明确诊断。
+游戏 SDK 的玩家/物品名称访问器仍可能分配，ECS、其他钩子与游戏读取仍待治理，
 不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
 
 ## 任务生命周期

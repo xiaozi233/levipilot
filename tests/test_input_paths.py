@@ -19,7 +19,7 @@ class PhysicalInputContractTests(unittest.TestCase):
     def test_real_input_uses_hardware_hid_keys(self) -> None:
         source = (ROOT / "mod/probe/src/mod/Input.cpp").read_text(encoding="utf-8")
         self.assertIn("applyRealInput", source)
-        self.assertIn("hidKeyEvent(codes[i], want[i], true, error)", source)
+        self.assertIn("hidKeyEdge(codes[i], want[i], true)", source)
         self.assertIn("getKeymappingByAction", source)
         self.assertIn('"key.sprint"', source)
         self.assertIn("refreshBindings", source)
@@ -36,7 +36,7 @@ class PhysicalInputContractTests(unittest.TestCase):
     def test_jump_command_is_not_a_direct_impulse_by_default(self) -> None:
         source = (ROOT / "mod/probe/src/mod/Input.cpp").read_text(encoding="utf-8")
         # The direct impulse may only live behind the legacy early-return branch.
-        real = source.split("void ProbeMod::applyRealInput", 1)[1].split(
+        real = source.split("bool ProbeMod::applyRealInput", 1)[1].split(
             "void ProbeMod::applyControls", 1
         )[0]
         self.assertNotIn("jumpFromGround", real)

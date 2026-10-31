@@ -180,9 +180,9 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["in_world"]        = mWorld.inWorld();
         out["world_entry"]     = mWorld.entryStatus();
         out["recording"]       = mLegacyStream.active();
-        out["tick"]            = mTick.load();
-        out["macro_playing"]   = mMacroPlaying.load();
-        out["macro_index"]     = mMacroIndex.load();
+        out["tick"]                  = mTick.load();
+        out["macro_playing"]         = mMacroPlayback.active();
+        out["macro_index"]           = mMacroPlayback.index();
         out["macro_recording"]       = mMacroRecording.active();
         out["queue_dropped"]   = mQueueDropped.load();
         out["pipe_write_timeouts"] = mPipeWriteTimeouts.load();

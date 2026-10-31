@@ -30,6 +30,9 @@ constexpr size_t KeyJump    = 5;
 constexpr size_t KeySprint  = 6;
 constexpr size_t KeyCount   = 7;
 constexpr int    kBindRefreshTicks = 20;
+// Construct SDK lookup keys before any tick; the SDK accepts const string refs.
+std::array<std::string, 7> const
+    kBindingNames{"key.forward", "key.back", "key.left", "key.right", "key.sneak", "key.jump", "key.sprint"};
 } // namespace
 
 bool ProbeMod::refreshBindings(bool releaseOnChange) {
@@ -42,16 +45,6 @@ bool ProbeMod::refreshBindings(bool releaseOnChange) {
         return false;
     }
 
-    // Static strings: the lookup happens on the tick thread, so avoid
-    // constructing std::string temporaries there.
-    static std::string const kForward = "key.forward";
-    static std::string const kBack    = "key.back";
-    static std::string const kLeft    = "key.left";
-    static std::string const kRight   = "key.right";
-    static std::string const kSneak   = "key.sneak";
-    static std::string const kJump    = "key.jump";
-    static std::string const kSprint  = "key.sprint";
-
     auto const read = [&layout](std::string const& action, int fallback) {
         auto const& mapping = layout->getKeymappingByAction(action);
         if (!mapping.isAssigned()) {
@@ -62,30 +55,28 @@ bool ProbeMod::refreshBindings(bool releaseOnChange) {
     };
 
     KeyBindings next;
-    next.forward = read(kForward, 87);  // W
-    next.back    = read(kBack, 83);     // S
-    next.left    = read(kLeft, 65);     // A
-    next.right   = read(kRight, 68);    // D
-    next.sneak   = read(kSneak, 16);    // Lshift
-    next.jump    = read(kJump, 32);     // Space
-    next.sprint  = read(kSprint, 0);    // 0 = unassigned
+    next.forward = read(kBindingNames[0], 87); // W
+    next.back    = read(kBindingNames[1], 83); // S
+    next.left    = read(kBindingNames[2], 65); // A
+    next.right   = read(kBindingNames[3], 68); // D
+    next.sneak   = read(kBindingNames[4], 16); // Lshift
+    next.jump    = read(kBindingNames[5], 32); // Space
+    next.sprint  = read(kBindingNames[6], 0);  // 0 = unassigned
 
     bool const changed = !mBindingsValid || next.forward != mBindings.forward
                       || next.back != mBindings.back || next.left != mBindings.left
                       || next.right != mBindings.right || next.sneak != mBindings.sneak
                       || next.jump != mBindings.jump || next.sprint != mBindings.sprint;
-    if (changed && releaseOnChange) {
-        releaseRealInput();
-    }
+    if (changed && releaseOnChange && !releaseRealInput()) return false;
     mBindings      = next;
     mBindingsValid = true;
     mBindingsTick  = mTick.load(std::memory_order_relaxed);
     return true;
 }
 
-void ProbeMod::releaseRealInput() {
-    std::string error;
-    int const   codes[KeyCount] = {
+bool ProbeMod::releaseRealInput() {
+    bool      released        = true;
+    int const codes[KeyCount] = {
         mBindings.forward,
         mBindings.back,
         mBindings.left,
@@ -99,8 +90,8 @@ void ProbeMod::releaseRealInput() {
         if (!mHeldKeys[i] || codes[i] == 0) {
             continue;
         }
-        hidKeyEvent(codes[i], false, true, error);
-        mHeldKeys[i] = false;
+        if (hidKeyEdge(codes[i], false, true)) released = false;
+        else mHeldKeys[i] = false;
     }
     auto& device = Mouse::_instance();
     if (mHeldLmb) {
@@ -112,64 +103,88 @@ void ProbeMod::releaseRealInput() {
         mHeldRmb = false;
     }
     mInjectingInput.store(false, std::memory_order_release);
+    return released;
 }
 
-void ProbeMod::performClick(LocalPlayer& player, int button) {
+bool ProbeMod::performClick(LocalPlayer& player, int button) {
+    ClickResult result;
+    result.button   = button;
     mInjectingClick = true;
-    struct InjectGuard {
-        std::atomic_bool& flag;
-        ~InjectGuard() { flag = false; }
-    } guard{mInjectingClick};
-
-    nlohmann::json result;
-    result["event"]     = "click_result";
-    result["button"]    = button == 1 ? "left" : "right";
-    result["game_mode"] = static_cast<bool>(player.mGameMode);
-
-    if (!player.mGameMode) {
-        enqueue(result.dump());
-        return;
+    try {
+        if (!guardedGameRead([&] {
+                injectCaptureFault(mClickCaptureTest.exchange(CaptureTest::None));
+                result.gameMode = static_cast<bool>(player.mGameMode);
+                if (!player.mGameMode) return;
+                GameMode& gm    = *player.mGameMode;
+                HitResult hit   = player.traceRay(mClickReach.load(), true, true);
+                result.hitValid = true;
+                result.hitType  = static_cast<int>(hit.mType);
+                result.x        = hit.mBlock.x;
+                result.y        = hit.mBlock.y;
+                result.z        = hit.mBlock.z;
+                result.face     = static_cast<int>(hit.mFacing);
+                result.hitX     = hit.mPos.x;
+                result.hitY     = hit.mPos.y;
+                result.hitZ     = hit.mPos.z;
+                if (button == 1) {
+                    if (hit.mType == HitResultType::Tile) {
+                        bool destroyed = false;
+                        gm.startDestroyBlock(hit.mBlock, hit.mFacing, destroyed);
+                        if (!destroyed) gm.destroyBlock(hit.mBlock, hit.mFacing);
+                    } else if (hit.mType == HitResultType::Entity && hit.getEntity())
+                        gm.attack(*hit.getEntity(), hit.mPos);
+                    return;
+                }
+                auto& item = const_cast<ItemStack&>(player.getSelectedItem());
+                if (hit.mType == HitResultType::Tile) {
+                    auto const& block = player.getDimensionBlockSourceConst().getBlock(hit.mBlock);
+                    gm.useItemOn(item, hit.mBlock, hit.mFacing, hit.mPos, HandSlot::Mainhand, &block, true);
+                } else if (hit.mType == HitResultType::Entity && hit.getEntity()) {
+                    if (!player.getSelectedItem().isNull()) gm.interact(*hit.getEntity(), hit.mPos, HandSlot::Mainhand);
+                } else gm.useItem(item, HandSlot::Mainhand);
+            }))
+            result.error = "click_fault";
+    } catch (...) {
+        result.error = "click_failed";
     }
-    GameMode& gm       = *player.mGameMode;
-    HitResult hit      = player.traceRay(mClickReach.load(), true, true);
-    result["hit_type"] = static_cast<int>(hit.mType);
-    result["block"]    = {hit.mBlock.x, hit.mBlock.y, hit.mBlock.z};
-    result["face"]     = static_cast<int>(hit.mFacing);
-    result["hit_pos"]  = {hit.mPos.x, hit.mPos.y, hit.mPos.z};
-
-    if (button == 1) {
-        if (hit.mType == HitResultType::Tile) {
-            bool destroyed = false;
-            gm.startDestroyBlock(hit.mBlock, hit.mFacing, destroyed);
-            if (!destroyed) {
-                gm.destroyBlock(hit.mBlock, hit.mFacing);
-            }
-        } else if (hit.mType == HitResultType::Entity && hit.getEntity()) {
-            gm.attack(*hit.getEntity(), hit.mPos);
-        }
-        enqueue(result.dump());
-        return;
-    }
-
-    auto& item = const_cast<ItemStack&>(player.getSelectedItem());
-    if (hit.mType == HitResultType::Tile) {
-        auto const& block = player.getDimensionBlockSourceConst().getBlock(hit.mBlock);
-        gm.useItemOn(item, hit.mBlock, hit.mFacing, hit.mPos, HandSlot::Mainhand, &block, true);
-    } else if (hit.mType == HitResultType::Entity && hit.getEntity()) {
-        // Empty-hand entity use dereferences a null item inside the game.
-        if (!player.getSelectedItem().isNull()) {
-            gm.interact(*hit.getEntity(), hit.mPos, HandSlot::Mainhand);
-        }
-    } else {
-        gm.useItem(item, HandSlot::Mainhand);
-    }
-    enqueue(result.dump());
+    mInjectingClick = false;
+    if (!mClickResults.push(result)) mClickResultsLost.fetch_add(1, std::memory_order_relaxed);
+    return result.error == nullptr;
 }
 
-void ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
+void ProbeMod::drainClicks() {
+    ClickResult result;
+    while (mClickResults.pop(result)) {
+        nlohmann::json out{
+            {"event",     "click_result"                       },
+            {"button",    result.button == 1 ? "left" : "right"},
+            {"game_mode", result.gameMode                      },
+            {"ok",        result.error == nullptr              }
+        };
+        if (result.hitValid)
+            out.update({
+                {"hit_type", result.hitType                                                                   },
+                {"block",    {result.x, result.y, result.z}                                                   },
+                {"face",     result.face                                                                      },
+                {"hit_pos",  {finiteOrZero(result.hitX), finiteOrZero(result.hitY), finiteOrZero(result.hitZ)}}
+            });
+        if (result.error) out["reason"] = result.error;
+        enqueue(out.dump());
+    }
+    if (auto lost = mClickResultsLost.exchange(0))
+        enqueue(
+            nlohmann::json{
+                {"event",  "click_diagnostic"},
+                {"reason", "buffer_full"     },
+                {"lost",   lost              }
+        }.dump()
+        );
+}
+
+bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
     std::uint64_t const tick = mTick.load(std::memory_order_relaxed);
     if (!mBindingsValid || tick - mBindingsTick >= kBindRefreshTicks) {
-        refreshBindings(true);
+        if (!refreshBindings(true)) return false;
     }
 
     // If the guest has a sprint key (currently often R), press it. If sprint is
@@ -208,7 +223,7 @@ void ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
         mBindings.jump,
         mBindings.sprint,
     };
-    std::string error;
+    bool applied = true;
     mInjectingInput.store(true, std::memory_order_release);
     for (size_t i = 0; i < KeyCount; ++i) {
         if (mHeldKeys[i] == want[i] || codes[i] == 0) {
@@ -216,9 +231,8 @@ void ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
         }
         // Hardware is the origin a physical keyboard produces. The injection
         // guard above keeps input_lock from dropping our own edge.
-        if (hidKeyEvent(codes[i], want[i], true, error)) {
-            mHeldKeys[i] = want[i];
-        }
+        if (hidKeyEdge(codes[i], want[i], true)) applied = false;
+        else mHeldKeys[i] = want[i];
     }
     if (!sprintBound && sprintRequested) {
         if (mSprintTapPhase == 1) {
@@ -242,6 +256,7 @@ void ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
     button(1, state.lmb, mHeldLmb);
     button(2, state.rmb, mHeldRmb);
     mInjectingInput.store(false, std::memory_order_release);
+    return applied;
 }
 
 void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state) {
@@ -382,7 +397,7 @@ void ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
     }
 }
 
-void ProbeMod::applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick) {
+bool ProbeMod::applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick) {
     // Event-level macro replay uses the same physical layer as set_input/move:
     // digital key states through Hardware HID, including the double-tap-W
     // sprint gesture. No MoveInput flags are written here.
@@ -394,41 +409,30 @@ void ProbeMod::applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick) 
     state.jump    = tick.jump;
     state.lmb     = tick.lmb;
     state.rmb     = tick.rmb;
-    state.active  = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak
-                   || tick.jump;
-    applyRealInput(player, state);
+    state.active       = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak || tick.jump;
+    bool const applied = applyRealInput(player, state);
 
     if (tick.yaw != 0.0f || tick.pitch != 0.0f) {
         applyTurnDelta(player, Vec2{tick.pitch, tick.yaw});
     }
-    mPrevMacroTick     = tick;
-    mHavePrevMacroTick = true;
+    return applied;
 }
 
-void ProbeMod::releaseMacroInputs() {
-    if (!mHavePrevMacroTick) {
-        return;
-    }
-    releaseRealInput();
-    mPrevMacroTick     = MacroTick{};
-    mHavePrevMacroTick = false;
-    mInjectingInput.store(false, std::memory_order_relaxed);
-}
+bool ProbeMod::releaseMacroInputs() { return releaseRealInput(); }
 
-void ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick) {
-    if (mMacroEventLevel) {
-        applyMacroTickEvents(player, tick);
-        return;
+bool ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick, bool eventLevel) {
+    if (eventLevel) {
+        return applyMacroTickEvents(player, tick);
     }
     if (tick.rmb != mPrevMacroRmb) {
         if (tick.rmb) {
-            performClick(player, 2);
+            if (!performClick(player, 2)) return false;
         }
         mPrevMacroRmb = tick.rmb;
     }
     if (tick.lmb != mPrevMacroLmb) {
         if (tick.lmb) {
-            performClick(player, 1);
+            if (!performClick(player, 1)) return false;
         }
         mPrevMacroLmb = tick.lmb;
     }
@@ -445,7 +449,13 @@ void ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, Macro
     state.active     = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak || tick.jump;
     state.yawDelta   = tick.yaw;
     state.pitchDelta = tick.pitch;
+    if (mButtonMode.load() == 0 && mJumpImpulseMode.load() == 0) {
+        bool const applied = applyRealInput(player, state);
+        if (tick.yaw != 0 || tick.pitch != 0) applyTurnDelta(player, Vec2{tick.pitch, tick.yaw});
+        return applied;
+    }
     applyControls(client, player, state);
+    return true;
 }
 
 

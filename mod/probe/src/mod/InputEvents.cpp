@@ -24,22 +24,19 @@ HIDControllerGameCoreDesktop* gamecoreHid(void* shim) {
 // messages. Keyboard::_inputs() is drained by the game's input pipeline (which
 // emits KeyInputEvent and runs bindings); MouseDevice::feed() is the publisher
 // behind MouseInputEvent. Both run on the client tick thread.
-bool ProbeMod::hidKeyEvent(int code, bool down, bool hardware, std::string& error) {
+char const* ProbeMod::hidKeyEdge(int code, bool down, bool hardware) {
     auto platform = ll::service::getAppPlatform();
     if (!platform) {
-        error = "no_platform";
-        return false;
+        return "no_platform";
     }
     auto* shim = platform->getPlatformShim();
     if (shim == nullptr) {
-        error = "no_platform_shim";
-        return false;
+        return "no_platform_shim";
     }
     auto* hid = gamecoreHid(shim);
     if (hid == nullptr) {
         // Either the shared_ptr is empty or the shim layout faulted under SEH.
-        error = "no_hid_controller";
-        return false;
+        return "no_hid_controller";
     }
     if (down) {
         hid->onKeyDown(
@@ -49,6 +46,14 @@ bool ProbeMod::hidKeyEvent(int code, bool down, bool hardware, std::string& erro
         );
     } else {
         hid->onKeyUp(code);
+    }
+    return nullptr;
+}
+
+bool ProbeMod::hidKeyEvent(int code, bool down, bool hardware, std::string& error) {
+    if (auto failure = hidKeyEdge(code, down, hardware)) {
+        error = failure;
+        return false;
     }
     return true;
 }

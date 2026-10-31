@@ -15,12 +15,12 @@
 
 | 顺序 | 等级 / 处理 | 位置 | 具体问题、影响与建议 |
 | --- | --- | --- | --- |
-| 1 | P1 / 部分修复，其余立即处理 | `ProbeMod.cpp::onPlayerTick/afterPlayerTick`、宏播放等 | tick 外层只有 C++ try/catch；在 `/EHs` 下不能隔离访问违例。查询/JSON 录制/跑酷/宏录制、hook_call 与姿态采样已加局部 SEH；实体各队列阶段有局部 SEH。其他游戏读取仍需逐一收进局部边界，不能推广为整个 tick 安全。禁止直接包住持有 mutex 的整个 tick，以免跳过析构。 |
+| 1 | P1 / 部分修复，其余立即处理 | `ProbeMod.cpp::onPlayerTick/afterPlayerTick`、ECS/输入/飞行等 | tick 外层只有 C++ try/catch；在 `/EHs` 下不能隔离访问违例。查询/JSON 录制/跑酷/宏录制、hook_call 与姿态采样已加局部 SEH；实体各队列阶段、宏播放/释放和点击同样已加局部 SEH。其他游戏读取仍需逐一收进局部边界，不能推广为整个 tick 安全。禁止直接包住持有 mutex 的整个 tick，以免跳过析构。 |
 | 2 | P2 / 已修复 | `MacroRecordModel.h`、`Macro.cpp::recordMacroTick`、`CommandRecording.cpp` 的 `macro_rec_start` | 原默认 0/超上限会在满 200000 条后仍保持 recording=true。现统一有效上限，到顶停止并保留缓冲，只报告一次 limit；冷侧预留容量，追加不增长 vector。原生模型跑完整 200000 条，覆盖 0/超上限/边界/停止后不再追加；现场专项 17/17 验证配置、唯一终结、保存及无效参数不破坏已有数据。 |
 | 3 | P2 / 已修复 | `WorldEntryModel.h`、`World.cpp::enterOnClient/probeEntryOnClient`、`WorldSession.cpp::pollEntry` | 已增加独立进入编号、30 秒截止、唯一终结及主线程实际状态观察；超时保留隔离，无玩家/安全菜单/服务端消失连续确认 500 ms 才恢复准入，避免重叠启动。Python 按编号匹配结果；native 验证截止/旧编号/竞争，专项现场 30/30 验证模拟超时、启动/观察 SEH 与真实缺失 join 后恢复。 |
-| 4 | P2 / 部分重构 | `Inventory.cpp::applySlotRequest`、`Macro.cpp::finishMacro`、`ProbeMod.cpp::safeTickPost`、`Transport.cpp::enqueue` | 查询、JSON 录制、跑酷事件与 hook_call 的自有 JSON/格式化/传输已迁出 tick，实体路径离开 tick。宏录制采样使用预初始化帧存储、无锁准入与后台终结；姿态使用一致原子载荷。SDK owning-string 名称访问器仍可能分配，宏播放和其他路径仍构造 JSON/string 或进入锁。继续用定长载荷交给消费者，分别验证游戏读取与生命周期；不能仅凭代码声称性能提高多少。 |
+| 4 | P2 / 部分重构 | `ProbeMod.cpp::safeTickPre/safeTickPost`、`Ecs.cpp`、`Transport.cpp::enqueue` | 查询、JSON 录制、跑酷事件与 hook_call 的自有 JSON/格式化/传输已迁出 tick，实体路径离开 tick。宏录制/播放使用预初始化帧或冷侧独占帧、无锁准入与后台终结，点击使用固定队列；姿态使用一致原子载荷。SDK owning-string 名称访问器仍可能分配，ECS/玩家名等其他路径仍进入锁或生成字符串/JSON。继续用定长载荷交给消费者，分别验证游戏读取与生命周期；不能仅凭代码声称性能提高多少。 |
 | 5 | P2 / 本批完成 | `State.cpp::captureScan`、`QueryModel.h::advanceScan` | 原实现缺少每 tick 预算，过滤 air 时小 limit 也读完整区域。现每 tick 最多 512 格，带取消/超时、tick 跨度和截断原因；native 验证顺序/边界/零分配，现场 32768 格为 64 批，重连和退出取消通过。扫描跨 tick，不能当成同 tick 的原子世界快照。 |
-| 6 | P2 / 重构 | `ProbeMod.h` 宏/输入字段、`ProbeMod.cpp::startMacroIfRequested/tickMacroPlayback`、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | ProbeMod 仍负责多领域状态；宏状态跨多个 TU、多个原子与两把锁，修改一个会话契约容易遗漏另一条 reset/stop 路径。按 MacroSession/InputSession 封装状态和操作，明确线程所有权与锁顺序，先迁移宏；保留 Internal.h 作为统一共享入口的仓库约定。 |
+| 6 | P2 / 部分重构 | `ProbeMod.h` 宏/输入字段、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | ProbeMod 仍负责多领域状态。播放已迁 MacroPlayback，移除旧宏帧锁与松散播放字段；录制/输入跨 TU 的整体会话、按键与锁存所有权仍需统一，避免 reset/stop 遗漏。按 MacroSession/InputSession 继续封装，明确线程所有权与锁顺序；保留 Internal.h 作为统一共享入口的仓库约定。 |
 | 7 | P2 / 重构 | `Inventory.cpp` 四组服务端写入、`Server.cpp::requestServerTeleport`、`TaskEvents.cpp::useOnServerImpl`、`Entities.cpp::captureEntityStage` | 重复查询 Minecraft/Level/Player 和空值处理，玩家身份策略还分别使用 name 或 UUID+name。修复易漏改，错误语义容易漂移。提炼仅在服务端线程解析的上下文执行器，保留各领域既有错误事件，不跨线程保存 Actor 指针。 |
 | 8 | P2 / 验证完善 | `driver/selftest.py::Checks.note/finish`、`check_task_operations` 等 | skip 只打印 NOTE，不进入结果分母；权限关闭或无空槽时，“全部通过”的数字会下降而看不出缺测。改为 pass/fail/skip 三态，输出原因和预期覆盖；完整验收模式遇必需检查 skip 应失败。拆分接近 3000 行的现场套件，以 fixture 明确前置状态与恢复。 |
 | 9 | P2 / 本批完成 | `State.cpp::captureState/stateJson` | 原方块读取失败被静默吞掉，响应缺字段却像完整成功。现局部 SEH 返回 partial/warnings，正常查询可恢复；专项验证失败字段缺省、其他字段存在及后续恢复。整条采样 C++ 异常走明确的 capture_failed，不再静默成功。 |
@@ -97,7 +97,14 @@ hook_call 已移到独占请求槽与后台回执，有 busy/2 秒截止/取消/
 跨会话。实验会话保留部分 entries 和主体异常。完整首轮 483/484 的实体朝向误报已按
 本次实际 eye/target 快照修正，并把玩家朝向验收容差从 20° 收紧到 0.1°。
 卸载分支由原生模型覆盖，未现场热卸载；宏播放/ECS/输入及 SDK 分配仍待治理。
-原清单仍剩 5 大项，第 12 项进行中，13–16 未完成。
+
+宏播放与点击后续：离线 **307/307**，专项现场 **56/56**（真实退出/重进），完整现场
+**536/536**（无跳过）。MacroPlayback 冷侧独占帧、tick 无会话锁/shared_ptr/JSON，
+局部 SEH/C++、唯一 run_id 终结、释放重试、换短宏/快速重启及任务接管通过；点击回执
+移至后台并显式报告故障/溢出。native 验证 200000 帧零分配与并发停止/换帧，Python
+跑酷过滤旧运行终结并在失败前排完采样。构建/静态/profile、安装哈希和无新增/修改 crash
+核对通过，未做现场热卸载或性能提升对照。ECS/输入/其他游戏边界及 SDK 分配仍属第 12 项，
+宏录制/输入整体所有权仍属第 13 项。原清单仍剩 5 大项，第 12 项进行中，13–16 未完成。
 
 下一步继续补其余游戏读取边界，
 再迁其余 tick 格式化与拆分子系统，最后统一类型命名及文档。每批以 native 回归、

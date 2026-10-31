@@ -144,15 +144,14 @@ bool ProbeMod::disable() {
     mPoseEpoch.fetch_add(1);
     {
         std::lock_guard lock(mMacroSessionMutex);
+        mMacroPlayback.stop(MacroEnd::Disabled);
         mMacroRecording.stop(MacroRecordEnd::Disabled);
         drainMacroRecordingLocked();
     }
-    mMacroPlaying   = false;
-    mMacroStartRequested = false;
     // Input release must happen on the game tick. If a final tick is still
     // delivered during shutdown, this request clears event-level keys before
     // the mod leaves; it also makes the intent explicit for a later unload.
-    mMacroStopRequested = true;
+
     packetCaptureStop();
     // Never leave the game with real input dropped after an unload.
     mHardwareInputLocked = false;
@@ -185,6 +184,8 @@ bool ProbeMod::disable() {
     // The spool worker can finish before an admitted capture releases its
     // lease. stop() has now joined it, so persist any remaining final failure.
     if (auto failure = recordTakeFailure()) enqueue(failure->dump());
+    drainMacroPlayback();
+    drainClicks();
     flushSpool(true);
     {
         std::lock_guard lock(mSpoolFileMutex);
@@ -305,16 +306,14 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         performClick(player, click);
     }
 
-    if (mMacroStopRequested.exchange(false)) releaseMacroInputs();
+    releaseMacroIfRequested();
 
     // Closed-loop tasks own the tick while they run.
     if (tickTask(*client, player)) {
         return;
     }
 
-    startMacroIfRequested();
-
-    if (mMacroPlaying.load(std::memory_order_relaxed)) {
+    if (mMacroPlayback.active()) {
         tickMacroPlayback(*client, player);
         return;
     }
@@ -455,69 +454,6 @@ void ProbeMod::applyToggleFlyRequest(LocalPlayer& player) {
         }
             .dump()
     );
-}
-
-void ProbeMod::startMacroIfRequested() {
-    if (!mMacroStartRequested.load(std::memory_order_acquire)) {
-        return;
-    }
-    bool started = false;
-    {
-        std::lock_guard sessionLock(mMacroSessionMutex);
-        if (!mMacroStartRequested.exchange(false, std::memory_order_acq_rel)) {
-            return;
-        }
-        if (!mMacroRecording.active()) {
-            std::lock_guard macroLock(mMacroMutex);
-            if (mMacro) {
-                mMacroPlaying = true;
-                started = true;
-            }
-        }
-    }
-    if (started) {
-        mPrevSprint   = false;
-        mPrevSneak    = false;
-        mPrevMacroRmb = false;
-        mPrevMacroLmb = false;
-        mInjected     = false;
-        getSelf().getLogger().info(
-            "harness: macro started at tick {}, range [{}, {})",
-            mMacroIndex.load(),
-            mMacroStart.load(),
-            mMacroEnd.load()
-        );
-    } else {
-        enqueue(R"({"event":"error","reason":"macro_not_loaded"})");
-    }
-}
-
-void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
-    std::shared_ptr<Macro> macro;
-    {
-        std::lock_guard lock(mMacroMutex);
-        macro = mMacro;
-    }
-    int index = mMacroIndex.load(std::memory_order_relaxed);
-    int end   = mMacroEnd.load(std::memory_order_relaxed);
-    if (!macro || index < 0 || index >= static_cast<int>(macro->size()) || index >= end) {
-        // macro_load can swap in a shorter macro while looping, so the
-        // restart point must be re-validated against the *current* size
-        // before the row access below; otherwise it reads out of bounds.
-        int const restart = mMacroStart.load(std::memory_order_relaxed);
-        if (macro && mMacroLoop.load() && !macro->empty() && restart >= 0
-            && restart < static_cast<int>(macro->size()) && restart < end) {
-            index = restart;
-            mMacroIndex.store(index, std::memory_order_relaxed);
-        } else {
-            finishMacro("end");
-        }
-    }
-    if (mMacroPlaying.load(std::memory_order_relaxed)) {
-        auto const& row = (*macro)[static_cast<size_t>(index)];
-        applyMacroTick(client, player, row);
-        mMacroIndex.store(index + 1);
-    }
 }
 
 void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests) {

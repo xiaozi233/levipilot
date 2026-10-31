@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **299/299**，现场 **459/459**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **305/305**，现场 **484/484**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -119,7 +119,9 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   `Player::interact` / `GameMode::interact`：空 item 上下文会触发 `[rsi+0x1D0]`（RSI=0）
   崩溃。
 - `look_at_entity` 用玩家头部到实体头部的向量算 yaw/pitch（`probe::detail::yawTo/
-  pitchTo` 共享公式），再走 `_applyTurnDelta`。
+  pitchTo` 共享公式），再走 `_applyTurnDelta`。`look_at_done` 附带实际使用的 `eye/target`
+  坐标（客户端/服务端两个阶段，非同 tick 原子快照）。自检用这些坐标重算方向，分别校验
+  回执误差 <0.001°、玩家实际朝向误差 <0.1°，避免移动目标的后续位置造成误报。
 - 2026-10-31 实体/快捷栏验收：离线 **289/289**，查询专项 **99/99**，真实生命周期
   **16/16**，完整现场 **377/377**（无跳过）。原生模型覆盖 500 轮跨线程阶段交接、
   超时运行中回调与新请求隔离、消费中重连丢弃及槽位快照；现场覆盖三个实体阶段的
@@ -369,8 +371,32 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 - dump 结果本身也走 `enqueue`，因此会自动进 T1 的 spool。
 - JSON `start` 的逐 tick 事件保留为兼容路径，两者可以同时开。
 - 采样的游戏 API 调用放在独立 SEH 边界内；结构化异常先转成失败，再正常退出 capture，
-  避免 `/EHs` 未展开析构导致下一次 start/stop 永久等待。tick 只设置故障标志，spool
-  线程合并发出 `internal_error(phase=record_tick)`；本轮没有在游戏中注入故障验证。
+  避免 `/EHs` 未展开析构导致下一次 start/stop 永久等待。SEH/C++ 异常分别停止本次会话，
+  原因为 `capture_fault/capture_failed`；退出世界、卸载分别为 `world_left/disabled`。
+  tick 只写固定结果，冷侧发一次 `record_failed`，带 `record_id/rows/ok=false/reason`。
+  独立事件不会被 Python 当成其他在途命令的 `error`；新 start 前先排出上一代未报告失败。
+- `record_started/record_stopped` 与 `status.record` 增加 `record_id/ok/reason/active`，原字段
+  保留。正常停止为 `reason=client`；重复 stop 保留原失败，故障优先于并发正常停止。
+  启动前后复核世界代次，避免准备缓冲期间退出后仍开启录制。初始化失败保留旧数据和结果。
+- `record_dump` 增加 `record_id/ok/reason/partial`，失败后的完整已发布帧仍可读；故障帧不发布。
+  Python `record_bin_stop()` 明确传播失败；`record_dump_all()` 默认拒绝失败或丢行，取证时
+  可传 `allow_partial=True`。分页固定同一 `record_id`，显式允许部分数据也不能混入新会话。
+  `RecordSession` 保存 record_id，退出时先保留部分 `entries` 再抛错；实验主体已有异常时
+  将清理失败附为 note，保留原异常。
+- 卸载先停止并等待在途采样，再在 spool 退出后补排尚未消费的失败，最后刷盘；
+  避免后台线程先结束时漏掉 admitted capture 的终结。卸载分支由原生模型覆盖，
+  现场未执行 DLL 热卸载。
+
+- 2026-10-31 失败传播验收：最终专项 **33/33**（含真实退出/重进），完整现场 **484/484**
+  （无跳过）、离线 **305/305**；最终生命周期模型调整后补跑 native 回归通过。原生覆盖
+  在途采样/停止竞争、失败优先/唯一通知、初始化失败保留旧数据、退出与卸载取消，及
+  既有 10 万帧并发环绕/2500 次重启。现场验证 JSON/hex 部分帧逐条一致，失败后 head
+  不再增长，checked stop/dump 拒绝失败，新会话恢复；实验主体异常保留并附清理失败。
+  日志 `out/reliability-bin-record-*`，复现 `--binary-capture-only` /
+  `--binary-capture-world "超平坦测试"`。完整构建、ruff check/format、mypy 和 profile
+  通过；安装/构建 SHA-256 均为
+  `0C7599A84A80EDF5369391498062E74C43F87356C1D9EA7D3AA2EC52CA9C9540`。
+  无新增/修改 crash 文件，最终站稳、输入解锁且任务/两类录制/宏停止。
 
 ## 跑酷辅助（P2）
 
@@ -803,8 +829,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **459/459**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **299/299**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **484/484**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **305/305**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

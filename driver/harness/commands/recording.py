@@ -35,7 +35,9 @@ class RecordingCommands(PipeConnection):
         )
 
     def record_bin_stop(self, timeout: float | None = None) -> dict[str, Any]:
-        return self.request({"cmd": "record_stop"}, "record_stopped", timeout=timeout)
+        reply = self.request({"cmd": "record_stop"}, "record_stopped", timeout=timeout)
+        self.check_recording_result(reply)
+        return reply
 
     def record_dump(
         self,
@@ -63,8 +65,10 @@ class RecordingCommands(PipeConnection):
         chunk: int = 1024,
         format: str = "jsonl",
         timeout: float | None = None,
+        allow_partial: bool = False,
+        record_id: int | None = None,
     ) -> list[RecordEntry]:
-        """Drain the ring up to the head observed on the first reply."""
+        """Drain one recording up to its initial head; reject failure/loss by default."""
         entries: list[RecordEntry] = []
         stop_at: int | None = None
         cursor = since
@@ -72,6 +76,17 @@ class RecordingCommands(PipeConnection):
             while True:
                 limit = chunk if stop_at is None else min(chunk, stop_at - cursor)
                 message = self.record_dump(cursor, limit=limit, format=format, timeout=timeout)
+                observed_id = message.get("record_id")
+                if record_id is None:
+                    record_id = observed_id
+                elif observed_id is not None and observed_id != record_id:
+                    raise ModProtocolError("record_dump recording changed during collection")
+                if not allow_partial:
+                    self.check_recording_result(message)
+                    if int(message.get("lost", 0)):
+                        raise ModProtocolError(
+                            "record_dump lost rows; use allow_partial=True to inspect"
+                        )
                 batch = decode_dump(message)
                 next_cursor = int(message.get("next", cursor))
                 if batch and next_cursor <= cursor:

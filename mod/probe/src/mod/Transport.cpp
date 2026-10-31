@@ -51,11 +51,7 @@ void ProbeMod::spoolThreadLoop() {
         }
     };
     auto reportRecordFault = [this] {
-        if (recordTakeFault()) {
-            enqueue(
-                R"({"event":"error","reason":"internal_error","phase":"record_tick","message":"structured exception"})"
-            );
-        }
+        if (auto failure = recordTakeFailure()) enqueue(failure->dump());
     };
     // The spool thread is the only consumer of task/chat events; if one bad
     // payload ever threw, the whole task pipeline would freeze (event ring

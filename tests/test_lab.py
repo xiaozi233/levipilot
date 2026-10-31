@@ -5,7 +5,9 @@ from __future__ import annotations
 import itertools
 import math
 import unittest
+from unittest.mock import patch
 
+from driver.harness import ModProtocolError
 from driver.harness.lab import (
     ACTOR_DATA_FLAG_COMPONENT,
     KEY_SPACE,
@@ -148,6 +150,32 @@ class BuilderTests(unittest.TestCase):
 
 
 class SessionTests(unittest.TestCase):
+    def test_failed_record_session_retains_partial_rows(self) -> None:
+        rows = [entry(100)]
+        client = FakeClient(entries=rows)
+        session = RecordSession(client)
+        with (
+            patch.object(client, "record_bin_stop", side_effect=ModProtocolError("capture_fault")),
+            self.assertRaisesRegex(ModProtocolError, "capture_fault"),
+            session,
+        ):
+            pass
+        self.assertEqual(session.entries, rows)
+        dump = next(c for c in client.calls if c[0] == "record_dump_all")
+        self.assertTrue(dump[2]["allow_partial"])
+
+    def test_failed_record_cleanup_preserves_body_exception(self) -> None:
+        client = FakeClient(entries=[entry(100)])
+        session = RecordSession(client)
+        with (
+            patch.object(client, "record_bin_stop", side_effect=ModProtocolError("capture_fault")),
+            self.assertRaisesRegex(ValueError, "experiment") as caught,
+            session,
+        ):
+            raise ValueError("experiment")
+        self.assertEqual(len(session.entries), 1)
+        self.assertIn("capture_fault", caught.exception.__notes__[0])
+
     def test_record_session_dumps_from_zero(self) -> None:
         rows = [entry(100), entry(101)]
         client = FakeClient(entries=rows)

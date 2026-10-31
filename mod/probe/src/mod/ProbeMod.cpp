@@ -140,6 +140,7 @@ bool ProbeMod::disable() {
     mChatCapture.cancel("disabled");
     cancelQueries("disabled");
     hookCancelCalls("disabled");
+    recordCancel(RecordEnd::Disabled);
     mPoseEpoch.fetch_add(1);
     {
         std::lock_guard lock(mMacroSessionMutex);
@@ -181,6 +182,9 @@ bool ProbeMod::disable() {
     if (mSpoolThread.joinable()) {
         mSpoolThread.join();
     }
+    // The spool worker can finish before an admitted capture releases its
+    // lease. stop() has now joined it, so persist any remaining final failure.
+    if (auto failure = recordTakeFailure()) enqueue(failure->dump());
     flushSpool(true);
     {
         std::lock_guard lock(mSpoolFileMutex);

@@ -206,6 +206,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["watch_hits"]    = watchTotalHits();
         out["watch_dropped"] = watchDroppedHits();
         out["record_active"]   = recordActive();
+        out["record"]           = recordStateJson();
         out["record_rows"]     = recordRows();
         out["record_head"]     = recordHead();
         out["record_period"]   = recordPeriod();

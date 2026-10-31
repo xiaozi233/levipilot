@@ -2,6 +2,7 @@
 
 #include "mod/AtomicRing.h"
 #include "mod/ProbeMod.h"
+#include "mod/RecordModel.h"
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientCancelJoinLevelEvent.h"
@@ -379,13 +380,16 @@ constexpr std::uint32_t RecordFlagInLava  = 1u << 13;
 
 std::uint32_t blockNameHash(std::string const& name);
 
-bool          recordStart(std::uint32_t period, std::string& error);
-void          recordStop();
+bool           recordStart(std::uint32_t period, std::string& error, std::optional<nlohmann::json>& previous);
+void           recordStop(RecordEnd reason = RecordEnd::Client);
+void           recordCancel(RecordEnd reason);
+nlohmann::json recordStateJson();
 bool          recordActive();
 std::uint64_t recordHead();
 std::uint64_t recordRows();
 std::uint32_t recordPeriod();
-bool          recordTakeFault(); // Consumed/formatted by the spool thread.
+std::optional<nlohmann::json> recordTakeFailure(); // Consumed/formatted on the cold side.
+bool                          recordArmTest(CaptureTest test);
 void          recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
 
 // format: "jsonl" (decoded rows) or "hex" ("bin" is accepted as an alias).

@@ -36,6 +36,10 @@ nlohmann::json entityRowJson(EntitySnapshot::Row const& row) {
             {"distance", finiteOrZero(row.distance)}};
 }
 
+nlohmann::json aimPositionJson(EntitySnapshot::Vec const& value) {
+    return {{"x", finiteOrZero(value.x)}, {"y", finiteOrZero(value.y)}, {"z", finiteOrZero(value.z)}};
+}
+
 nlohmann::json entityJson(EntityQuery const& query, EntitySnapshot const& out) {
     if (out.error) return {{"event", "error"}, {"reason", out.error}, {"phase", "entities"}};
     auto const& row = out.rows.front();
@@ -63,7 +67,8 @@ nlohmann::json entityJson(EntityQuery const& query, EntitySnapshot const& out) {
         break;
     case EntityOperation::LookAt:
         result = {{"event", "look_at_done"}, {"runtime_id", query.runtimeId},
-                  {"yaw", finiteOrZero(out.yaw)}, {"pitch", finiteOrZero(out.pitch)}};
+                  {"yaw", finiteOrZero(out.yaw)}, {"pitch", finiteOrZero(out.pitch)},
+                  {"eye", aimPositionJson(out.eye)}, {"target", aimPositionJson(out.aim)}};
         break;
     }
     result["truncated"] = out.truncated;

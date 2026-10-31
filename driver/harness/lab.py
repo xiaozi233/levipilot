@@ -18,6 +18,7 @@ Analysis helpers are pure functions so they can be unit-tested offline.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import math
 import time
@@ -25,6 +26,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .errors import ModPipeError
 from .record import RecordEntry
 
 if TYPE_CHECKING:
@@ -145,14 +147,37 @@ class RecordSession:
         self.client = client
         self.period = period
         self.entries: list[RecordEntry] = []
+        self.record_id: int | None = None
 
     def __enter__(self) -> RecordSession:
-        self.client.record_bin_start(period=self.period)
+        started = self.client.record_bin_start(period=self.period)
+        self.record_id = started.get("record_id")
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        self.client.record_bin_stop()
-        self.entries = self.client.record_dump_all(since=0, chunk=8192)
+        failure: ModPipeError | None = None
+        try:
+            self.client.record_bin_stop()
+        except ModPipeError as error:
+            failure = error
+        try:
+            self.entries = self.client.record_dump_all(
+                since=0, chunk=8192, allow_partial=failure is not None, record_id=self.record_id
+            )
+        except ModPipeError as error:
+            if failure is None:
+                failure = error
+                with contextlib.suppress(ModPipeError):
+                    self.entries = self.client.record_dump_all(
+                        since=0, chunk=8192, allow_partial=True, record_id=self.record_id
+                    )
+            else:
+                failure.add_note(f"partial dump also failed: {error}")
+        if failure is not None:
+            if exc and isinstance(exc[1], BaseException):
+                exc[1].add_note(f"recording cleanup also failed: {failure}")
+            else:
+                raise failure
 
     @property
     def rows(self) -> list[dict[str, Any]]:

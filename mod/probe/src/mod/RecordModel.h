@@ -8,11 +8,32 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <optional>
 #include <thread>
 #include <type_traits>
 #include <utility>
 
 namespace probe::detail {
+
+enum class RecordEnd { None, Client, CaptureFault, CaptureFailed, WorldLeft, Disabled };
+inline bool recordSucceeded(RecordEnd reason) { return reason == RecordEnd::None || reason == RecordEnd::Client; }
+inline char const* recordEndName(RecordEnd reason) {
+    switch (reason) {
+    case RecordEnd::None:
+        return "none";
+    case RecordEnd::Client:
+        return "client";
+    case RecordEnd::CaptureFault:
+        return "capture_fault";
+    case RecordEnd::CaptureFailed:
+        return "capture_failed";
+    case RecordEnd::WorldLeft:
+        return "world_left";
+    case RecordEnd::Disabled:
+        return "disabled";
+    }
+    return "unknown";
+}
 
 // One tick producer; lifecycle and dump callers are serialized externally.
 // Commands wait for an admitted capture before resetting. The producer never
@@ -29,6 +50,11 @@ template <class Entry, std::size_t Capacity> class RecordBuffer {
     static constexpr unsigned Active = 1, Capturing = 2;
 
   public:
+    struct Outcome {
+        std::uint64_t recordId = 0, rows = 0;
+        RecordEnd reason = RecordEnd::None;
+        bool ok() const { return recordSucceeded(reason); }
+    };
     class Capture {
       public:
         Capture(Capture const&) = delete;
@@ -58,8 +84,9 @@ template <class Entry, std::size_t Capacity> class RecordBuffer {
             slot.sequence.store(sequence, std::memory_order_release);
             mOwner->mHead.store(index + 1, std::memory_order_release);
         }
+        void fail(RecordEnd reason) { mOwner->finish(reason); }
 
-      private:
+    private:
         friend class RecordBuffer;
         explicit Capture(RecordBuffer* owner) : mOwner(owner) {}
         RecordBuffer* mOwner;
@@ -73,19 +100,38 @@ template <class Entry, std::size_t Capacity> class RecordBuffer {
         if (!mSlots) {
             return false;
         }
+        initialize(); // Failure preserves the preceding stopped rows and outcome.
         mHead.store(0, std::memory_order_relaxed);
         mTickCounter = 0;
         mPeriod.store(std::clamp<std::uint32_t>(period, 1, 200), std::memory_order_relaxed);
-        initialize();
+        ++mRecordId;
+        mEnd.store(RecordEnd::None, std::memory_order_relaxed);
         mState.store(Active, std::memory_order_release);
         return true;
     }
 
-    void stop() {
-        mState.fetch_and(~Active, std::memory_order_acq_rel);
+    void stop(RecordEnd reason = RecordEnd::Client) {
+        if (mState.load(std::memory_order_acquire)) finish(reason);
         while ((mState.load(std::memory_order_acquire) & Capturing) != 0) {
             std::this_thread::yield(); // Command thread only, never the tick.
         }
+    }
+
+    // Lifecycle callback: disable admission without waiting for a tick. Cold
+    // stop/outcome consumers join the admitted capture before reading payloads.
+    void cancel(RecordEnd reason) {
+        if (mState.load(std::memory_order_acquire)) finish(reason);
+    }
+
+    Outcome outcome() const { // Cold; call stop first for the final row count.
+        return {mRecordId, head(), mEnd.load(std::memory_order_acquire)};
+    }
+    std::optional<Outcome> takeFailure() { // Cold, externally serialized.
+        if (!mRecordId || mReportedId == mRecordId || mState.load(std::memory_order_acquire)) return {};
+        auto result = outcome();
+        mReportedId = mRecordId;
+        if (result.ok()) return {};
+        return result;
     }
 
     Capture capture() {
@@ -130,11 +176,21 @@ template <class Entry, std::size_t Capacity> class RecordBuffer {
     }
 
   private:
+    void finish(RecordEnd reason) {
+        auto expected = RecordEnd::None;
+        if (!mEnd.compare_exchange_strong(expected, reason, std::memory_order_release, std::memory_order_relaxed)
+            && !recordSucceeded(reason) && recordSucceeded(expected)) {
+            mEnd.compare_exchange_strong(expected, reason, std::memory_order_release, std::memory_order_relaxed);
+        }
+        mState.fetch_and(~Active, std::memory_order_release);
+    }
     std::unique_ptr<Slot[]> mSlots;
     std::atomic<unsigned> mState{0};
     std::atomic<std::uint64_t> mHead{0};
     std::atomic<std::uint32_t> mPeriod{1};
     std::uint64_t mTickCounter = 0;
+    std::atomic<RecordEnd>     mEnd{RecordEnd::None};
+    std::uint64_t              mRecordId = 0, mReportedId = 0; // Cold ownership only.
 };
 
 } // namespace probe::detail

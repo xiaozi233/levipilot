@@ -168,7 +168,71 @@ void repeatedRestarts() {
     ticker.join();
 }
 
+void failureOutcomes() {
+    using probe::detail::RecordEnd;
+    Buffer records;
+    assert(records.start(1, [] {}));
+    {
+        auto capture = records.capture();
+        capture.publish(sample(42));
+    }
+    auto id = records.outcome().recordId;
+    {
+        auto capture = records.capture();
+        records.cancel(RecordEnd::Client);
+        assert(!records.takeFailure()); // The producer still owns its lease.
+        capture.fail(RecordEnd::CaptureFault);
+    }
+    records.stop();
+    auto failure = records.takeFailure();
+    assert(failure && !failure->ok() && failure->recordId == id && failure->rows == 1);
+    assert(failure->reason == RecordEnd::CaptureFault && !records.takeFailure());
+    assert(!records.capture());
+    Entry row;
+    assert(records.read(0, row) && row.words[0] == 42);
+    try {
+        records.start(2, [] { throw 42; });
+        assert(false);
+    } catch (int) {
+    }
+    assert(records.outcome().recordId == id && records.head() == 1 && !records.active());
+    assert(records.outcome().reason == RecordEnd::CaptureFault && records.read(0, row));
+    for (auto reason : {RecordEnd::CaptureFailed, RecordEnd::WorldLeft, RecordEnd::Disabled}) {
+        assert(records.start(1, [] {}));
+        assert(records.outcome().recordId > id && records.outcome().ok());
+        id = records.outcome().recordId;
+        {
+            auto capture = records.capture();
+            if (reason == RecordEnd::CaptureFailed) capture.fail(reason);
+            else records.cancel(reason);
+            assert(!records.takeFailure()); // Lifecycle drain must wait for this lease.
+        }
+        records.stop();
+        auto done = records.takeFailure();
+        assert(done && done->reason == reason && done->rows == 0 && !done->ok());
+        assert(!records.takeFailure());
+    }
+}
+
+void stopRacesFailure() {
+    using probe::detail::RecordEnd;
+    Buffer records;
+    assert(records.start(1, [] {}));
+    std::future<void> stop;
+    {
+        auto capture = records.capture();
+        stop = std::async(std::launch::async, [&] { records.stop(); });
+        while (records.active()) std::this_thread::yield();
+        assert(stop.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready);
+        capture.fail(RecordEnd::CaptureFailed);
+    }
+    stop.get();
+    assert(records.outcome().reason == RecordEnd::CaptureFailed && !records.outcome().ok());
+}
+
 int main() {
+    failureOutcomes();
+    stopRacesFailure();
     lifecycle();
     resetWaitsForCapture();
     wraparound();

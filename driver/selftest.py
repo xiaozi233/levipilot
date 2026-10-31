@@ -13,6 +13,8 @@
     py -3.11 driver/selftest.py --macro-capture-world "超平坦测试"  # also leave/rejoin recording lifecycle
     py -3.11 driver/selftest.py --tick-safety-only  # guarded hook calls and coherent checkpoint poses
     py -3.11 driver/selftest.py --tick-safety-world "超平坦测试"  # plus menu cancellation/pose invalidation
+    py -3.11 driver/selftest.py --binary-capture-only  # binary recording failures and retained rows
+    py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
     py -3.11 driver/selftest.py --entry-lifecycle-world "超平坦测试"  # startup watchdog/recovery
     py -3.11 driver/selftest.py --overhead-only  # read concurrently across a full sample-ring wrap
@@ -45,7 +47,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
-from driver.harness.lab import Builder, double_space_fly, settle, swim_drive, swim_stop  # noqa: E402
+from driver.harness.lab import (  # noqa: E402
+    Builder,
+    double_space_fly,
+    record_session,
+    settle,
+    swim_drive,
+    swim_stop,
+)
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry, decode_dump  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
@@ -1515,6 +1524,196 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
 
 
+def check_binary_capture(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """A failed binary session must stop, retain rows and stay visibly failed."""
+    original = client.state()
+    if not checks.check("binary_capture_in_world", original.get("in_world") is True):
+        return
+    if not checks.check("binary_capture_idle", client.status().get("record_active") is False):
+        return
+
+    def terminal(record_id: int) -> dict[str, Any]:
+        return client.wait_event(
+            "record_failed", 3, predicate=lambda row: row.get("record_id") == record_id
+        )
+
+    def rejects(operation: str, reason: str) -> bool:
+        try:
+            getattr(client, operation)()
+        except ModProtocolError as error:
+            return reason in str(error)
+        return False
+
+    def no_duplicate(record_id: int) -> bool:
+        try:
+            client.wait_event(
+                "record_failed", 0.2, predicate=lambda row: row.get("record_id") == record_id
+            )
+        except ModTimeout:
+            return True
+        return False
+
+    rejected = client.request({"cmd": "selftest_record_capture", "mode": "seh"}, "error")
+    if not checks.check(
+        "binary_capture_fault_gate", rejected.get("reason") == "not_recording", str(rejected)
+    ):
+        return
+    for mode, reason in (("seh", "capture_fault"), ("cpp", "capture_failed")):
+        started = client.record_bin_start()
+        record_id = int(started.get("record_id", 0))
+        checks.check(
+            f"binary_{mode}_start",
+            record_id > 0
+            and started.get("ok") is True
+            and started.get("active") is True
+            and started.get("reason") == "none",
+            str(started),
+        )
+        wait_ticks(client, 4)
+        client.request(
+            {"cmd": "selftest_record_capture", "mode": mode}, "record_capture_test_armed"
+        )
+        done = terminal(record_id)
+        checks.check(
+            f"binary_{mode}_terminal",
+            done.get("reason") == reason
+            and done.get("ok") is False
+            and int(done.get("rows", 0)) >= 4,
+            str(done),
+        )
+        stopped = client.request({"cmd": "record_stop"}, "record_stopped")
+        checks.check(
+            f"binary_{mode}_stop_preserves_failure",
+            stopped.get("record_id") == record_id
+            and stopped.get("active") is False
+            and stopped.get("ok") is False
+            and stopped.get("reason") == reason
+            and stopped.get("rows") == done.get("rows") == stopped.get("head"),
+            str(stopped),
+        )
+        checks.check(f"binary_{mode}_checked_stop", rejects("record_bin_stop", reason))
+        json_dump = client.record_dump(limit=8192)
+        hex_dump = client.record_dump(limit=8192, format="hex")
+        rows = decode_dump(json_dump)
+        checks.check(
+            f"binary_{mode}_partial_formats",
+            json_dump.get("record_id") == hex_dump.get("record_id") == record_id
+            and json_dump.get("partial") is True
+            and hex_dump.get("partial") is True
+            and json_dump.get("ok") is False
+            and json_dump.get("reason") == reason
+            and json_dump.get("lost") == hex_dump.get("lost") == 0
+            and len(rows) == done.get("rows")
+            and rows == decode_dump(hex_dump)
+            and all(after.tick == before.tick + 1 for before, after in itertools.pairwise(rows)),
+            f"rows={len(rows)}",
+        )
+        checks.check(f"binary_{mode}_checked_dump", rejects("record_dump_all", reason))
+        checks.check(
+            f"binary_{mode}_explicit_partial",
+            client.record_dump_all(chunk=2, allow_partial=True, record_id=record_id) == rows,
+        )
+        wait_ticks(client, 3)
+        status = client.status()["record"]
+        checks.check(
+            f"binary_{mode}_frozen",
+            status.get("active") is False
+            and status.get("record_id") == record_id
+            and status.get("head") == len(rows)
+            and status.get("reason") == reason,
+            str(status),
+        )
+        checks.check(f"binary_{mode}_unique", no_duplicate(record_id))
+        with record_session(client) as recovered:
+            wait_ticks(client, 4)
+        checks.check(
+            f"binary_{mode}_recovery",
+            int(recovered.record_id or 0) > record_id
+            and len(recovered.entries) >= 4
+            and client.ping().get("event") == "pong",
+        )
+
+    failure = ""
+    try:
+        with record_session(client) as partial:
+            wait_ticks(client, 4)
+            client.request(
+                {"cmd": "selftest_record_capture", "mode": "seh"}, "record_capture_test_armed"
+            )
+            terminal(int(partial.record_id or 0))
+    except ModProtocolError as error:
+        failure = str(error)
+    checks.check(
+        "binary_context_failure_retains_rows",
+        "capture_fault" in failure and len(partial.entries) >= 4,
+        f"{failure}; rows={len(partial.entries)}",
+    )
+    notes: list[str] = []
+    try:
+        with record_session(client) as body_failure:
+            wait_ticks(client, 4)
+            client.request(
+                {"cmd": "selftest_record_capture", "mode": "cpp"}, "record_capture_test_armed"
+            )
+            terminal(int(body_failure.record_id or 0))
+            raise ValueError("binary capture body sentinel")
+    except ValueError as error:
+        if str(error) != "binary capture body sentinel":
+            raise
+        notes = getattr(error, "__notes__", [])
+    checks.check(
+        "binary_context_preserves_body_exception",
+        len(body_failure.entries) >= 4 and any("capture_failed" in note for note in notes),
+        str(notes),
+    )
+
+    if world:
+        started = client.record_bin_start()
+        record_id = int(started["record_id"])
+        try:
+            wait_ticks(client, 4)
+            client.leave_world()
+            client.wait_event("world_left", 45)
+            done = terminal(record_id)
+            checks.check(
+                "binary_world_cancel",
+                done.get("ok") is False
+                and done.get("reason") == "world_left"
+                and int(done.get("rows", 0)) >= 4,
+                str(done),
+            )
+            checks.check(
+                "binary_world_partial_retained",
+                len(client.record_dump_all(allow_partial=True, record_id=record_id))
+                == done.get("rows"),
+            )
+            checks.check("binary_world_checked_stop", rejects("record_bin_stop", "world_left"))
+            checks.check("binary_world_unique", no_duplicate(record_id))
+            deadline = time.monotonic() + 45
+            while not client.worlds().get("ready"):
+                if time.monotonic() >= deadline:
+                    raise ModTimeout("binary recording: main menu did not become ready")
+                time.sleep(0.1)
+            rejected = client.request({"cmd": "record_start"}, "error")
+            checks.check("binary_menu_rejected", rejected.get("reason") == "not_in_world")
+        finally:
+            joined = client.enter_world_ready(world)
+            checks.check("binary_world_rejoin", joined.get("ok") is True, str(joined))
+            client.wait_in_world(timeout=60)
+            client.reset(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            checks.check("binary_world_settle", settle(client, on_ground=True)["ok"])
+        with record_session(client) as recovered:
+            wait_ticks(client, 4)
+        checks.check(
+            "binary_world_recovery",
+            int(recovered.record_id or 0) > record_id and len(recovered.entries) >= 4,
+        )
+
+
 def check_overhead_window(client: ModClient, checks: Checks, *, wrap: bool = False) -> None:
     """Verify published window bounds/legacy metrics while real ticks overwrite it."""
     start = client.overhead()
@@ -2253,6 +2452,12 @@ def main(argv: list[str] | None = None) -> int:
         help="also check hook cancellation and pose validity on leave/rejoin",
     )
     modes.add_argument(
+        "--binary-capture-only", action="store_true", help="check binary recording failure outcomes"
+    )
+    modes.add_argument(
+        "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
+    )
+    modes.add_argument(
         "--use-lifecycle-only",
         action="store_true",
         help="inject missing/failed server work and verify task termination/recovery in a world",
@@ -2326,10 +2531,14 @@ def main(argv: list[str] | None = None) -> int:
         or args.macro_capture_world
         or args.tick_safety_only
         or args.tick_safety_world
+        or args.binary_capture_only
+        or args.binary_capture_world
     ):
         try:
             client.input_lock(True)
-            if args.tick_safety_only or args.tick_safety_world:
+            if args.binary_capture_only or args.binary_capture_world:
+                check_binary_capture(client, checks, args.binary_capture_world)
+            elif args.tick_safety_only or args.tick_safety_world:
                 check_tick_safety(client, checks, args.tick_safety_world)
             elif args.macro_capture_only or args.macro_capture_world:
                 check_macro_capture(client, checks, args.macro_capture_world)
@@ -2345,7 +2554,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "tick_safety_error"
+                "binary_capture_error"
+                if args.binary_capture_only or args.binary_capture_world
+                else "tick_safety_error"
                 if args.tick_safety_only or args.tick_safety_world
                 else "macro_capture_error"
                 if args.macro_capture_only or args.macro_capture_world
@@ -2438,6 +2649,7 @@ def main(argv: list[str] | None = None) -> int:
         check_macro_capture(client, checks)
         check_tick_safety(client, checks)
         check_tick_streams(client, checks)
+        check_binary_capture(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 
@@ -4057,17 +4269,25 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             look = client.look_at_entity(runtime_id)
-            # the entity may have moved since the info snapshot
-            fresh = client.entity(runtime_id)
+            # Validate the positions actually used by this request. A later
+            # entity query observes a moving target at a different time.
+            eye, target = look["eye"], look["target"]
             expected_yaw = math.degrees(
-                math.atan2(-(float(fresh["x"]) - feet[0]), (float(fresh["z"]) - feet[2]))
+                math.atan2(
+                    -(float(target["x"]) - float(eye["x"])),
+                    float(target["z"]) - float(eye["z"]),
+                )
             )
             current = client.state()
             yaw_gap = abs((float(current.get("yaw", 0.0)) - expected_yaw + 180.0) % 360.0 - 180.0)
+            requested_gap = abs((float(look["yaw"]) - expected_yaw + 180.0) % 360.0 - 180.0)
             checks.check(
                 "look_at_entity",
-                look.get("event") == "look_at_done" and yaw_gap < 20.0,
-                f"yaw={current.get('yaw'):.1f} expected={expected_yaw:.1f}",
+                look.get("event") == "look_at_done"
+                and look.get("runtime_id") == runtime_id
+                and requested_gap < 1e-3
+                and yaw_gap < 0.1,
+                f"yaw={current.get('yaw'):.3f} expected={expected_yaw:.3f} requested_gap={requested_gap:.6f}",
             )
 
             health_before = info.get("health")

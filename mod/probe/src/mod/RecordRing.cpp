@@ -11,11 +11,9 @@ namespace {
 
 RecordBuffer<RecordEntry, RecordCapacity> gRecords;
 std::mutex gRingMutex; // Command-side lifecycle and dumps; never taken by tick.
-std::atomic_bool gSampleFault{false};
+std::atomic<CaptureTest>                  gSampleTest{CaptureTest::None};
 
-// Liquid name hashes for the medium flag bits. blockNameHash takes std::string
-// temporaries, so they are resolved here (command thread) instead of in the
-// tick, and read back as plain relaxed loads.
+// Liquid hashes are resolved on the command side and remain plain tick loads.
 std::atomic<std::uint32_t> gWaterHash{0};
 std::atomic<std::uint32_t> gFlowingWaterHash{0};
 std::atomic<std::uint32_t> gLavaHash{0};
@@ -104,16 +102,33 @@ std::uint32_t blockHashAt(BlockSource const& source, int x, int y, int z) {
             return hash;
         }
     }
-    // Table unavailable (compat mode): keep the old semantics, at the cost of
-    // an allocation. Documented exception to the hot-path discipline.
+    // getTypeName returns a const reference in this SDK. The fallback hashes
+    // it directly, without owning strings, profile lookups or cache allocation.
     return blockNameHash(block.getTypeName());
 }
 
 } // namespace
 
-bool recordStart(std::uint32_t period, std::string& error) {
+namespace {
+nlohmann::json failureJson(RecordBuffer<RecordEntry, RecordCapacity>::Outcome const& done) {
+    // A recording failure belongs to a session, not an unrelated command.
+    return {
+        {"event",     "record_failed"           },
+        {"phase",     "record_tick"             },
+        {"reason",    recordEndName(done.reason)},
+        {"ok",        false                     },
+        {"record_id", done.recordId             },
+        {"rows",      done.rows                 }
+    };
+}
+} // namespace
+
+bool recordStart(std::uint32_t period, std::string& error, std::optional<nlohmann::json>& previous) {
     std::lock_guard lock(gRingMutex);
+    gRecords.stop();
+    if (auto done = gRecords.takeFailure()) previous = failureJson(*done);
     if (!gRecords.start(period, [] {
+            gSampleTest = CaptureTest::None;
             gWaterHash.store(blockNameHash("minecraft:water"), std::memory_order_relaxed);
             gFlowingWaterHash.store(blockNameHash("minecraft:flowing_water"), std::memory_order_relaxed);
             gLavaHash.store(blockNameHash("minecraft:lava"), std::memory_order_relaxed);
@@ -129,9 +144,25 @@ bool recordStart(std::uint32_t period, std::string& error) {
     return true;
 }
 
-void recordStop() {
+void recordStop(RecordEnd reason) {
     std::lock_guard lock(gRingMutex);
-    gRecords.stop();
+    gRecords.stop(reason);
+}
+
+void recordCancel(RecordEnd reason) { gRecords.cancel(reason); }
+
+nlohmann::json recordStateJson() {
+    std::lock_guard lock(gRingMutex);
+    auto const      done = gRecords.outcome();
+    return {
+        {"record_id", done.recordId             },
+        {"ok",        done.ok()                 },
+        {"reason",    recordEndName(done.reason)},
+        {"rows",      done.rows                 },
+        {"head",      done.rows                 },
+        {"period",    gRecords.period()         },
+        {"active",    gRecords.active()         }
+    };
 }
 
 bool recordActive() { return gRecords.active(); }
@@ -142,13 +173,25 @@ std::uint64_t recordRows() { return recordHead(); }
 
 std::uint32_t recordPeriod() { return gRecords.period(); }
 
-bool recordTakeFault() { return gSampleFault.exchange(false, std::memory_order_acq_rel); }
+std::optional<nlohmann::json> recordTakeFailure() {
+    std::lock_guard lock(gRingMutex);
+    if (auto done = gRecords.takeFailure()) return failureJson(*done);
+    return {};
+}
+
+bool recordArmTest(CaptureTest test) {
+    std::lock_guard lock(gRingMutex);
+    if (!gRecords.active()) return false;
+    gSampleTest = test;
+    return true;
+}
 
 namespace {
 
 void captureTickEntry(
     LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge, RecordEntry& entry
 ) {
+    injectCaptureFault(gSampleTest.exchange(CaptureTest::None));
     entry.tick = tick;
 
     auto const& pos = player.getPosition();
@@ -274,13 +317,17 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
     pathCount(PathCounter::Record);
     if (!capture.sampleDue()) return;
 
-    HandledSehScope captureFlag;
-    RecordEntry entry;
-    if (!captureEntryWithSeh(player, client, tick, jumpEdge, entry)) {
-        gSampleFault.store(true, std::memory_order_release);
-        return;
+    try {
+        HandledSehScope captureFlag;
+        RecordEntry     entry;
+        if (!captureEntryWithSeh(player, client, tick, jumpEdge, entry)) {
+            capture.fail(RecordEnd::CaptureFault);
+            return;
+        }
+        capture.publish(entry);
+    } catch (...) {
+        capture.fail(RecordEnd::CaptureFailed);
     }
-    capture.publish(entry);
 }
 
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary) {
@@ -312,6 +359,11 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
     out["entry_size"] = RecordSize;
     out["active"]     = recordActive();
     out["period"]     = recordPeriod();
+    auto const outcome = gRecords.outcome();
+    out["record_id"]   = outcome.recordId;
+    out["ok"]          = outcome.ok();
+    out["reason"]      = recordEndName(outcome.reason);
+    out["partial"]     = !outcome.ok();
 
     if (binary) {
         static constexpr char Digits[] = "0123456789abcdef";

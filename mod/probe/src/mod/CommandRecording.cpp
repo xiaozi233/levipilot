@@ -51,44 +51,57 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         return true;
     }
     if (cmd == "record_start") {
+        auto const worldEpoch = mPoseEpoch.load();
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
         if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return true;
         }
-        std::uint32_t const period = std::clamp(j.value("period", 1), 1, 200);
-        std::string         error;
-        if (!recordStart(period, error)) {
+        std::uint32_t const           period = std::clamp(j.value("period", 1), 1, 200);
+        std::string                   error;
+        std::optional<nlohmann::json> previous;
+        bool const                    started = recordStart(period, error, previous);
+        if (previous) enqueue(previous->dump());
+        if (!started) {
             enqueue(
                 nlohmann::json{
-                    {"event",  "error"      },
-                    {"reason", error        },
+                    {"event",  "error"},
+                    {"reason", error  },
             }
                     .dump()
             );
             return true;
         }
-        enqueue(
-            nlohmann::json{
-                {"event",     "record_started"  },
-                {"period",    period            },
-                {"capacity",  RecordCapacity    },
-                {"entry_size", RecordSize       },
-        }
-                .dump()
-        );
+        // Exit can run while the cold start joins a preceding capture or
+        // prepares storage. The pose epoch advances on every world exit.
+        if (!mWorld.inWorld() || mPoseEpoch.load() != worldEpoch) recordCancel(RecordEnd::WorldLeft);
+        auto out          = recordStateJson();
+        out["event"]      = "record_started";
+        out["capacity"]   = RecordCapacity;
+        out["entry_size"] = RecordSize;
+        enqueue(out.dump());
         return true;
     }
     if (cmd == "record_stop") {
         recordStop();
-        enqueue(
-            nlohmann::json{
-                {"event",  "record_stopped"  },
-                {"rows",   recordRows()      },
-                {"head",   recordHead()      },
-                {"period", recordPeriod()    },
+        auto out     = recordStateJson();
+        out["event"] = "record_stopped";
+        enqueue(out.dump());
+        return true;
+    }
+    if (cmd == "selftest_record_capture") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
         }
-                .dump()
-        );
+        auto const mode = j.value("mode", std::string{});
+        if (mode != "seh" && mode != "cpp") enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+        else if (!recordArmTest(mode == "seh" ? CaptureTest::Fault : CaptureTest::Cpp))
+            enqueue(R"({"event":"error","reason":"not_recording"})");
+        else enqueue(R"({"event":"record_capture_test_armed"})");
         return true;
     }
     if (cmd == "record_dump") {

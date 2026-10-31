@@ -10,6 +10,50 @@ from tests.test_transport import FakeClient
 
 
 class RecordingCommandsTests(unittest.TestCase):
+    def test_binary_stop_propagates_failed_recording(self) -> None:
+        client = FakeClient()
+        client._session.lines.put(
+            {"event": "record_stopped", "ok": False, "reason": "capture_fault"}
+        )
+        with self.assertRaisesRegex(ModProtocolError, "capture_fault"):
+            client.record_bin_stop()
+
+    def test_binary_dump_failure_requires_explicit_partial(self) -> None:
+        client = FakeClient()
+        message = {
+            "event": "record_dump",
+            "ok": False,
+            "reason": "capture_failed",
+            "head": 1,
+            "next": 1,
+            "data": "00" * 64,
+        }
+        with patch.object(client, "record_dump", return_value=message):
+            with self.assertRaisesRegex(ModProtocolError, "capture_failed"):
+                client.record_dump_all()
+            self.assertEqual(len(client.record_dump_all(allow_partial=True)), 1)
+
+    def test_binary_dump_rejects_lost_rows(self) -> None:
+        client = FakeClient()
+        message = {"event": "record_dump", "lost": 1, "head": 2, "next": 2, "data": "00" * 64}
+        with patch.object(client, "record_dump", return_value=message):
+            with self.assertRaisesRegex(ModProtocolError, "lost rows"):
+                client.record_dump_all()
+            self.assertEqual(len(client.record_dump_all(allow_partial=True)), 1)
+
+    def test_binary_dump_never_combines_recordings(self) -> None:
+        client = FakeClient()
+        messages = [
+            {"event": "record_dump", "record_id": 1, "head": 2, "next": 1, "data": "00" * 64},
+            {"event": "record_dump", "record_id": 2, "head": 2, "next": 2, "data": "00" * 64},
+        ]
+        for partial in (False, True):
+            with (
+                patch.object(client, "record_dump", side_effect=messages),
+                self.assertRaisesRegex(ModProtocolError, "recording changed"),
+            ):
+                client.record_dump_all(allow_partial=partial)
+
     def test_macro_partial_save_is_reported_as_failed_recording(self) -> None:
         client = FakeClient()
         client._session.lines.put(

@@ -43,8 +43,8 @@ xmake -j4 -y
 | `mem_read` / `mem_write` | 读/写本进程内存（`addr,len` / `addr,hex`）；写需要 `allow_write=true`；坏地址回 `ok=false,reason=bad_addr` |
 | `probe` | `kind=raw/block/legacy`；结构化读取 `Block*` → `BlockLegacy*`、名字哈希/字符串、block id 和两个 float |
 | `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | 硬件写观察点（DR0–DR3，size 1/2/4/8，mode `w`/`rw`，默认只装 tick 线程，`thread=all` 被拒绝）；`depth` 可选 1..32（默认 8）控制每次命中抓多少返回地址，深度越大 VEH 开销与环内存越高；`watch_drain` 的 `rip` 是触发后的下一条指令，附 `code_hex`=rip-16..rip |
-| `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样） |
-| `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` |
+| `record_start` / `record_stop` | 启动/停止定长二进制 tick 环（`period` 每 N tick 采样），返回 `record_id/ok/reason` |
+| `record_dump` | `since,limit,format=jsonl/bin`；返回解码行或 64 字节记录的 hex 块，`next/head/lost` 及会话/失败元数据 |
 | `hook_install` | `symbol` 或 `va`，`tag/sample/dry_run`；符号钩用 typed detour，VA 安装需 `allow_hook_va`；可选 `mem_arg(0..3)/mem_offset/mem_size(4..64, step 4)` 在 detour 内抓参数指向的短命缓冲 |
 | `hook_rm` / `hook_list` | 卸钩 / 列出已装钩与命中统计 |
 | `hook_drain` | `since,limit`；命中环（4 个整数参数、返回地址、4 帧栈、`b_float`）；开了内存采样时另带 `mem{arg,offset,len,ok,addr,hex,f32}` |
@@ -197,10 +197,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **459/459**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **484/484**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **299/299**。常用实测数字：
+离线单测 **305/305**。常用实测数字：
+
+2026-10-31 二进制录制失败传播：`--binary-capture-world "超平坦测试"` **33/33**，完整现场
+**484/484**（无跳过）、离线 **305/305**。覆盖 SEH/C++ 唯一失败、部分帧与重复停止、
+Python 失败传播/原异常保留、退出取消与重进恢复；分页禁止跨会话。修正实体朝向验收为
+使用本次 eye/target，回读误差 <0.1°。构建/静态/profile 与安装哈希一致，无新增/修改 crash；
+未现场热卸载 DLL，未用这轮宣称整个 tick 零分配。
 
 2026-10-31 钩子调用/姿态：`--tick-safety-world "超平坦测试"` **32/32**，完整现场
 **459/459**（无跳过）、离线 **299/299**。覆盖钩子异常/超时唯一失败与恢复、busy 参数保护、
@@ -435,6 +441,10 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   `record_dump` 默认
   每次 1024 条，`since/next` 是绝对序号。因为传输是 JSONL，`bin`/`hex` 用 hex 分块而不是
   裸字节帧，避免破坏行协议。
+- 二进制采样故障或离开世界会终止本次录制，异步通知为 `record_failed`；重复停止保留
+  原失败，已发布部分帧仍可导出。Python `record_bin_stop()` 遇失败抛错，`record_dump_all()`
+  默认拒绝失败/丢行，显式 `allow_partial=True` 可取证，但始终拒绝跨 `record_id` 拼接。
+  `lab.record_session()` 在清理失败时仍保留部分 `entries`，实验主体的异常不会被覆盖。
 - 记录里的 `block_below/feet/head` 是方块类型名的 FNV-1a 32 哈希；用
   `driver.harness.record.block_hash(name)` 对照。
 - `hook_va` 的通用 detour 只保留 4 个整数参数寄存器（rcx/rdx/r8/r9）；float/xmm 参数、

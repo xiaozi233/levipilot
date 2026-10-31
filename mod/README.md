@@ -56,11 +56,11 @@ xmake -j4 -y
 | `signature_check` | `name,expected_hex`；对任意期望签名做比对（负路径自检） |
 | `overhead` | tick/钩子耗时 p50/p99/max、`tick_hz`、`calls_per_sec`、`paths.{record,watch,hook}` 调用率 |
 | `selftest_busy` | 在 tick 内忙等 `us` 微秒 × `ticks`（≤5 ms/200 tick），需 `allow_selftest_stress=true` |
-| `ecs_context` | `context,component_id`；从 hook 捕获的 `EntityContext*` 直接解析组件（address/index/count/size） |
+| `ecs_context` | `context,component_id`；核对 hook 捕获的 `EntityContext*` 所属 registry 后在对应线程读组件（address/index/count/size/registry/scope） |
 | `ecs_registries` | 客户端 EnTT registry 指针、组件 storage 数、entity id |
 | `ecs_entity` | `runtime_id` → actor/context/registry/entity 地址、拥有组件数 |
 | `ecs_components` | 枚举实体组件：运行时 `id`、index、地址、`stride`、storage `count`；单个 storage 探测失败时跳过并在 `skipped` 里报 id，不再整条命令回 `internal_error` |
-| `ecs_component` | 读组件原始字节（`len` 默认 stride，最大 512） |
+| `ecs_component` | 读组件原始字节（`len=0` 依次取 profile 尺寸/stride/64，最大 512） |
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
@@ -197,10 +197,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **536/536**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **575/575**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **307/307**。常用实测数字：
+离线单测 **308/308**。常用实测数字：
+
+2026-10-31 ECS 快照：`--ecs-capture-world "超平坦测试"` **51/51**，完整现场
+**575/575**（无跳过）、离线 **308/308**。五个接口已移出 tick，客户端/服务端 context
+匹配所属 registry；覆盖逐 storage 故障继续、两侧 SEH/C++/超时、busy 保留、真实重连/
+退出/重进。安装/构建哈希一致，无新增/修改 crash 文件；输入/飞行等其余边界仍待治理。
 
 2026-10-31 宏播放/点击：`--macro-playback-world "超平坦测试"` **56/56**，完整现场
 **536/536**（无跳过）、离线 **307/307**。覆盖两种回放的 SEH/C++ 唯一失败、释放重试、
@@ -439,6 +444,10 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 - `ecs_entity/ecs_components` 按 runtime id 解析到的是服务端 Actor；客户端玩家的 context
   从 `state.context` 取，`ecs_context` 用它做交叉验证。不要在 tick 线程枚举客户端 registry
   （会和游戏线程竞争并崩溃）。
+- ECS 请求由所属客户端/服务端队列采样，后台格式化。2 秒截止、同域重叠返回 ecs_busy，
+  退出取消、重连丢弃旧结果。最多 1024 条组件/失败 id、4096 次 storage 访问、512 字节
+  原始数据；超限标记 truncated，坏 storage 保留 skipped/partial。scope 表示本次实际读取侧。
+  context 必须对应当前客户端或服务端 registry，否则返回 context_not_found；原始地址可能复用。
 - spool 每 100 ms 或 64 KB 刷一次，进程被强杀时最多丢最后约 100 ms 的记录；队列溢出
   会写一条 `queue_dropped` 标记进 spool。
 - `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。
@@ -474,9 +483,10 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   `jmp [rip+0]` 导入 thunk 再取真实函数。
 - `mods/probe/offsets.json` 可以在运行时覆盖签名/结构偏移/组件 id，不用重编译；
   它只会改当前进程里已选中的 profile。
-- ECS 组件 id 是**运行时** EnTT id，跨进程/跨版本不稳定；`ecs_components` 只报 id、地址、
-  stride、count，不给类型名。stride 由同一 storage 的两个元素地址差推断，只有一个元素时
-  为 0（此时 `ecs_component` 默认读 64 字节）。目前只暴露客户端 registry。
+- ECS 组件 id 是**运行时** EnTT id，跨进程/跨版本不稳定；`ecs_components` 报 id、地址、
+  stride、count，profile 已知组件附带 name/size。stride 由同一 storage 的两个元素地址差
+  推断，只有一个元素时为 0；组件默认读取长度依次取 profile 尺寸、stride、64 字节。
+  `ecs_registries` 列出客户端 registry；runtime-id 请求读取服务端，context 会核对所属侧。
 
 ## License
 

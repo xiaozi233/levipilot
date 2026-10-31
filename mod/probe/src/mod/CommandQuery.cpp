@@ -32,6 +32,21 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, timeout);
         else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, timeout);
         else if (target == "select_slot") accepted = mSlotCapture.begin({0, test}, now, timeout);
+        else if (target == "ecs") {
+            EcsQuery query;
+            query.test = test;
+            auto const stage = j.value("stage", std::string{"client"});
+            if (stage == "client") query.testStage = EcsStage::Client;
+            else if (stage == "server") query.testStage = EcsStage::Server;
+            else {
+                enqueue(R"({"event":"error","reason":"bad_test_stage"})");
+                return true;
+            }
+            query.runtimeId = j.value("runtime_id", std::uint64_t{0});
+            query.operation = query.testStage == EcsStage::Client
+                ? EcsOperation::Registries : EcsOperation::Components;
+            accepted = bool(mEcsCapture.begin(query, now, timeout));
+        }
         else if (target == "entities") {
             EntityQuery query;
             query.test = test;
@@ -207,44 +222,33 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         queueClearInventory();
         return true;
     }
-    if (cmd == "ecs_registries") {
-        EcsRequest request;
-        request.kind = EcsRequest::Kind::Registries;
-        {
-            std::lock_guard lock(mEcsMutex);
-            mEcsRequest = request;
-        }
-        return true;
-    }
-    if (cmd == "ecs_entity" || cmd == "ecs_components" || cmd == "ecs_component" || cmd == "ecs_context") {
-        if (!mWorld.inWorld()) {
-            enqueue(R"({"event":"error","reason":"not_in_world"})");
+    if (cmd == "ecs_registries" || cmd == "ecs_entity" || cmd == "ecs_components"
+        || cmd == "ecs_component" || cmd == "ecs_context") {
+        auto const epoch = mPoseEpoch.load();
+        if (!mWorld.inWorld() || !hooksAllowed()) {
+            enqueue(nlohmann::json{{"event", "error"},
+                {"reason", mWorld.inWorld() ? "version_mismatch" : "not_in_world"}}.dump());
             return true;
         }
-        EcsRequest request;
-        request.runtimeId = j.value("runtime_id", std::uint64_t{0});
-        if (cmd == "ecs_entity") {
-            request.kind = EcsRequest::Kind::Entity;
-        } else if (cmd == "ecs_components") {
-            request.kind = EcsRequest::Kind::Components;
-        } else if (cmd == "ecs_context") {
-            std::uint64_t contextAddr = 0;
-            if (!parseAddress(j.value("context", nlohmann::json{}), contextAddr)) {
+        EcsQuery query;
+        query.runtimeId = j.value("runtime_id", std::uint64_t{0});
+        query.componentId = j.value("component_id", std::uint32_t{0});
+        if (cmd == "ecs_registries") query.operation = EcsOperation::Registries;
+        else if (cmd == "ecs_entity") query.operation = EcsOperation::Entity;
+        else if (cmd == "ecs_components") query.operation = EcsOperation::Components;
+        else if (cmd == "ecs_context") {
+            query.operation = EcsOperation::Context;
+            if (!parseAddress(j.value("context", nlohmann::json{}), query.context)) {
                 enqueue(R"({"event":"error","reason":"bad_addr"})");
                 return true;
             }
-            request.kind           = EcsRequest::Kind::Context;
-            request.contextAddress = contextAddr;
-            request.componentId    = j.value("component_id", std::uint32_t{0});
         } else {
-            request.kind        = EcsRequest::Kind::Component;
-            request.componentId = j.value("component_id", std::uint32_t{0});
-            request.length      = j.value("len", std::uint32_t{0});
+            query.operation = EcsOperation::Component;
+            query.length = j.value("len", std::uint32_t{0});
         }
-        {
-            std::lock_guard lock(mEcsMutex);
-            mEcsRequest = request;
-        }
+        if (auto request = mEcsCapture.begin(query, GetTickCount64())) {
+            if (!mWorld.inWorld() || mPoseEpoch.load() != epoch) request->cancel("world_left");
+        } else enqueue(R"({"event":"error","reason":"ecs_busy","phase":"ecs"})");
         return true;
     }
     if (cmd == "entity" || cmd == "attack_entity" || cmd == "interact_entity" || cmd == "look_at_entity") {

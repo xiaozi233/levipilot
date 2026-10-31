@@ -288,6 +288,7 @@ void ProbeMod::resetQueries() {
     mInventoryCapture.reset();
     mSlotCapture.reset();
     mEntityCapture.reset();
+    mEcsCapture.reset();
 }
 void ProbeMod::cancelQueries(char const* reason) {
     mStateCapture.cancel(reason);
@@ -297,10 +298,12 @@ void ProbeMod::cancelQueries(char const* reason) {
     mInventoryCapture.cancel(reason);
     mSlotCapture.cancel(reason);
     mEntityCapture.cancel(reason);
+    mEcsCapture.cancel(reason);
 }
 
 void ProbeMod::drainQueries() {
     drainEntities();
+    drainEcs();
     auto const now     = GetTickCount64();
     auto       publish = [&](auto& done, nlohmann::json out) {
         auto line = out.dump();

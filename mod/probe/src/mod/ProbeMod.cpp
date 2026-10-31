@@ -625,17 +625,6 @@ void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
         captureInventory(player, request, out);
         return true;
     });
-    {
-        std::optional<EcsRequest> request;
-        {
-            std::lock_guard lock(mEcsMutex);
-            request.swap(mEcsRequest);
-        }
-        if (request) {
-            applyEcs(player, *request);
-        }
-    }
-
     mBlockCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureBlocks(player, request, out);

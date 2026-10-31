@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/ChatModel.h"
+#include "mod/EcsModel.h"
 #include "mod/EntityModel.h"
 #include "mod/MacroPlaybackModel.h"
 #include "mod/PacketTap.h"
@@ -64,17 +65,6 @@ struct Checkpoint {
     float z     = 0.0f;
     float yaw   = 0.0f;
     float pitch = 0.0f;
-};
-
-struct EcsRequest {
-    enum class Kind { Entity, Components, Component, Registries, Context };
-
-    Kind          kind      = Kind::Entity;
-    std::uint64_t runtimeId = 0;
-    // Kind::Context: raw EntityContext* captured by a hook argument.
-    std::uint64_t contextAddress = 0;
-    std::uint32_t componentId    = 0;
-    std::uint32_t length         = 64;
 };
 
 struct TeleportRequest {
@@ -310,11 +300,9 @@ private:
     void drainEntities();
     detail::EntityStage captureEntityStage(detail::EntityStage stage, detail::EntityQuery const& query,
                                            detail::EntitySnapshot& out);
-    void applyEcs(LocalPlayer& player, EcsRequest const& request);
-    // Runtime-id ECS requests resolve server-side actors; they run on the
-    // server thread with a structured-exception backstop.
-    void applyRuntimeEcsRequest(EcsRequest const& request);
-    bool runEcsGuarded(EcsRequest const& request);
+    detail::EcsStage captureEcsStage(detail::EcsStage stage, detail::EcsQuery const& query,
+                                   detail::EcsSnapshot& out);
+    void drainEcs();
     void queueInventoryWrite(std::string const& container, int slot, std::string const& item, int count, int aux);
     // Moves an existing inventory stack into a worn slot (armor/offhand) so
     // enchantments applied while held (e.g. /enchant) survive the transfer.
@@ -523,8 +511,7 @@ private:
     // UI work owns a bounded snapshot; the spool consumer owns timeout and JSON.
     detail::ChatCapture mChatCapture;
     detail::EntityCapture mEntityCapture;
-    std::mutex                  mEcsMutex;
-    std::optional<EcsRequest>   mEcsRequest;
+    detail::EcsCapture mEcsCapture;
     std::atomic<int>            mInputSource{-1};
     std::atomic<int>            mInputController{0};
     std::atomic<int>            mInputFocus{0};

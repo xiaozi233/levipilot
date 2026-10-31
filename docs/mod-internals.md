@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **307/307**，现场 **536/536**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **308/308**，现场 **575/575**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -477,16 +477,38 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 
 ## ECS 内省（T6）
 
-- 请求在 tick 线程处理（和 `entity` 动作同一个入口），通过 `Actor::getRuntimeActorList()`
-  找目标，再取 `Actor::getEntityContext()`。
+- 请求由 `StagedCapture<EcsQuery, EcsSnapshot, EcsStage>` 独享，与实体请求共用生命周期
+  模型。ECS 不进入 tick：spool 调度客户端平台队列或服务端队列，回调只读游戏对象并填
+  快照，spool 统一生成 JSON。管道线程只验证/安装请求，不读取游戏对象。
+- `ecs_registries` 在客户端队列枚举当前玩家的 registry；runtime-id 三类请求先确认客户端
+  玩家存在，再在服务端队列查找目标和读取。`ecs_context` 在局部 SEH 下复制原始 handle 的
+  registry 身份和 entity id；只有与当前客户端 registry 匹配，或在服务端找到对应 registry，
+  才读取组件。跨阶段只传数字，不保存 Actor/registry 指针供后续回调直接使用；陌生 registry
+  返回 context_not_found。原始地址可能复用，scope/registry 是本次核对结果，不是持久 handle。
 - `EntityContext::getRegistry()` 返回 EnTT v4 的 `basic_registry<EntityId>`；
   `registry.storage()` 迭代 `(runtime component id, storage)`，`storage.contains(entity)` /
   `storage.index(entity)` / `storage.value(entity)` 给出该实体的组件指针。
-- 组件字节用 T2 的 `readMemory` 读，长度默认取 stride；stride 由同一 storage 前两个元素的
-  `value()` 地址差推断（单元素 storage 为 0）。
-- `ecs_registries` 报客户端 registry 指针、组件 storage 数和 entity id。服务端 registry
-  没有暴露（服务端对象只能经 `queueServerTask` 访问）。
-- 组件 id 是运行时 EnTT id，不是稳定的 ABI 常量；报告里只有 id/地址/stride/count，没有类型名。
+- 每请求冷侧分配约 37 KiB 定长快照；最多保存 1024 条结果/失败 id，最多访问 4096 个 storage，
+  超限标记 truncated。contains/index/value/stride 都在逐 storage 的局部 SEH/C++ 边界中；
+  坏条目进 skipped/partial，其他条目保留。整体游戏读取故障为 ecs_fault，C++ 为 capture_failed。
+- 组件字节用 T2 的 `readMemory` 读；显式长度优先，其次 profile 尺寸、stride、64，
+  最终限制为 1..512。stride 由同一 storage 前两个元素的 `value()` 地址差推断，
+  单元素/零地址/超 uint32 距离为 0。profile 已知组件带 size/name，未知 id 不猜类型。
+- 共用 2 秒 wall-clock 截止；同域重叠请求返回 ecs_busy，参数错误保留原请求。
+  退出/卸载取消，重连丢弃旧回执；排队回调只持弱引用，迟到回调不能操作新请求。
+  已开始的游戏读取不能被超时抢占，超时消费者不读取仍在写入的快照。
+  SDK 的实体列表/类型名访问仍可能分配，但都在所属队列中执行，未宣称整个 tick 零分配。
+- ECS 验收：`--ecs-capture-world "超平坦测试"` **51/51**（真实重连/退出/重进），
+  完整现场 **575/575**（无跳过）、离线 **308/308**。native 验证结果/失败上限、
+  4096 个无匹配 storage 仍受预算限制、逐条故障与零分配、500 次跨线程交接、运行中
+  超时不暴露快照、新请求隔离与重连丢弃；原实体模型同样通过。现场覆盖五接口、
+  两侧 SEH/C++/超时、唯一终结/恢复、坏 storage 保留其余结果、busy/坏参数保留原请求，
+  以及主菜单拒绝和新 context。另以可读的非 context 缓冲验证陌生 registry 被拒绝为
+  context_not_found。临时标签自然消失不再误判为采样丢失。
+  构建/静态/profile 通过；无新增/修改 crash 文件，最终站稳、输入解锁且任务/录制/宏停止。
+  安装/构建 DLL SHA-256 均为
+  `70C229A1EA2F11ABFB985327C71A2B213223589F39CD679416B3616B53F3A3C0`。
+  日志 `out/reliability-ecs-*`。未现场热卸载、未做性能对照，第 12 项其余边界仍待治理。
 
 ## panic（T8）
 
@@ -856,8 +878,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **536/536**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **307/307**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **575/575**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **308/308**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

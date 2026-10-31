@@ -36,6 +36,8 @@ scenario DSL / LLM / shell
 | `Inventory.cpp` | 背包定长采样与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `EntityModel.h` | 实体请求独享的定长快照、分阶段调度、超时与迟到回调隔离；不依赖游戏 SDK |
+| `StagedCapture.h` | 实体与 ECS 共用的请求独享分阶段生命周期、截止/取消、唯一消费与重连隔离 |
+| `EcsModel.h` / `Ecs.cpp` | ECS 定长快照、有界逐 storage 探测、所属线程读取与后台协议格式化 |
 | `Server.cpp` | 服务端权威传送 |
 | `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
 | `WorldEntryModel.h` | 独立进入编号、启动截止、唯一终结与安全菜单恢复；不依赖游戏 SDK |
@@ -150,7 +152,13 @@ shared_ptr，也不生成 JSON。冷侧换帧/启动用 Writing 门等待已准�
 带 run_id 的唯一终结。播放与按键释放分别有局部 SEH/C++ 边界，失败保留释放请求供后续
 tick 重试；新播放先完成旧输入清理。世界退出取消与启动前后世界代次检查共同隔离旧运行。
 点击结果写 128 项定长队列，由 spool 格式化；故障和队列溢出有明确诊断。
-游戏 SDK 的玩家/物品名称访问器仍可能分配，ECS、其他钩子与游戏读取仍待治理，
+ECS 已移出 tick，和实体共用 `StagedCapture`：客户端平台队列读取客户端 registry，
+服务端队列读取 runtime-id 对应实体。原始 context 先复制 registry 身份和 entity id，
+只有与当前客户端或服务端 registry 匹配后才读取组件，陌生 registry 返回 context_not_found。
+每请求冷侧独享约 37 KiB 快照；最多 1024 条结果/失败 id、4096 个 storage 探测、512 字节
+组件原始数据，超限标记 truncated；逐 storage 局部 SEH/C++ 故障记入 skipped/partial。
+后台处理 2 秒截止、busy、退出取消、重连丢弃与 JSON；运行中的游戏调用不支持超时抢占。
+游戏 SDK 的玩家/物品名称访问器仍可能分配，输入、其他钩子与游戏读取仍待治理，
 不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
 
 ## 任务生命周期

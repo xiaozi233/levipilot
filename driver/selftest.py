@@ -15,6 +15,8 @@
     py -3.11 driver/selftest.py --tick-safety-world "超平坦测试"  # plus menu cancellation/pose invalidation
     py -3.11 driver/selftest.py --binary-capture-only  # binary recording failures and retained rows
     py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
+    py -3.11 driver/selftest.py --ecs-capture-only  # bounded ECS snapshots and stage failures
+    py -3.11 driver/selftest.py --ecs-capture-world "超平坦测试"  # plus reconnect and leave/rejoin
     py -3.11 driver/selftest.py --macro-playback-only  # guarded replay, release and frame ownership
     py -3.11 driver/selftest.py --macro-playback-world "超平坦测试"  # plus cancellation on world exit
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
@@ -1526,6 +1528,208 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
 
 
+def check_ecs_capture(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Read both registries through owned stages, then fault and retire requests."""
+    original = client.state()
+    if not checks.check("ecs_capture_in_world", original.get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    runtime_id = int(original["runtime_id"])
+
+    def unique() -> bool:
+        with contextlib.suppress(ModTimeout):
+            client.wait_event(
+                (
+                    "error",
+                    "ecs_registries",
+                    "ecs_entity",
+                    "ecs_components",
+                    "ecs_component",
+                    "ecs_context",
+                ),
+                0.15,
+                predicate=lambda row: row.get("event") != "error" or row.get("phase") == "ecs",
+            )
+            return False
+        return True
+
+    def inject(stage: str, mode: str, timeout_ms: int = 250) -> dict[str, Any]:
+        return {
+            "cmd": "selftest_query_failure",
+            "target": "ecs",
+            "stage": stage,
+            "mode": mode,
+            "timeout_ms": timeout_ms,
+            "runtime_id": runtime_id,
+        }
+
+    registries = client.ecs_registries()
+    checks.check(
+        "ecs_client_registry",
+        registries.get("scope") == "client"
+        and registries.get("truncated") is False
+        and int(registries["registries"][0]["components"]) > 0,
+    )
+    entity = client.ecs_entity(runtime_id)
+    checks.check(
+        "ecs_server_entity",
+        entity.get("scope") == "server" and int(entity.get("components", 0)) > 0,
+    )
+    listing = client.ecs_components(runtime_id)
+    rows = listing["components"]
+    checks.check(
+        "ecs_bounded_component_rows",
+        listing.get("scope") == "server"
+        and len(rows) <= 1024
+        and int(listing.get("visited", 0)) <= 4096
+        and listing.get("truncated") is False,
+        f"rows={len(rows)} skipped={listing.get('skipped')} visited={listing.get('visited')}",
+    )
+    state_vector = next((row for row in rows if row.get("name") == "StateVector"), None)
+    if not checks.check("ecs_known_component", state_vector is not None):
+        return
+    assert state_vector is not None
+    component_id = int(state_vector["id"])
+    client_view = client.ecs_context(int(original["context"]), component_id)
+    server_view = client.ecs_context(int(entity["context"]), component_id)
+    checks.check(
+        "ecs_client_context_scope",
+        client_view.get("scope") == "client"
+        and client_view.get("registry") == registries["registries"][0]["registry"],
+    )
+    checks.check(
+        "ecs_server_context_scope",
+        server_view.get("scope") == "server"
+        and server_view.get("registry") == entity["registry"]
+        and server_view.get("address") == state_vector["address"],
+    )
+    for length, expected in ((0, int(state_vector["size"])), (1, 1), (512, 512), (999, 512)):
+        raw = client.ecs_component(runtime_id, component_id, length=length)
+        checks.check(
+            f"ecs_component_length_{length}",
+            raw.get("ok") is True
+            and raw.get("len") == expected
+            and len(raw.get("hex", "")) == expected * 2,
+        )
+    for name, request, reason in (
+        ("missing_entity", {"cmd": "ecs_entity", "runtime_id": (1 << 63) - 1}, "entity_not_found"),
+        (
+            "missing_component",
+            {
+                "cmd": "ecs_component",
+                "runtime_id": runtime_id,
+                "component_id": next(i for i in range(100) if i not in {r["id"] for r in rows}),
+            },
+            "component_not_found",
+        ),
+        (
+            "bad_context",
+            {"cmd": "ecs_context", "context": "0x41410000", "component_id": component_id},
+            "bad_addr",
+        ),
+    ):
+        rejected = client.request(request, "error")
+        checks.check(f"ecs_{name}", rejected.get("reason") == reason, str(rejected))
+
+    for stage in ("client", "server"):
+        for mode, reason in (
+            ("seh", "ecs_fault"),
+            ("cpp", "capture_failed"),
+            ("timeout", "capture_timeout"),
+        ):
+            failed = client.request(inject(stage, mode), "error", timeout=5)
+            if not checks.check(
+                f"ecs_{stage}_{mode}_terminal",
+                failed.get("phase") == "ecs" and failed.get("reason") == reason,
+                str(failed),
+            ):
+                return
+            checks.check(f"ecs_{stage}_{mode}_unique", unique())
+            checks.check(
+                f"ecs_{stage}_{mode}_recovery",
+                client.ecs_entity(runtime_id).get("scope") == "server",
+            )
+
+    partial = client.request(inject("server", "partial"), "ecs_components")
+    checks.check(
+        "ecs_storage_fault_preserves_rows",
+        partial.get("partial") is True
+        and len(partial.get("skipped", [])) == 1
+        and len(partial["components"]) > 0,
+    )
+    recovered = client.ecs_components(runtime_id)
+    checks.check(
+        "ecs_storage_fault_recovers",
+        recovered.get("skipped") == listing.get("skipped")
+        and component_id in {row["id"] for row in recovered["components"]},
+        # Transient ECS tags can disappear between these requests; compare
+        # failures and the stable profile component, not every gameplay tag.
+        str({"skipped": recovered.get("skipped"), "components": len(recovered["components"])}),
+    )
+    with client.exchange():
+        client.send(inject("client", "timeout", 500))
+        rejected = client.request({"cmd": "ecs_registries"}, "error")
+        checks.check("ecs_busy_preserves_request", rejected.get("reason") == "ecs_busy")
+        malformed = client.request({"cmd": "ecs_component", "len": "bad"}, "error")
+        checks.check(
+            "ecs_bad_param_preserves_request",
+            malformed.get("reason") == "bad_command",
+            str(malformed),
+        )
+        failed = client.wait_event("error", 3, predicate=lambda row: row.get("phase") == "ecs")
+        checks.check("ecs_original_timeout", failed.get("reason") == "capture_timeout")
+    checks.check("ecs_busy_recovers", bool(client.ecs_registries().get("registries")))
+
+    if world:
+        client.send(inject("server", "timeout", 10000))
+        client.ping()
+        client.close()
+        client.connect()
+        client.input_lock(True)
+        checks.check("ecs_reconnect_fresh", bool(client.ecs_registries().get("registries")))
+        checks.check("ecs_reconnect_no_old_result", unique())
+        client.send(inject("server", "timeout", 10000))
+        client.ping()
+        wait_ticks(client, 3)
+        try:
+            client.leave_world()
+            client.wait_event("world_left", 45)
+            failed = client.wait_event("error", 4, predicate=lambda row: row.get("phase") == "ecs")
+            checks.check("ecs_world_cancel", failed.get("reason") == "world_left", str(failed))
+            checks.check("ecs_world_unique", unique())
+            for command in (
+                "ecs_registries",
+                "ecs_entity",
+                "ecs_components",
+                "ecs_component",
+                "ecs_context",
+            ):
+                rejected = client.request({"cmd": command}, "error")
+                checks.check(f"ecs_menu_{command}", rejected.get("reason") == "not_in_world")
+        finally:
+            client.enter_world_ready(world)
+            client.wait_in_world(timeout=60)
+            restored = settle(client, on_ground=True)
+            checks.check("ecs_world_still", restored["ok"])
+        fresh_state = client.state()
+        client.ecs_entity(int(fresh_state["runtime_id"]))
+        fresh = client.ecs_context(int(fresh_state["context"]), component_id)
+        checks.check("ecs_world_fresh_context", fresh.get("scope") == "client")
+        stale = client.request(
+            {"cmd": "ecs_context", "context": original["context"], "component_id": component_id},
+            ("ecs_context", "error"),
+        )
+        # Addresses may be recycled; a successful lookup must still prove a current registry.
+        checks.check(
+            "ecs_stale_handle_safe",
+            stale.get("event") == "error" or stale.get("scope") in ("client", "server"),
+        )
+
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("ecs_handled_fault_no_dump", after == before)
+
+
 def check_macro_playback(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Exercise real replay faults, release/restart, and cold frame replacement."""
     original = client.state()
@@ -2688,6 +2892,12 @@ def main(argv: list[str] | None = None) -> int:
         "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
     )
     modes.add_argument(
+        "--ecs-capture-only", action="store_true", help="check owned ECS snapshots and failures"
+    )
+    modes.add_argument(
+        "--ecs-capture-world", metavar="WORLD", help="also check ECS reconnect/leave/rejoin"
+    )
+    modes.add_argument(
         "--macro-playback-only", action="store_true", help="check replay faults and frame ownership"
     )
     modes.add_argument(
@@ -2757,7 +2967,9 @@ def main(argv: list[str] | None = None) -> int:
         return checks.finish()
 
     if (
-        args.query_capture_only
+        args.ecs_capture_only
+        or args.ecs_capture_world
+        or args.query_capture_only
         or args.query_lifecycle_world
         or args.macro_limit_only
         or args.entry_lifecycle_world
@@ -2774,7 +2986,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.macro_playback_only or args.macro_playback_world:
+            if args.ecs_capture_only or args.ecs_capture_world:
+                check_ecs_capture(client, checks, args.ecs_capture_world)
+            elif args.macro_playback_only or args.macro_playback_world:
                 check_macro_playback(client, checks, args.macro_playback_world)
             elif args.binary_capture_only or args.binary_capture_world:
                 check_binary_capture(client, checks, args.binary_capture_world)
@@ -2794,7 +3008,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "macro_playback_error"
+                "ecs_capture_error"
+                if args.ecs_capture_only or args.ecs_capture_world
+                else "macro_playback_error"
                 if args.macro_playback_only or args.macro_playback_world
                 else "binary_capture_error"
                 if args.binary_capture_only or args.binary_capture_world
@@ -2893,6 +3109,7 @@ def main(argv: list[str] | None = None) -> int:
         check_tick_streams(client, checks)
         check_binary_capture(client, checks)
         check_macro_playback(client, checks)
+        check_ecs_capture(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

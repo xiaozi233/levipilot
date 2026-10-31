@@ -99,6 +99,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             watchesRemoved = watchesOk ? watchesBefore : 0;
         }
         if (tasksLevel) {
+            cancelPacketInjection("panic");
             cancelTeleport("panic");
             cancelTasks("panic");
             beginTask();
@@ -275,6 +276,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["packet_peer_sends"] = mPackets.peerSends();
         out["packet_inject"]     = mAllowPacketInject.load();
         out["chat_sent"]         = mChatSent.load();
+        out["command_template_attempts"] = mCommandTemplates.attempts();
+        out["command_template_faults"] = mPacketTemplateFaults.load();
         out["tick_probe_addr"] =
             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
         out["watch_count"]   = watchCount();

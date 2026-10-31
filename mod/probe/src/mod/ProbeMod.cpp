@@ -31,6 +31,7 @@ bool ProbeMod::enable() {
         return true;
     }
     bootLog("enable: begin");
+    if (!mCommandTemplates.initialize()) bootLog("packet templates: allocation failed");
     mChatCapture.reset();
     resetQueries();
     hookResetCalls();
@@ -282,7 +283,6 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     // G1/G2: drain queued event-level input into the game's own queues before
     // anything else in this tick touches movement.
     tickInputInjection();
-    tickPacketInject(player);
 
     // T9: one lock-free snapshot of movement/look requests per tick.
     RequestBlock const requests = readRequests();

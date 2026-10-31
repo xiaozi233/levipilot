@@ -18,7 +18,7 @@
 | 9 | Hook 槽复用的旧 mem 数据 | 完成 | 命中记录改为零初始化定长载荷；无 mem 配置不会继承上一次快照 |
 | 10 | Chat 请求超时、主菜单生命周期 | 完成 | 请求独享快照、2 秒超时、退出取消、主菜单平台队列；native 回归、专项现场 9/9、完整现场 237/237 |
 | 11 | UseTask 服务端等待没有截止条件 | 完成 | 5 秒截止、迟到副作用拒绝、拥有者失败回调；native 边界/竞争/零分配、专项现场 16/16、完整现场 253/253 |
-| 12 | 游戏线程采样异常边界、JSON、分配与锁 | 进行中 | 查询/JSON 录制/跑酷/宏录制已迁快照或定长队列；hook_call 已迁独占请求与后台回执，姿态已加局部 SEH/一致快照/世界代次；二进制录制已补唯一失败与部分数据传播；宏播放已迁无锁准入/后台终结、点击已迁固定队列；ECS 已移出 tick 并迁独占分阶段快照；事件输入已有局部边界、固定结果和文本屏障，文本/UI 迁客户端队列；飞行已迁分阶段请求、唯一终结和有界重断言；玩家名缓存已改 UUID/epoch 原子快照；移动/视角已加局部边界/失败传播/释放重试，传送已迁独占请求/后台调度；内部错误已迁定长队列/后台清理与两阶段准入；封包注入/模板及其余边界仍待治理 |
+| 12 | 游戏线程采样异常边界、JSON、分配与锁 | 进行中 | 查询/JSON 录制/跑酷/宏录制已迁快照或定长队列；hook_call 已迁独占请求与后台回执，姿态已加局部 SEH/一致快照/世界代次；二进制录制已补唯一失败与部分数据传播；宏播放已迁无锁准入/后台终结、点击已迁固定队列；ECS 已移出 tick 并迁独占分阶段快照；事件输入已有局部边界、固定结果和文本屏障，文本/UI 迁客户端队列；飞行已迁分阶段请求、唯一终结和有界重断言；玩家名缓存已改 UUID/epoch 原子快照；移动/视角已加局部边界/失败传播/释放重试，传送已迁独占请求/后台调度；内部错误已迁定长队列/后台清理与两阶段准入；命令包模板/注入已迁定长采样与独占请求，通用 PacketTap 序列化及其余 SDK 边界仍待治理 |
 | 13 | ProbeMod 跨领域状态耦合 | 未完成，播放模型已局部封装 | 宏录制/输入整体会话与其余字段所有权仍待推进 |
 | 14 | 服务端玩家解析重复 | 部分接入；未完成 | 背包四组写入/命令/权限/物品使用/传送共用 ServerPlayerContext；实体/飞行仍待统一 |
 | 15 | 交互覆盖、自检跳过统计 | 集成覆盖已补一部分；统计待做 | 新增异常/并发/真实请求交错回归 |
@@ -26,6 +26,136 @@
 
 原清单完成 11/16；第 12 项进行中，13–16 未完成。补充审阅的宏硬上限、世界进入
 看门狗与 Overhead 统计环并发已修复；第 12 项其余范围不能因局部验收通过而自动算完成。
+
+## 第 12 项：封包来源模板与独占注入（2026-10-31）
+
+- 移除 tickPacketInject、单槽 mChatPending 及模板 mutex/owning payload。发送钩子只复制
+  定长 origin 字段和完整 requestId（最多 512 字节），局部 SEH/C++；模板环冷侧初始化，
+  最新捕获 pending/失败时不复用旧值。玩家 owner UUID 与 origin UUID 分开保存，
+  用世界/请求代次防止旧世界身份复用，自身注入不会重新捕获来源。
+- chat_send 共用 StagedCapture 独占生命周期，spool 调度客户端平台队列；真实 SDK
+  构造器创建临时上下文/payload，完整恢复捕获来源后构造并发送，不伪造 SDK 对象布局。
+  构造与发送前复核世界、代次、截止和实际客户端玩家 UUID。SDK owning 对象在 raw SEH
+  frame 外持有，已完成构造正常析构；构造中途故障与已开始发送不能抢占、回滚或自动重试。
+- 接受和唯一 chat_sent 回执均增加 packet_id，保留 ok/text/reason；忙时明确拒绝，
+  不覆盖文本。2 秒截止、退出/panic/内部错误取消，重连丢弃旧请求，这些边界同时使模板失效。
+  超时/取消不读取仍由回调持有的 snapshot，失败保守 partial=true；成功仅表示调用完成，
+  命令效果仍以 blocks/state 为准。Python 默认等接受，可选 wait=True 按编号等完成。
+- 原生回归覆盖 requestId embedded NUL/512 边界、最新失败与 pending 不回退、身份/代次、
+  发送前截止、运行中超时/替换、旧回调与并发环绕、生产模板采样零自有分配。离线
+  **322/322**，ruff/mypy/profile 与两次完整 C++ 构建通过。现场专项
+  **55/55**（含真实重连/退出/重进），覆盖前后 SEH/C++、模拟投递拒绝/超时、busy、
+  来源失败/超限不回退、panic/tick 恢复取消、唯一终结、blocks 回读和恢复，无新增 crash。
+  首轮 41/42 因测试等待未先消费主动触发的 internal_error 诊断，清理又撞恢复期；
+  修正事件关联/恢复状态等待后通过，C++ 实现未因此改动。
+  复现 `driver/selftest.py --packet-injection-only` 或
+  `--packet-injection-world "超平坦测试"`，默认全套也接入；需同时开启两类封包能力。
+- 通用 PacketTap::write 的 SDK 序列化分配与其余高频钩子边界仍待治理；本批不声称
+  所有封包路径零分配、全 tick SEH 或性能提高，第 12 项与 13–16 仍未完成。
+- **首轮历史失败，后续验收见下**：2026-10-31 18:07:19（截图时间 10:07:19Z），
+  check_flight 的 finally 恢复 gamemode/fly/togglefly 后，reset 的服务端成功回执已返回，
+  约 6 tick 后在 tick 842 收到 world_left。用户提供的错误详情为 Block /
+  ClientDisconnection-90；对应 SDK 枚举为 BadPacket=90（不是 BlockMismatch=63 或
+  InvalidCommandRequestPacket=50），尚未定位产生该原因的实际包/方向/调用链。
+  最后状态 packet_capture=false、控制 held/cleanup/injecting 均清空，进程/管道仍存活，
+  服务端已释放、HBUI 错误页仍在，worlds.ready=false；113 个既有 crash 文件无新增/修改。
+  后续 task_operations 因无世界仍读取 feet_x，产生次生 KeyError，不能覆盖原始断开。
+  此前旧版也有 HBUI ready=false，但没有其错误详情，不能据此断言同根因或排除本批回归。
+  用户要求本轮只评估/给方案，需逆向则仅提供提示词；未执行反编译/地址定位/新增 hook。
+  事件与状态分别保存在 out/reliability-packet-injection-disconnect-timeline.json、
+  out/reliability-packet-injection-block-incident.json；转交提示词
+  out/block-badpacket-investigation-prompt.md。当时只恢复了磁盘配置，运行中配置尚需重启加载；
+  最终姿态恢复与完整验收也未完成，因此当时保留 919/919 基线。后续完整验收与恢复结果
+  见「传送检查同步前提与恢复保护」，不以重放成功抹去本次失败。
+
+### BadPacket(90) 断开的静态定位与重放（2026-10-31 后续）
+
+- **转交报告中的设置点已静态闭合**：客户端里 `closeConnection(..., DisconnectFailReason::BadPacket=90, "")`
+  全库只有一处 —— `ClientNetworkHandler::handlePacketViolation`（角色
+  `@client_handle_packet_violation`，`0x1412FA0F0`）。只有
+  `response == PacketViolationResponse::TerminateConnection(3)` 才走
+  `onClientLevelExit(client, 5)` + `closeConnection(netId, 90, "")`（`0x1412FA243`）；
+  非主客户端分支是 `onDisconnect(..., 90, ..., "DisconnectPacket")`（`0x1412FA315`）。
+  也就是说：该路径是“有包被判协议违规且严重度 = 终止”，不是 BlockMismatch=63 或
+  InvalidCommandRequestPacket=50 这两个断开原因；不能据此排除命令请求包作为触发包。
+- **`Block` 不是方块**：`data/definitions/disconnection_errors/disconnection_error_messaging.json`
+  里 `ThemeName=Packet` 的 `DefaultStrings.Codeword=Block`，该主题覆盖
+  `WorldTransferNotPrimaryClient / UnknownPacket / UnexpectedPacket /
+  InvalidCommandRequestPacket / BadPacket` 五个原因；错误页只显示码字 +
+  `ClientDisconnection-<reason>`。码字不能反推具体原因。
+- `ClientDisconnection-<n>` 文案由 `@client_disconnect_text`（`0x14049AE20`）按**连接种类**
+  拼出，只说明“客户端这条连接”，不区分是客户端自己断开还是服务端下发 DisconnectPacket。
+- **本批 chat_send 在该窗口未被调用**：`onPacketSent` 的模板捕获要求 `capture && sendEnabled`，
+  事发时 `packet_capture=false`；`chat_send` 未被调用（`chat_sent=9` 全部来自 18:05 的
+  55/55 专项）。所以不能把“新注入路径”直接归因为本次断开，也没有证据排除它之前留下的状态。
+- **重放结果（未复现）**：全新进程 + 允许 capture/inject 后
+  （1）全量默认自检 **990/991**（唯一失败 `teleport_keeps_rotation`，见下）；
+  （2）先跑 `--packet-injection-world`（55/55，含 9 次真实注入、op_self、commands_enabled）
+  再在同一进程跑全量，仍 **990/991**，同样只有 `teleport_keeps_rotation` 失败。
+  两次都没有 world_left、没有新增 crash；有限重放未复现，不能排除本批低频回归或
+  故障进程更长历史相关的状态，具体触发包仍未定位（unresolved）。
+- `teleport_keeps_rotation` 在完整套件里 2/2 失败，但 `--teleport-only` 44/44、
+  `--controls-only` 后再 `--teleport-only` 44/44 通过；此前“相机干扰”的解释未被证明。
+  后续最小复现与检查修复见下一小节；当时完整套件未通过的日志保留。
+- 自检加固（本轮已改）：新增 `lab.world_state()` 区分 `world / menu / disconnect_error /
+  exiting` —— HBUI URL 本身不能当主菜单（断开错误页也是 `ui://./hbui/index.html`），
+  只有 `worlds.ready=true` 才算菜单；`check_flight` 收尾后调用 `require_world()`，
+  意外 `world_left` 立即抛 `WorldLost` 终止整轮并保留首个失败，`check_task_operations`
+  不再用 `feet_x` KeyError 覆盖原始故障；`LEVIPILOT_PACKET_DUMP=<path>` 可让整轮打开
+  包身份环并在结束时落盘（`packet_tap_dump`）。离线 **326/326**、ruff/mypy 全绿。
+- 错误页自愈（本轮已改）：`lab.capture_disconnect_report()` 把 state/status/screen/worlds/
+  diag/包身份环写进 `out/disconnect-<时间>.json`（每项 best-effort，管道中途断也能出文件），
+  自检在 `WorldLost` 分支自动调用；`driver/dev.py recover [--world ...] [--force]`
+  负责“记录 → 受控重启 → 可回菜单/重进世界”。后续审阅收紧强停：HBUI/ready=false
+  不能证明已刷盘；保存门禁失败保留进程，只有显式 `--force` 才能强停。
+  现场验收：世界里 `recover` 会拒绝（`state=world`），`--force` 走完
+  “记录 → 强停 → 重启 → 回菜单 → 重进世界”并 exit 0；`recover` 连续两次端到端通过。
+  错误页分类最初由 `WorldStateTests` 4 项离线覆盖，后续补至 6 项；真实断开页样本仍缺（`/kick @s` 与
+  `/stop` 在本地世界都被拒），所以“错误页上跑 recover”这一步只有代码路径、无现场样本。
+- 仍缺的一步：把 `@client_handle_packet_violation` 做成只读诊断（定长环记录
+  response / packetId / error_code / 线程 / tick；`PacketViolationHandler::checkForViolation`
+  是 4 寄存器参数的更安全入口），下次复发即可直接给出触发包与错误码，再决定是否修
+  包构造 / 状态同步 / 顺序。
+
+### 传送检查同步前提与恢复保护（2026-10-31）
+
+- 在同一进程、真实输入上锁时独立重放两条传送：先从 yaw=30/pitch=0 改到 55/15，
+  紧接不带角度传送。零间隔首轮实际仍为 29.993/0；其余零间隔有成功，间隔 1/4 tick
+  的样本成功。它足以否定“必须有前序全套或真实鼠标干扰才失败”，不能推断 SDK 内部时序。
+  API 现有契约是等待服务端调用完成，朝向/位置同步须回读；并未承诺同步完成回执。
+- `wait_rotation` 在 3 秒内要求连续三个不同 tick 的 yaw/pitch 匹配，保持 0.1 度容差，
+  先验证第一条传送的前提，再执行无角度传送。没有重发传送、放宽容差或把失败计作跳过。
+  专项 `--teleport-only` **45/45**；离线覆盖旧姿态、重复 tick、采样缺口、yaw 环绕、
+  截止和退档。证据 `out/rotation-order-results.json`、`out/reliability-rotation-teleport-live.log`。
+- `wait_ticks`/`wait_still` 观察到无世界即抛 `WorldLost`，默认入口也先检查世界，
+  task 检查无世界时停止后续执行。诊断文件写入失败不覆盖原始错误；解锁失败仍关闭连接。
+- 首次完整重跑通过朝向检查后，在取消传送的 `panic` 等待处遇到回执顺序竞态：
+  `error/phase=teleport/reason=panic` 可能先于 `panic_done`，普通 request 将其误当请求失败。
+  `DiagnosticsCommands.panic` 现保留该类会话取消事件，等到自身回执；其他错误仍抛出，
+  超时关闭连接防止旧无编号回执串到下一次 panic。离线覆盖两种顺序、命令拒绝、其他故障
+  和超时；传送自检使用生产 panic 封装，专项仍为 45/45。首次失败日志保留为
+  `out/reliability-rotation-full-live.log`，不计为成功验收。
+- `world_state` 的候选错误页还要求四个服务端对象明确为 false，进度界面/缺失诊断归
+  `exiting`，分类不证明磁盘保存完成。`recover` 的保存门禁失败不再自动强停，显式
+  `--force` 才能放弃会话；自定义 `--exe` 正确传给重启。上述路径有离线回归，真实错误页
+  的恢复仍缺现场样本，不以主动制造违规封包或绕过安全门替代验收。
+- 收尾时发现 `wait_for_menu` 会把保存/加载进度页上的缓存世界列表误认作菜单；现必须
+  `worlds.ready is True`，安全菜单可以没有存档列表，缺少 ready 不算通过。
+  离线覆盖缓存列表、安全空列表和缺失 ready。真实菜单预检按预期 exit 1、0/1，
+  留下 `aborted_world_left` 与诊断，不执行世界修改；这不计为完整套件失败。
+- 最终验收：离线 **346/346**，ruff check/format、mypy（92 files）、profile 生成一致性
+  和 roles 校验（50/57）通过，`xmake -j4 -y` 成功。完整现场 **992/992，无跳过**；
+  命令包来源/独占注入真实重连/退出/重进 **55/55**，传送专项 **45/45**，传送真实生命周期
+  **50/50**。`recover` 世界内不带 force 正确拒绝（exit 2），正常保存后的 ready 菜单
+  执行 `recover --force --world` 重启重进成功（exit 0）；这不是断开错误页的现场样本。
+- 最终恢复检查 **17/17**：姿态/模式/飞行与 mayfly/效果/背包及选中槽恢复，站稳、控制释放、
+  解锁、会话停止和恢复状态 idle 均回读通过。原配置逐字节恢复并重启加载，临时
+  packet_capture/packet_inject 均关闭；113 个既有 crash 文件无新增/修改。安装与构建/打包
+  DLL SHA-256 一致：`85BFF73BFC2F82A1D92C8A7ACF6789B94B601463B8FC45CE175BFC5153395628`。
+  证据 `out/reliability-rotation-final.json`；离线、完整、封包生命周期和传送生命周期日志分别为
+  `out/reliability-rotation-offline-complete.log`、`out/reliability-rotation-full-final-live.log`、
+  `out/reliability-rotation-packet-world-live.log`、`out/reliability-rotation-teleport-world-live.log`。
+  BadPacket 的具体触发包与根因仍 unresolved；第 12 项其余 SDK 边界及 13–16 继续保留。
 
 ## 第 12 项：tick 内部错误恢复（2026-10-31）
 
@@ -40,7 +170,8 @@
   正常释放。恢复期间控制命令返回 tick_recovering，查询、停止/解锁、世界生命周期及
   unknown_cmd 语义保留。status.tick_recovery 提供恢复编号、active 和阶段。
   这不是整个 tick 的 SEH 边界，也不能抢占/回滚已经开始的 SDK 或服务端调用。
-  封包模板/注入仍待下一批处理；录制和查询继续用于观察故障与恢复。
+  本子批次当时尚未覆盖封包模板/注入；现已在上方后续批次接入取消与来源失效。
+  录制和查询继续用于观察故障与恢复，通用 PacketTap 及其余 SDK 边界仍待治理。
 - 已验：原生覆盖旧编号、释放/新快照双门、UTF-8 截断、队列溢出、10 万轮并发与
   热路径零自有分配；离线 **318/318**，ruff check/format、mypy（90 files）和 profile
   通过，完整及最终增量 C++ 构建通过。现场专项 **51/51**，实际重连/退出/重进专项

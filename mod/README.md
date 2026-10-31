@@ -68,7 +68,7 @@ xmake -j4 -y
 | `key_state` | `code`；游戏侧 `Keyboard::_states`、LL KeyInputEvent 计数、注入计数 |
 | `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
 | `text_input` | `text`；通过 HID `onTextInput` 往当前输入框送字符（需 `allow_input_inject`）；queued 回带 `input_id`，独立 `text_input_done/ok/reason`；Python 可用 `text_input(..., wait=True)` 等完成 |
-| `chat_send` | `text`；复制捕获的 `CommandRequestPacket` 模板并发往服务端（需 `allow_packet_inject`） |
+| `chat_send` | `text`；使用捕获的命令来源构造并发送 `CommandRequestPacket`（需 `allow_packet_inject`）；接受/完成均带 `packet_id` |
 | `op_self` | `level`（0–4）；在服务端玩家上设置命令权限（H2 自检用，需 `allow_packet_inject`） |
 | `commands_enabled` | 读/写世界的 `mCommandsEnabled`（`value` 可选） |
 | `packet_capture` | `on,ids?,sample?`；只记录 `(tick,seq,id,tid)`，需 `allow_packet_capture=true`；denylist 硬挡 |
@@ -193,7 +193,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 传送已移出 tick，复用 UUID/世界代次解析，后台调度及回执。
 reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` 再回读到达；失败可能
 已部分清效果/传送，不自动重放。忙时拒绝，退出/panic 取消，重连丢弃旧请求。
-专项入口为 `driver/selftest.py --teleport-only`（44/44）/ `--teleport-world WORLD`（49/49）。
+Python `panic()` 保留先于 `panic_done` 到达的领域取消事件，供原请求按编号消费；
+其他错误照常抛出，等待超时断开连接以隔离迟到的无编号回执。
+回执只确认服务端调用完成，下一次传送依赖上次朝向时先回读同步；自检要求连续三 tick
+匹配目标，仍用 0.1° 容差。专项入口为 `driver/selftest.py --teleport-only`（45/45）/
+`--teleport-world WORLD`（50/50）。意外退档停止自检并尽力保存诊断，诊断写入失败不覆盖首错。
 
 `start/stop` 的 JSON 逐 tick 录制仍供 Python、DSL 与跑酷使用；内部采样改为固定队列，
 后台生成 JSON。保留旧字段，新增 `record_id/truncated`；`stopped` 增加 `ok/rows/record_id`，
@@ -202,12 +206,15 @@ reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` �
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **919/919**（跑之前先 `clear @s` 清空快捷栏，否则
+当前基线：live selftest **992/992**（跑之前先 `clear @s` 清空快捷栏，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
-`allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **318/318**。最终坐标/朝向/能力/站稳、释放与解锁已回读恢复；113 个既有
+`allow_selftest_stress` 和 `allow_packet_capture`/`allow_packet_inject`；2026-10-31 全套，无跳过）、
+离线单测 **346/346**。最终坐标/朝向/能力/背包/站稳、释放与解锁已回读恢复；113 个既有
 crash 文件无新增/修改，安装/构建/打包哈希一致。此前身份批次的收尾退出异常在用户
-正常退出重启后恢复，本轮未复现；其根因仍待复核。常用实测数字：
+正常退出重启后恢复；BadPacket 具体触发包仍 unresolved，有限重放未复现不能排除低频回归。
+临时配置已恢复并重新加载。真实错误页上的 recover 尚无现场验收，候选分类不证明保存已完成，
+只有显式 --force 才可强停。封包真实生命周期 **55/55**、传送 **45/45** / 生命周期 **50/50**。
+常用实测数字：
 
 内部 tick 错误：后台发送原有 error/internal_error（增加 recovery_id/tick/truncated），
 消息最多 255 字节，非法 UTF-8 替换；溢出以 tick_error_diagnostic.lost 计数。恢复期间
@@ -465,7 +472,13 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   但没有对应的解码器（保持原始 hex）。
 - H2 只能注入 `CommandRequestPacket(77)`，而且必须先有一条真实的 77 包做模板；
   `op_self` 会修改世界里的玩家权限（测试世界用，别在日常存档里开）。
-  `chat_send` 的 ok=true 只代表包已发出，命令是否执行要用 `blocks`/位置回读验证。
+  `chat_send_queued` 只表示接受；同域忙时回 `packet_inject_busy`，不会覆盖旧文本。
+  `chat_sent {packet_id,ok,text,reason?,partial}` 在客户端发送调用完成后由后台发出；
+  Python `chat_send(..., wait=True)` 可按编号等待。ok=true 只表示发送调用完成，命令效果须用
+  `blocks`/位置回读。2 秒截止、退出/panic/内部错误会终止请求，重连丢弃旧请求；
+  这些边界也会使来源模板失效，须开启 send capture 并重新发一条真实命令。
+  模板保存完整 requestId（最多 512 字节，超限拒绝），不截断身份；失败不会回退旧模板。
+  `partial=true` 保守表示发送或 SDK 构造可能部分执行，不能回滚或自动重试。
 - 暂停菜单不响应注入按键（Esc/Enter 都无效）；退出暂停仍需桌面点击 Resume。背包（E）
   和聊天（`/`）可以开，背包用 Esc 能回到 hud。
 - 输入注入依赖 `LocalPlayer::$normalTick` 符号；游戏升级后需重新构建。

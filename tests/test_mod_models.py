@@ -106,6 +106,9 @@ class ModModelTests(unittest.TestCase):
     def test_teleport_admission_partial_mutations_and_stale_callbacks(self) -> None:
         self.run_native("teleport_model")
 
+    def test_packet_template_ownership_and_injection_lifecycle(self) -> None:
+        self.run_native("packet_injection_model")
+
     def test_macro_playback_ownership_failures_and_restart(self) -> None:
         self.run_native("macro_playback_model")
 

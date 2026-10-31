@@ -73,5 +73,20 @@ class PacketCommands(PipeConnection):
                 raise ModProtocolError(f"text_input: {done.get('reason', 'failed')}")
             return done
 
-    def chat_send(self, text: str, timeout: float | None = None) -> dict[str, Any]:
-        return self.request({"cmd": "chat_send", "text": text}, "chat_send_queued", timeout=timeout)
+    def chat_send(
+        self, text: str, timeout: float | None = None, *, wait: bool = False
+    ) -> dict[str, Any]:
+        """Queue a command packet; completion confirms the send call, not its effect."""
+        with self.exchange():
+            queued = self.request(
+                {"cmd": "chat_send", "text": text}, "chat_send_queued", timeout=timeout
+            )
+            packet_id = queued.get("packet_id")
+            if not wait or packet_id is None:
+                return queued
+            done = self.wait_event(
+                "chat_sent", timeout, predicate=lambda row: row.get("packet_id") == packet_id
+            )
+            if done.get("ok") is False:
+                raise ModProtocolError(f"chat_send: {done.get('reason', 'failed')}")
+            return done

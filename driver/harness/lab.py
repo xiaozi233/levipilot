@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import math
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .errors import ModPipeError
@@ -296,6 +298,74 @@ SWIMMING_FLAG_BIT = 57  # index into the ADF flag names table (SWIMMING)
 KEY_W = 0x57
 KEY_SPRINT = 0x11  # default sprint binding (Ctrl)
 KEY_SPACE = 0x20
+
+
+# The disconnect error page is also an HBUI screen (``ui://./hbui/index.html``),
+# so the screen URL alone proves neither a safe main menu nor completed teardown.
+def world_state(client: ModClient) -> str:
+    """Classify where the client is: ``world``/``menu``/``disconnect_error``/``exiting``.
+
+    ``disconnect_error`` is a candidate error page: HBUI with no ready menu and
+    all server objects explicitly absent. It is not proof of a specific error
+    or completed disk writes. Callers must not auto-enter or force-stop from
+    this classification alone. Missing/failed probes stay ``exiting``.
+    """
+    if client.state().get("in_world") is True:
+        return "world"
+    try:
+        ready = client.worlds().get("ready") is True
+    except ModPipeError:
+        return "exiting"
+    if ready:
+        return "menu"
+    try:
+        screen = str(client.screen().get("name") or "")
+        if "hbui" not in screen.lower() or "progress_screen" in screen.lower():
+            return "exiting"
+        diag = client.diag()
+    except ModPipeError:
+        return "exiting"
+    absent = all(
+        diag.get(field) is False
+        for field in ("minecraft", "server_instance", "level", "server_level")
+    )
+    return "disconnect_error" if absent else "exiting"
+
+
+def capture_disconnect_report(
+    client: ModClient, directory: str | Path, *, tag: str = "disconnect", tap_limit: int = 8192
+) -> Path:
+    """Snapshot everything the pipe can still answer after a lost level.
+
+    The interesting failure (a protocol violation that closed the connection) is
+    over by the time anyone looks, and the game then sits on the error page with
+    no level. This writes state/status/screen/worlds/diag plus the packet
+    identity ring so the next investigation starts from evidence, not memory.
+    Every probe is best-effort: a pipe that dies mid-report still yields a file.
+    """
+    captured = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+
+    def probe(name: str, call: Callable[[], Any]) -> Any:
+        try:
+            return call()
+        except (ModPipeError, OSError) as exc:  # ModTimeout is a ModPipeError
+            return {"event": "probe_failed", "probe": name, "error": str(exc)}
+
+    report: dict[str, Any] = {
+        "captured_at": captured,
+        "world_state": probe("world_state", lambda: world_state(client)),
+        "state": probe("state", client.state),
+        "screen": probe("screen", client.screen),
+        "worlds": probe("worlds", client.worlds),
+        "status": probe("status", client.status),
+        "diag": probe("diag", client.diag),
+        "packet_tap": probe("packet_tap", lambda: client.packet_drain(0, tap_limit)),
+    }
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{tag}-{captured}.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    return path
 
 
 def ensure_protection(client: ModClient, *, seconds: int = 900) -> dict[str, Any]:

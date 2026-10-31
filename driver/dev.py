@@ -32,6 +32,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from driver.harness import ModClient, ModPipeError, ModTimeout
+from driver.harness.lab import capture_disconnect_report, world_state
 
 DEFAULT_VERSION = (
     Path(os.environ.get("APPDATA", "")) / "levilauncher.exe" / "versions" / "1.26.51.01"
@@ -351,13 +352,13 @@ def restore_config(mod_dir: Path) -> bool:
 
 
 def wait_for_menu(client: ModClient, timeout: float = 90.0) -> list[dict]:
-    """Wait until the world list is readable (main menu is up)."""
+    """Wait for the mod's safe-menu gate; cached world names are insufficient."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            worlds = client.worlds().get("worlds", [])
-            if worlds:
-                return list(worlds)
+            reply = client.worlds()
+            if reply.get("ready") is True:
+                return list(reply.get("worlds", []))
         except (ModPipeError, ModTimeout):
             pass
         time.sleep(1.0)
@@ -474,6 +475,50 @@ def run(args: argparse.Namespace) -> int:
         client.close()
 
 
+def recover(args: argparse.Namespace) -> int:
+    """Record a stuck session, then restart; force-stop requires --force."""
+    version_dir = Path(args.version_dir).expanduser()
+    exe = Path(args.exe).expanduser() if args.exe else version_dir / "Minecraft.Windows.exe"
+    kind = "exiting"
+    if game_pids(exe):
+        try:
+            with ModClient(connect_timeout=5, timeout=20) as client:
+                kind = world_state(client)
+                log(f"state: {kind}")
+                if kind == "world" and not args.force:
+                    print(
+                        "error: 仍在世界里（state=world）；先正常离开世界，或加 --force",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if kind == "menu" and not args.force:
+                    log("menu: 已经是可用菜单，无需恢复")
+                    return 0
+                report = capture_disconnect_report(client, REPO_ROOT / "out", tag="disconnect")
+                log(f"recorded: {report}")
+        except (ModPipeError, ModTimeout, OSError) as exc:
+            log(f"pipe unavailable ({exc}); no live state to record")
+    if game_pids(exe):
+        if args.force:
+            kill_game(exe, force=True)
+        else:
+            try:
+                kill_game(exe)
+            except SystemExit as exc:
+                log(f"graceful stop refused ({exc}); process preserved, use --force to abandon it")
+                return 2
+        time.sleep(1.0)
+    argv = [sys.executable, str(Path(__file__).resolve()), "run", "--version-dir", str(version_dir)]
+    if args.exe:
+        argv += ["--exe", str(exe)]
+    argv.append("--build" if args.build else "--no-build")
+    if args.world:
+        argv += ["--world", args.world]
+    if args.no_focus:
+        argv += ["--no-focus"]
+    return subprocess.call(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -536,6 +581,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     restore_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
 
+    recover_parser = sub.add_parser(
+        "recover",
+        help="record a dead session (disconnect error page), restart to the menu, re-enter",
+    )
+    recover_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
+    recover_parser.add_argument("--exe")
+    recover_parser.add_argument("--world", help="world to enter after the restart")
+    recover_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="explicitly allow force-stop when saving cannot be confirmed (may lose unsaved changes)",
+    )
+    recover_parser.add_argument("--build", action="store_true", help="run xmake after the restart")
+    recover_parser.add_argument("--no-focus", action="store_true")
+
     args = parser.parse_args(argv)
 
     try:
@@ -556,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "restore-config":
             ok = restore_config(Path(args.version_dir).expanduser() / "mods" / "probe")
             return 0 if ok else 1
+        if args.command == "recover":
+            return recover(args)
         return run(args)
     except (ModPipeError, ModTimeout, OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

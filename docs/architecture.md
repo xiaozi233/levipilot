@@ -75,7 +75,7 @@ scenario DSL / LLM / shell
 | `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环、独享 hook_call 请求及后台回执 |
 | `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
 | `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 9 个 send/recv 钩子、逐锚点统计、身份/字节环与 drain |
-| `Packets.cpp` | 命令包模板捕获与 `chat_send` 注入；对 tap 钩子的薄转发 |
+| `Packets.cpp` / `PacketInjectionModel.h` | 定长来源模板、带编号的独占命令包请求、客户端队列发送及后台唯一回执；对 tap 钩子的薄转发 |
 | `Overhead.cpp` | tick/hook 开销采样与分位数、自检忙等 |
 | `OverheadModel.h` | 原子载荷的定长统计窗口、有界一致快照及路径计数；不依赖游戏 SDK |
 | `Resolve.cpp` | exe 版本指纹、符号锚点 + 24 字节签名、offsets.json 覆盖 |

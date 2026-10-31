@@ -63,6 +63,7 @@
 #include "mc/server/ServerInstance.h"
 #include "mc/server/ServerLevel.h"
 #include "mc/server/commands/CommandContext.h"
+#include "mc/server/commands/ClientAutomationCommandOrigin.h"
 #include "mc/server/commands/CommandOriginData.h"
 #include "mc/server/commands/CommandOriginType.h"
 #include "mc/server/commands/CommandPermissionLevel.h"

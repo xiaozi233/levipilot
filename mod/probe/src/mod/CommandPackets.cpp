@@ -61,7 +61,21 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
         });
         return true;
     }
-    if (cmd == "chat_send") {
+    if (cmd == "selftest_packet_template") {
+        if (!mAllowSelftestStress.load() || !mAllowPacketInject.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        if (mode == "seh") mPacketTemplateTest = CaptureTest::Fault;
+        else if (mode == "cpp") mPacketTemplateTest = CaptureTest::Cpp;
+        else if (mode == "long") mPacketTemplateTest = CaptureTest::Partial;
+        else if (mode == "off") mPacketTemplateTest = CaptureTest::None;
+        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        enqueue(R"({"event":"packet_template_test_armed"})");
+        return true;
+    }
+    if (cmd == "chat_send" || cmd == "selftest_packet_injection") {
         if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return true;
@@ -81,12 +95,26 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             enqueue(R"({"event":"error","reason":"bad_text"})");
             return true;
         }
-        {
-            std::lock_guard lock(mChatMutex);
-            mChatPending = std::move(text);
+        PacketInjectionQuery query;
+        query.text = std::move(text);
+        std::uint64_t timeout = 2000;
+        if (cmd == "selftest_packet_injection") {
+            if (!mAllowSelftestStress.load()) {
+                enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+                return true;
+            }
+            auto const mode = j.value("mode", std::string{});
+            if (mode == "seh") query.test = PacketInjectionTest::Seh;
+            else if (mode == "cpp") query.test = PacketInjectionTest::Cpp;
+            else if (mode == "timeout") query.test = PacketInjectionTest::Deferred;
+            else if (mode == "queue") query.test = PacketInjectionTest::Queue;
+            else if (mode == "after_send") query.test = PacketInjectionTest::AfterSend;
+            else if (mode == "stale_epoch") query.test = PacketInjectionTest::Obsolete;
+            else if (mode == "wrong_owner") query.test = PacketInjectionTest::WrongOwner;
+            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            timeout = std::clamp<std::uint64_t>(j.value("timeout_ms", 250), 100, 10000);
         }
-        bootLog("input: chat_send queued");
-        enqueue(R"({"event":"chat_send_queued"})");
+        queuePacketInjection(std::move(query), timeout);
         return true;
     }
     if (cmd == "packet_capture") {

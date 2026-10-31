@@ -5,7 +5,7 @@
   "resolver": "skills/bedrock-re/roles/resolve.py",
   "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
   "offsets_ref": "docs/offsets/1.26.51.01.json",
-  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。",
+  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。",
   "roles": {
     "@tick_entity_systems": {
       "strategy": [
@@ -661,6 +661,31 @@
       "confidence": "code",
       "evidence": [
         "[代码] 由 (位移, autoStep, preAABB) 生成第二个候选盒并进并集"
+      ]
+    },
+    "@client_handle_packet_violation": {
+      "strategy": [
+        "unique pair: mov r8d,5 (onClientLevelExit 2nd arg = 5) within 0x140 of mov r8d,5Ah (closeConnection reason = BadPacket)",
+        "sole closeConnection(..., 90, ...) call site in the image"
+      ],
+      "address": "0x1412FA0F0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] a4(PacketViolationResponse)!=3 时提前返回；==3(TerminateConnection) 才在 0x1412FA1C3 传 5 调 onClientLevelExit，再判 isPrimaryClient：真→0x1412FA243 closeConnection(netId, 90, \"\")，假→0x1412FA315 onDisconnect(..., 90, ..., \"DisconnectPacket\")。全库只有这一处用 90 调 closeConnection。",
+        "[常量] 90 = Connection::DisconnectFailReason::BadPacket（mc/network/connection/DisconnectFailReason.h）；与 data/definitions/disconnection_errors/disconnection_error_messaging.json 中 ThemeName=Packet / Codeword=Block 的覆盖集 {105, 48, 49, 50, 90} 一致。",
+        "[实测] 2026-10-31 10:07:19Z（北京时间 18:07:19）现场错误页为 ClientDisconnection-90、主题码字 Block，与设置点一致；具体触发包/错误码 unresolved。"
+      ]
+    },
+    "@client_disconnect_text": {
+      "strategy": [
+        "string:ClientDisconnection xref"
+      ],
+      "address": "0x14049AE20",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 连接种类 -> 文案：case 3 \"ClientDisconnection\"、case 4 \"ServerDisconnection\"、case 1 \"Prerequisites\"、case 2 \"InitialConnection\"；错误页 \"ClientDisconnection-<reason>\" 由它拼出，只表示连接侧，不区分谁发起断开。"
       ]
     }
   }

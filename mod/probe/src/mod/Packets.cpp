@@ -2,12 +2,26 @@
 
 using namespace probe::detail;
 
-
 namespace probe {
+namespace {
+thread_local bool injectingCommandPacket = false;
+struct CommandInjectionScope {
+    bool previous = injectingCommandPacket;
+    CommandInjectionScope() { injectingCommandPacket = true; }
+    ~CommandInjectionScope() { injectingCommandPacket = previous; }
+};
+} // namespace
 
 void ProbeMod::onPacketSent(Packet& packet) {
-    if (mPackets.sendActive() && packet.getId() == MinecraftPacketIds::CommandRequest) {
-        captureCommandTemplate(packet);
+    if (!injectingCommandPacket && mPackets.sendActive() && mAllowPacketInject.load()) {
+        try {
+            if (!guardedGameRead([&] {
+                if (packet.getId() == MinecraftPacketIds::CommandRequest) captureCommandTemplate(packet);
+            })) throw 0;
+        } catch (...) {
+            mPacketTemplateFaults.fetch_add(1);
+            mCommandTemplates.capture(localPlayerIdentity(), mPacketGeneration.load(), [](auto&) { return false; });
+        }
     }
     mPackets.onSent(packet, mTick.load(std::memory_order_relaxed));
 }
@@ -17,75 +31,142 @@ void ProbeMod::onPacketReceived(Packet const& packet, std::size_t anchor) {
 }
 
 void ProbeMod::packetPeerTick() { mPackets.peerTick(); }
-
 void ProbeMod::packetCaptureStop() { mPackets.stop(); }
 
-void ProbeMod::tickPacketInject(LocalPlayer& player) {
-    std::string text;
-    {
-        std::lock_guard lock(mChatMutex);
-        if (mChatPending.empty()) {
-            return;
-        }
-        text.swap(mChatPending);
-    }
-    std::string error;
-    bool const  ok = sendCommandPacket(player, text, error);
-    mChatLastResult.store(ok ? 0 : 1, std::memory_order_relaxed);
-    if (ok) {
-        mChatSent.fetch_add(1, std::memory_order_relaxed);
-    }
-    nlohmann::json event{
-        {"event", "chat_sent"},
-        {"ok",    ok         },
-        {"text",  text       },
-    };
-    if (!ok) {
-        event["reason"] = error;
-    }
-    enqueue(event.dump());
+void ProbeMod::captureCommandTemplate(Packet& packet) {
+    mCommandTemplates.capture(localPlayerIdentity(), mPacketGeneration.load(), [&](CommandTemplate& out) {
+        bool ok = false;
+        try { ok = guardedGameRead([&] {
+            auto const test = mPacketTemplateTest.exchange(CaptureTest::None);
+            injectCaptureFault(test);
+            auto const& payload = static_cast<CommandRequestPacket const&>(packet);
+            auto const& origin = *payload.mOrigin;
+            out.type = static_cast<std::uint64_t>(origin.mType);
+            out.uuidA = origin.mUUID->a;
+            out.uuidB = origin.mUUID->b;
+            out.playerId = origin.mPlayerId;
+            out.setRequestId(*origin.mRequestId);
+            if (test == CaptureTest::Partial) out.error = CommandTemplateError::TooLong;
+        }); } catch (...) { mPacketTemplateFaults.fetch_add(1); throw; }
+        if (!ok) mPacketTemplateFaults.fetch_add(1);
+        return ok;
+    });
 }
 
-void ProbeMod::captureCommandTemplate(Packet& packet) {
-    if (!mAllowPacketInject.load(std::memory_order_relaxed)) {
+void ProbeMod::queuePacketInjection(PacketInjectionQuery query, std::uint64_t timeout) {
+    std::lock_guard lock(mPacketInjectionMutex);
+    query.owner = localPlayerIdentity();
+    if (!query.owner.valid) {
+        enqueue(R"({"event":"error","reason":"packet_player_unknown"})");
         return;
     }
-    try {
-        // CommandRequestPacket publicly inherits its payload, so a copy of the
-        // payload (including the player origin) is a valid template.
-        CommandRequestPacketPayload copy =
-            static_cast<CommandRequestPacketPayload const&>(static_cast<CommandRequestPacket&>(packet));
-        std::lock_guard lock(mCommandTemplateMutex);
-        mCommandTemplate = std::move(copy);
-    } catch (...) {
-        // Template capture is best effort; chat_send will report no template.
+    auto const now = GetTickCount64();
+    query.id = mNextPacketId + 1;
+    query.generation = mPacketGeneration.load();
+    query.deadline = now + timeout;
+    query.templateError = mCommandTemplates.latest(query.origin, query.owner, query.generation);
+    if (query.test == PacketInjectionTest::Obsolete) ++query.owner.epoch;
+    if (query.test == PacketInjectionTest::WrongOwner) ++query.origin.owner.uuidA;
+    auto request = mPacketInjection.begin(std::move(query), now, timeout);
+    if (!request) {
+        enqueue(R"({"event":"error","reason":"packet_inject_busy"})");
+        return;
     }
+    mNextPacketId = request->query.id;
+    bootLog("input: chat_send queued id=" + std::to_string(mNextPacketId));
+    enqueue(nlohmann::json{{"event", "chat_send_queued"}, {"packet_id", mNextPacketId}}.dump());
 }
 
-bool ProbeMod::sendCommandPacket(LocalPlayer& player, std::string const& text, std::string& error) {
-    (void)player;
-    try {
-        std::optional<CommandRequestPacketPayload> payload;
-        {
-            std::lock_guard lock(mCommandTemplateMutex);
-            if (!mCommandTemplate) {
-                error = "no_command_template";
-                return false;
-            }
-            payload = *mCommandTemplate;
+void ProbeMod::cancelPacketInjection(char const* reason, bool discard) {
+    std::lock_guard lock(mPacketInjectionMutex);
+    mPacketGeneration.fetch_add(1);
+    mPacketTemplateTest = CaptureTest::None;
+    if (discard) mPacketInjection.reset();
+    else mPacketInjection.cancel(reason);
+}
+
+void ProbeMod::sendCommandPacket(PacketInjectionQuery const& query, PacketInjectionSnapshot& out) {
+    if (query.templateError) { out.error = query.templateError; return; }
+    // SDK owning objects live outside the raw SEH frame. Completed objects
+    // unwind normally after a handled fault; partial SDK construction cannot
+    // be rolled back. No SDK object is retained by the template/send hook.
+    std::unique_ptr<CommandOrigin> contextOrigin;
+    std::optional<CommandContext> context;
+    std::optional<CommandRequestPacketPayload> payload;
+    std::optional<CommandRequestPacket> packet;
+    std::string requestId(query.origin.requestIdView());
+    CommandInjectionScope injected; // Restores even after SEH/C++; never recapture our own send.
+    if (!guardedGameRead([&] {
+        applyPacketInjection(out,
+            [&]() -> char const* {
+                if (auto error = packetInjectionAdmission(query, mPacketGeneration.load(), mPoseEpoch.load(),
+                                                          mWorld.inWorld(), GetTickCount64())) return error;
+                if (!mAllowPacketInject.load()) return "packet_inject_disabled";
+                auto client = ll::service::getClientInstance();
+                auto* player = client ? client->getLocalPlayer() : nullptr;
+                if (!player) return "packet_player_not_found";
+                auto const uuid = player->getUuid();
+                if (uuid.a != query.owner.uuidA || uuid.b != query.owner.uuidB) return "packet_player_changed";
+                return nullptr;
+            },
+            [&]() -> char const* {
+                // Use real SDK constructors, then restore EVERY captured
+                // origin field. The temporary automation origin never sends.
+                contextOrigin = std::make_unique<ClientAutomationCommandOrigin>(requestId);
+                context.emplace(query.text, std::move(contextOrigin), static_cast<int>(CurrentCmdVersion::Latest));
+                payload.emplace(*context, false);
+                auto& origin = *payload->mOrigin;
+                origin.mType = static_cast<CommandOriginType>(query.origin.type);
+                origin.mUUID = mce::UUID{query.origin.uuidA, query.origin.uuidB};
+                origin.mRequestId = requestId;
+                origin.mPlayerId = query.origin.playerId;
+                payload->mCommand = query.text;
+                payload->mVersion = CurrentCmdVersion::Latest;
+                payload->mInternalSource = false;
+                packet.emplace(std::move(*payload));
+                return nullptr;
+            },
+            [&] { packet->sendToServer(); },
+            [&](PacketInjectionTest point) {
+                if (point == PacketInjectionTest::Seh && query.test == PacketInjectionTest::Cpp) throw 42;
+                if (query.test == point) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+            });
+    })) out.error = "packet_inject_fault";
+}
+
+void ProbeMod::drainPacketInjection() {
+    std::lock_guard lock(mPacketInjectionMutex);
+    if (auto request = mPacketInjection.current(); request && request->query.test != PacketInjectionTest::Deferred) {
+        if (auto stage = request->dispatch()) {
+            auto weak = std::weak_ptr{request};
+            auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
+            try {
+                if (request->query.test == PacketInjectionTest::Queue) failed("packet_inject_queue_failed");
+                else queueClientTask([this, weak, stage = *stage] {
+                    if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](PacketInjectionSnapshot& out) {
+                        sendCommandPacket(active->query, out);
+                        return PacketInjectionStage::Complete;
+                    });
+                }, failed);
+            } catch (...) { failed("packet_inject_queue_failed"); }
         }
-        payload->mCommand        = text;
-        payload->mVersion        = CurrentCmdVersion::Latest;
-        payload->mInternalSource = false;
-        CommandRequestPacket packet{std::move(*payload)};
-        packet.sendToServer();
-        return true;
-    } catch (std::exception const& e) {
-        error = e.what();
-    } catch (...) {
-        error = "unknown exception";
     }
-    return false;
+    auto done = mPacketInjection.take(GetTickCount64());
+    if (!done.request) return;
+    // Cancellation may finish while a callback still owns snapshot. Never
+    // inspect that snapshot or claim rollback; report conservative partial.
+    auto error = done.error ? done.error : done.request->snapshot.error;
+    if (error && std::string_view(error) == "capture_timeout") error = "packet_inject_timeout";
+    if (error && std::string_view(error) == "capture_failed") error = "packet_inject_failed";
+    auto const& query = done.request->query;
+    nlohmann::json result{{"event", "chat_sent"}, {"ok", error == nullptr}, {"text", query.text},
+                           {"packet_id", query.id}, {"partial", error != nullptr}};
+    if (error) result["reason"] = error;
+    auto line = result.dump();
+    if (done.release()) {
+        if (!error) mChatSent.fetch_add(1);
+        enqueue(std::move(line));
+    }
 }
 
 } // namespace probe

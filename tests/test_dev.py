@@ -182,5 +182,79 @@ class GameShutdownTests(unittest.TestCase):
         terminate.assert_not_called()
 
 
+class MenuReadinessTests(unittest.TestCase):
+    def test_cached_names_do_not_bypass_the_save_gate(self):
+        client = MagicMock()
+        worlds = [{"name": "test"}]
+        client.worlds.side_effect = [
+            {"ready": False, "worlds": worlds},
+            {"ready": True, "worlds": worlds},
+        ]
+        with patch.object(dev.time, "sleep") as sleep:
+            self.assertEqual(dev.wait_for_menu(client), worlds)
+        sleep.assert_called_once()
+        self.assertEqual(client.worlds.call_count, 2)
+
+    def test_safe_empty_menu_is_ready(self):
+        client = MagicMock()
+        client.worlds.return_value = {"ready": True, "worlds": []}
+        self.assertEqual(dev.wait_for_menu(client), [])
+
+    def test_missing_ready_flag_does_not_prove_a_safe_menu(self):
+        client = MagicMock()
+        client.worlds.return_value = {"worlds": [{"name": "cached"}]}
+        with (
+            patch.object(dev.time, "monotonic", side_effect=[0, 0, 2]),
+            patch.object(dev.time, "sleep"),
+            self.assertRaises(dev.ModTimeout),
+        ):
+            dev.wait_for_menu(client, timeout=1)
+
+
+class RecoveryTests(unittest.TestCase):
+    def run_recovery(self, kind, *, force=False, stop_error=None):
+        with (
+            patch.object(dev, "game_pids", return_value=[12]),
+            patch.object(dev, "ModClient"),
+            patch.object(dev, "world_state", return_value=kind),
+            patch.object(dev, "capture_disconnect_report", return_value=Path("report.json")),
+            patch.object(dev, "kill_game", side_effect=stop_error) as stop,
+            patch.object(dev.time, "sleep"),
+            patch.object(dev.subprocess, "call", return_value=0) as restart,
+        ):
+            args = ["recover", "--exe", "D:/custom/Minecraft.Windows.exe", "--world", "test"]
+            result = dev.main([*args, "--force"] if force else args)
+        return result, stop, restart
+
+    def test_world_refuses_without_force(self):
+        result, stop, restart = self.run_recovery("world")
+        self.assertEqual(result, 2)
+        stop.assert_not_called()
+        restart.assert_not_called()
+
+    def test_ready_menu_needs_no_recovery(self):
+        result, stop, restart = self.run_recovery("menu")
+        self.assertEqual(result, 0)
+        stop.assert_not_called()
+        restart.assert_not_called()
+
+    def test_unconfirmed_exit_never_falls_back_to_force(self):
+        for kind in ("exiting", "disconnect_error"):
+            result, stop, restart = self.run_recovery(kind, stop_error=SystemExit("not saved"))
+            self.assertEqual(result, 2)
+            stop.assert_called_once_with(Path("D:/custom/Minecraft.Windows.exe"))
+            restart.assert_not_called()
+
+    def test_explicit_force_preserves_custom_executable_on_restart(self):
+        result, stop, restart = self.run_recovery("disconnect_error", force=True)
+        self.assertEqual(result, 0)
+        stop.assert_called_once_with(Path("D:/custom/Minecraft.Windows.exe"), force=True)
+        argv = restart.call_args.args[0]
+        self.assertEqual(
+            argv[argv.index("--exe") + 1], str(Path("D:/custom/Minecraft.Windows.exe"))
+        )
+        self.assertEqual(argv[argv.index("--world") + 1], "test")
+
+
 if __name__ == "__main__":
     unittest.main()

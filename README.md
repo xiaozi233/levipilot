@@ -42,6 +42,11 @@ py -3.11 driver/dev.py run --world "超平坦测试"
 # 手动启动时也可以让 mod 自己进世界：写 mods/probe/harness.json
 py -3.11 driver/dev.py run --write-config --world "超平坦测试"
 
+# 卡在断开错误页时（HBUI 且 worlds.ready=false 只是候选，不能据此认定保存已完成）：
+# 先落盘现场到 out/disconnect-<时间>.json，再受控重启回菜单或重进世界
+py -3.11 driver/dev.py recover --world "超平坦测试"
+# 保存门禁不能确认时默认保留进程；明确放弃未保存更改才添加 --force
+
 # 常用操作
 py -3.11 driver/transport_mod.py ping
 py -3.11 driver/transport_mod.py state

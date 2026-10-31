@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..connection import PipeConnection
+from ..errors import ModProtocolError, ModTimeout
 
 
 class DiagnosticsCommands(PipeConnection):
@@ -52,10 +53,31 @@ class DiagnosticsCommands(PipeConnection):
         return self.request({"cmd": "selftest_av"}, ("error", "selftest_fault_done"), timeout)
 
     def panic(self, level: str = "all", timeout: float | None = None) -> dict[str, Any]:
-        """Remove hooks/watches and cancel tasks without killing the game."""
+        """Cancel workflows, preserving their terminal events before/after the receipt."""
         if level not in {"hooks", "tasks", "all"}:
             raise ValueError("level must be hooks, tasks or all")
-        return self.request({"cmd": "panic", "level": level}, "panic_done", timeout=timeout)
+        with self.exchange():
+            self.send({"cmd": "panic", "level": level})
+            try:
+                reply = self.wait_event(
+                    ("panic_done", "error"),
+                    timeout,
+                    # A cancelled workflow may publish its error before the
+                    # panic receipt. It belongs to that workflow's consumer.
+                    predicate=lambda row: (
+                        not (
+                            row.get("event") == "error"
+                            and row.get("reason") == "panic"
+                            and row.get("phase")
+                        )
+                    ),
+                )
+            except ModTimeout:
+                self.close()  # A late unnumbered receipt must not match a new panic.
+                raise
+            if reply.get("event") == "error":
+                raise ModProtocolError(f"panic: {reply.get('reason', reply)}")
+            return reply
 
     def spool_flush(self, timeout: float | None = None) -> dict[str, Any]:
         return self.request({"cmd": "spool_flush"}, "spool_flushed", timeout=timeout)

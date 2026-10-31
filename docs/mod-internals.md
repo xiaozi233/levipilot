@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。当前离线全量 **318/318**，现场 **919/919**（未跳过）；
+同步收集 tick，停止失败会传递错误。当前离线全量 **346/346**，现场 **992/992**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -78,8 +78,10 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   `teleported` 或带 `phase=teleport` 的 error；2 秒截止，忙时 `teleport_busy`，退出/panic
   取消、重连丢弃旧回执。错误保守 `partial=true`，不重试已开始的副作用；仅 reset 清效果，
   普通 teleport/checkpoint 保留效果。未给角度保留朝向，只给一个角度时另一个仍为零。
+  `teleported` 只确认服务端调用完成，客户端姿态随后同步；连续传送测试须先回读首条目标
+  朝向，再检查第二条无角度传送的保留语义。`wait_rotation` 要求连续三 tick 匹配，容差仍为 0.1°。
   `selftest_teleport` 需 `allow_selftest_stress`；`driver/selftest.py --teleport-only` 验证故障、
-  效果/朝向回读与恢复（44/44），`--teleport-world` 另验真实重连/退出/重进（49/49）。
+  效果/朝向回读与恢复（45/45），`--teleport-world` 另验真实重连/退出/重进（50/50）。
 - **飞行**：客户端和服务端玩家同时 `setAbility(MayFly/Flying)`；只写客户端时，传送后
   服务端 abilities 会把 `flying` 同步回来。
 - **命令**：服务器线程 + `PlayerCommandOrigin` + `MinecraftCommands::executeCommand`，
@@ -704,23 +706,33 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
 
 ## 命令包注入（H2）
 
-- `CommandRequestPacketPayload` 的默认构造没有导出，所以不自己拼 payload；
-  走模板复用：
+- `CommandRequestPacketPayload` 的默认构造没有导出；通过真实 SDK 构造器重建 payload，
+  只复用真实发送捕获到的来源值：
   1. 用 `/`（key 191）+ `text_input`（HID `onTextInput`）+ Enter 发一条真实命令；
-  2. `sendToServer` 钩子在 id==77 时把 payload 拷贝进 `mCommandTemplate`
-     （`CommandRequestPacket` 公开继承 payload，copy 后 origin/UUID 都是真实值）；
-  3. `chat_send {text}` 在 tick 线程复制模板，只替换 `mCommand`，设置
-     `mVersion=Latest`/`mInternalSource=false`，构造 `CommandRequestPacket` 并调
-     `Packet::sendToServer()`。
+  2. `sendToServer` 钩子在 id==77 时仅采 origin 数值字段和 requestId 字节，写入预初始化的
+     AtomicRing；不复制 owning payload/command，不取模板锁，读取有局部 SEH/C++ 边界。
+     origin UUID 不假定等于玩家 UUID，另附 tick 发布的玩家身份/世界代次与请求代次。
+     最新捕获 pending/失败时明确不可用；requestId 超过 512 字节拒绝，embedded NUL 原样保留。
+  3. `chat_send {text}` 冷侧安装独占请求，spool 调度平台客户端队列。临时
+     ClientAutomationCommandOrigin → CommandContext → payload 均走 SDK 构造器，随后完整覆盖
+     捕获的 type/UUID/requestId/playerId，发送的来源仍为原真实来源；设置
+     `mVersion=Latest`/`mInternalSource=false`，构造 packet 并调用 `sendToServer()`。
+     构造前、发送前都复核代次/截止/实际玩家 UUID；自身发送不再刷新模板，避免迟到发送污染新代次。
+     owning 对象在 raw SEH frame 外持有，已完成构造的对象正常析构；SDK 构造中途故障不可回滚。
 - 门禁：`allow_packet_inject`（默认 false），只允许这一个 id；`chat_send` 只入队，
-  真正发送和结果通过 `chat_sent {ok,text}` 事件回报。
+  真正发送和结果通过 `chat_sent {ok,text,packet_id,partial,reason?}` 事件由后台回报。
+  `chat_send_queued` 也带 packet_id，旧字段保留；Python 默认仍只等接受，wait=True 可等完成。
+  请求忙时明确拒绝，2 秒截止；退出/panic/内部错误取消，重连丢弃旧请求，模板同时按代次失效。
+  超时/取消不能读取还在运行的 snapshot，不重试可能已开始的发送，失败保守 partial=true。
 - `op_self {level}` 在服务端玩家上 `setCommandPermissions`（测试世界用）；
   `commands_enabled` 读写 `LevelData::mCommandsEnabled`。客户端命令包仍受玩家权限约束，
   `commands_enabled=true` 不代表玩家是 Operator。
 - 实测（1.26.51.01）：`/setblock` 回读 `gold_block`；`/tp @s ~1 ~ ~` 位移 1.000；
   `/fill`、`/give` 生效；注入前后 tick p99 不变，`chat_sent` 计数正确。
-- 注意：`chat_sent ok=true` 只表示包已发出；命令是否执行必须用 `blocks`/位置回读。
-  模板在每次真实 77 包发出时刷新，进程重启后需要重新发一条命令。
+- 注意：`chat_sent ok=true` 只表示发送调用完成；命令是否执行必须用 `blocks`/位置回读。
+  模板在每次真实 77 包发出时刷新，重启/重连/世界退出或取消后需要重新发一条命令。
+  上面的 p99 数字是历史 H2 验收，本批未做性能对照；通用 PacketTap::write 的序列化分配和
+  其余高频钩子 SDK 边界仍待处理，不能把命令包请求迁移等同于整个第 12 项完成。
 
 ## 封包字节与层选择（H1-B）
 
@@ -934,9 +946,24 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **919/919**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **318/318**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **992/992**
+（输入、自检压力及两类封包能力开启）、离线单测 **346/346**。
 本批最终姿态/能力/站稳与释放/解锁已回读恢复；此前退出异常根因仍待复核，未宣称已修复。
+
+### 命令包来源/独占注入与自检同步（2026-10-31）
+
+- 封包真实重连/退出/重进 **55/55**，传送 **45/45**、真实生命周期 **50/50**；完整现场
+  **992/992**（无跳过）、离线 **346/346**，构建、ruff check/format、mypy（92 files）、
+  profile 一致性通过。朝向检查先要求连续三 tick 匹配，再验证无角度传送；panic 保留
+  先到达的领域取消事件，其他错误仍抛出。
+- 已保存菜单下验证自检前提失败会停止并落盘报告；验证 recover 在世界中无 force 时拒绝，
+  在已保存菜单显式 force 后可重启重进。`wait_for_menu` 使用 ready，缓存列表不代表可进入。
+  真实错误页恢复没有现场样本，分类不证明磁盘保存完成，保存门禁失败不会自动强停。
+- 临时配置逐字节恢复且重启加载，姿态/能力/背包/站稳、释放/解锁、113 个 crash 无新增/修改
+  均回读确认。安装与打包 DLL SHA-256 相同：
+  `85BFF73BFC2F82A1D92C8A7ACF6789B94B601463B8FC45CE175BFC5153395628`。
+  证据 `out/reliability-rotation-final.json`，本轮日志同前缀；BadPacket 触发包仍 unresolved，
+  通用 PacketTap 序列化及其余 SDK 边界继续保留在第 12 项，13–16 未完成。
 
 ### tick 内部错误恢复（2026-10-31）
 
@@ -1294,8 +1321,8 @@ mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 W
 - H1-B B3：`packet_capture {serialize_ids:[144]}` 后 `packet_bytes` 拿到
   `PlayerAuthInput` 的 91–93 字节，`seq` 与身份记录一一对应（32/32 匹配）；tick 19.7–20.0，
   `dropped=0`。序列化只在白名单 id 上发生，关闭 capture 时零调用。
-- H2：`chat_send` 复制捕获到的 `CommandRequestPacket(77)` 模板，只替换命令字符串后
-  走 `Packet::sendToServer()`。实测 `/setblock` 回读为 `gold_block`、`/tp @s ~1 ~ ~`
+- H2（历史初验）：旧 `chat_send` 复制 `CommandRequestPacket(77)` payload；现改为定长来源模板
+  和客户端队列独占请求，见「命令包注入（H2）」。历史实测 `/setblock` 回读为 `gold_block`、`/tp @s ~1 ~ ~`
   位移正好 1.000 格、`/fill`/`/give` 生效；注入前后 tick p99 不变（19.8 Hz）。
   捕获模板需要先用 `/` + `text_input` + Enter 发一条真实命令；客户端命令还要求
   `op_self`（世界 commands 已开启时仍可能是 Member 权限）。

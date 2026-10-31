@@ -16,6 +16,8 @@
     py -3.11 driver/selftest.py --binary-capture-only  # binary recording failures and retained rows
     py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
     py -3.11 driver/selftest.py --teleport-only  # owned server teleport faults and side effects
+    py -3.11 driver/selftest.py --packet-injection-only  # owned command sends and template faults
+    py -3.11 driver/selftest.py --packet-injection-world "超平坦测试"  # plus reconnect/leave/rejoin
     py -3.11 driver/selftest.py --tick-recovery-only  # tick errors, fail-stop and fresh requests
     py -3.11 driver/selftest.py --tick-recovery-world "超平坦测试"  # plus reconnect/leave/rejoin
     py -3.11 driver/selftest.py --teleport-world "超平坦测试"  # plus reconnect/leave/rejoin
@@ -44,6 +46,7 @@ import contextlib
 import itertools
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -57,11 +60,13 @@ if str(ROOT) not in sys.path:
 from driver.harness.hooks import decode_hook_hits  # noqa: E402
 from driver.harness.lab import (  # noqa: E402
     Builder,
+    capture_disconnect_report,
     double_space_fly,
     record_session,
     settle,
     swim_drive,
     swim_stop,
+    world_state,
 )
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry, decode_dump  # noqa: E402
@@ -94,10 +99,41 @@ class Checks:
         return 1 if failed else 0
 
 
+class WorldLost(ModPipeError):
+    """The level disappeared mid-check.
+
+    Everything a check would measure afterwards is derived from that loss, so
+    the run stops instead of letting the next check overwrite the first failure
+    (historically a ``feet_x`` KeyError hid the original disconnect).
+    """
+
+
+def require_world(client: ModClient, where: str) -> None:
+    """Raise :class:`WorldLost` unless the client is still inside the level."""
+    kind = world_state(client)
+    if kind != "world":
+        raise WorldLost(f"{where}: world state is {kind}")
+
+
+def dump_packet_tap(client: ModClient, path: str | None) -> None:
+    """Write the packet-identity ring to ``path`` (diagnostics; never fatal)."""
+    if not path:
+        return
+    try:
+        rows = client.packet_drain(0, 8192)
+        Path(path).write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    except (ModPipeError, OSError) as exc:
+        print(f"NOTE  packet_tap_dump  (failed: {exc})")
+        return
+    print(f"NOTE  packet_tap_dump  ({rows.get('count', 0)} rows -> {path})")
+
+
 def wait_still(client: ModClient, timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = client.state()
+        if state.get("in_world") is not True:
+            raise WorldLost("wait_still: player left the world")
         if (
             state.get("on_ground")
             and abs(float(state.get("vx", 0.0))) < 0.01
@@ -120,14 +156,52 @@ def wait_screen(client: ModClient, expected: str, timeout: float = 2.0) -> str:
 
 
 def wait_ticks(client: ModClient, ticks: int, timeout: float = 6.0) -> int:
-    start = int(client.status().get("tick", 0))
+    status = client.status()
+    if status.get("in_world") is not True:
+        raise WorldLost("wait_ticks: player is not in a world")
+    start = int(status.get("tick", 0))
     deadline = time.monotonic() + timeout
     while True:
-        current = int(client.status().get("tick", 0))
+        status = client.status()
+        if status.get("in_world") is not True:
+            raise WorldLost(f"wait_ticks: world lost after tick {start}")
+        current = int(status.get("tick", 0))
         if current - start >= ticks:
             return current - start
         if time.monotonic() > deadline:
             return current - start
+        time.sleep(0.01)
+
+
+def wait_rotation(client: ModClient, yaw: float, pitch: float, timeout: float = 3.0) -> None:
+    """Require the requested camera pose on three distinct consecutive ticks.
+
+    A server teleport receipt precedes client synchronization. Starting the
+    next teleport before this gate can preserve the old server rotation.
+    """
+    deadline = time.monotonic() + timeout
+    last_tick: int | None = None
+    streak = 0
+    while True:
+        state = client.state()
+        if state.get("in_world") is not True:
+            raise WorldLost("wait_rotation: player left the world")
+        tick = int(state["tick"])
+        if tick != last_tick:
+            matches = (
+                abs((float(state["yaw"]) - yaw + 180) % 360 - 180) < 0.1
+                and abs(float(state["pitch"]) - pitch) < 0.1
+            )
+            consecutive = last_tick is not None and tick == last_tick + 1
+            streak = (streak + 1 if consecutive else 1) if matches else 0
+            last_tick = tick
+            if streak >= 3:
+                return
+        if time.monotonic() >= deadline:
+            raise ModTimeout(
+                f"rotation did not settle: yaw={state.get('yaw')} want={yaw}, "
+                f"pitch={state.get('pitch')} want={pitch}, matching_ticks={streak}/3"
+            )
         time.sleep(0.01)
 
 
@@ -2031,6 +2105,244 @@ def check_player_identity(client: ModClient, checks: Checks, world: str | None =
     checks.check("identity_handled_fault_no_dump", after == before)
 
 
+def check_packet_injection(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Exercise the production template hook and owned send pipeline with readback."""
+    if not client.status().get("packet_inject"):
+        checks.check("packet_owned_inject_gate", True, "packet injection disabled")
+        return
+    try:
+        client.packet_capture(True, ids=[77])
+    except ModProtocolError as exc:
+        checks.check("packet_owned_capture_gate", "packet_capture_disabled" in str(exc), str(exc))
+        return
+    original = client.state()
+    client.input_lock(True)
+    client.set_input()
+    client.op_self()
+    client.commands_enabled(True)
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    x, y, z = (math.floor(float(original[f"feet_{axis}"])) for axis in "xyz")
+    candidates = [[x + dx, y, z + dz] for dx, dz in ((4, 4), (-4, 4), (4, -4), (-4, -4))]
+    blocks = client.blocks(candidates)["blocks"]
+    target = next(
+        (
+            cell
+            for cell, block in zip(candidates, blocks, strict=True)
+            if block.get("name") == "minecraft:air"
+        ),
+        None,
+    )
+    if not checks.check("packet_owned_air_fixture", target is not None):
+        client.packet_capture(False)
+        return
+    assert target is not None
+    tx, ty, tz = target
+    command = f"/setblock {tx} {ty} {tz} minecraft:gold_block"
+
+    def block() -> str:
+        return str(client.blocks([target])["blocks"][0].get("name"))
+
+    def clear() -> None:
+        client.command(f"setblock {tx} {ty} {tz} air")
+        wait_ticks(client, 4)
+        if block() != "minecraft:air":
+            raise ValueError("packet fixture failed to restore air")
+
+    def complete(packet_id: int) -> dict[str, Any]:
+        return client.wait_event(
+            ("chat_sent", "error"), 4, predicate=lambda row: row.get("packet_id") == packet_id
+        )
+
+    def recovered() -> None:
+        deadline = time.monotonic() + 4
+        while client.status()["tick_recovery"]["active"]:
+            if time.monotonic() >= deadline:
+                raise ModTimeout("packet selftest: tick recovery did not finish")
+            time.sleep(0.01)
+
+    def unique(packet_id: int) -> bool:
+        try:
+            client.wait_event(
+                "chat_sent", 0.12, predicate=lambda row: row.get("packet_id") == packet_id
+            )
+        except ModTimeout:
+            return True
+        return False
+
+    def inject(mode: str, timeout: int = 250) -> dict[str, Any]:
+        return client.request(
+            {
+                "cmd": "selftest_packet_injection",
+                "mode": mode,
+                "text": command,
+                "timeout_ms": timeout,
+            },
+            "chat_send_queued",
+        )
+
+    def seed(mode: str = "off") -> None:
+        client.packet_capture(True, ids=[77])
+        client.key_event(191)
+        client.key_event(191, False)
+        if wait_screen(client, "chat_screen") != "chat_screen":
+            raise ValueError("packet fixture failed to open chat")
+        try:
+            client.text_input("say harness_owned_template", wait=True)
+            client.request(
+                {"cmd": "selftest_packet_template", "mode": mode}, "packet_template_test_armed"
+            )
+            count = int(client.status()["command_template_attempts"])
+            client.key_event(13)
+            client.key_event(13, False)
+            if wait_screen(client, "hud_screen") != "hud_screen":
+                raise ValueError("packet fixture failed to submit chat")
+            if int(client.status()["command_template_attempts"]) <= count:
+                raise ValueError("packet fixture did not capture the real command send")
+        finally:
+            if client.screen().get("name") == "chat_screen":
+                client.key_event(27)
+                client.key_event(27, False)
+                wait_screen(client, "hud_screen")
+
+    def no_template(name: str) -> None:
+        queued = client.chat_send(command)
+        row = complete(int(queued["packet_id"]))
+        checks.check(
+            name,
+            row.get("ok") is False
+            and row.get("reason") in ("no_command_template", "command_template_stale"),
+            str(row),
+        )
+        checks.check(name + "_no_effect", block() == "minecraft:air")
+
+    try:
+        client.panic("tasks")
+        no_template("packet_owned_no_template")
+        seed()
+        sent_before = int(client.status()["chat_sent"])
+        done = client.chat_send(command, wait=True)
+        wait_ticks(client, 4)
+        checks.check(
+            "packet_owned_success", done.get("ok") is True and block() == "minecraft:gold_block"
+        )
+        checks.check("packet_owned_success_unique", unique(int(done["packet_id"])))
+        checks.check("packet_owned_count", int(client.status()["chat_sent"]) == sent_before + 1)
+        clear()
+        for mode, reason in (
+            ("seh", "packet_inject_fault"),
+            ("cpp", "packet_inject_failed"),
+            ("timeout", "packet_inject_timeout"),
+            ("queue", "packet_inject_queue_failed"),
+            ("stale_epoch", "world_left"),
+            ("wrong_owner", "command_template_owner_mismatch"),
+            ("after_send", "packet_inject_fault"),
+        ):
+            accepted = inject(mode)
+            packet_id = int(accepted["packet_id"])
+            result = complete(packet_id)
+            checks.check(
+                f"packet_owned_{mode}",
+                result.get("ok") is False
+                and result.get("reason") == reason
+                and result.get("partial") is True,
+                str(result),
+            )
+            checks.check(f"packet_owned_{mode}_unique", unique(packet_id))
+            wait_ticks(client, 4)
+            expected = "minecraft:gold_block" if mode == "after_send" else "minecraft:air"
+            checks.check(f"packet_owned_{mode}_effect", block() == expected, block())
+            clear()
+        for mode, reason in (
+            ("seh", "command_template_fault"),
+            ("cpp", "command_template_fault"),
+            ("long", "command_template_too_long"),
+        ):
+            seed(mode)
+            queued = client.chat_send(command)
+            result = complete(int(queued["packet_id"]))
+            checks.check(
+                f"packet_template_{mode}",
+                result.get("ok") is False and result.get("reason") == reason,
+                str(result),
+            )
+            checks.check(f"packet_template_{mode}_no_fallback", block() == "minecraft:air")
+            seed()
+            done = client.chat_send(command, wait=True)
+            wait_ticks(client, 4)
+            checks.check(
+                f"packet_template_{mode}_recovers",
+                done.get("ok") is True and block() == "minecraft:gold_block",
+            )
+            clear()
+        accepted = inject("timeout", 10000)
+        busy = client.request({"cmd": "chat_send", "text": "/say must_not_replace"}, "error")
+        checks.check("packet_owned_busy", busy.get("reason") == "packet_inject_busy")
+        client.panic("tasks")
+        result = complete(int(accepted["packet_id"]))
+        checks.check(
+            "packet_owned_panic", result.get("reason") == "panic" and result.get("text") == command
+        )
+        checks.check("packet_owned_panic_unique", unique(int(accepted["packet_id"])))
+        no_template("packet_owned_panic_template_invalid")
+        seed()
+        accepted = inject("timeout", 10000)
+        client.request(
+            {"cmd": "selftest_tick_error", "mode": "std", "phase": "pre"}, "tick_error_test_armed"
+        )
+        client.wait_event(
+            "error",
+            4,
+            predicate=lambda row: (
+                row.get("reason") == "internal_error" and row.get("phase") == "tick_pre"
+            ),
+        )
+        result = complete(int(accepted["packet_id"]))
+        checks.check("packet_owned_tick_cancel", result.get("reason") == "internal_error")
+        recovered()
+        no_template("packet_owned_tick_template_invalid")
+        if world:
+            seed()
+            accepted = inject("timeout", 10000)
+            client.close()
+            client.connect()
+            client.input_lock(True)
+            no_template("packet_owned_reconnect_template_invalid")
+            checks.check("packet_owned_reconnect_no_stale", unique(int(accepted["packet_id"])))
+            seed()
+            accepted = inject("timeout", 10000)
+            try:
+                client.leave_world()
+                client.wait_event("world_left", 45)
+                result = complete(int(accepted["packet_id"]))
+                checks.check("packet_owned_world_cancel", result.get("reason") == "world_left")
+                row = client.request({"cmd": "chat_send", "text": command}, "error")
+                checks.check("packet_owned_menu_rejects", row.get("reason") == "not_in_world")
+            finally:
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+            no_template("packet_owned_world_template_invalid")
+        seed()
+        done = client.chat_send(command, wait=True)
+        wait_ticks(client, 4)
+        checks.check(
+            "packet_owned_recovers", done.get("ok") is True and block() == "minecraft:gold_block"
+        )
+    finally:
+        recovered()
+        client.request(
+            {"cmd": "selftest_packet_template", "mode": "off"}, "packet_template_test_armed"
+        )
+        clear()
+        client.packet_capture(False)
+    checks.check("packet_owned_fixture_restored", block() == "minecraft:air")
+    checks.check(
+        "packet_owned_alive", bool(client.ping()) and client.state().get("in_world") is True
+    )
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("packet_owned_handled_fault_no_dump", before == after)
+
+
 def check_teleport(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Verify server teleport ownership, partial failures and session isolation."""
     original = client.state()
@@ -2101,6 +2413,8 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
         )
         checks.check("teleport_preserves_effects", has_marker())
         client.teleport(**position, yaw=yaw + 25, pitch=15)
+        wait_rotation(client, yaw + 25, 15)
+        checks.check("teleport_rotation_settled", True)
         client.teleport(**position)  # Neither angle keeps both current values.
         wait_ticks(client, 4)
         state = client.state()
@@ -2108,6 +2422,8 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
             "teleport_keeps_rotation",
             abs((float(state["yaw"]) - yaw - 25 + 180) % 360 - 180) < 0.1
             and abs(float(state["pitch"]) - 15) < 0.1,
+            f"yaw={float(state['yaw']):.3f} want={yaw + 25:.3f} "
+            f"pitch={float(state['pitch']):.3f} want=15.000",
         )
         client.teleport(**position, yaw=yaw)
         wait_ticks(client, 4)
@@ -2168,7 +2484,7 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
             result.get("effects_cleared") is True and not client.state().get("effects"),
         )
         accepted = client.request(inject("timeout", timeout=10000), "teleport_queued")
-        client.request({"cmd": "panic", "level": "tasks"}, "panic_done")
+        client.panic("tasks")
         result = complete(int(accepted["teleport_id"]))
         checks.check("teleport_panic_cancels", result.get("reason") == "panic")
         checks.check("teleport_panic_recovers", restore_pose().get("ok") is True)
@@ -2386,6 +2702,9 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
             pitch=float(original["pitch"]),
         )
         wait_ticks(client, 10)
+        # The cleanup reset is the last thing this check does; if the level is
+        # gone now, stop here so the disconnect keeps its own diagnostics.
+        require_world(client, "flight cleanup")
     restored = client.state()
     checks.check(
         "flight_restores_abilities",
@@ -3400,6 +3719,17 @@ def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None
 def check_task_operations(client: ModClient, checks: Checks) -> None:
     """Verify real navigation and place/mine effects on a temporary air cell."""
     original = client.state()
+    if original.get("in_world") is not True:
+        raise WorldLost("task_operations: player left the world")
+    if any(f"feet_{axis}" not in original for axis in "xyz"):
+        # Never let a missing pose surface as a KeyError: the interesting event
+        # is that the level is already gone (see WorldLost in main).
+        checks.check(
+            "task_operations_pose",
+            False,
+            f"no player pose: in_world={original.get('in_world')} state={world_state(client)}",
+        )
+        return
     pose = [float(original[f"feet_{axis}"]) for axis in "xyz"]
     snapshot = client.inventory()
     slot = next(
@@ -3971,6 +4301,14 @@ def main(argv: list[str] | None = None) -> int:
         "--teleport-only", action="store_true", help="check owned server teleports and failures"
     )
     modes.add_argument(
+        "--packet-injection-only",
+        action="store_true",
+        help="check command templates and owned packet sends",
+    )
+    modes.add_argument(
+        "--packet-injection-world", metavar="WORLD", help="also check packet reconnect/leave/rejoin"
+    )
+    modes.add_argument(
         "--teleport-world", metavar="WORLD", help="also check teleport reconnect/leave/rejoin"
     )
     modes.add_argument(
@@ -4082,7 +4420,9 @@ def main(argv: list[str] | None = None) -> int:
         return checks.finish()
 
     if (
-        args.teleport_only
+        args.packet_injection_only
+        or args.packet_injection_world
+        or args.teleport_only
         or args.teleport_world
         or args.tick_recovery_only
         or args.tick_recovery_world
@@ -4112,7 +4452,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.tick_recovery_only or args.tick_recovery_world:
+            if args.packet_injection_only or args.packet_injection_world:
+                check_packet_injection(client, checks, args.packet_injection_world)
+            elif args.tick_recovery_only or args.tick_recovery_world:
                 check_tick_recovery(client, checks, args.tick_recovery_world)
             elif args.teleport_only or args.teleport_world:
                 check_teleport(client, checks, args.teleport_world)
@@ -4146,7 +4488,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "tick_recovery_error"
+                "packet_injection_error"
+                if args.packet_injection_only or args.packet_injection_world
+                else "tick_recovery_error"
                 if args.tick_recovery_only or args.tick_recovery_world
                 else "teleport_error"
                 if args.teleport_only or args.teleport_world
@@ -4206,7 +4550,9 @@ def main(argv: list[str] | None = None) -> int:
             client.close()
         return checks.finish()
 
+    tap_dump = os.environ.get("LEVIPILOT_PACKET_DUMP") or None
     try:
+        require_world(client, "selftest preflight")
         # Scripts own the session: drop real hardware keys/mouse so a person at
         # the machine cannot perturb the run. Injected events still pass; use
         # `harness input-lock --off` (or input_lock(false)) to release.
@@ -4216,6 +4562,14 @@ def main(argv: list[str] | None = None) -> int:
         except (ModPipeError, ModProtocolError) as exc:
             checks.note("input_lock_auto", f"unavailable: {exc}")
         checks.check("ping", client.ping().get("event") == "pong")
+        if tap_dump:
+            # Diagnostic mode: keep the packet-identity ring on for the whole
+            # run so a disconnect still has the last packets before it.
+            try:
+                client.packet_capture(True, sample=1, directions=["send", "recv"])
+                checks.note("packet_tap_all", f"on -> {tap_dump}")
+            except (ModPipeError, ModProtocolError) as exc:
+                checks.note("packet_tap_all", f"unavailable: {exc}")
         if args.stress_cycles:
             check_lifecycle_stress(client, checks, args.stress_cycles, args.stress_world)
         client.command('tellraw @s {"rawtext":[{"text":"LeviPilot chat snapshot selftest"}]}')
@@ -4266,6 +4620,7 @@ def main(argv: list[str] | None = None) -> int:
         check_controls(client, checks)
         check_teleport(client, checks)
         check_tick_recovery(client, checks)
+        check_packet_injection(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 
@@ -6120,13 +6475,26 @@ def main(argv: list[str] | None = None) -> int:
 
         checks.check("macro_status", client.macro_status().get("event") == "macro_status")
         return checks.finish()
+    except WorldLost as exc:
+        # Stop at the first sign of a lost level: later checks would only
+        # report the consequences of it.
+        checks.check("aborted_world_left", False, str(exc))
+        try:
+            report = capture_disconnect_report(client, ROOT / "out", tag="disconnect")
+            checks.note("disconnect_report", str(report))
+        except OSError as report_exc:
+            checks.note("disconnect_report", f"failed: {report_exc}")
+        return checks.finish()
     except ModPipeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     finally:
-        with contextlib.suppress(ModPipeError, ModProtocolError):
-            client.input_lock(False)
-        client.close()
+        dump_packet_tap(client, tap_dump)
+        try:
+            with contextlib.suppress(ModPipeError):
+                client.input_lock(False)
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@
 #include "mod/MacroPlaybackModel.h"
 #include "mod/MovementModel.h"
 #include "mod/PacketTap.h"
+#include "mod/PacketInjectionModel.h"
 #include "mod/PlayerIdentityModel.h"
 #include "mod/PoseModel.h"
 #include "mod/QueryModel.h"
@@ -37,8 +38,6 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-
-#include "mc/network/packet/CommandRequestPacketPayload.h"
 
 #include <windows.h>
 
@@ -123,14 +122,17 @@ public:
 
     std::atomic_bool                           mAllowPacketCapture{false};
     std::atomic_bool                           mAllowPacketInject{false};
-    std::mutex                                 mChatMutex;
-    std::string                                mChatPending;
-    std::mutex                                 mCommandTemplateMutex;
-    std::optional<CommandRequestPacketPayload> mCommandTemplate;
     std::atomic<std::uint64_t>                 mChatSent{0};
-    std::atomic<std::int32_t>                  mChatLastResult{0};
-    void                                       tickPacketInject(LocalPlayer& player);
-    bool             sendCommandPacket(LocalPlayer& player, std::string const& text, std::string& error);
+    detail::CommandTemplateStore mCommandTemplates;
+    detail::PacketInjectionCapture mPacketInjection;
+    std::mutex mPacketInjectionMutex; // Cold admission, scheduling and completion only.
+    std::atomic<std::uint64_t> mPacketGeneration{0}, mPacketTemplateFaults{0};
+    std::uint64_t mNextPacketId = 0; // Cold-owned.
+    std::atomic<detail::CaptureTest> mPacketTemplateTest{detail::CaptureTest::None};
+    void queuePacketInjection(detail::PacketInjectionQuery query, std::uint64_t timeout = 2000);
+    void drainPacketInjection();
+    void cancelPacketInjection(char const* reason, bool discard = false);
+    void sendCommandPacket(detail::PacketInjectionQuery const& query, detail::PacketInjectionSnapshot& out);
     bool             hidTextInput(std::string const& text, std::string& error);
     void             captureCommandTemplate(Packet& packet);
     std::atomic_bool mAllowInputInject{false};
@@ -559,8 +561,6 @@ private:
     detail::PoseStore                mPose;
     std::atomic<std::uint64_t>       mPoseEpoch{1};
     std::atomic<detail::CaptureTest> mPoseTest{detail::CaptureTest::None};
-
-    // Teleport requests live in RequestBlock above (mTeleportMutex removed in T9).
 
     detail::TaskController     mTasks;
     std::uint64_t              mSeenTaskId = 0; // Game-thread input ownership generation.

@@ -70,6 +70,7 @@ void ProbeMod::drainInternalErrors() {
             cancelInputEvents("internal_error");
             cancelFlight("internal_error");
             cancelTeleport("internal_error");
+            cancelPacketInjection("internal_error");
             mEntityCapture.cancel("internal_error");
             mSlotCapture.cancel("internal_error");
             mClickRequest = mSlotRequest = -1;

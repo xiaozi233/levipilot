@@ -19,12 +19,16 @@ cd mod/probe && xmake -j4 -y   # -j4 限制 CPU 占用
 # 源码比 probe.dll 新时会自动重建；--no-build 可跳过，--build 强制
 py -3.11 driver/dev.py run --world "超平坦测试"
 
+# 卡在断开错误页（HBUI、worlds.ready=false）时：先落盘现场，再受控重启回菜单/重进世界
+# 报告写到 out/disconnect-<时间>.json；不加 --world 只回到菜单
+py -3.11 driver/dev.py recover --world "超平坦测试"
+
 # 无游戏单测 / 静态检查
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 跳过项会减少执行数；2026-10-31 完整自检是 919/919，验收边界见 reliability-repairs
+# 跳过项会减少执行数；2026-10-31 完整自检是 992/992，含两类封包能力，边界见 reliability-repairs
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
@@ -185,6 +189,10 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
   旧线程遗留的 DR 曾导致服务端线程被误记为写 tick 变量。
 - 主菜单/世界列表/暂停菜单/对话框仍需桌面 UI 操作（见 `docs/ui-automation.md`），
   但日常开发循环不需要。
+- **断开错误页不是菜单**：它同样是 `ui://./hbui/index.html`，但 `worlds.ready=false`。
+  `world_state()` 的 `disconnect_error` 只是 HBUI + 服务端对象全释放的候选错误页，不能证明
+  保存已完成；未知/仍有服务端对象归 `exiting`。`dev.py recover` 先落盘诊断再走保存门禁，
+  失败保留进程；明确放弃未保存会话才用 `recover --force`。禁止由 URL 放宽准入或自动强停。
 - tick 记录会同时写入 `<modDir>/spool-<pid>.jsonl`（100 ms / 64 KB 刷盘）；连接时不再清空队列，
   而是先刷 spool 再补发。崩溃取证走 VEH 写 `crash-<pid>-<tick>.dmp` + `crash-<pid>.txt`。
 - 请求级 AV 由 `dispatchWithSeh` 转成 `internal_error`；不要把会崩的代码放到 tick 线程，
@@ -214,12 +222,22 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
 全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **919/919**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress`；2026-10-31 全套，无跳过）、
-离线单测 **318/318**、ruff/mypy（driver+tests）全绿。tick 内部错误恢复专项 51/51、
+执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **992/992**
+（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress` 和
+`allow_packet_capture`/`allow_packet_inject`；2026-10-31 全套，无跳过）、
+离线单测 **346/346**、ruff/mypy（driver+tests）全绿。tick 内部错误恢复专项 51/51、
 真实生命周期 57/57；最终姿态/能力/站稳、释放与解锁已回读恢复。此前 HBUI ready=false 在用户正常
 退出重启后恢复，本批未复现，根因仍待复核。审阅修复进度见
 [`docs/reliability-repairs.md`](docs/reliability-repairs.md)，其余项目仍待推进。
+
+2026-10-31 封包路径后续已验收：来源/独占注入真实生命周期 55/55，传送专项 45/45、
+真实生命周期 50/50，完整 992/992、离线 346/346。传送检查先回读首条朝向连续三 tick 匹配，
+再验证无角度传送；Python panic 保留先于自身回执的领域取消。意外退档停止自检并保存诊断，
+菜单等待使用 ready 门禁，recover 仅在显式 --force 时强停。临时配置已逐字节恢复并重启加载，
+最终姿态/能力/背包/站稳、释放/解锁均回读通过，113 个 crash 无新增/修改。
+此前 Block / ClientDisconnection-90 的触发包仍 unresolved；转交报告已提供客户端设置点角色，
+有限重放未复现不能排除低频回归，本轮未做新增逆向或诊断钩子。真实错误页恢复仍缺现场样本；
+详情与后续范围见 `docs/reliability-repairs.md`。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage
@@ -237,7 +255,7 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 
 - ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化；宏播放已迁
   `MacroPlayback`，宏录制/输入的整体会话所有权仍在第 13 项
-- 查询快照已覆盖 state/buttons/inventory/blocks/scan/select_slot；实体/ECS 已迁共用分阶段会话，JSON 录制/跑酷事件已迁固定队列与后台格式化；宏录制已迁预初始化帧与局部 SEH，hook_call 已迁独占请求/后台回执，姿态已迁一致快照；二进制录制已补唯一失败与部分导出；宏播放已迁无锁准入/后台终结、点击已迁固定队列；事件输入已加局部边界/固定结果/文本屏障，文本与 screen/key_state 已迁客户端队列；飞行已迁分阶段请求/唯一终结/有界重断言；身份缓存已迁 UUID/epoch 原子快照；移动/视角已加局部边界/失败传播/释放重试；传送已迁独占请求/后台调度；内部错误上报已迁定长队列/后台清理与两阶段准入；封包注入/模板及其余 SDK 边界仍待治理
+- 查询快照已覆盖 state/buttons/inventory/blocks/scan/select_slot；实体/ECS 已迁共用分阶段会话，JSON 录制/跑酷事件已迁固定队列与后台格式化；宏录制已迁预初始化帧与局部 SEH，hook_call 已迁独占请求/后台回执，姿态已迁一致快照；二进制录制已补唯一失败与部分导出；宏播放已迁无锁准入/后台终结、点击已迁固定队列；事件输入已加局部边界/固定结果/文本屏障，文本与 screen/key_state 已迁客户端队列；飞行已迁分阶段请求/唯一终结/有界重断言；身份缓存已迁 UUID/epoch 原子快照；移动/视角已加局部边界/失败传播/释放重试；传送已迁独占请求/后台调度；内部错误上报已迁定长队列/后台清理与两阶段准入；命令包模板/注入已迁定长采样与独占请求，通用 PacketTap 序列化及其余 SDK 边界仍待治理
 - Overhead 统计环已迁原子载荷并通过 1100 tick 现场环绕；性能比较仍需受控对照
 - 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成，专项 30/30；
   UseTask 5 秒截止、chat_history 2 秒超时也已现场验收

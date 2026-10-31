@@ -74,7 +74,7 @@ inline bool blockedDuringTickRecovery(std::string_view command) {
         "select_slot", "chat_send", "teleport", "reset", "checkpoint_load",
         "look_at_entity", "attack_entity", "interact_entity",
         "selftest_use_failure", "selftest_task_fault", "selftest_flight", "selftest_teleport",
-        "selftest_input_events", "selftest_controls"
+        "selftest_input_events", "selftest_controls", "selftest_packet_injection", "selftest_packet_template"
     };
     for (auto known : commands) if (command == known) return true;
     return false;

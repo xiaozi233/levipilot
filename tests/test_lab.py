@@ -320,3 +320,84 @@ class DoubleSpaceTests(unittest.TestCase):
         result = double_space_fly(client, attempts=2)
         self.assertFalse(result["flying"])
         self.assertEqual(len([c for c in client.calls if c[0] == "key"]), 8)
+
+
+class WorldStateTests(unittest.TestCase):
+    """The disconnect error page is HBUI too, so it must not read as a menu."""
+
+    def client(self, *, in_world, ready, screen, error=False, diag=None):
+        from driver.harness.errors import ModPipeError
+
+        class Client:
+            def state(self):
+                return {"in_world": in_world}
+
+            def worlds(self):
+                if error:
+                    raise ModPipeError("pipe gone")
+                return {"ready": ready}
+
+            def screen(self):
+                return {"name": screen}
+
+            def diag(self):
+                return (
+                    diag
+                    if diag is not None
+                    else dict.fromkeys(
+                        ("minecraft", "server_instance", "level", "server_level"), False
+                    )
+                )
+
+        return Client()
+
+    def test_in_world(self) -> None:
+        from driver.harness.lab import world_state
+
+        self.assertEqual(world_state(self.client(in_world=True, ready=False, screen="")), "world")
+
+    def test_menu_needs_ready_world_list(self) -> None:
+        from driver.harness.lab import world_state
+
+        self.assertEqual(
+            world_state(self.client(in_world=False, ready=True, screen="ui://./hbui/index.html")),
+            "menu",
+        )
+
+    def test_hbui_without_world_list_is_the_error_page(self) -> None:
+        from driver.harness.lab import world_state
+
+        self.assertEqual(
+            world_state(self.client(in_world=False, ready=False, screen="ui://./hbui/index.html")),
+            "disconnect_error",
+        )
+
+    def test_dead_pipe_is_exiting(self) -> None:
+        from driver.harness.lab import world_state
+
+        self.assertEqual(
+            world_state(self.client(in_world=False, ready=False, screen="", error=True)), "exiting"
+        )
+
+    def test_hbui_with_live_server_is_still_exiting(self) -> None:
+        from driver.harness.lab import world_state
+
+        for diag in ({}, {"server_instance": True}):
+            self.assertEqual(
+                world_state(
+                    self.client(in_world=False, ready=False, screen="ui://hbui", diag=diag)
+                ),
+                "exiting",
+            )
+
+    def test_hbui_progress_is_never_an_error_page(self) -> None:
+        from driver.harness.lab import world_state
+
+        self.assertEqual(
+            world_state(
+                self.client(
+                    in_world=False, ready=False, screen="ui://hbui/world_saving_progress_screen"
+                )
+            ),
+            "exiting",
+        )

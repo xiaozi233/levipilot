@@ -123,6 +123,9 @@ void WorldSession::start() {
     });
     mExitListener      = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
         mInWorld = false;
+        mOwner.mPoseEpoch.fetch_add(1);
+        mOwner.mPoseTest = CaptureTest::None;
+        hookCancelCalls("world_left");
         mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);
         mOwner.mLegacyWorldLeft.store(true, std::memory_order_release);
         mOwner.mMacroRecordWorldLeft.store(true, std::memory_order_release);

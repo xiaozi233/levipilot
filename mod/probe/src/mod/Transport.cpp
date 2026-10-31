@@ -37,9 +37,24 @@ void ProbeMod::enqueue(std::string line) {
 }
 
 void ProbeMod::spoolThreadLoop() {
+    auto reportPoseFaults = [this] {
+        auto const errors = mPose.takeFailures();
+        if (errors.fault || errors.cpp || errors.nonFinite) {
+            enqueue(
+                nlohmann::json{
+                    {"event",      "pose_diagnostic"},
+                    {"faults",     errors.fault     },
+                    {"exceptions", errors.cpp       },
+                    {"non_finite", errors.nonFinite }
+            }.dump()
+            );
+        }
+    };
     auto reportRecordFault = [this] {
         if (recordTakeFault()) {
-            enqueue(R"({"event":"error","reason":"internal_error","phase":"record_tick","message":"structured exception"})");
+            enqueue(
+                R"({"event":"error","reason":"internal_error","phase":"record_tick","message":"structured exception"})"
+            );
         }
     };
     // The spool thread is the only consumer of task/chat events; if one bad
@@ -55,6 +70,8 @@ void ProbeMod::spoolThreadLoop() {
             drainQueries();
             drainTickStreams();
             drainMacroRecording();
+            if (auto result = hookTakeCallResult()) enqueue(result->dump());
+            reportPoseFaults();
             reportRecordFault();
             flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
             faultReported = false;
@@ -86,6 +103,8 @@ void ProbeMod::spoolThreadLoop() {
         drainQueries();
         drainTickStreams();
         drainMacroRecording();
+        if (auto result = hookTakeCallResult()) enqueue(result->dump());
+        reportPoseFaults();
         reportRecordFault();
     } catch (...) {
     }
@@ -294,6 +313,7 @@ void ProbeMod::serverLoop() {
             if (!connected) {
                 mChatCapture.reset();
                 resetQueries();
+                hookResetCalls();
                 bool const ok = pipe.connect(mRunning);
                 if (!mRunning.load(std::memory_order_relaxed)) {
                     break;

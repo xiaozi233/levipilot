@@ -432,8 +432,11 @@ nlohmann::json hookRemove(int id);
 int            hookRemoveAll();
 nlohmann::json hookListJson();
 nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit);
-bool           hookRequestCall(std::string const& symbol, float scale, std::string& error);
-bool           hookTick(LocalPlayer& player, nlohmann::json& result);
+bool hookRequestCall(std::string const& symbol, float scale, std::string& error, CaptureTest test = CaptureTest::None);
+void hookTick(LocalPlayer& player);
+std::optional<nlohmann::json> hookTakeCallResult();
+void                          hookCancelCalls(char const* reason);
+void                          hookResetCalls();
 
 // ---------------------------------------------------------------------------
 // T9: tick-path overhead measurement.

@@ -231,11 +231,36 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
         enqueue(hookDrainJson(since, limit).dump());
         return true;
     }
-    if (cmd == "hook_call") {
+    if (cmd == "hook_call" || cmd == "selftest_hook_call") {
+        if (!hooksAllowed() || !mWorld.inWorld()) {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"                                             },
+                    {"reason", hooksAllowed() ? "not_in_world" : "version_mismatch"}
+            }
+                    .dump()
+            );
+            return true;
+        }
+        CaptureTest test = CaptureTest::None;
+        if (cmd == "selftest_hook_call") {
+            if (!mAllowSelftestStress.load()) {
+                enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+                return true;
+            }
+            auto const mode = j.value("mode", std::string{});
+            if (mode == "seh") test = CaptureTest::Fault;
+            else if (mode == "cpp") test = CaptureTest::Cpp;
+            else if (mode == "timeout") test = CaptureTest::Deferred;
+            else {
+                enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+                return true;
+            }
+        }
         std::string const symbol = j.value("symbol", std::string{});
         float const       scale  = j.value("scale", 1.0f);
         std::string       error;
-        if (!hookRequestCall(symbol, scale, error)) {
+        if (!hookRequestCall(symbol, scale, error, test)) {
             enqueue(
                 nlohmann::json{
                     {"event",  "error"      },

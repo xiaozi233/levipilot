@@ -79,6 +79,9 @@ class ModModelTests(unittest.TestCase):
     def test_query_publication_cancellation_and_scan_budget(self) -> None:
         self.run_native("query_model")
 
+    def test_pose_snapshots_faults_and_concurrent_publication(self) -> None:
+        self.run_native("pose_model")
+
     def test_entity_stage_timeout_cancellation_and_slot_snapshot(self) -> None:
         self.run_native("entity_model")
 

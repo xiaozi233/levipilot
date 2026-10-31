@@ -86,8 +86,7 @@ void waitReady(std::size_t slot) {
     }
 }
 
-std::atomic_bool  gCallPending{false};
-std::atomic<float> gCallScale{1.0f};
+HookCallCapture gCalls;
 
 std::uint32_t floatBits(float value) {
     std::uint32_t out = 0;
@@ -633,28 +632,58 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
     return out;
 }
 
-bool hookRequestCall(std::string const& symbol, float scale, std::string& error) {
+bool hookRequestCall(std::string const& symbol, float scale, std::string& error, CaptureTest test) {
     if (symbol != kJumpPendingSymbol) {
         error = "unknown_symbol";
         return false;
     }
-    gCallScale.store(scale, std::memory_order_relaxed);
-    gCallPending.store(true, std::memory_order_release);
+    if (!std::isfinite(scale)) {
+        error = "bad_param";
+        return false;
+    }
+    if (!gCalls.begin({scale, test}, GetTickCount64(), 2000)) {
+        error = "hook_call_busy";
+        return false;
+    }
     return true;
 }
 
-bool hookTick(LocalPlayer& player, nlohmann::json& result) {
-    if (!gCallPending.exchange(false, std::memory_order_acq_rel)) {
-        return false;
-    }
-    float const scale = gCallScale.load(std::memory_order_relaxed);
-    MobJump::setJumpPendingScale(player.getEntityContext(), scale);
-    result = {
-        {"event",  "hook_call_done"      },
-        {"symbol", kJumpPendingSymbol    },
-        {"scale",  scale                 },
-    };
-    return true;
+void hookTick(LocalPlayer& player) {
+    gCalls.advance([&](auto const& request, auto& out) {
+        if (request.test == CaptureTest::Deferred) return false;
+        out.scale = request.scale;
+        if (!guardedGameRead([&] {
+                injectCaptureFault(request.test);
+                MobJump::setJumpPendingScale(player.getEntityContext(), request.scale);
+            }))
+            out.error = "capture_fault";
+        return true;
+    });
 }
+
+std::optional<nlohmann::json> hookTakeCallResult() {
+    auto done = gCalls.take(GetTickCount64());
+    if (!done) return {};
+    char const*    error = done.error ? done.error : done.snapshot().error;
+    nlohmann::json result;
+    if (error)
+        result = {
+            {"event",  "error"    },
+            {"phase",  "hook_call"},
+            {"reason", error      }
+        };
+    else
+        result = {
+            {"event",  "hook_call_done"     },
+            {"symbol", kJumpPendingSymbol   },
+            {"scale",  done.snapshot().scale},
+            {"ok",     true                 }
+        };
+    if (!done.release()) return {};
+    return result;
+}
+
+void hookCancelCalls(char const* reason) { gCalls.cancel(reason); }
+void hookResetCalls() { gCalls.reset(); }
 
 } // namespace probe::detail

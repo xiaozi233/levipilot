@@ -4,6 +4,7 @@
 #include "mod/EntityModel.h"
 #include "mod/MacroRecordModel.h"
 #include "mod/PacketTap.h"
+#include "mod/PoseModel.h"
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
 #include "mod/TaskModel.h"
@@ -546,12 +547,11 @@ private:
 
     std::mutex                        mCheckpointMutex;
     std::map<std::string, Checkpoint> mCheckpoints;
-    // Last known feet pose, updated by the tick thread for checkpoint_save.
-    std::atomic<float> mLastFeetX{0.0f};
-    std::atomic<float> mLastFeetY{0.0f};
-    std::atomic<float> mLastFeetZ{0.0f};
-    std::atomic<float> mLastPitch{0.0f};
-    std::atomic_bool   mPoseValid{false};
+    // Tick writer; coherent checkpoint/crash snapshots. World exit advances
+    // the epoch so the preceding world's pose cannot become a new checkpoint.
+    detail::PoseStore                mPose;
+    std::atomic<std::uint64_t>       mPoseEpoch{1};
+    std::atomic<detail::CaptureTest> mPoseTest{detail::CaptureTest::None};
 
     // Teleport requests live in RequestBlock above (mTeleportMutex removed in T9).
 
@@ -619,12 +619,8 @@ private:
     std::atomic<std::uint64_t> mSpoolErrors{0};
 
     // Crash report context. The pipe thread is the only writer of
-    // mLastCommand; the tick thread is the only writer of the pose fields.
+    // mLastCommand; the tick thread is the only writer of mPose.
     char                       mLastCommand[512]{};
-    std::atomic<float>         mLastX{0.0f};
-    std::atomic<float>         mLastY{0.0f};
-    std::atomic<float>         mLastZ{0.0f};
-    std::atomic<float>         mLastYaw{0.0f};
     std::atomic<std::uint32_t> mTickThreadId{0};
 
     // T2/T3 configuration and diagnostics.

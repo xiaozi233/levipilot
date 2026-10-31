@@ -79,16 +79,18 @@ void ProbeMod::checkpointSave(std::string const& name) {
         enqueue(R"({"event":"error","reason":"bad_checkpoint_name"})");
         return;
     }
-    if (!mPoseValid.load(std::memory_order_relaxed)) {
+    PoseSnapshot pose;
+    auto const   epoch = mPoseEpoch.load();
+    if (!mWorld.inWorld() || !mPose.read(pose, epoch) || epoch != mPoseEpoch.load()) {
         enqueue(R"({"event":"error","reason":"no_pose"})");
         return;
     }
     Checkpoint point;
-    point.x     = mLastFeetX.load(std::memory_order_relaxed);
-    point.y     = mLastFeetY.load(std::memory_order_relaxed);
-    point.z     = mLastFeetZ.load(std::memory_order_relaxed);
-    point.yaw   = mLastYaw.load(std::memory_order_relaxed);
-    point.pitch = mLastPitch.load(std::memory_order_relaxed);
+    point.x     = pose.feetX;
+    point.y     = pose.feetY;
+    point.z     = pose.feetZ;
+    point.yaw   = pose.yaw;
+    point.pitch = pose.pitch;
     {
         std::lock_guard lock(mCheckpointMutex);
         mCheckpoints[name] = point;
@@ -106,13 +108,15 @@ void ProbeMod::checkpointSave(std::string const& name) {
     }
     enqueue(
         nlohmann::json{
-            {"event", "checkpoint_saved"},
-            {"name",  name              },
-            {"x",     point.x           },
-            {"y",     point.y           },
-            {"z",     point.z           },
-            {"yaw",   point.yaw         },
-            {"pitch", point.pitch       },
+            {"event",      "checkpoint_saved"},
+            {"name",       name              },
+            {"x",          point.x           },
+            {"y",          point.y           },
+            {"z",          point.z           },
+            {"yaw",        point.yaw         },
+            {"pitch",      point.pitch       },
+            {"tick",       pose.tick         },
+            {"pose_epoch", pose.epoch        },
     }
             .dump()
     );

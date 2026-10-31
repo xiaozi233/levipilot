@@ -238,7 +238,48 @@ void publication() {
     assert(allocations.load() == baseline);
 }
 
+void hookCallOwnership() {
+    HookCallCapture call;
+    auto const before = allocations.load();
+    assert(call.begin({0.25f}, 0, 2000));
+    assert(!call.begin({0.75f}, 1, 2000));
+    call.advance([](auto const& request, auto& out) {
+        assert(request.scale == 0.25f); // Rejected overlap cannot replace the request.
+        out.scale = request.scale;
+        return true;
+    });
+    {
+        auto done = call.take(2);
+        assert(done && !done.error && done.snapshot().scale == 0.25f);
+    }
+    assert(call.begin({0.5f}, 0, 2000));
+    {
+        auto expired = call.take(2000);
+        assert(expired && std::string_view(expired.error) == "capture_timeout");
+    }
+    call.advance([](auto const&, auto&) {
+        assert(false); // An expired request cannot invoke the game later.
+        return true;
+    });
+    assert(call.begin({0.75f}, 0, 2000));
+    call.cancel("world_left");
+    call.advance([](auto const&, auto&) {
+        assert(false);
+        return true;
+    });
+    {
+        auto cancelled = call.take(1);
+        assert(cancelled && std::string_view(cancelled.error) == "world_left");
+    }
+    assert(call.begin({}, 0, 2000));
+    call.advance([](auto const&, auto&) -> bool { throw 42; });
+    auto failed = call.take(1);
+    assert(failed && std::string_view(failed.error) == "capture_failed");
+    assert(allocations.load() == before);
+}
+
 int main() {
+    hookCallOwnership();
     lifecycle();
     runningCancellation(false);
     runningCancellation(true);

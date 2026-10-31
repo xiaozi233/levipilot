@@ -33,6 +33,8 @@ bool ProbeMod::enable() {
     bootLog("enable: begin");
     mChatCapture.reset();
     resetQueries();
+    hookResetCalls();
+    mPoseEpoch.fetch_add(1);
 
     mMouseListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::input::MouseInputEvent>([this](auto& event) {
@@ -137,6 +139,8 @@ bool ProbeMod::disable() {
     cancelTasks("disabled");
     mChatCapture.cancel("disabled");
     cancelQueries("disabled");
+    hookCancelCalls("disabled");
+    mPoseEpoch.fetch_add(1);
     {
         std::lock_guard lock(mMacroSessionMutex);
         mMacroRecording.stop(MacroRecordEnd::Disabled);
@@ -629,12 +633,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 
     runCaptureRequests(*client, player);
 
-    {
-        nlohmann::json hookResult;
-        if (detail::hookTick(player, hookResult)) {
-            enqueue(hookResult.dump());
-        }
-    }
+    detail::hookTick(player);
 
     if (mMacroRecording.active()) {
         recordMacroTick(*client, player);
@@ -648,18 +647,26 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 }
 
 void ProbeMod::recordTickPose(LocalPlayer& player) {
-    auto const& pos  = player.getPosition();
-    auto const  feet = player.getFeetPos();
-    auto const  rot  = player.getRotation();
-    mLastX.store(finiteOrZero(static_cast<float>(pos.x)), std::memory_order_relaxed);
-    mLastY.store(finiteOrZero(static_cast<float>(pos.y)), std::memory_order_relaxed);
-    mLastZ.store(finiteOrZero(static_cast<float>(pos.z)), std::memory_order_relaxed);
-    mLastYaw.store(finiteOrZero(rot.y), std::memory_order_relaxed);
-    mLastPitch.store(finiteOrZero(rot.x), std::memory_order_relaxed);
-    mLastFeetX.store(finiteOrZero(static_cast<float>(feet.x)), std::memory_order_relaxed);
-    mLastFeetY.store(finiteOrZero(static_cast<float>(feet.y)), std::memory_order_relaxed);
-    mLastFeetZ.store(finiteOrZero(static_cast<float>(feet.z)), std::memory_order_relaxed);
-    mPoseValid.store(true, std::memory_order_relaxed);
+    auto const epoch = mPoseEpoch.load();
+    auto const test  = mPoseTest.load();
+    // Fault modes stay armed until explicitly cleared, allowing a cold reader
+    // to verify that a failed sample never reuses the preceding valid pose.
+    mPose.capture(epoch, mTick.load(), [&](PoseSnapshot& out) {
+        return guardedGameRead([&] {
+            injectCaptureFault(test);
+            auto const pos  = player.getPosition();
+            auto const feet = player.getFeetPos();
+            auto const rot  = player.getRotation();
+            out.x           = pos.x;
+            out.y           = pos.y;
+            out.z           = pos.z;
+            out.feetX       = feet.x;
+            out.feetY       = feet.y;
+            out.feetZ       = feet.z;
+            out.yaw         = rot.y;
+            out.pitch       = rot.x;
+        });
+    });
 }
 
 void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
@@ -829,6 +836,8 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
         mModDirW,
         static_cast<unsigned long>(pid)
     );
+    PoseSnapshot pose;
+    bool const   havePose = mPose.latest(pose);
     char text[2048]{};
     std::snprintf(
         text,
@@ -840,21 +849,23 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
         "thread=%lu\n"
         "last_command=%s\n"
         "state=(%.3f, %.3f, %.3f) yaw=%.2f\n"
+        "pose_valid=%d pose_tick=%llu pose_epoch=%llu\n"
         "queue_dropped=%llu\n"
         "spool=%ls\n"
         "dump=%ls\n",
         static_cast<unsigned long>(pid),
         static_cast<unsigned long long>(tick),
         info != nullptr && info->ExceptionRecord != nullptr ? info->ExceptionRecord->ExceptionCode : 0UL,
-        info != nullptr && info->ExceptionRecord != nullptr
-            ? info->ExceptionRecord->ExceptionAddress
-            : nullptr,
+        info != nullptr && info->ExceptionRecord != nullptr ? info->ExceptionRecord->ExceptionAddress : nullptr,
         static_cast<unsigned long>(tid),
         command,
-        static_cast<double>(mLastX.load(std::memory_order_relaxed)),
-        static_cast<double>(mLastY.load(std::memory_order_relaxed)),
-        static_cast<double>(mLastZ.load(std::memory_order_relaxed)),
-        static_cast<double>(mLastYaw.load(std::memory_order_relaxed)),
+        static_cast<double>(pose.x),
+        static_cast<double>(pose.y),
+        static_cast<double>(pose.z),
+        static_cast<double>(pose.yaw),
+        havePose ? 1 : 0,
+        static_cast<unsigned long long>(pose.tick),
+        static_cast<unsigned long long>(pose.epoch),
         static_cast<unsigned long long>(mQueueDropped.load(std::memory_order_relaxed)),
         mSpoolPath.c_str(),
         dumpPath

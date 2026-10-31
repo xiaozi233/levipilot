@@ -135,6 +135,24 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         }
         return true;
     }
+    if (cmd == "selftest_pose_capture") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        if (mode != "seh" && mode != "cpp" && mode != "off") {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
+        mPoseTest = mode == "seh" ? CaptureTest::Fault : mode == "cpp" ? CaptureTest::Cpp : CaptureTest::None;
+        enqueue(R"({"event":"pose_capture_test_armed"})");
+        return true;
+    }
     if (cmd == "selftest_busy") {
         // F10: this can stall the tick for ~1 s, so it needs an explicit opt-in.
         if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {

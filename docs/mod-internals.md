@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **298/298**，现场 **435/435**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **299/299**，现场 **459/459**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -376,8 +376,13 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 
 - `scan`：管道线程提交 `ScanQuery`，tick 每次最多读 512 格，spool 格式化完成快照。
   体积上限 32768 格、结果上限 16384，默认跳过空气；生命周期及跨 tick 语义见“查询采样”。
-- 存档点：tick 线程每 tick 把脚部坐标/朝向写进原子量；`checkpoint_save` 在管道线程读这些
-  原子量并写 `checkpoints.json`（`.tmp` + `MoveFileExW` 原子替换），所以文件 I/O 不进 tick。
+- 存档点：tick 线程通过 `PoseStore` 发布一整帧位置/脚部坐标/朝向，载荷 word 与序号都是
+  原子量。管道线程最多尝试 8 次一致读取，不能拼出跨 tick 的坐标；姿态读取有局部 SEH，
+  故障/C++ 异常/非有限数字使本次姿态失效，计数由后台生成 `pose_diagnostic`。
+  世界退出推进 pose epoch，主菜单或新世界还没有新姿态时 `checkpoint_save` 返回 no_pose。
+  成功回执保留坐标字段并增加 tick/pose_epoch，文件使用 `checkpoints.json` 的
+  `.tmp` + `MoveFileExW` 原子替换，文件 I/O 不进 tick。崩溃报告同样有界读取一致姿态，
+  读取失败明确 pose_valid=0，不在异常处理器等待写者。
   `checkpoint_load` 复用 `resetPlayer`，和 `reset` 一样清任务/输入，但**不清药水效果**
   （`resetPlayer` 现在带 `clearEffects` 参数：只有 `reset` 传 true）。
   <!-- (2026-10-25) 之前 `resetPlayer` 固定 clearEffects=true，且 `teleport` 处理器不重置这个
@@ -402,7 +407,20 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   记录由 `AtomicRing` 的原子 64 位载荷发布，多个 detour 线程不会写普通字段造成数据竞争；
   drain 遇到延迟提交会保留当前 `next`，遇到环绕覆写会累加 `lost`。
 - `hook_call` 只是为了验证：tick 线程调用 `MobJump::setJumpPendingScale(ctx, scale)`，
-  该调用会穿过 detour，因此能确定性地产生一条命中。
+  该调用会穿过 detour，因此能确定性地产生一条命中。请求使用独占 `SnapshotMailbox`，
+  参数非有限时拒绝，在途重复请求返回 hook_call_busy，不覆盖前一参数。
+  局部 SEH 隔离调用；JSON 与传输移到 spool，成功保留 hook_call_done/symbol/scale 并增加 ok。
+  失败为 error，带 phase=hook_call 和 capture_fault/capture_failed/capture_timeout/world_left；
+  2 秒截止，主菜单拒绝，退出/卸载取消，重连丢弃旧在途回执。
+  已开始的游戏调用不能被超时抢占；钩子目标本身的行为与开销不因 wrapper 而消失。
+- 钩子调用/姿态验收：`--tick-safety-world "超平坦测试"` **32/32**，完整现场
+  **459/459**（无跳过）、离线 **299/299**。原生覆盖 200000 次姿态并发发布、无混帧/
+  跨世界/非有限值、故障失效/零分配；钩子请求参数保护、超时/取消后拒绝迟到执行和异常。
+  最终模型变更后两个 native 用例补验通过。现场覆盖真实重连/退出/重进和故障后恢复，
+  无新增/修改 crash 文件；未主动崩溃验证报告格式，也未声称整体性能改善。
+  最终安装/构建 SHA-256 均为
+  `86AA34E86C7BBC9BC06D89A3A60072C9F562883376F6ECAE8E966AF8D2B0EA73`。
+  日志 `out/reliability-tick-safety-*`；宏播放、ECS/输入等其余边界仍待治理。
 
 ## ECS 内省（T6）
 
@@ -785,8 +803,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **435/435**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **298/298**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **459/459**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **299/299**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

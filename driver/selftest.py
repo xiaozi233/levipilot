@@ -11,6 +11,8 @@
     py -3.11 driver/selftest.py --macro-limit-only  # bounded recording and retained rows
     py -3.11 driver/selftest.py --macro-capture-only  # sampling faults, partial save and retry
     py -3.11 driver/selftest.py --macro-capture-world "超平坦测试"  # also leave/rejoin recording lifecycle
+    py -3.11 driver/selftest.py --tick-safety-only  # guarded hook calls and coherent checkpoint poses
+    py -3.11 driver/selftest.py --tick-safety-world "超平坦测试"  # plus menu cancellation/pose invalidation
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
     py -3.11 driver/selftest.py --entry-lifecycle-world "超平坦测试"  # startup watchdog/recovery
     py -3.11 driver/selftest.py --overhead-only  # read concurrently across a full sample-ring wrap
@@ -1007,6 +1009,178 @@ def check_macro_capture(client: ModClient, checks: Checks, world: str | None = N
                 save_raw("cleanup")
         for path in paths:
             path.unlink(missing_ok=True)
+
+
+def check_tick_safety(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Exercise the actual hook request and checkpoint pose capture boundaries."""
+    original = client.state()
+    if not checks.check("tick_safety_in_world", original.get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    name = f"selftest_pose_{time.monotonic_ns()}"
+    symbol = "MobJump::setJumpPendingScale"
+
+    def arm_pose(mode: str) -> dict[str, Any]:
+        return client.request(
+            {"cmd": "selftest_pose_capture", "mode": mode}, ("pose_capture_test_armed", "error")
+        )
+
+    def save_pose() -> dict[str, Any]:
+        return client.request(
+            {"cmd": "checkpoint_save", "name": name}, ("checkpoint_saved", "error")
+        )
+
+    def unique_hook() -> bool:
+        with contextlib.suppress(ModTimeout):
+            client.wait_event(
+                ("hook_call_done", "error"),
+                0.15,
+                predicate=lambda row: (
+                    row.get("event") == "hook_call_done" or row.get("phase") == "hook_call"
+                ),
+            )
+            return False
+        return True
+
+    try:
+        for mode, reason in (
+            ("seh", "capture_fault"),
+            ("cpp", "capture_failed"),
+            ("timeout", "capture_timeout"),
+        ):
+            result = client.request(
+                {"cmd": "selftest_hook_call", "symbol": symbol, "mode": mode},
+                ("hook_call_done", "error"),
+                timeout=5,
+            )
+            if result.get("reason") == "selftest_stress_disabled":
+                checks.check("tick_safety_fault_gate", False, str(result))
+                return
+            checks.check(
+                f"hook_call_{mode}_terminal",
+                result.get("phase") == "hook_call" and result.get("reason") == reason,
+                str(result),
+            )
+            checks.check(f"hook_call_{mode}_unique", unique_hook())
+            recovered = client.hook_call(symbol, 0.0)
+            checks.check(
+                f"hook_call_{mode}_recovery",
+                recovered.get("ok") is True
+                and recovered.get("scale") == 0.0
+                and bool(client.ping()),
+            )
+
+        with client.exchange():
+            client.send({"cmd": "selftest_hook_call", "symbol": symbol, "mode": "timeout"})
+            busy = client.request({"cmd": "hook_call", "symbol": symbol, "scale": 0.5}, "error")
+            checks.check(
+                "hook_call_overlap_rejected", busy.get("reason") == "hook_call_busy", str(busy)
+            )
+            checks.check(
+                "hook_call_overlap_original_preserved",
+                client.wait_event("error", 5).get("reason") == "capture_timeout",
+            )
+        invalid = client.request({"cmd": "hook_call", "symbol": symbol, "scale": 1e100}, "error")
+        checks.check("hook_call_non_finite_rejected", invalid.get("reason") == "bad_param")
+        checks.check("hook_call_invalid_recovery", client.hook_call(symbol, 0.0).get("ok") is True)
+
+        wait_ticks(client, 2)
+        initial = save_pose()
+        checks.check(
+            "pose_snapshot_present",
+            initial.get("event") == "checkpoint_saved" and int(initial.get("tick", 0)) > 0,
+            str(initial),
+        )
+        for mode in ("seh", "cpp"):
+            while True:
+                try:
+                    client.wait_event("pose_diagnostic", 0)
+                except ModTimeout:
+                    break
+            armed = arm_pose(mode)
+            if not checks.check(
+                f"pose_{mode}_armed", armed.get("event") == "pose_capture_test_armed", str(armed)
+            ):
+                return
+            try:
+                wait_ticks(client, 3)
+                rejected = save_pose()
+                checks.check(
+                    f"pose_{mode}_invalidated", rejected.get("reason") == "no_pose", str(rejected)
+                )
+                diagnostic = client.wait_event("pose_diagnostic", 3)
+                checks.check(
+                    f"pose_{mode}_diagnostic",
+                    int(diagnostic.get("faults" if mode == "seh" else "exceptions", 0)) > 0,
+                    str(diagnostic),
+                )
+            finally:
+                arm_pose("off")
+                wait_ticks(client, 3)
+            recovered_pose = save_pose()
+            checks.check(
+                f"pose_{mode}_recovery",
+                recovered_pose.get("event") == "checkpoint_saved"
+                and int(recovered_pose.get("tick", 0)) > int(initial.get("tick", 0)),
+            )
+
+        if world:
+            client.send({"cmd": "selftest_hook_call", "symbol": symbol, "mode": "timeout"})
+            client.ping()  # Submit before the real disconnect.
+            client.reconnect()
+            for _ in range(int(client.hello.get("replay_rows", 0))):
+                client.readline(timeout=5)
+            client.input_lock(True)
+            checks.check(
+                "hook_call_reconnect_recovery", client.hook_call(symbol, 0.0).get("ok") is True
+            )
+            checks.check("hook_call_reconnect_no_stale", unique_hook())
+            client.send({"cmd": "selftest_hook_call", "symbol": symbol, "mode": "timeout"})
+            try:
+                client.leave_world()
+                client.wait_event("world_left", 45)
+                cancelled = client.wait_event(
+                    "error", 5, predicate=lambda row: row.get("phase") == "hook_call"
+                )
+                checks.check(
+                    "hook_call_world_cancel",
+                    cancelled.get("reason") == "world_left",
+                    str(cancelled),
+                )
+                deadline = time.monotonic() + 45
+                while not client.worlds().get("ready"):
+                    if time.monotonic() >= deadline:
+                        raise ModTimeout("tick safety: menu did not become ready")
+                    time.sleep(0.1)
+                rejected = client.request({"cmd": "hook_call", "symbol": symbol}, "error")
+                checks.check("hook_call_menu_rejected", rejected.get("reason") == "not_in_world")
+                checks.check("pose_menu_invalidated", save_pose().get("reason") == "no_pose")
+            finally:
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+                client.teleport(
+                    *(float(original[f"feet_{a}"]) for a in "xyz"),
+                    yaw=float(original["yaw"]),
+                    pitch=float(original["pitch"]),
+                )
+                checks.check("tick_safety_world_still", settle(client)["ok"])
+            rejoined = save_pose()
+            checks.check(
+                "pose_new_world_epoch",
+                rejoined.get("event") == "checkpoint_saved"
+                and int(rejoined.get("pose_epoch", 0)) > int(initial.get("pose_epoch", 0)),
+                str(rejoined),
+            )
+            checks.check(
+                "hook_call_world_recovery", client.hook_call(symbol, 0.0).get("ok") is True
+            )
+        after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+        checks.check("tick_safety_handled_fault_no_dump", after == before)
+    finally:
+        with contextlib.suppress(ModPipeError):
+            arm_pose("off")
+            client.checkpoint_delete(name)
 
 
 def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
@@ -2069,6 +2243,16 @@ def main(argv: list[str] | None = None) -> int:
         help="also check macro recording across leave/rejoin",
     )
     modes.add_argument(
+        "--tick-safety-only",
+        action="store_true",
+        help="check guarded hook calls and coherent poses",
+    )
+    modes.add_argument(
+        "--tick-safety-world",
+        metavar="WORLD",
+        help="also check hook cancellation and pose validity on leave/rejoin",
+    )
+    modes.add_argument(
         "--use-lifecycle-only",
         action="store_true",
         help="inject missing/failed server work and verify task termination/recovery in a world",
@@ -2140,10 +2324,14 @@ def main(argv: list[str] | None = None) -> int:
         or args.tick_stream_world
         or args.macro_capture_only
         or args.macro_capture_world
+        or args.tick_safety_only
+        or args.tick_safety_world
     ):
         try:
             client.input_lock(True)
-            if args.macro_capture_only or args.macro_capture_world:
+            if args.tick_safety_only or args.tick_safety_world:
+                check_tick_safety(client, checks, args.tick_safety_world)
+            elif args.macro_capture_only or args.macro_capture_world:
                 check_macro_capture(client, checks, args.macro_capture_world)
             elif args.tick_stream_only or args.tick_stream_world:
                 check_tick_streams(client, checks, args.tick_stream_world)
@@ -2157,7 +2345,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "macro_capture_error"
+                "tick_safety_error"
+                if args.tick_safety_only or args.tick_safety_world
+                else "macro_capture_error"
                 if args.macro_capture_only or args.macro_capture_world
                 else "macro_limit_error"
                 if args.macro_limit_only
@@ -2246,6 +2436,7 @@ def main(argv: list[str] | None = None) -> int:
         check_query_capture(client, checks)
         check_macro_record_limits(client, checks)
         check_macro_capture(client, checks)
+        check_tick_safety(client, checks)
         check_tick_streams(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)

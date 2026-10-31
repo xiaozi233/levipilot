@@ -197,10 +197,15 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **435/435**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **459/459**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **298/298**。常用实测数字：
+离线单测 **299/299**。常用实测数字：
+
+2026-10-31 钩子调用/姿态：`--tick-safety-world "超平坦测试"` **32/32**，完整现场
+**459/459**（无跳过）、离线 **299/299**。覆盖钩子异常/超时唯一失败与恢复、busy 参数保护、
+真实重连/退出取消、主菜单拒绝，及姿态读取失败和世界代次隔离。安装哈希一致，
+无新增/修改 crash 文件；宏播放/ECS/输入等其余 tick 路径仍待治理。
 
 2026-10-31 宏录制采样：`--macro-capture-world "超平坦测试"` **29/29**，完整现场
 **435/435**（无跳过）、离线 **298/298**。覆盖采样故障唯一终结、部分文件、真实保存失败
@@ -290,6 +295,12 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   见 [`../docs/mod-internals.md`](../docs/mod-internals.md) 的「实测数字速查」。
 
 ## 限制
+
+- `hook_call` 仅在世界中可用，独占请求槽、2 秒截止，在途重复请求返回 hook_call_busy。
+  成功仍为 hook_call_done；采样故障/超时/退出以 error 和 phase=hook_call 明确报告，
+  重连丢弃旧在途请求，已开始的游戏调用不能被超时抢占。
+- `checkpoint_save` 使用单 tick 的一致姿态，回执增加 tick/pose_epoch。姿态读取失败、
+  主菜单或新世界还没有新姿态时返回 no_pose；不会使用前一世界的残留坐标。
 
 - 宏录制 `max_ticks` 须为非负整数，省略/0/超过 200000 均使用 200000 tick 上限。
   `macro_rec_started.max_ticks/hard_limit` 和 `macro_status.record_limit` 可查看实际限制；

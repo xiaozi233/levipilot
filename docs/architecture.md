@@ -43,6 +43,7 @@ scenario DSL / LLM / shell
 | `ClientDispatch.cpp` | 游戏平台主线程投递与 SEH/C++ 异常隔离；主菜单也能执行 |
 | `SignIn.cpp` | 主菜单 Xbox Live 登录态查询（OreUI → MainMenuScreenModel） |
 | `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
+| `PoseModel.h` | 单 tick 姿态原子载荷快照、有界一致读取、世界代次隔离与故障计数 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
@@ -63,7 +64,7 @@ scenario DSL / LLM / shell
 | `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
 | `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
-| `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环 |
+| `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环、独享 hook_call 请求及后台回执 |
 | `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
 | `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 9 个 send/recv 钩子、逐锚点统计、身份/字节环与 drain |
 | `Packets.cpp` | 命令包模板捕获与 `chat_send` 注入；对 tap 钩子的薄转发 |

@@ -10,6 +10,16 @@ struct CaptureRequest {
     CaptureTest test = CaptureTest::None;
 };
 
+struct HookCallRequest {
+    float       scale = 1;
+    CaptureTest test  = CaptureTest::None;
+};
+struct HookCallSnapshot {
+    float       scale = 1;
+    char const* error = nullptr;
+};
+using HookCallCapture = SnapshotMailbox<HookCallRequest, HookCallSnapshot>;
+
 struct ItemSnapshot {
     FixedText<256>  type;
     FixedText<4096> name;

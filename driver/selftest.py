@@ -16,6 +16,8 @@
     py -3.11 driver/selftest.py --binary-capture-only  # binary recording failures and retained rows
     py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
     py -3.11 driver/selftest.py --teleport-only  # owned server teleport faults and side effects
+    py -3.11 driver/selftest.py --tick-recovery-only  # tick errors, fail-stop and fresh requests
+    py -3.11 driver/selftest.py --tick-recovery-world "超平坦测试"  # plus reconnect/leave/rejoin
     py -3.11 driver/selftest.py --teleport-world "超平坦测试"  # plus reconnect/leave/rejoin
     py -3.11 driver/selftest.py --ecs-capture-only  # bounded ECS snapshots and stage failures
     py -3.11 driver/selftest.py --ecs-capture-world "超平坦测试"  # plus reconnect and leave/rejoin
@@ -1531,6 +1533,196 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
             restored = settle(client, on_ground=True)
             checks.check("tick_stream_world_still", restored["ok"], str(restored))
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
+
+
+def check_tick_recovery(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Exercise the outer C++ catches without raising an unsafe whole-tick SEH."""
+    original = client.state()
+    if not checks.check("tick_recovery_in_world", original.get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    macro_name = f"selftest_tick_recovery_{time.monotonic_ns()}"
+    macro_path = directory / "macros" / f"{macro_name}.json"
+    client.input_lock(True)
+    client.input_cfg(mode=0, jump_impulse=0)
+
+    def ready() -> dict[str, Any]:
+        deadline = time.monotonic() + 5
+        while True:
+            status = client.status()
+            if status["tick_recovery"]["active"] is False or time.monotonic() >= deadline:
+                return status
+            time.sleep(0.01)
+
+    def rebase() -> None:
+        client.stop_move()
+        client.look(0, relative=True)
+        client.teleport(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        wait_ticks(client, 4)
+        settle(client, on_ground=True)
+
+    def fault(phase: str, mode: str, hold_ms: int = 0) -> dict[str, Any]:
+        previous = int(client.status()["tick_recovery"]["recovery_id"])
+        client.request(
+            {"cmd": "selftest_tick_error", "phase": phase, "mode": mode, "hold_ms": hold_ms},
+            "tick_error_test_armed",
+        )
+        row = client.wait_event(
+            "error", 4, predicate=lambda row: int(row.get("recovery_id", 0)) > previous
+        )
+        checks.check(
+            f"tick_recovery_{phase}_{mode}_reported",
+            row.get("reason") == "internal_error" and row.get("phase") == f"tick_{phase}",
+            ascii(row),
+        )
+        return row
+
+    try:
+        for phase in ("pre", "post"):
+            for mode in ("std", "unknown", "long", "invalid"):
+                rebase()
+                client.set_input(forward=1, ticks=-1)
+                client.look(1, relative=True, ticks=-1)
+                wait_ticks(client, 2)
+                # Also retain an event-level key and fail its movement key-up
+                # once; both paths must finish release before readmission.
+                key = int(original["bindings"]["sneak"])
+                queued = client.key_event(key, True, via="hardware")
+                client.wait_event(
+                    "input_event_done",
+                    3,
+                    predicate=lambda row, input_id=queued["input_id"]: (
+                        row.get("input_id") == input_id
+                    ),
+                )
+                client.request(
+                    {"cmd": "selftest_controls", "operation": "key_up", "mode": "seh_before"},
+                    "control_test_armed",
+                )
+                row = fault(phase, mode, 1500)
+                checks.check(
+                    f"tick_recovery_{phase}_{mode}_message",
+                    row.get("truncated") is (mode == "long")
+                    and 0 < len(str(row.get("message", "")).encode()) <= 255
+                    and (mode != "unknown" or row.get("message") == "unknown exception")
+                    and (mode != "invalid" or "\ufffd" in str(row.get("message", ""))),
+                )
+                pending = client.status()
+                refused = client.request({"cmd": "set", "forward": 1, "ticks": -1}, "error")
+                unknown = client.request({"cmd": "__tick_recovery_unknown"}, "error")
+                checks.check(
+                    f"tick_recovery_{phase}_{mode}_admission",
+                    pending["tick_recovery"]["active"] is True
+                    and refused.get("reason") == "tick_recovering"
+                    and unknown.get("reason") == "unknown_cmd"
+                    and bool(client.ping()),
+                    str(pending["tick_recovery"]),
+                )
+                if phase == "pre" and mode == "std":
+                    isolated = client.request({"cmd": "selftest_av"}, "error")
+                    checks.check(
+                        "tick_recovery_dispatch_unlocks",
+                        isolated.get("phase") == "dispatch" and bool(client.ping()),
+                    )
+                recovered = ready()
+                controls = recovered["controls"]
+                checks.check(
+                    f"tick_recovery_{phase}_{mode}_released",
+                    recovered["tick_recovery"]["active"] is False
+                    and controls["held_mask"] == 0
+                    and controls["cleanup_pending"] is False
+                    and controls["injecting_input"] is False
+                    and controls["injecting_look"] is False
+                    and client.key_state(key).get("down") is False,
+                    str(recovered["tick_recovery"]),
+                )
+                wait_ticks(client, 6)
+                state = client.state()
+                wait_ticks(client, 4)
+                after_state = client.state()
+                checks.check(
+                    f"tick_recovery_{phase}_{mode}_not_replayed",
+                    state["input"]["w"] is False
+                    and state["input"]["jump"] is False
+                    and abs((float(after_state["yaw"]) - float(state["yaw"]) + 180) % 360 - 180)
+                    < 0.05,
+                    f"before={state['yaw']}, after={after_state['yaw']}",
+                )
+        for event_level in (False, True):
+            rebase()
+            client.macro_save(macro_name, [["true", *["false"] * 8, "1", "0"]] * 4)
+            client.macro_load(macro_name)
+            started = client.macro_run(loop=True, event_level=event_level)
+            wait_ticks(client, 2)
+            fault("post", "std")
+            done = client.wait_event(
+                "macro_done",
+                4,
+                predicate=lambda row, run_id=started["run_id"]: row.get("run_id") == run_id,
+            )
+            ready()
+            checks.check(
+                f"tick_recovery_macro_{event_level}_cancelled",
+                done.get("ok") is False
+                and done.get("reason") == "internal_error"
+                and client.macro_status().get("playing") is False,
+                str(done),
+            )
+        rebase()
+        started = client.request({"cmd": "use", "ticks": 2000}, "use_started")
+        fault("pre", "unknown")
+        cancelled = client.wait_event(
+            "task_cancelled", 4, predicate=lambda row: row.get("task_id") == started["task_id"]
+        )
+        ready()
+        checks.check("tick_recovery_task_cancelled", cancelled.get("reason") == "internal_error")
+        checks.check("tick_recovery_fresh_task", client.jump_when(mode="now").get("ok") is True)
+        settle(client, on_ground=True)
+        client.set_input(forward=1, ticks=10)
+        wait_ticks(client, 1)
+        checks.check("tick_recovery_fresh_movement", client.state()["input"]["w"] is True)
+        client.stop_move()
+        wait_ticks(client, 4)
+        if world:
+            client.set_input(forward=1, ticks=-1)
+            row = fault("pre", "std", 2000)
+            client.reconnect()
+            reconnecting = client.status()["tick_recovery"]
+            checks.check(
+                "tick_recovery_reconnect_keeps_barrier",
+                reconnecting.get("active") is True
+                and reconnecting.get("recovery_id") == row["recovery_id"],
+            )
+            left = client.leave_world()
+            client.wait_event("world_left", 30)
+            checks.check("tick_recovery_leave", left.get("ok") is True)
+            refused = client.request({"cmd": "move", "forward": 1}, "error")
+            checks.check(
+                "tick_recovery_menu_keeps_barrier", refused.get("reason") == "tick_recovering"
+            )
+            client.enter_world_ready(world)
+            client.wait_in_world(timeout=60)
+            recovered = ready()
+            state = client.state()
+            checks.check(
+                "tick_recovery_rejoin_clears_barrier",
+                recovered["tick_recovery"]["active"] is False and state["in_world"] is True,
+            )
+            checks.check("tick_recovery_rejoin_no_replay", state["input"]["w"] is False)
+    finally:
+        client.request({"cmd": "selftest_tick_error", "mode": "off"}, "tick_error_test_armed")
+        ready()
+        client.request({"cmd": "selftest_controls", "mode": "off"}, "control_test_armed")
+        client.macro_stop()
+        macro_path.unlink(missing_ok=True)
+        rebase()
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("tick_recovery_no_crash_artifacts", after == before)
 
 
 def check_controls(client: ModClient, checks: Checks) -> None:
@@ -3785,6 +3977,14 @@ def main(argv: list[str] | None = None) -> int:
         "--controls-only", action="store_true", help="check control faults and input release"
     )
     modes.add_argument(
+        "--tick-recovery-only", action="store_true", help="check tick errors and fail-stop recovery"
+    )
+    modes.add_argument(
+        "--tick-recovery-world",
+        metavar="WORLD",
+        help="also check recovery across reconnect/leave/rejoin",
+    )
+    modes.add_argument(
         "--player-identity-only",
         action="store_true",
         help="check local UUID sampling and server resolution",
@@ -3884,6 +4084,8 @@ def main(argv: list[str] | None = None) -> int:
     if (
         args.teleport_only
         or args.teleport_world
+        or args.tick_recovery_only
+        or args.tick_recovery_world
         or args.controls_only
         or args.player_identity_only
         or args.player_identity_world
@@ -3910,7 +4112,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.teleport_only or args.teleport_world:
+            if args.tick_recovery_only or args.tick_recovery_world:
+                check_tick_recovery(client, checks, args.tick_recovery_world)
+            elif args.teleport_only or args.teleport_world:
                 check_teleport(client, checks, args.teleport_world)
             elif args.controls_only:
                 check_controls(client, checks)
@@ -3942,7 +4146,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "teleport_error"
+                "tick_recovery_error"
+                if args.tick_recovery_only or args.tick_recovery_world
+                else "teleport_error"
                 if args.teleport_only or args.teleport_world
                 else "controls_error"
                 if args.controls_only
@@ -4059,6 +4265,7 @@ def main(argv: list[str] | None = None) -> int:
         check_player_identity(client, checks)
         check_controls(client, checks)
         check_teleport(client, checks)
+        check_tick_recovery(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

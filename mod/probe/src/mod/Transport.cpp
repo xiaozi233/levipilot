@@ -60,6 +60,7 @@ void ProbeMod::spoolThreadLoop() {
     while (mRunning.load(std::memory_order_relaxed)) {
         Sleep(25);
         try {
+            drainInternalErrors();
             mWorld.pollEntry();
             drainTaskEvents();
             drainChatHistory();
@@ -97,6 +98,7 @@ void ProbeMod::spoolThreadLoop() {
         }
     }
     try {
+        drainInternalErrors();
         drainTaskEvents();
         drainChatHistory();
         drainQueries();

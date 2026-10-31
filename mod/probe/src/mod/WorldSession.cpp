@@ -127,6 +127,8 @@ void WorldSession::start() {
         mOwner.mPoseTest = CaptureTest::None;
         mOwner.mPlayerIdentityTest = CaptureTest::None;
         for (auto& test : mOwner.mControlTests) test = ControlTest::None;
+        for (auto& test : mOwner.mTickErrorTests) test = TickErrorTest::None;
+        mOwner.mTickRecoveryHoldUntilMs = 0;
         hookCancelCalls("world_left");
         recordCancel(RecordEnd::WorldLeft);
         mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);

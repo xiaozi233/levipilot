@@ -18,7 +18,7 @@
 | 1 | P1 / 部分修复，其余立即处理 | `ProbeMod.cpp::onPlayerTick/afterPlayerTick`、移动/传送等 | tick 外层只有 C++ try/catch；在 `/EHs` 下不能隔离访问违例。查询/JSON 录制/跑酷/宏录制、hook_call 与姿态采样已加局部 SEH；实体/ECS/飞行各队列阶段、宏播放/释放、点击、事件输入与飞行重断言同样已加局部 SEH，文本/UI 查询迁到客户端平台队列；身份采样已改局部 SEH/C++ 与无锁 UUID 快照。其他游戏读取仍需逐一收进局部边界，不能推广为整个 tick 安全。禁止直接包住持有 mutex 的整个 tick，以免跳过析构。 |
 | 2 | P2 / 已修复 | `MacroRecordModel.h`、`Macro.cpp::recordMacroTick`、`CommandRecording.cpp` 的 `macro_rec_start` | 原默认 0/超上限会在满 200000 条后仍保持 recording=true。现统一有效上限，到顶停止并保留缓冲，只报告一次 limit；冷侧预留容量，追加不增长 vector。原生模型跑完整 200000 条，覆盖 0/超上限/边界/停止后不再追加；现场专项 17/17 验证配置、唯一终结、保存及无效参数不破坏已有数据。 |
 | 3 | P2 / 已修复 | `WorldEntryModel.h`、`World.cpp::enterOnClient/probeEntryOnClient`、`WorldSession.cpp::pollEntry` | 已增加独立进入编号、30 秒截止、唯一终结及主线程实际状态观察；超时保留隔离，无玩家/安全菜单/服务端消失连续确认 500 ms 才恢复准入，避免重叠启动。Python 按编号匹配结果；native 验证截止/旧编号/竞争，专项现场 30/30 验证模拟超时、启动/观察 SEH 与真实缺失 join 后恢复。 |
-| 4 | P2 / 部分重构 | `ProbeMod.cpp::safeTickPre/safeTickPost`、`InputEvents.cpp::tickInputInjection`、`Transport.cpp::enqueue` | 查询、JSON 录制、跑酷事件与 hook_call 的自有 JSON/格式化/传输已迁出 tick，实体/ECS 路径离开 tick。宏录制/播放使用预初始化帧或冷侧独占帧、无锁准入与后台终结，点击使用固定队列；姿态使用一致原子载荷。事件输入已有固定结果和顺序屏障，文本/UI 查询移到平台队列并后台格式化；飞行迁分阶段请求，tick 只做有界重断言及固定结果发布。SDK owning-string 名称访问器仍可能分配，身份缓存改为 UUID/epoch 原子载荷，移除每 tick 的 getRealName 分配与玩家名锁。移动/视角已加局部边界与释放重试、传送已移出 tick 并迁独占请求；封包注入等其余路径仍有锁或字符串/JSON。继续用定长载荷交给消费者，分别验证游戏读取与生命周期；不能仅凭代码声称性能提高多少。 |
+| 4 | P2 / 部分重构 | `ProbeMod.cpp::safeTickPre/safeTickPost`、`InputEvents.cpp::tickInputInjection`、`Transport.cpp::enqueue` | 查询、JSON 录制、跑酷事件与 hook_call 的自有 JSON/格式化/传输已迁出 tick，实体/ECS 路径离开 tick。宏录制/播放使用预初始化帧或冷侧独占帧、无锁准入与后台终结，点击使用固定队列；姿态使用一致原子载荷。事件输入已有固定结果和顺序屏障，文本/UI 查询移到平台队列并后台格式化；飞行迁分阶段请求，tick 只做有界重断言及固定结果发布。SDK owning-string 名称访问器仍可能分配，身份缓存改为 UUID/epoch 原子载荷，移除每 tick 的 getRealName 分配与玩家名锁。移动/视角已加局部边界与释放重试、传送已移出 tick 并迁独占请求；内部错误已迁定长队列、后台清理和恢复准入；封包注入等其余路径仍有锁或字符串/JSON。继续用定长载荷交给消费者，分别验证游戏读取与生命周期；不能仅凭代码声称性能提高多少。 |
 | 5 | P2 / 本批完成 | `State.cpp::captureScan`、`QueryModel.h::advanceScan` | 原实现缺少每 tick 预算，过滤 air 时小 limit 也读完整区域。现每 tick 最多 512 格，带取消/超时、tick 跨度和截断原因；native 验证顺序/边界/零分配，现场 32768 格为 64 批，重连和退出取消通过。扫描跨 tick，不能当成同 tick 的原子世界快照。 |
 | 6 | P2 / 部分重构 | `ProbeMod.h` 宏/输入字段、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | ProbeMod 仍负责多领域状态。播放已迁 MacroPlayback，移除旧宏帧锁与松散播放字段；录制/输入跨 TU 的整体会话、按键与锁存所有权仍需统一，避免 reset/stop 遗漏。按 MacroSession/InputSession 继续封装，明确线程所有权与锁顺序；保留 Internal.h 作为统一共享入口的仓库约定。 |
 | 7 | P2 / 部分重构 | `Server.cpp::serverPlayerContext/captureTeleport`、`Flight.cpp`、`Entities.cpp::captureEntityStage` | 背包四组写入、命令、权限与物品使用已共用 ServerPlayerContext，按 UUID/世界代次解析，显式命令玩家名仍支持。未知玩家不再静默使用控制台 origin。传送已接入共享解析器并通过现场验收；实体/飞行仍有独立解析与名字兜底；继续统一身份策略及领域错误，不跨线程保存 Actor 指针。 |
@@ -142,6 +142,13 @@ fly_ok 现在等待两侧调用，失败保守 partial 且不回滚已开始的�
 独占请求/截止/取消/唯一终结和回读通过。最终姿态/能力/站稳、释放/解锁、三份 DLL
 哈希与无新增 crash 已核对。封包注入/模板、内部错误上报等第 12 项范围仍未完成；
 13–16 继续保留。此前退出异常本轮未复现，根因仍未确认，详见修复跟踪文档。
+
+tick 内部错误后续：离线 **318/318**，专项 **51/51**、真实重连/退出/重进 **57/57**，
+完整现场 **919/919**（无跳过）。错误路径已迁定长队列、后台取消/格式化及两阶段恢复，
+旧编号、释放失败与有效 mailbox 双门保证旧控制不重放。恢复中控制拒绝、查询可用，
+dispatch SEH 后冷侧准入锁释放、两类宏/任务终止和新请求恢复通过。最终姿态/能力/
+站稳、释放/解锁、DLL 哈希与无新增 crash 已核对；第 12 项仍保留封包模板/注入、
+其余 SDK 边界和既有热路径锁的治理，13–16 未完成。详情见修复跟踪文档。
 
 下一步继续补其余游戏读取边界，
 再迁其余 tick 格式化与拆分子系统，最后统一类型命名及文档。每批以 native 回归、

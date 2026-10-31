@@ -111,20 +111,24 @@ char const* ProbeMod::applyInputEvent(InputInjection const& item) {
     return error;
 }
 
+bool ProbeMod::releaseInputEvents() {
+    bool released = true;
+    for (auto& held : mHeldEvents) {
+        if (!held) continue;
+        auto up = *held;
+        up.data = 0;
+        up.test = CaptureTest::None;
+        if (applyInputEvent(up)) released = false;
+        else held.reset();
+    }
+    return released;
+}
+
 void ProbeMod::tickInputInjection() {
     mInputTickSerial.fetch_add(1, std::memory_order_release);
     auto const generation = mInputEvents.generation();
     if (generation != mInputEventGeneration) {
-        bool released = true;
-        for (auto& held : mHeldEvents) {
-            if (!held) continue;
-            auto up = *held;
-            up.data = 0;
-            up.test = CaptureTest::None;
-            if (applyInputEvent(up)) released = false;
-            else held.reset();
-        }
-        if (!released) return; // Retry failed releases before admitting new input.
+        if (!releaseInputEvents()) return; // Retry failed releases before admitting new input.
         mInputEventGeneration = generation;
     }
     mInputEvents.tick([&](InputInjection const& item) {

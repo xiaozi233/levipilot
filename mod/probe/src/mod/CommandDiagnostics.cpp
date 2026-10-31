@@ -6,6 +6,38 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_tick_error") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        if (mode == "off") {
+            for (auto& test : mTickErrorTests) test = TickErrorTest::None;
+            mTickRecoveryHoldUntilMs = 0;
+        } else {
+            if (!mAllowInputInject.load() || !mWorld.inWorld() || mTickRecovery.active()) {
+                enqueue(R"({"event":"error","reason":"tick_test_unavailable"})");
+                return true;
+            }
+            auto const phase = j.value("phase", std::string{});
+            if (phase != "pre" && phase != "post") {
+                enqueue(R"({"event":"error","reason":"bad_test_phase"})");
+                return true;
+            }
+            TickErrorTest test;
+            if (mode == "std") test = TickErrorTest::Standard;
+            else if (mode == "unknown") test = TickErrorTest::Unknown;
+            else if (mode == "long") test = TickErrorTest::LongMessage;
+            else if (mode == "invalid") test = TickErrorTest::InvalidMessage;
+            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            auto const hold = std::clamp(j.value("hold_ms", 0), 0, 2000);
+            mTickRecoveryHoldUntilMs = GetTickCount64() + hold;
+            mTickErrorTests[phase == "pre" ? 0 : 1] = test;
+        }
+        enqueue(R"({"event":"tick_error_test_armed"})");
+        return true;
+    }
     if (cmd == "ping") {
         enqueue(
             R"({"event":"pong","mod":"probe","protocol":4,"capabilities":["tick_json","bin_record","mem","watch","signin","hook"]})"
@@ -217,6 +249,10 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             {"faults", identityFailures.fault}, {"failures", identityFailures.cpp}, {"empty", identityFailures.empty}};
         out["controls"] = {{"injecting_input", mInjectingInput.load()}, {"injecting_look", mInjectingLook.load() != 0},
             {"cleanup_pending", mControlCleanupPending.load()}, {"held_mask", mControlHeldMask.load()}};
+        auto const recovery = mTickRecovery.snapshot();
+        out["tick_recovery"] = {{"recovery_id", recovery.id}, {"active", recovery.phase != TickRecovery::Phase::Running},
+            {"phase", recovery.phase == TickRecovery::Phase::Running ? "running"
+                      : recovery.phase == TickRecovery::Phase::Pending ? "pending" : "prepared"}};
         out["world_entry"]     = mWorld.entryStatus();
         out["recording"]       = mLegacyStream.active();
         out["tick"]                  = mTick.load();

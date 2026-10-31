@@ -22,7 +22,8 @@ enum class MacroEnd {
     ApplyFault,
     ApplyFailed,
     ReleaseFault,
-    ReleaseFailed
+    ReleaseFailed,
+    InternalError
 };
 inline bool macroSucceeded(MacroEnd reason) {
     return reason == MacroEnd::None || reason == MacroEnd::End || reason == MacroEnd::Client
@@ -52,6 +53,8 @@ inline char const* macroEndName(MacroEnd reason) {
         return "release_fault";
     case MacroEnd::ReleaseFailed:
         return "release_failed";
+    case MacroEnd::InternalError:
+        return "internal_error";
     }
     return "unknown";
 }

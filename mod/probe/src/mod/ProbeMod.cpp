@@ -252,10 +252,11 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
     // A bug in our own code must not take the game down with it.
     try {
         safeTickPre(player);
+        if (!mTickRecovery.active()) injectTickError(TickPhase::Pre);
     } catch (std::exception const& e) {
-        reportInternalError("tick_pre", e.what());
+        reportInternalError(TickPhase::Pre, e.what());
     } catch (...) {
-        reportInternalError("tick_pre", "unknown exception");
+        reportInternalError(TickPhase::Pre, "unknown exception");
     }
     mPreUs = qpcElapsedUs(mTickStartQpc, qpcNow());
 }
@@ -273,6 +274,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     }
     mWorld.observePlayer(true);
     mLastTickMs = GetTickCount64();
+    if (recoverTickControls(player)) return;
 
     capturePlayerIdentity(player);
 
@@ -428,10 +430,11 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     std::uint64_t const postStart = qpcNow();
     try {
         safeTickPost(player);
+        if (!mTickRecovery.active()) injectTickError(TickPhase::Post);
     } catch (std::exception const& e) {
-        reportInternalError("tick_post", e.what());
+        reportInternalError(TickPhase::Post, e.what());
     } catch (...) {
-        reportInternalError("tick_post", "unknown exception");
+        reportInternalError(TickPhase::Post, "unknown exception");
     }
     std::uint64_t const postEnd = qpcNow();
     std::uint64_t const hookUs  = mPreUs + qpcElapsedUs(postStart, postEnd);
@@ -469,16 +472,18 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 
     // Slot changes are applied after the original tick: the normal tick re-reads
     // the hotbar from input state, so a pre-tick change would be overwritten.
-    if (int slot = mSlotRequest.exchange(-1); slot >= 0) {
+    if (int slot = mSlotRequest.exchange(-1); slot >= 0 && !mTickRecovery.active()) {
         // Internal task selection is not a user select_slot request.
         SlotSnapshot ignored;
         applySlotRequest(player, SlotQuery{slot}, ignored);
     }
-    mSlotCapture.advance([&](auto const& request, auto& out) {
-        if (request.test == CaptureTest::Deferred) return false;
-        applySlotRequest(player, request, out);
-        return true;
-    });
+    if (!mTickRecovery.active()) {
+        mSlotCapture.advance([&](auto const& request, auto& out) {
+            if (request.test == CaptureTest::Deferred) return false;
+            applySlotRequest(player, request, out);
+            return true;
+        });
+    }
 
     runCaptureRequests(*client, player);
 
@@ -712,35 +717,6 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
         CloseHandle(report);
     }
 }
-
-void ProbeMod::reportInternalError(char const* phase, std::string const& message) {
-    updateRequests([](RequestBlock& request) {
-        request.input      = ControlState{};
-        request.inputTicks = 0;
-        ++request.inputSeq;
-        request.jumpCancel = true;
-        ++request.jumpSeq;
-    });
-    cancelTasks("internal_error");
-
-    std::uint64_t const now  = GetTickCount64();
-    std::uint64_t const last = mLastInternalErrorMs.load(std::memory_order_relaxed);
-    if (now - last < 1000) {
-        return;
-    }
-    mLastInternalErrorMs.store(now, std::memory_order_relaxed);
-    getSelf().getLogger().error("harness: {} failed: {}", phase, message);
-    enqueue(
-        nlohmann::json{
-            {"event",   "error"         },
-            {"reason",  "internal_error"},
-            {"phase",   phase           },
-            {"message", message         },
-    }
-            .dump()
-    );
-}
-
 
 } // namespace probe
 

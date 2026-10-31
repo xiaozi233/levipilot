@@ -34,6 +34,7 @@ bool ProbeMod::dispatchWithSeh(std::string const& line) {
 }
 
 void ProbeMod::handleLine(std::string const& line) {
+    std::lock_guard recovery(mTickRecoveryMutex);
     recordCommand(line);
     // Any structured exception raised while handling this command belongs to
     // the request, not to the process. The flag must be visible to the crash
@@ -69,6 +70,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
     }
 
     auto cmd = j.value("cmd", std::string{});
+    if (mTickRecovery.active() && blockedDuringTickRecovery(cmd)) {
+        enqueue(R"({"event":"error","reason":"tick_recovering"})");
+        return;
+    }
     // Each domain returns true only after consuming the command. Keep all
     // handlers under dispatchWithSeh, including their early error responses.
     if (dispatchDiagnosticsCommand(cmd, j)

@@ -50,6 +50,7 @@ scenario DSL / LLM / shell
 | `PoseModel.h` | 单 tick 姿态原子载荷快照、有界一致读取、世界代次隔离与故障计数 |
 | `PlayerIdentityModel.h` / `PlayerIdentity.cpp` | 无字符串/锁的 UUID 身份快照、局部采样边界与世界代次校验；冷侧读者不访问客户端玩家 |
 | `TeleportModel.h` / `Server.cpp` | 服务端独占传送请求、修改前准入、后台唯一回执与取消 |
+| `TickRecoveryModel.h` / `TickRecovery.cpp` | 定长内部错误、恢复编号、后台会话清理与游戏线程释放/快照准入 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
@@ -111,6 +112,12 @@ scenario DSL / LLM / shell
 - **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
   结构化异常由 `dispatchWithSeh` 转成 `internal_error`。请求、录制采样及客户端/服务端回调的
   SEH 边界在当前线程标记异常归属，已处理故障不会被 first-chance VEH 误记为进程崩溃。
+
+tick 的 C++ 异常发布定长错误并立即停止控制，spool 清理会话和格式化；恢复期间
+拒绝新控制命令，游戏线程完成释放并读到清理后的有效请求快照才恢复准入。
+恢复冷锁由 handleLine 在 dispatchWithSeh 外持有，tick 不使用；编号隔离迟到清理，
+诊断队列满也不会提前开放。它不替代各 SDK 调用的局部 SEH 边界。专项 51/51、
+真实重连/退出/重进 57/57、完整 919/919 和离线 318/318 通过，验收边界见 reliability-repairs.md。
 
 输入、视角合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
 载荷按 64 位原子字读写，tick 有界校验序号，竞争时保留上一份已验证快照，不等待写者。

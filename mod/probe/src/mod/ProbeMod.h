@@ -15,6 +15,7 @@
 #include "mod/TaskModel.h"
 #include "mod/TeleportModel.h"
 #include "mod/TickStreamModel.h"
+#include "mod/TickRecoveryModel.h"
 #include "mod/WorldSession.h"
 
 #include "ll/api/event/Listener.h"
@@ -108,6 +109,7 @@ public:
     void cancelInputEvents(char const* reason);
     char const* applyInputEvent(InputInjection const& item);
     void                                         tickInputInjection();
+    bool                                         releaseInputEvents();
     char const*                                  hidKeyEdge(int code, bool down, bool hardware);
 
     // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
@@ -209,7 +211,10 @@ private:
     // Tick isolation: a bug in one of our hooks must not take the game down.
     void safeTickPre(LocalPlayer& player);
     void safeTickPost(LocalPlayer& player);
-    void reportInternalError(char const* phase, std::string const& message);
+    void reportInternalError(detail::TickPhase phase, char const* message) noexcept;
+    void drainInternalErrors();
+    bool recoverTickControls(LocalPlayer& player);
+    void injectTickError(detail::TickPhase phase);
 
     // Closed-loop tasks.
     bool          tickTask(ClientInstance& client, LocalPlayer& player);
@@ -588,7 +593,13 @@ private:
     std::deque<std::string> mQueue;
     std::atomic<std::uint64_t> mQueueDropped{0};
     std::atomic<std::uint64_t> mPipeWriteTimeouts{0};
-    std::atomic<std::uint64_t> mLastInternalErrorMs{0};
+    detail::TickRecovery mTickRecovery;
+    // Cold only; handleLine owns this outside its raw SEH frame, so dispatch
+    // faults still release the lock. The spool recovery serializes admission.
+    std::mutex mTickRecoveryMutex;
+    std::uint64_t mLastInternalErrorMs = 0; // Spool-owned logger rate limit.
+    std::array<std::atomic<detail::TickErrorTest>, 2> mTickErrorTests{};
+    std::atomic<std::uint64_t> mTickRecoveryHoldUntilMs{0}; // Gated selftest only.
 
     // T1 spool. mSpoolBuffer/mSpoolDroppedMarked/mLastFlushMs are protected by
     // mQueueMutex (the tick path already takes it in enqueue); the file stream is

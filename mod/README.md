@@ -202,19 +202,27 @@ reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` �
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **868/868**（跑之前先 `clear @s` 清空快捷栏，否则
+当前基线：live selftest **919/919**（跑之前先 `clear @s` 清空快捷栏，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **317/317**。最终坐标/朝向/能力/站稳、释放与解锁已回读恢复；113 个既有
+离线单测 **318/318**。最终坐标/朝向/能力/站稳、释放与解锁已回读恢复；113 个既有
 crash 文件无新增/修改，安装/构建/打包哈希一致。此前身份批次的收尾退出异常在用户
 正常退出重启后恢复，本轮未复现；其根因仍待复核。常用实测数字：
+
+内部 tick 错误：后台发送原有 error/internal_error（增加 recovery_id/tick/truncated），
+消息最多 255 字节，非法 UTF-8 替换；溢出以 tick_error_diagnostic.lost 计数。恢复期间
+控制命令返回 tick_recovering，status.tick_recovery.active=false 才恢复准入；
+已有移动/视角、任务/宏等控制会话停止，需要新请求重新启动。释放失败逐 tick 重试，
+不使用过期请求快照。查询和解锁仍可用；已开始的 SDK/服务端调用无法回滚。
+`--tick-recovery-only` **51/51**、`--tick-recovery-world "超平坦测试"` **57/57**，
+完整 **919/919** 通过；不是全 tick SEH 保护，封包模板/注入和其余边界继续治理。
 
 移动/视角故障恢复：control_error 后台诊断和 status.controls；
 move/set/look 的接受回执不代表应用成功，失败会停止该序列，默认路径先重试不确定的
 按键/鼠标释放，再接纳新状态。`driver/selftest.py --controls-only` **126/126**，
 任务 input_failed、两类宏 playback_fault 与恢复通过；默认键位 Hardware HID 路径不变。
-本批合并传送后的完整/离线验收见上述基线。未做性能对照/现场热卸载，封包注入、
-内部错误上报及其余 SDK 边界仍待治理，详见 docs/reliability-repairs.md。
+本批合并传送后的完整/离线验收见上述基线。未做性能对照/现场热卸载，封包注入/模板
+及其余 SDK 边界仍待治理，详见 docs/reliability-repairs.md。
 
 2026-10-31 玩家身份：`--player-identity-world "超平坦测试"` **41/41**，完整现场
 **698/698**（无跳过）、离线 **315/315**。UUID/世界代次快照替代每 tick 玩家名分配与锁；

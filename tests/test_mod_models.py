@@ -97,6 +97,9 @@ class ModModelTests(unittest.TestCase):
     def test_control_edge_recovery_nested_flags_and_concurrent_diagnostics(self) -> None:
         self.run_native("movement_model")
 
+    def test_tick_error_recovery_tickets_overflow_and_concurrent_cleanup(self) -> None:
+        self.run_native("tick_recovery_model")
+
     def test_flight_assertion_budget_and_staged_lifecycle(self) -> None:
         self.run_native("flight_model")
 

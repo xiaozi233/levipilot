@@ -71,6 +71,7 @@
 #include "mc/server/commands/PlayerCommandOrigin.h"
 #include "mc/server/commands/ServerCommandOrigin.h"
 #include "mc/world/ContainerID.h"
+#include "mc/world/level/GameType.h"
 #include "mc/world/Minecraft.h"
 #include "mc/world/actor/Actor.h"
 #include "mc/world/actor/player/AbilitiesIndex.h"

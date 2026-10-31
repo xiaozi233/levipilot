@@ -1,0 +1,144 @@
+#include "mod/Internal.h"
+
+using namespace probe::detail;
+
+namespace probe {
+
+bool ProbeMod::queueFlight(FlightQuery query, std::uint64_t timeout) {
+    std::lock_guard lock(mFlightMutex);
+    if (!hooksAllowed() || !mWorld.inWorld()) {
+        enqueue(nlohmann::json{{"event", "error"}, {"reason", hooksAllowed() ? "not_in_world" : "version_mismatch"}}.dump());
+        return false;
+    }
+    query.id = mNextFlightId + 1;
+    query.generation = mFlightGeneration.load();
+    if (!mFlightCapture.begin(query, GetTickCount64(), timeout)) {
+        enqueue(R"({"event":"error","reason":"flight_busy"})");
+        return false;
+    }
+    mNextFlightId = query.id;
+    mFlightAssertion.prepare(query.id);
+    enqueue(nlohmann::json{{"event", "flight_queued"}, {"flight_id", query.id}}.dump());
+    return true;
+}
+
+void ProbeMod::cancelFlight(char const* reason, bool discard) {
+    std::lock_guard lock(mFlightMutex);
+    mFlightGeneration.fetch_add(1);
+    mFlightAssertion.cancel();
+    if (discard) {
+        mFlightCapture.reset();
+        mFlightReplyAfter = mNextFlightId;
+    } else mFlightCapture.cancel(reason);
+}
+
+FlightStage ProbeMod::captureFlightStage(FlightStage stage, FlightQuery const& query, FlightSnapshot& out) {
+    FlightStage next = FlightStage::Complete;
+    std::string name; // SDK owning values remain outside the raw SEH frame.
+    if (!guardedGameRead([&] {
+        if (query.generation != mFlightGeneration.load() || !mWorld.inWorld()) { out.error = "world_left"; return; }
+        if (stage == query.testStage) injectCaptureFault(query.test);
+        if (stage == FlightStage::Client) {
+            auto client = ll::service::getClientInstance();
+            auto* player = client ? client->getLocalPlayer() : nullptr;
+            if (!player) { out.error = "no_player"; return; }
+            out.gamemode = static_cast<int>(player->getPlayerGameType());
+            if (query.operation == FlightOperation::Toggle && player->getPlayerGameType() == GameType::Spectator) {
+                out.error = "spectator_not_supported"; return;
+            }
+            auto const uuid = player->getUuid();
+            out.uuidA = uuid.a;
+            out.uuidB = uuid.b;
+            name = player->getRealName();
+            out.name.assign(name);
+            // UUID is primary. An incomplete fallback identity must never
+            // resolve another player with the same prefix.
+            if (out.name.view().size() != name.size()) out.name.assign({});
+            auto const current = player->getAbilities().getBool(AbilitiesIndex::MayFly);
+            out.target = query.target == FlightTarget::Invert ? !current : query.target == FlightTarget::On;
+            player->setAbility(AbilitiesIndex::MayFly, out.target);
+            if (query.operation == FlightOperation::Fly || !out.target)
+                player->setAbility(AbilitiesIndex::Flying, out.target);
+            out.clientApplied = true;
+            out.flying = player->isFlying();
+            if (query.operation == FlightOperation::Toggle) {
+                auto const test = query.testStage == FlightStage::Assert ? query.test : CaptureTest::None;
+                mFlightAssertion.start(query.id, out.target, test);
+            }
+            next = FlightStage::Server;
+            return;
+        }
+        auto minecraft = ll::service::bedrock::getMinecraft();
+        auto* level = minecraft ? minecraft->getLevel() : nullptr;
+        if (!level) { out.error = "flight_no_server_level"; return; }
+        auto* player = level->getPlayer(mce::UUID{out.uuidA, out.uuidB});
+        if (!player && !out.name.empty()) { name = out.name.c_str(); player = level->getPlayer(name); }
+        if (!player) { out.error = "flight_player_not_found"; return; }
+        if (query.operation == FlightOperation::Toggle && player->getPlayerGameType() == GameType::Spectator) {
+            out.error = "spectator_not_supported"; return;
+        }
+        player->setAbility(AbilitiesIndex::MayFly, out.target);
+        if (query.operation == FlightOperation::Fly || !out.target)
+            player->setAbility(AbilitiesIndex::Flying, out.target);
+        out.serverApplied = true;
+    })) out.error = "flight_fault";
+    return next;
+}
+
+void ProbeMod::tickFlightAssertion(LocalPlayer& player) {
+    mFlightAssertion.tick([&](bool target, CaptureTest test) -> char const* {
+        if (!guardedGameRead([&] {
+            injectCaptureFault(test);
+            player.setAbility(AbilitiesIndex::MayFly, target);
+            if (!target) player.setAbility(AbilitiesIndex::Flying, false);
+        })) return "flight_assert_fault";
+        return nullptr;
+    });
+}
+
+void ProbeMod::drainFlight() {
+    std::lock_guard lock(mFlightMutex);
+    FlightAssertion::Failure failure;
+    while (mFlightAssertion.pop(failure)) {
+        if (failure.id <= mFlightReplyAfter) continue;
+        auto request = mFlightCapture.current();
+        if (request && request->query.id == failure.id) request->cancel(failure.error);
+        else enqueue(nlohmann::json{{"event", "flight_assertion_failed"}, {"flight_id", failure.id},
+                                   {"ok", false}, {"reason", failure.error}, {"partial", true}}.dump());
+    }
+    if (auto lost = mFlightAssertion.takeLost())
+        enqueue(nlohmann::json{{"event", "flight_assertion_failed"}, {"reason", "buffer_full"}, {"lost", lost}}.dump());
+    if (auto request = mFlightCapture.current()) {
+        if (auto stage = request->dispatch(); stage && !(request->query.test == CaptureTest::Deferred && *stage == request->query.testStage)) {
+            auto weak = std::weak_ptr{request};
+            auto run = [this, weak, stage = *stage] {
+                if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](FlightSnapshot& out) {
+                    return captureFlightStage(stage, active->query, out);
+                });
+            };
+            auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
+            try {
+                if (*stage == FlightStage::Server) queueServerTask(std::move(run), failed);
+                else queueClientTask(std::move(run), failed);
+            } catch (...) { request->cancel("flight_queue_failed"); }
+        }
+    }
+    auto done = mFlightCapture.take(GetTickCount64());
+    if (!done.request) return;
+    auto error = done.error ? done.error : done.request->snapshot.error;
+    auto const& query = done.request->query;
+    nlohmann::json result;
+    if (error) {
+        mFlightAssertion.cancel();
+        result = {{"event", "error"}, {"phase", "flight"}, {"flight_id", query.id}, {"reason", error}, {"partial", true}};
+    } else {
+        auto const& out = done.request->snapshot;
+        result = {{"event", query.operation == FlightOperation::Fly ? "fly_ok" : "togglefly_ok"},
+                  {"flight_id", query.id}, {"mayfly", out.target}, {"flying", out.flying},
+                  {"gamemode", out.gamemode}, {"client_applied", out.clientApplied}, {"server_applied", out.serverApplied}};
+    }
+    auto line = result.dump();
+    if (done.release()) enqueue(std::move(line));
+}
+
+} // namespace probe

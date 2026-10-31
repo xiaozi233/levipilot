@@ -1531,6 +1531,196 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
 
 
+def check_flight(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Verify staged abilities, bounded tick assertion, failures and retirement."""
+    original = client.state()
+    if not checks.check("flight_in_world", original.get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    client.input_lock(True)
+
+    def inject(stage: str, mode: str, timeout: int = 250) -> dict[str, Any]:
+        return {
+            "cmd": "selftest_flight",
+            "stage": stage,
+            "mode": mode,
+            "on": False,
+            "timeout_ms": timeout,
+        }
+
+    def unique(flight_id: int) -> bool:
+        try:
+            client.wait_event(
+                ("error", "fly_ok", "togglefly_ok", "flight_assertion_failed"),
+                0.15,
+                predicate=lambda row: row.get("flight_id") == flight_id,
+            )
+        except ModTimeout:
+            return True
+        return False
+
+    def off() -> bool:
+        reply = client.fly(False)
+        wait_ticks(client, 2)
+        state = client.state()
+        return (
+            reply.get("server_applied") is True
+            and not state.get("mayfly")
+            and not state.get("flying")
+        )
+
+    try:
+        client.command("gamemode survival @s")
+        wait_ticks(client, 8)
+        checks.check("flight_disable_applies_both", off())
+        client.teleport(
+            float(original["feet_x"]),
+            float(original["feet_y"]) + 6,
+            float(original["feet_z"]),
+        )
+        air_ready = settle(
+            client, on_ground=False, still=None, ticks=1, timeout=3, clear_input=False
+        )
+        airborne = air_ready["state"]
+        checks.check(
+            "flight_air_fixture",
+            air_ready["ok"] and float(airborne["feet_y"]) > float(original["feet_y"]) + 3,
+            f"on_ground={airborne.get('on_ground')}, y={airborne.get('feet_y')}",
+        )
+        enabled = client.fly(True)
+        wait_ticks(client, 3)
+        flying = client.state()
+        checks.check(
+            "flight_enable_applies_both",
+            enabled.get("client_applied") is True
+            and enabled.get("server_applied") is True
+            and flying.get("flying") is True
+            and flying.get("mayfly") is True
+            and flying.get("on_ground") is False,
+            str(enabled),
+        )
+        checks.check("flight_enable_off_recovers", off())
+        client.teleport(*(float(original[f"feet_{axis}"]) for axis in "xyz"))
+        landed = settle(client, on_ground=True)
+        checks.check("flight_air_returns_ground", landed["ok"], str(landed))
+        enabled = client.toggle_fly(True)
+        checks.check(
+            "flight_toggle_server",
+            enabled.get("server_applied") is True and enabled.get("mayfly") is True,
+        )
+        wait_ticks(client, 12)
+        checks.check("flight_eight_tick_persists", client.state().get("mayfly") is True)
+        checks.check("flight_invert_off", client.toggle_fly().get("mayfly") is False)
+        checks.check("flight_invert_on", client.toggle_fly().get("mayfly") is True)
+        checks.check("flight_toggle_stop", off())
+        for stage in ("client", "server"):
+            for mode, reason in (
+                ("seh", "flight_fault"),
+                ("cpp", "capture_failed"),
+                ("timeout", "capture_timeout"),
+            ):
+                failed = client.request(inject(stage, mode), "error", timeout=4)
+                checks.check(
+                    f"flight_{stage}_{mode}",
+                    failed.get("phase") == "flight"
+                    and failed.get("reason") == reason
+                    and failed.get("partial") is True,
+                    str(failed),
+                )
+                checks.check(f"flight_{stage}_{mode}_unique", unique(int(failed["flight_id"])))
+                checks.check(f"flight_{stage}_{mode}_recovery", off())
+        for mode, reason in (("seh", "flight_assert_fault"), ("cpp", "flight_assert_failed")):
+            queued = client.request(inject("assert", mode, 2000), "flight_queued")
+            flight_id = int(queued["flight_id"])
+            result = client.wait_event(
+                ("error", "togglefly_ok", "flight_assertion_failed"),
+                4,
+                predicate=lambda row, wanted=flight_id: row.get("flight_id") == wanted,
+            )
+            if result.get("event") == "togglefly_ok":
+                result = client.wait_event(
+                    "flight_assertion_failed",
+                    3,
+                    predicate=lambda row, wanted=flight_id: row.get("flight_id") == wanted,
+                )
+            checks.check(f"flight_assert_{mode}", result.get("reason") == reason, str(result))
+            checks.check(f"flight_assert_{mode}_unique", unique(flight_id))
+            checks.check(f"flight_assert_{mode}_recovery", off())
+
+        queued = client.request(inject("server", "timeout", 1000), "flight_queued")
+        busy = client.request({"cmd": "fly", "enabled": True}, "error")
+        checks.check("flight_busy_preserves_request", busy.get("reason") == "flight_busy")
+        malformed = client.request({"cmd": "togglefly", "on": []}, "error")
+        checks.check("flight_bad_param_preserves_request", malformed.get("reason") == "bad_command")
+        failed = client.wait_event("error", 3, predicate=lambda row: row.get("phase") == "flight")
+        checks.check(
+            "flight_original_timeout",
+            failed.get("flight_id") == queued["flight_id"]
+            and failed.get("reason") == "capture_timeout",
+        )
+        checks.check("flight_busy_recovers", off())
+        client.command("gamemode spectator @s")
+        wait_ticks(client, 8)
+        rejected = client.request({"cmd": "togglefly"}, "error")
+        checks.check(
+            "flight_spectator_rejects", rejected.get("reason") == "spectator_not_supported"
+        )
+        client.command("gamemode survival @s")
+        wait_ticks(client, 8)
+        checks.check("flight_spectator_recovers", off())
+
+        if world:
+            queued = client.request(inject("client", "timeout", 10000), "flight_queued")
+            client.close()
+            client.connect()
+            client.input_lock(True)
+            checks.check("flight_reconnect_fresh", off())
+            checks.check("flight_reconnect_no_stale", unique(int(queued["flight_id"])))
+            queued = client.request(inject("server", "timeout", 10000), "flight_queued")
+            wait_ticks(client, 3)
+            try:
+                client.leave_world()
+                client.wait_event("world_left", 45)
+                cancelled = client.wait_event(
+                    "error", 4, predicate=lambda row: row.get("phase") == "flight"
+                )
+                checks.check(
+                    "flight_world_cancel",
+                    cancelled.get("reason") == "world_left"
+                    and cancelled.get("flight_id") == queued["flight_id"],
+                    str(cancelled),
+                )
+                for command in ("fly", "togglefly"):
+                    rejected = client.request({"cmd": command}, "error")
+                    checks.check(f"flight_menu_{command}", rejected.get("reason") == "not_in_world")
+            finally:
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+            checks.check("flight_world_recovers", off())
+    finally:
+        client.command(f"gamemode {original['gamemode']} @s")
+        wait_ticks(client, 8)
+        client.fly(bool(original.get("flying")))
+        if int(original["gamemode"]) != 3:
+            client.toggle_fly(bool(original.get("mayfly")))
+        client.reset(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        wait_ticks(client, 10)
+    restored = client.state()
+    checks.check(
+        "flight_restores_abilities",
+        restored.get("mayfly") == original.get("mayfly")
+        and restored.get("flying") == original.get("flying"),
+    )
+    checks.check("flight_tick_alive", bool(client.ping()) and restored.get("in_world") is True)
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("flight_handled_fault_no_dump", after == before)
+
+
 def check_input_events(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Exercise production event failures, text ordering, and UI thread queries."""
     if not checks.check("input_events_in_world", client.state().get("in_world") is True):
@@ -3102,6 +3292,12 @@ def main(argv: list[str] | None = None) -> int:
         "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
     )
     modes.add_argument(
+        "--flight-only", action="store_true", help="check staged flight and tick assertions"
+    )
+    modes.add_argument(
+        "--flight-world", metavar="WORLD", help="also check flight reconnect/leave/rejoin"
+    )
+    modes.add_argument(
         "--input-events-only", action="store_true", help="check guarded input and text ordering"
     )
     modes.add_argument(
@@ -3183,7 +3379,9 @@ def main(argv: list[str] | None = None) -> int:
         return checks.finish()
 
     if (
-        args.input_events_only
+        args.flight_only
+        or args.flight_world
+        or args.input_events_only
         or args.input_events_world
         or args.ecs_capture_only
         or args.ecs_capture_world
@@ -3204,7 +3402,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.input_events_only or args.input_events_world:
+            if args.flight_only or args.flight_world:
+                check_flight(client, checks, args.flight_world)
+            elif args.input_events_only or args.input_events_world:
                 check_input_events(client, checks, args.input_events_world)
             elif args.ecs_capture_only or args.ecs_capture_world:
                 check_ecs_capture(client, checks, args.ecs_capture_world)
@@ -3228,7 +3428,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "input_events_error"
+                "flight_error"
+                if args.flight_only or args.flight_world
+                else "input_events_error"
                 if args.input_events_only or args.input_events_world
                 else "ecs_capture_error"
                 if args.ecs_capture_only or args.ecs_capture_world
@@ -3333,6 +3535,7 @@ def main(argv: list[str] | None = None) -> int:
         check_macro_playback(client, checks)
         check_ecs_capture(client, checks)
         check_input_events(client, checks)
+        check_flight(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

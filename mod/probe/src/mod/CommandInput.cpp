@@ -366,18 +366,37 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         mClickRequest.store(button == "right" ? 2 : 1);
         return true;
     }
-    if (cmd == "fly") {
-        mFlyRequest.store(j.value("enabled", true) ? 1 : 0);
-        enqueue(R"({"event":"fly_ok"})");
+    if (cmd == "fly" || cmd == "togglefly") {
+        FlightQuery query;
+        query.operation = cmd == "fly" ? FlightOperation::Fly : FlightOperation::Toggle;
+        query.target = cmd == "fly" ? (j.value("enabled", true) ? FlightTarget::On : FlightTarget::Off)
+                     : (j.contains("on") ? (j.value("on", true) ? FlightTarget::On : FlightTarget::Off)
+                                          : FlightTarget::Invert);
+        queueFlight(query);
         return true;
     }
-    if (cmd == "togglefly") {
-        // Grants/removes the MayFly ability (the double-space toggle gate) in
-        // any non-spectator mode. With no "on" argument each call flips it.
-        int const request = j.contains("on") ? (j.value("on", true) ? 1 : 0) : 2;
-        mToggleFlyRequest.store(request);
-        // The reply is emitted from the tick (applyToggleFlyRequest) so the
-        // caller sees the resulting state and the spectator guard can fail it.
+    if (cmd == "selftest_flight") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        auto const stage = j.value("stage", std::string{});
+        FlightQuery query;
+        query.target = j.value("on", false) ? FlightTarget::On : FlightTarget::Off;
+        if (mode == "seh") query.test = CaptureTest::Fault;
+        else if (mode == "cpp") query.test = CaptureTest::Cpp;
+        else if (mode == "timeout") query.test = CaptureTest::Deferred;
+        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        if (stage == "client") query.testStage = FlightStage::Client;
+        else if (stage == "server") query.testStage = FlightStage::Server;
+        else if (stage == "assert" && query.test != CaptureTest::Deferred) query.testStage = FlightStage::Assert;
+        else { enqueue(R"({"event":"error","reason":"bad_test_stage"})"); return true; }
+        auto const timeout = j.value("timeout_ms", 250);
+        if (timeout < 100 || timeout > 10000) {
+            enqueue(R"({"event":"error","reason":"bad_test_timeout"})"); return true;
+        }
+        queueFlight(query, static_cast<std::uint64_t>(timeout));
         return true;
     }
     return false;

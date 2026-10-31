@@ -65,8 +65,9 @@ class InputCommands(PipeConnection):
         """Grant/remove double-space flight (the MayFly ability).
 
         Works in any mode except spectator; without ``on`` each call flips it.
-        The reply is emitted after the tick applies it and carries the
-        resulting ``mayfly``/``flying``/``gamemode``.
+        The reply follows client and server application and carries
+        ``mayfly``/``flying``/``gamemode``. The client keeps asserting the gate
+        for eight ticks; later failures emit ``flight_assertion_failed``.
         """
         message: dict[str, Any] = {"cmd": "togglefly"}
         if on is not None:

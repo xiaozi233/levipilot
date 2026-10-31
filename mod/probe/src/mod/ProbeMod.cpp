@@ -299,8 +299,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
 
     consumeTeleportRequest(player, requests);
 
-    applyFlyRequest(player);
-    applyToggleFlyRequest(player);
+    tickFlightAssertion(player);
 
     if (int click = mClickRequest.exchange(-1); click >= 0) {
         performClick(player, click);
@@ -328,31 +327,6 @@ void ProbeMod::consumeTeleportRequest(LocalPlayer& player, RequestBlock const& r
     if (requests.teleportSeq != mSeenTeleportSeq) {
         mSeenTeleportSeq = requests.teleportSeq;
         requestServerTeleport(player, requests.teleport);
-    }
-}
-
-void ProbeMod::applyFlyRequest(LocalPlayer& player) {
-    int const fly = mFlyRequest.exchange(-1);
-    if (fly < 0) {
-        return;
-    }
-    bool const enabled = fly != 0;
-    player.setAbility(AbilitiesIndex::MayFly, enabled);
-    player.setAbility(AbilitiesIndex::Flying, enabled);
-    // The client ability write alone is overwritten the next time the
-    // server syncs abilities (for example after a /tp). Mirror it on the
-    // server-side player so "fly off" actually sticks.
-    if (auto server = ll::service::bedrock::getServerInstance()) {
-        std::string name = player.getRealName();
-        queueServerTask([name, enabled] {
-            auto    minecraft    = ll::service::bedrock::getMinecraft();
-            Level*  level        = minecraft ? minecraft->getLevel() : nullptr;
-            Player* serverPlayer = (level != nullptr && !name.empty()) ? level->getPlayer(name) : nullptr;
-            if (serverPlayer != nullptr) {
-                serverPlayer->setAbility(AbilitiesIndex::MayFly, enabled);
-                serverPlayer->setAbility(AbilitiesIndex::Flying, enabled);
-            }
-        });
     }
 }
 
@@ -400,60 +374,6 @@ void ProbeMod::registerCommands(CommandRegistry& registry) {
     } catch (...) {
         bootLog("command: togglefly registration failed");
     }
-}
-
-void ProbeMod::applyToggleFlyRequest(LocalPlayer& player) {
-    int const request = mToggleFlyRequest.exchange(-1);
-    if (request < 0) {
-        int left = mToggleFlyAssertTicks.load(std::memory_order_relaxed);
-        if (left > 0) {
-            bool const target = mToggleFlyTarget.load(std::memory_order_relaxed);
-            player.setAbility(AbilitiesIndex::MayFly, target);
-            if (!target) {
-                player.setAbility(AbilitiesIndex::Flying, false);
-            }
-            mToggleFlyAssertTicks.store(left - 1, std::memory_order_relaxed);
-        }
-        return;
-    }
-    if (player.getPlayerGameType() == GameType::Spectator) {
-        enqueue(R"({"event":"error","reason":"spectator_not_supported"})");
-        return;
-    }
-    bool const current = player.getAbilities().getBool(AbilitiesIndex::MayFly);
-    bool const target  = request == 2 ? !current : (request == 1);
-    player.setAbility(AbilitiesIndex::MayFly, target);
-    if (!target) {
-        // Removing the gate must also end an in-progress flight.
-        player.setAbility(AbilitiesIndex::Flying, false);
-    }
-    mToggleFlyTarget.store(target, std::memory_order_relaxed);
-    mToggleFlyAssertTicks.store(8, std::memory_order_relaxed);
-    // Mirror on the server player: the next ability sync would otherwise
-    // restore the mode default and make the toggle look ignored.
-    if (auto server = ll::service::bedrock::getServerInstance()) {
-        std::string name = player.getRealName();
-        queueServerTask([name, target] {
-            auto    minecraft    = ll::service::bedrock::getMinecraft();
-            Level*  level        = minecraft ? minecraft->getLevel() : nullptr;
-            Player* serverPlayer = (level != nullptr && !name.empty()) ? level->getPlayer(name) : nullptr;
-            if (serverPlayer != nullptr) {
-                serverPlayer->setAbility(AbilitiesIndex::MayFly, target);
-                if (!target) {
-                    serverPlayer->setAbility(AbilitiesIndex::Flying, false);
-                }
-            }
-        });
-    }
-    enqueue(
-        nlohmann::json{
-            {"event",    "togglefly_ok"                           },
-            {"mayfly",   target                                   },
-            {"gamemode", static_cast<int>(player.getPlayerGameType())},
-            {"flying",   player.isFlying()                        },
-        }
-            .dump()
-    );
 }
 
 void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests) {

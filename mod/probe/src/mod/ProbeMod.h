@@ -3,6 +3,7 @@
 #include "mod/ChatModel.h"
 #include "mod/EcsModel.h"
 #include "mod/EntityModel.h"
+#include "mod/FlightModel.h"
 #include "mod/InputEventModel.h"
 #include "mod/MacroPlaybackModel.h"
 #include "mod/PacketTap.h"
@@ -408,8 +409,12 @@ private:
     // safeTickPre/Post stage helpers; each keeps the exact ordering the
     // monolithic functions had (ProbeMod.cpp).
     void consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests);
-    void applyFlyRequest(LocalPlayer& player);
-    void applyToggleFlyRequest(LocalPlayer& player);
+    bool queueFlight(detail::FlightQuery query, std::uint64_t timeout = 2000);
+    void drainFlight();
+    void tickFlightAssertion(LocalPlayer& player);
+    void cancelFlight(char const* reason, bool discard = false);
+    detail::FlightStage captureFlightStage(detail::FlightStage stage, detail::FlightQuery const& query,
+                                           detail::FlightSnapshot& out);
     void releaseMacroIfRequested();
     void tickMacroPlayback(ClientInstance& client, LocalPlayer& player);
     void consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests);
@@ -511,13 +516,11 @@ private:
     std::atomic<int>            mInputSource{-1};
     std::atomic<int>            mInputController{0};
     std::atomic<int>            mInputFocus{0};
-    std::atomic<int>            mFlyRequest{-1};
-    // -1 none, 0 disable, 1 enable, 2 toggle the MayFly ability (double-space flight).
-    std::atomic<int>            mToggleFlyRequest{-1};
-    // A gamemode change / ability sync already in flight can overwrite the
-    // client ability right after we set it; re-assert it for a few ticks.
-    std::atomic<bool>           mToggleFlyTarget{false};
-    std::atomic<int>            mToggleFlyAssertTicks{0};
+    detail::FlightCapture mFlightCapture;
+    detail::FlightAssertion mFlightAssertion;
+    std::mutex mFlightMutex; // Cold admission, completion and lifecycle only.
+    std::atomic<std::uint64_t> mFlightGeneration{0};
+    std::uint64_t mNextFlightId = 0, mFlightReplyAfter = 0; // Cold-owned.
     struct ClickResult {
         int         button = 0, hitType = 0, x = 0, y = 0, z = 0, face = 0;
         float       hitX = 0, hitY = 0, hitZ = 0;

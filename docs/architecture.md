@@ -28,6 +28,7 @@ scenario DSL / LLM / shell
 | `Input.cpp` | 移动/视角注入、按键事件、左右键动作、macro 的单 tick 应用 |
 | `InputEvents.cpp` | HID/键鼠事件注入、文本顺序屏障、客户端 UI 查询与后台回执 |
 | `InputEventModel.h` | 有界事件及结果槽、文本屏障、代次取消与请求独享的文本/UI 快照；不依赖游戏 SDK |
+| `Flight.cpp` / `FlightModel.h` | 飞行能力的客户端/服务端分阶段请求、截止与取消、按请求编号准入的 8 tick 重断言及后台回执 |
 | `TaskModel.h` | 独立于游戏 SDK 的任务类型、单活动任务控制器、固定事件队列 |
 | `Tasks.cpp` | 六种任务的逐 tick 计算，只写定长结果，不格式化 JSON |
 | `TaskEvents.cpp` | 任务状态/事件 JSON、服务端物品使用调度与 SEH 隔离 |
@@ -37,7 +38,7 @@ scenario DSL / LLM / shell
 | `Inventory.cpp` | 背包定长采样与写入、give/clear、快捷栏选择 |
 | `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
 | `EntityModel.h` | 实体请求独享的定长快照、分阶段调度、超时与迟到回调隔离；不依赖游戏 SDK |
-| `StagedCapture.h` | 实体与 ECS 共用的请求独享分阶段生命周期、截止/取消、唯一消费与重连隔离 |
+| `StagedCapture.h` | 实体、ECS 与飞行共用的请求独享分阶段生命周期、截止/取消、唯一消费与重连隔离 |
 | `EcsModel.h` / `Ecs.cpp` | ECS 定长快照、有界逐 storage 探测、所属线程读取与后台协议格式化 |
 | `Server.cpp` | 服务端权威传送 |
 | `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
@@ -122,6 +123,14 @@ scenario DSL / LLM / shell
 完成表示 HID 调用及消费窗口结束，不证明当前输入框接受了文字。
 `screen/key_state` 由独立 `UiCapture` 在客户端平台队列读取，后台格式化，文本在途不占用
 UI 查询槽。两类请求均有截止、取消与重连隔离，旧成功字段和 queued 回执保留。
+
+管道 `fly/togglefly` 使用独占 `FlightCapture`，在客户端平台队列读取身份并应用能力，
+再在服务端队列按 UUID（完整玩家名兜底）应用；spool 负责调度和格式化。2 秒截止、
+忙时拒绝、退出取消和重连丢弃，成功事件保留原名与字段，增加 `flight_id` 和两侧应用结果。
+`fly_ok` 现在表示两侧调用完成；`togglefly_ok` 不等待后续 8 tick 重断言。重断言仅在 tick
+执行能力写入和固定队列发布，不取冷侧锁、不读玩家名、不投递任务或格式化。请求编号的
+原子准入阻止已取消回调重新启动重断言，后续失败发独立 `flight_assertion_failed`。
+失败保守标记 `partial=true`；已开始的游戏调用不能抢占，也不会回滚已生效的能力。
 
 任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止

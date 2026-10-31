@@ -119,8 +119,8 @@ xmake -j4 -y
 | `give` | `item,count,aux`；加到第一个空位 |
 | `clear_item` | `slot,container` |
 | `clear_inventory` | 清空背包、盔甲和副手 |
-| `fly` | `enabled`；客户端 + 服务端同时设置 |
-| `togglefly` | `on`（可选，缺省=切换）；开关"双击空格切换飞行"的 `MayFly`，tick 线程写入 + 服务端镜像 + 8 tick 重断言，回 `togglefly_ok{mayfly,gamemode,flying}`；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
+| `fly` | `enabled`；客户端与服务端分阶段设置，两侧完成后回 `fly_ok`；接受时另发 `flight_queued{flight_id}` |
+| `togglefly` | `on`（可选，缺省=切换）；开关"双击空格切换飞行"的 `MayFly`，两侧应用后回 `togglefly_ok{mayfly,gamemode,flying,flight_id}`，客户端保留 8 tick 重断言；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
 | `input_lock` | `on`；锁住真实硬件键鼠与相机转向（注入照常），见「限制」 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威；**不动药水效果** |
 | `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试（只有它会清效果） |
@@ -197,10 +197,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **619/619**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **663/663**（跑之前先 `clear @s` 清空快捷栏，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **313/313**。常用实测数字：
+离线单测 **314/314**。常用实测数字：
+
+2026-10-31 飞行请求：`--flight-world "超平坦测试"` **50/50**，完整现场 **663/663**
+（无跳过）、离线 **314/314**。两侧分阶段应用、局部 SEH/C++、忙/截止/唯一终结、
+8 tick 重断言故障、真实重连/退出取消/主菜单拒绝及恢复通过；空中开启飞行有回读验收。
+取消后的旧回调不能重新启动重断言。构建/静态/profile 与安装哈希一致，113 个既有
+crash 文件无新增/修改。tick 不再为飞行复制玩家名、投递任务或生成 JSON；已开始的
+调用不能被超时抢占或回滚，地面落地仍可结束 Flying，未做性能提升对照。
 
 2026-10-31 事件输入/文本/UI 查询：`--input-events-world "超平坦测试"` **51/51**，
 完整现场 **619/619**（无跳过）、离线 **313/313**。单事件局部 SEH/C++、编号结果、
@@ -384,8 +391,11 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   注册必须挂在 `ServerCommandRegisterEvent` 上——直接写在 `enable()` 里会启动即崩（已实测）。
   命令表按世界重建（退出/重进世界后再输入仍然可用），注册用 `CommandRegistry*` 身份判重，
   不会重复挂 execute。管道侧等价命令 `togglefly`（`{"cmd":"togglefly","on":bool}`，回
-  `togglefly_ok{mayfly,gamemode,flying}`；CLI `togglefly [--on|--off]`）走 tick 线程并带
-  8 tick 重断言，抵消模式切换后迟到的能力同步（它会在开关之后才到、把开关覆盖掉）。
+  `togglefly_ok{mayfly,gamemode,flying}`；CLI `togglefly [--on|--off]`）走客户端/服务端队列，
+  带 8 tick 重断言抵消迟到的能力同步。两种管道飞行请求共用独占槽，忙时回 `flight_busy`，
+  2 秒超时或退出世界明确失败，重连丢弃未入传输队列的旧回执；接受回执带 `flight_id`。
+  成功只表示两侧应用完成，后续重断言异常另发 `flight_assertion_failed`；失败的
+  `partial=true` 表示能力可能已部分生效，已开始的调用不能被超时抢占或自动回滚。
 - `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），

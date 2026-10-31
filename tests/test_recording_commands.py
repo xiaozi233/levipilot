@@ -10,6 +10,25 @@ from tests.test_transport import FakeClient
 
 
 class RecordingCommandsTests(unittest.TestCase):
+    def test_macro_partial_save_is_reported_as_failed_recording(self) -> None:
+        client = FakeClient()
+        client._session.lines.put(
+            {
+                "event": "macro_rec_saved",
+                "ok": False,
+                "reason": "capture_fault",
+                "path": "partial.json",
+            }
+        )
+        with self.assertRaisesRegex(ModProtocolError, "capture_fault.*partial.json"):
+            client.macro_record_stop()
+
+    def test_macro_save_accepts_legacy_receipt_without_ok(self) -> None:
+        client = FakeClient()
+        receipt = {"event": "macro_rec_saved", "ticks": 3}
+        client._session.lines.put(receipt)
+        self.assertEqual(client.macro_record_stop(), receipt)
+
     def test_recording_terminal_failure_is_not_success(self) -> None:
         for reason in ("capture_fault", "capture_failed", "buffer_full", "world_left"):
             with self.subTest(reason=reason):

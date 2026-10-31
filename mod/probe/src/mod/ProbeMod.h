@@ -2,6 +2,7 @@
 
 #include "mod/ChatModel.h"
 #include "mod/EntityModel.h"
+#include "mod/MacroRecordModel.h"
 #include "mod/PacketTap.h"
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
@@ -42,25 +43,6 @@ class Vec2;
 class Vec3;
 
 namespace probe {
-
-struct MacroTick {
-    bool  w      = false;
-    bool  a      = false;
-    bool  s      = false;
-    bool  d      = false;
-    bool  sprint = false;
-    bool  sneak  = false;
-    bool  jump   = false;
-    bool  rmb    = false;
-    bool  lmb    = false;
-    float yaw    = 0.0f;
-    float pitch  = 0.0f;
-
-    [[nodiscard]] float forward() const { return (w ? 1.0f : 0.0f) - (s ? 1.0f : 0.0f); }
-    [[nodiscard]] float strafe() const { return (d ? 1.0f : 0.0f) - (a ? 1.0f : 0.0f); }
-};
-
-using Macro = std::vector<MacroTick>;
 
 struct ControlState {
     float forward    = 0.0f;
@@ -601,14 +583,12 @@ private:
     std::atomic_bool mMacroStopRequested{false};
 
     // Macro recorder.
-    std::atomic_bool           mMacroRecording{false};
-    std::atomic<std::uint64_t> mMacroRecordMax{0};
+    detail::MacroRecordSession       mMacroRecording;
     std::mutex                 mMacroSessionMutex;
-    std::uint64_t              mMacroRecordGeneration = 0;
-    Macro                      mRecordedMacro;
-    std::atomic_bool           mHavePrevRotation{false};
-    float                      mPrevYaw          = 0.0f;
-    float                      mPrevPitch        = 0.0f;
+    std::atomic<detail::CaptureTest> mMacroRecordTest{detail::CaptureTest::None};
+    std::atomic_bool                 mMacroRecordWorldLeft{false};
+    void                             drainMacroRecording();
+    void                             drainMacroRecordingLocked();
 
     std::mutex              mQueueMutex;
     std::deque<std::string> mQueue;

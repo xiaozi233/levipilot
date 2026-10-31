@@ -139,7 +139,8 @@ bool ProbeMod::disable() {
     cancelQueries("disabled");
     {
         std::lock_guard lock(mMacroSessionMutex);
-        mMacroRecording = false;
+        mMacroRecording.stop(MacroRecordEnd::Disabled);
+        drainMacroRecordingLocked();
     }
     mMacroPlaying   = false;
     mMacroStartRequested = false;
@@ -458,7 +459,7 @@ void ProbeMod::startMacroIfRequested() {
         if (!mMacroStartRequested.exchange(false, std::memory_order_acq_rel)) {
             return;
         }
-        if (!mMacroRecording.load(std::memory_order_relaxed)) {
+        if (!mMacroRecording.active()) {
             std::lock_guard macroLock(mMacroMutex);
             if (mMacro) {
                 mMacroPlaying = true;
@@ -635,7 +636,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         }
     }
 
-    if (mMacroRecording.load(std::memory_order_relaxed)) {
+    if (mMacroRecording.active()) {
         recordMacroTick(*client, player);
     }
 

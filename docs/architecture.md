@@ -45,7 +45,7 @@ scenario DSL / LLM / shell
 | `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
-| `MacroRecordModel.h` | 宏录制有效上限与唯一限长终结；不依赖游戏 SDK |
+| `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
 | `Commands.cpp` | 单次 JSON 解析、领域分发、未知命令、请求级 SEH/异常隔离 |
 | `CommandDiagnostics.cpp` | 心跳、状态、版本诊断、panic、spool 与故障/开销自检命令 |
 | `CommandInspection.cpp` | 内存、watch、hook 命令的校验与分发 |
@@ -134,7 +134,11 @@ scenario DSL / LLM / shell
 退出取消，重连丢弃；队列仅持弱引用，迟到阶段不能操作新请求，JSON 在 spool 格式化。
 已开始的游戏调用不支持超时抢占；不会把跨阶段快照宣称为同一 tick 的原子状态。
 
-游戏 SDK 的玩家/物品名称访问器仍可能分配，legacy JSON、跑酷事件、宏等路径尚未迁移，
+JSON 逐 tick 录制（内部名 legacy）与跑酷事件已迁到固定队列、局部 SEH 和后台格式化；
+旧 JSON 接口仍供 Python、CLI 与跑酷使用，二进制环形录制作为另一套协议并存。
+宏录制由 `MacroRecordSession` 冷侧一次初始化帧存储，tick 只写已准入的固定槽位；
+停止等待在途采样结束，后台报告唯一终结，保存使用停止后的独享快照。
+游戏 SDK 的玩家/物品名称访问器仍可能分配，宏播放、其他钩子与游戏读取仍待治理，
 不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
 
 ## 任务生命周期

@@ -165,7 +165,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["tick"]            = mTick.load();
         out["macro_playing"]   = mMacroPlaying.load();
         out["macro_index"]     = mMacroIndex.load();
-        out["macro_recording"] = mMacroRecording.load();
+        out["macro_recording"]       = mMacroRecording.active();
         out["queue_dropped"]   = mQueueDropped.load();
         out["pipe_write_timeouts"] = mPipeWriteTimeouts.load();
         out["pipe_write_timeout_ms"] = PipeChannel::DefaultTimeoutMs;

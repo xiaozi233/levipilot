@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **296/296**，现场 **411/411**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **298/298**，现场 **435/435**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -168,15 +168,24 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   `traceRay + GameMode`（左键破坏、右键放置）。
 - 录制：WASD/Sprint/Sneak/Jump 来自输入状态，Yaw/Pitch 由 `ActorRotation` 差分；
   RMB/LMB 由 `MouseInputEvent` 记录。
-- 录制和播放共享 `mMacroSessionMutex` 管理会话边界。停止录制先在锁内关掉 tick 采样，再
-  复制完整快照并保存；保存完成后按录制代次清理，避免并发新会话的数据被旧保存操作清除。
+- 录制和播放的冷侧命令共享 `mMacroSessionMutex` 管理准入。录制采样由
+  `MacroRecordSession` 独享，tick 不取会话锁；停止先禁止新采样并等待已准入采样退出，再
+  在冷侧复制完整快照、锁外保存。保存完成后按录制代次清理，避免并发新会话的数据被旧保存操作清除。
   达到 `max_ticks` 后也保留缓冲供 `macro_rec_stop` 保存。重复录制、
   播放时录制、录制时播放都会返回明确错误，避免两个会话同时改写按键状态。
-- `MacroRecordModel` 统一限长策略：省略/0/超大 `max_ticks` 均归一到 200000，较小正数
-  使用原值；每次追加按有效上限判断并且只在活动 → 停止时报告一次 limit。不会出现
-  满 200000 条后仍 recording=true、静默丢后续帧的状态。开始回执带实际 max_ticks/hard_limit，
-  status 带 record_limit。开始前验证非负整数并预留容量，再清空旧会话，失败保留旧数据。
-  帧存储追加零分配不代表整个宏 tick 无分配/无锁：原有会话锁、游戏读取与事件投递仍待治理。
+- `MacroRecordSession` 统一限长策略：省略/0/超大 `max_ticks` 均归一到 200000，较小正数
+  使用原值；启动时创建全部已初始化帧槽，tick 不增长 vector、不格式化、不等待消费者。
+  到顶只报告一次 limit，保留完整帧。开始回执带实际 max_ticks/hard_limit/record_id，
+  status 带 record_limit/record_id。开始前验证非负整数并完成分配，再替换旧会话；失败保留旧数据。
+- 宏录制的输入/朝向读取使用局部 SEH，采样 C++ 异常和非有限角度同样明确终结；
+  `macro_rec_stopped` 带 ok=false、record_id/ticks/reason，区分
+  capture_fault/capture_failed/world_left/disabled。故障结果优先于并发的正常停止。
+  首帧角度固定为零，新录制重建基线，yaw 差分有界归一到 ±180°。
+  点击锁存无论按钮是否按住都消费，避免松开后补录旧点击。
+- 故障后有帧时 `macro_rec_stop` 仍可保存部分数据，`macro_rec_saved` 带
+  ok=false/partial=true/reason；Python 抛出含原因和部分文件路径的错误。
+  保存先序列化再打开目标，检查 write/flush/close，失败保留帧供重试。
+  此处未实现原子文件替换，也不宣称宏播放或整个游戏 tick 已无分配/无锁。
 - 宏硬上限验收：`driver/selftest.py --macro-limit-only` **17/17**，完整现场 **322/322**
   （无跳过），离线 **284/284**。原生模型实际追加 200000 条，覆盖省略/0/上限/超上限/
   uint64 最大值、达到上限后不再追加、唯一终结、保留完整数据及预留后零分配；现场验证
@@ -187,6 +196,14 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   日志：`out/reliability-macro-limit-{unit,live,full-live,build,restart}.log`。
 - 事件级播放停止后在下一客户端 tick 释放按住的 HID 按键和鼠标；卸载路径关闭录制状态并
   提交同一释放请求。
+- 宏录制采样验收：`--macro-capture-world "超平坦测试"` **29/29**，完整现场
+  **435/435**（无跳过）、离线 **298/298**。生产模型原生回归覆盖 200000 帧零分配、
+  并发状态读取、在途采样/停止竞争、故障优先、启动分配失败与跨会话旋转基线；
+  现场验证 SEH/C++ 唯一终结、部分帧保存、真实目标打开失败保留 3 帧并重试成功、快速
+  启停及退出/重进恢复。未模拟磁盘写满，未连续录制 200000 tick。
+  构建/静态/profile 检查通过，无新增/修改 crash 文件；安装与构建 SHA-256 均为
+  `D29E1160F03B5227D573316DE639113FF5C1F4476840374C01EC62FB7C9F1134`。
+  日志 `out/reliability-macro-capture-*`；宏播放/其他读取与 SDK 分配仍待治理。
 
 ## 鼠标录制
 
@@ -768,8 +785,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **411/411**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **296/296**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **435/435**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **298/298**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

@@ -54,6 +54,7 @@ void ProbeMod::spoolThreadLoop() {
             drainChatHistory();
             drainQueries();
             drainTickStreams();
+            drainMacroRecording();
             reportRecordFault();
             flushSpool(mSpoolForce.exchange(false, std::memory_order_acq_rel));
             faultReported = false;
@@ -84,6 +85,7 @@ void ProbeMod::spoolThreadLoop() {
         drainChatHistory();
         drainQueries();
         drainTickStreams();
+        drainMacroRecording();
         reportRecordFault();
     } catch (...) {
     }

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..connection import PipeConnection
+from ..errors import ModProtocolError
 
 
 class MacroCommands(PipeConnection):
@@ -51,7 +52,12 @@ class MacroCommands(PipeConnection):
         )
 
     def macro_record_stop(self, name: str = "recorded") -> dict[str, Any]:
-        return self.request({"cmd": "macro_rec_stop", "name": name}, "macro_rec_saved")
+        reply = self.request({"cmd": "macro_rec_stop", "name": name}, "macro_rec_saved")
+        if reply.get("ok") is False:
+            raise ModProtocolError(
+                f"macro recording: {reply.get('reason', 'failed')}; partial data: {reply.get('path', '')}"
+            )
+        return reply
 
     def macro_save(self, name: str, ticks: list[list[str]]) -> dict[str, Any]:
         return self.request({"cmd": "macro_save", "name": name, "ticks": ticks}, "macro_saved")

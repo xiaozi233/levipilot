@@ -6,45 +6,48 @@ using namespace probe::detail;
 namespace probe {
 
 void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
-    auto in  = readInput(client);
-    auto rot = player.getRotation();
+    mMacroRecording.tick([&](MacroRecordSession::Sample& sample) {
+        return guardedGameRead([&] {
+            injectCaptureFault(mMacroRecordTest.exchange(CaptureTest::None));
+            auto const in  = readInput(client);
+            auto const rot = player.getRotation();
+            auto&      row = sample.buttons;
+            row.w          = in.w;
+            row.a          = in.a;
+            row.s          = in.s;
+            row.d          = in.d;
+            row.sprint     = in.sprint;
+            row.sneak      = in.sneak;
+            row.jump       = in.jump;
+            // Always consume a latch, even while the corresponding button is
+            // held, so releasing a held click cannot replay an old press.
+            row.rmb      = consumeMacroClick(mMouseRight, mMouseRightLatch);
+            row.lmb      = consumeMacroClick(mMouseLeft, mMouseLeftLatch);
+            sample.yaw   = rot.y;
+            sample.pitch = rot.x;
+        });
+    });
+}
 
-    MacroTick row;
-    row.w      = in.w;
-    row.a      = in.a;
-    row.s      = in.s;
-    row.d      = in.d;
-    row.sprint = in.sprint;
-    row.sneak  = in.sneak;
-    row.jump   = in.jump;
-    row.rmb    = mMouseRight.load() || mMouseRightLatch.exchange(false);
-    row.lmb    = mMouseLeft.load() || mMouseLeftLatch.exchange(false);
-
-    if (mHavePrevRotation) {
-        float yaw = wrapDegrees(rot.y - mPrevYaw);
-        // Store the same sign _applyTurnDelta consumes, so playback reproduces
-        // the recorded rotation (and dmf's mouse-delta convention).
-        float pitch = -(rot.x - mPrevPitch);
-        row.yaw     = std::fabs(yaw) < 0.001f ? 0.0f : yaw;
-        row.pitch   = std::fabs(pitch) < 0.001f ? 0.0f : pitch;
-    }
-    mPrevYaw          = rot.y;
-    mPrevPitch        = rot.x;
-    mHavePrevRotation = true;
-
-    bool limitReached = false;
-    {
-        std::lock_guard lock(mMacroSessionMutex);
-        // The pipe thread closes recording under the same mutex before taking
-        // its snapshot. Re-checking here prevents a tick that observed the
-        // old flag from appending after macro_rec_stop has begun.
-        limitReached = appendMacroRecording(
-            mRecordedMacro, row, mMacroRecordMax.load(std::memory_order_relaxed), mMacroRecording
+void ProbeMod::drainMacroRecordingLocked() {
+    if (mMacroRecordWorldLeft.exchange(false)) mMacroRecording.stop(MacroRecordEnd::WorldLeft);
+    if (auto done = mMacroRecording.takeCompletion()) {
+        if (done->reason == MacroRecordEnd::Client) return; // Save is its normal completion receipt.
+        enqueue(
+            nlohmann::json{
+                {"event",     done->reason == MacroRecordEnd::Limit ? "macro_rec_limit" : "macro_rec_stopped"},
+                {"record_id", done->recordId                                                                 },
+                {"ticks",     done->rows                                                                     },
+                {"ok",        done->ok()                                                                     },
+                {"reason",    macroRecordEndName(done->reason)                                               }
+        }.dump()
         );
     }
-    if (limitReached) {
-        enqueue(R"({"event":"macro_rec_limit"})");
-    }
+}
+
+void ProbeMod::drainMacroRecording() {
+    std::lock_guard lock(mMacroSessionMutex);
+    drainMacroRecordingLocked();
 }
 
 void ProbeMod::finishMacro(std::string reason) {
@@ -189,6 +192,9 @@ bool ProbeMod::saveMacroFile(std::filesystem::path const& path, Macro const& mac
     if (!macroToJson(macro, value, error)) {
         return false;
     }
+    // Serialize before opening the target. A serialization/allocation failure
+    // must not truncate a previously saved macro.
+    auto const      data = value.dump(2);
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -196,7 +202,13 @@ bool ProbeMod::saveMacroFile(std::filesystem::path const& path, Macro const& mac
         error = "cannot write " + path.string();
         return false;
     }
-    file << value.dump(2);
+    file.write(data.data(), static_cast<std::streamsize>(data.size()));
+    file.flush();
+    file.close();
+    if (!file) {
+        error = "cannot write " + path.string();
+        return false;
+    }
     return true;
 }
 

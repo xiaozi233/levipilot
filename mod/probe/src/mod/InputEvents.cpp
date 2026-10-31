@@ -7,8 +7,8 @@ namespace probe {
 namespace {
 // The Windows client uses the GameCore platform shim, whose first members
 // include the HIDController shared_ptr. A wrong layout faults here, and this
-// runs on the client tick thread where no SEH guard exists yet, so the raw
-// cast stays inside its own __try (no C++ objects in this function).
+// is guarded locally as well as by each input operation. The raw cast stays
+// inside its own __try (no C++ objects in this function).
 HIDControllerGameCoreDesktop* gamecoreHid(void* shim) {
     __try {
         return static_cast<Bedrock::Platform_GameCore*>(shim)->mHIDController.get();
@@ -50,14 +50,6 @@ char const* ProbeMod::hidKeyEdge(int code, bool down, bool hardware) {
     return nullptr;
 }
 
-bool ProbeMod::hidKeyEvent(int code, bool down, bool hardware, std::string& error) {
-    if (auto failure = hidKeyEdge(code, down, hardware)) {
-        error = failure;
-        return false;
-    }
-    return true;
-}
-
 bool ProbeMod::hidTextInput(std::string const& text, std::string& error) {
     auto platform = ll::service::getAppPlatform();
     if (!platform) {
@@ -78,87 +70,207 @@ bool ProbeMod::hidTextInput(std::string const& text, std::string& error) {
     return true;
 }
 
-bool ProbeMod::queueInputInjection(InputInjection const& item) {
-    std::uint32_t const head = mInjectHead.load(std::memory_order_relaxed);
-    std::uint32_t const tail = mInjectTail.load(std::memory_order_acquire);
-    if (head - tail >= kInputInjectRing) {
-        return false;
-    }
-    mInjectRing[head % kInputInjectRing] = item;
-    mInjectHead.store(head + 1, std::memory_order_release);
-    return true;
+std::uint64_t ProbeMod::queueInputInjection(InputInjection const& item) {
+    std::lock_guard lock(mInputEventMutex);
+    return mInputEvents.push(item);
+}
+
+char const* ProbeMod::applyInputEvent(InputInjection const& item) {
+    char const* error = nullptr;
+    // Restore the flag outside the raw SEH frame, including partial SDK calls.
+    auto const previous = mInjectingInput.exchange(item.kind != InputKind::Raw);
+    try {
+        if (!guardedGameRead([&] {
+            injectCaptureFault(item.test);
+            if (item.kind == InputKind::Queue) {
+                auto& states = Keyboard::_states();
+                KeyboardAction action{};
+                action.state = item.data ? KeyboardAction::Keydown : KeyboardAction::Keyup;
+                action.key = item.code;
+                action.controllerId = Keyboard::_gameControllerId();
+                action.lshiftState = states[Keyboard::Lshift];
+                action.controlState = states[Keyboard::Control];
+                action.menuState = states[Keyboard::Menu];
+                action.isRepeatedEvent = item.repeat;
+                Keyboard::_inputs().push_back(action);
+            } else if (item.kind != InputKind::Mouse) {
+                error = hidKeyEdge(item.code, item.data != 0, item.kind != InputKind::Hid);
+            } else {
+                auto& device = Mouse::_instance();
+                device.feed(static_cast<char>(item.code), static_cast<schar>(item.data),
+                            item.hasPos ? item.x : device._x, item.hasPos ? item.y : device._y,
+                            item.dx, item.dy, false);
+                mMouseInjected.fetch_add(1, std::memory_order_relaxed);
+                if ((item.code == 0 || item.code == 7) && (item.dx || item.dy))
+                    mInjectTurnUntilTick.store(mTick.load(std::memory_order_relaxed) + 2,
+                                              std::memory_order_relaxed);
+            }
+        })) error = "input_fault";
+    } catch (...) { error = "input_failed"; }
+    mInjectingInput.store(previous, std::memory_order_release);
+    return error;
 }
 
 void ProbeMod::tickInputInjection() {
-    std::string text;
-    {
-        std::lock_guard lock(mTextMutex);
-        text.swap(mTextPending);
-    }
-    if (!text.empty()) {
-        std::string error;
-        mInjectingInput.store(true, std::memory_order_release);
-        hidTextInput(text, error);
-        mInjectingInput.store(false, std::memory_order_release);
-    }
-
-    std::uint32_t tail = mInjectTail.load(std::memory_order_acquire);
-    std::uint32_t head = mInjectHead.load(std::memory_order_acquire);
-    if (tail == head) {
-        return;
-    }
-
-    auto& keyboardInputs = Keyboard::_inputs();
-    auto& keyboardStates = Keyboard::_states();
-    mInjectingInput.store(true, std::memory_order_release);
-    while (tail != head) {
-        InputInjection const& item = mInjectRing[tail % kInputInjectRing];
-        if (item.kind == 0) {
-            KeyboardAction action{};
-            action.state           = item.data != 0 ? KeyboardAction::Keydown : KeyboardAction::Keyup;
-            action.key             = item.code;
-            action.controllerId    = Keyboard::_gameControllerId();
-            action.lshiftState     = keyboardStates[Keyboard::Lshift];
-            action.controlState    = keyboardStates[Keyboard::Control];
-            action.menuState       = keyboardStates[Keyboard::Menu];
-            action.isRepeatedEvent = item.repeat;
-            keyboardInputs.push_back(action);
-        } else if (item.kind == 2 || item.kind == 3) {
-            std::string error;
-            hidKeyEvent(item.code, item.data != 0, item.kind == 3, error);
-        } else if (item.kind == 4) {
-            // A genuine OS key: Hardware origin and no injection guard, so
-            // input_lock must drop it. This is the test proxy for a real press
-            // (kind 3 is indistinguishable from one except for the guard).
-            std::string error;
-            mInjectingInput.store(false, std::memory_order_release);
-            hidKeyEvent(item.code, item.data != 0, true, error);
-            mInjectingInput.store(true, std::memory_order_release);
-        } else {
-            auto& device = Mouse::_instance();
-            device.feed(
-                static_cast<char>(item.code),
-                static_cast<schar>(item.data),
-                item.hasPos ? item.x : device._x,
-                item.hasPos ? item.y : device._y,
-                item.dx,
-                item.dy,
-                false
-            );
-            mMouseInjected.fetch_add(1, std::memory_order_relaxed);
-            if ((item.code == 0 || item.code == 7) && (item.dx != 0 || item.dy != 0)) {
-                // The game applies the turn later in this frame, after our
-                // transient flag is cleared; allow it for the next two ticks.
-                mInjectTurnUntilTick.store(
-                    mTick.load(std::memory_order_relaxed) + 2,
-                    std::memory_order_relaxed
-                );
-            }
+    mInputTickSerial.fetch_add(1, std::memory_order_release);
+    auto const generation = mInputEvents.generation();
+    if (generation != mInputEventGeneration) {
+        bool released = true;
+        for (auto& held : mHeldEvents) {
+            if (!held) continue;
+            auto up = *held;
+            up.data = 0;
+            up.test = CaptureTest::None;
+            if (applyInputEvent(up)) released = false;
+            else held.reset();
         }
-        ++tail;
+        if (!released) return; // Retry failed releases before admitting new input.
+        mInputEventGeneration = generation;
     }
-    mInjectTail.store(tail, std::memory_order_release);
-    mInjectingInput.store(false, std::memory_order_release);
+    mInputEvents.tick([&](InputInjection const& item) {
+        std::size_t const slot = item.kind == InputKind::Mouse ? 256 + item.code : item.code;
+        bool const track = item.kind != InputKind::Mouse
+            || (item.code != 0 && item.code != 4 && item.code != 7);
+        // A fault may happen after an edge reaches the SDK. Keep its release
+        // even if the call reports failure; an extra key-up is harmless.
+        if (track && item.data) mHeldEvents[slot] = item;
+        auto error = applyInputEvent(item);
+        if (track && !item.data && !error) mHeldEvents[slot].reset();
+        return error;
+    }, mInputEventGeneration);
+}
+
+bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
+    std::lock_guard lock(mInputEventMutex);
+    TextQuery query{std::move(text), mInputEvents.nextId(), mInputEvents.generation(), test};
+    auto request = mTextCapture.begin(std::move(query), GetTickCount64());
+    if (!request) { enqueue(R"({"event":"error","reason":"text_input_busy"})"); return false; }
+    InputInjection barrier;
+    barrier.kind = InputKind::Text;
+    if (!mInputEvents.push(barrier)) {
+        mTextCapture.reset();
+        enqueue(R"({"event":"error","reason":"inject_queue_full"})");
+        return false;
+    }
+    enqueue(nlohmann::json{{"event", "text_input_queued"}, {"input_id", request->query.id}}.dump());
+    return true;
+}
+
+bool ProbeMod::queueUiQuery(UiQuery query) {
+    std::lock_guard lock(mInputEventMutex);
+    if (mUiCapture.begin(query, GetTickCount64())) return true;
+    enqueue(R"({"event":"error","reason":"ui_query_busy"})");
+    return false;
+}
+
+void ProbeMod::resetInputEvents() {
+    std::lock_guard lock(mInputEventMutex);
+    mInputEvents.cancel();
+    mInputReplyGeneration = mInputEvents.generation();
+    mTextCapture.reset();
+    mUiCapture.reset();
+}
+void ProbeMod::cancelInputEvents(char const* reason) {
+    std::lock_guard lock(mInputEventMutex);
+    mInputEvents.cancel();
+    mTextCapture.cancel(reason);
+    mUiCapture.cancel(reason);
+}
+
+void ProbeMod::drainInputEvents() {
+    std::lock_guard lock(mInputEventMutex);
+    InputOutcome row;
+    while (mInputEvents.pop(row)) {
+        if (row.kind == InputKind::Text || row.generation < mInputReplyGeneration) continue;
+        nlohmann::json out{{"event", "input_event_done"}, {"input_id", row.id}, {"ok", !row.error}};
+        if (row.error) out["reason"] = row.error;
+        enqueue(out.dump());
+    }
+    if (auto request = mTextCapture.current(); request && mInputEvents.textReady(request->query.id)) {
+        if (auto stage = request->dispatch(); stage && request->query.test != CaptureTest::Deferred) {
+            auto weak = std::weak_ptr{request};
+            auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
+            try {
+                queueClientTask([this, weak, stage = *stage] {
+                    if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](TextSnapshot& out) {
+                        if (stage == InputStage::Flush)
+                            return mInputTickSerial.load(std::memory_order_acquire) >= out.resumeTick
+                                ? InputStage::Complete : InputStage::Flush;
+                        std::string error;
+                        if (!guardedGameRead([&] {
+                            injectCaptureFault(active->query.test);
+                            if (active->query.generation != mInputEvents.generation() || !mWorld.inWorld())
+                                out.error = "world_left";
+                            else if (!hidTextInput(active->query.text, error)) out.error = "text_input_failed";
+                        })) out.error = "text_input_fault";
+                        // onTextInput queues UI work. Cross two player tick
+                        // boundaries before releasing a following Enter edge.
+                        out.resumeTick = mInputTickSerial.load(std::memory_order_acquire) + 2;
+                        return out.error ? InputStage::Complete : InputStage::Flush;
+                    });
+                }, failed);
+            } catch (...) { request->cancel("text_input_queue_failed"); }
+        }
+    }
+    if (auto done = mTextCapture.take(GetTickCount64()); done.request) {
+        auto error = done.error ? done.error : done.request->snapshot.error;
+        nlohmann::json out{{"event", "text_input_done"}, {"input_id", done.request->query.id}, {"ok", !error}};
+        if (error) out["reason"] = error;
+        auto line = out.dump();
+        // A queued Enter must never submit a partially applied/old command
+        // after text fails. Keep numbered cancellation replies on this client;
+        // reconnect alone advances the reply cutoff and discards old work.
+        if (error && done.request->query.generation == mInputEvents.generation()) mInputEvents.cancel();
+        mInputEvents.completeText(done.request->query.id);
+        if (done.release()) enqueue(std::move(line));
+    }
+    if (auto request = mUiCapture.current()) {
+        if (auto stage = request->dispatch(); stage && request->query.test != CaptureTest::Deferred) {
+            auto weak = std::weak_ptr{request};
+            auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
+            try {
+                queueClientTask([this, weak] {
+                    if (auto active = weak.lock()) active->run(InputStage::Client, GetTickCount64(), [&](UiSnapshot& out) {
+                        std::string name;
+                        if (!guardedGameRead([&] {
+                            injectCaptureFault(active->query.test);
+                            out.inWorld = mWorld.inWorld();
+                            if (active->query.operation == UiOperation::Screen) {
+                                auto client = ll::service::getClientInstance();
+                                if (client) name = client->getScreenName();
+                                out.name.assign(name);
+                                out.truncated = out.name.view().size() != name.size();
+                            } else {
+                                if (!out.inWorld) { out.error = "not_in_world"; return; }
+                                out.down = Keyboard::_states()[active->query.code] != 0;
+                                out.events = mKeyEventCount.load();
+                                out.injectedSeen = mKeyInjectedSeen.load();
+                                out.lastCode = mKeyLastCode.load();
+                                out.lastAction = mKeyLastAction.load();
+                                out.pending = mInputEvents.pending();
+                            }
+                        })) out.error = "ui_query_fault";
+                        return InputStage::Complete;
+                    });
+                }, failed);
+            } catch (...) { request->cancel("ui_query_queue_failed"); }
+        }
+    }
+    if (auto done = mUiCapture.take(GetTickCount64()); done.request) {
+        auto error = done.error ? done.error : done.request->snapshot.error;
+        nlohmann::json out;
+        if (error) out = {{"event", "error"}, {"phase", "ui_query"}, {"reason", error}};
+        else {
+            auto const& s = done.request->snapshot;
+            if (done.request->query.operation == UiOperation::Screen)
+                out = {{"event", "screen"}, {"name", s.name.c_str()}, {"in_world", s.inWorld}, {"truncated", s.truncated}};
+            else out = {{"event", "key_state"}, {"code", done.request->query.code}, {"down", s.down},
+                        {"events", s.events}, {"injected_seen", s.injectedSeen}, {"last_code", s.lastCode},
+                        {"last_action", s.lastAction}, {"pending", s.pending}};
+        }
+        auto line = out.dump();
+        if (done.release()) enqueue(std::move(line));
+    }
 }
 
 // input_lock: while scripts own the session, real hardware keys must not reach

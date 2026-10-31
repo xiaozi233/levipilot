@@ -3,6 +3,7 @@
 #include "mod/ChatModel.h"
 #include "mod/EcsModel.h"
 #include "mod/EntityModel.h"
+#include "mod/InputEventModel.h"
 #include "mod/MacroPlaybackModel.h"
 #include "mod/PacketTap.h"
 #include "mod/PoseModel.h"
@@ -96,27 +97,24 @@ public:
 
     // G1/G2: event-level input injection. The pipe thread queues; the client
     // tick drains into the game's own Keyboard/MouseDevice queues.
-    struct InputInjection {
-        // 0=key queue, 1=mouse, 2=HID virtual, 3=HID hardware (injected),
-        // 4=HID hardware without the injection guard (a real press, for tests)
-        std::uint8_t kind   = 0;
-        std::uint8_t code   = 0; // key code / MouseAction
-        std::int8_t  data   = 0; // key down or MouseAction data
-        std::int16_t dx     = 0;
-        std::int16_t dy     = 0;
-        std::int16_t x      = 0;
-        std::int16_t y      = 0;
-        bool         hasPos = false;
-        bool         repeat = false;
-    };
-    static constexpr std::size_t                 kInputInjectRing = 128;
-    std::array<InputInjection, kInputInjectRing> mInjectRing{};
-    std::atomic<std::uint32_t>                   mInjectHead{0};
-    std::atomic<std::uint32_t>                   mInjectTail{0};
-    bool                                         queueInputInjection(InputInjection const& item);
+    using InputInjection = detail::InputInjection;
+    std::mutex mInputEventMutex; // Cold admission, completion and cancellation only.
+    detail::InjectedEventQueue<> mInputEvents;
+    std::uint64_t mInputReplyGeneration = 1; // Cold; reconnect discards older results.
+    detail::UiCapture mUiCapture;
+    detail::TextCapture mTextCapture;
+    std::atomic<std::uint64_t> mInputTickSerial{0};
+    std::array<std::optional<InputInjection>, 264> mHeldEvents{}; // Tick-owned.
+    std::uint64_t mInputEventGeneration = 0; // Tick-owned release generation.
+    std::uint64_t queueInputInjection(InputInjection const& item);
+    bool queueTextInput(std::string text, detail::CaptureTest test = detail::CaptureTest::None);
+    bool queueUiQuery(detail::UiQuery query);
+    void drainInputEvents();
+    void resetInputEvents();
+    void cancelInputEvents(char const* reason);
+    char const* applyInputEvent(InputInjection const& item);
     void                                         tickInputInjection();
     char const*                                  hidKeyEdge(int code, bool down, bool hardware);
-    bool                                         hidKeyEvent(int code, bool down, bool hardware, std::string& error);
 
     // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
     // own owner; these forwarders keep the file-scope LL hooks unchanged.
@@ -131,8 +129,6 @@ public:
     std::atomic_bool                           mAllowPacketInject{false};
     std::mutex                                 mChatMutex;
     std::string                                mChatPending;
-    std::mutex                                 mTextMutex;
-    std::string                                mTextPending;
     std::mutex                                 mCommandTemplateMutex;
     std::optional<CommandRequestPacketPayload> mCommandTemplate;
     std::atomic<std::uint64_t>                 mChatSent{0};

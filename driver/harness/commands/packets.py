@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..connection import PipeConnection
+from ..errors import ModProtocolError
 
 
 class PacketCommands(PipeConnection):
@@ -54,8 +55,23 @@ class PacketCommands(PipeConnection):
             message["value"] = bool(value)
         return self.request(message, "commands_enabled", timeout=timeout)
 
-    def text_input(self, text: str) -> dict[str, Any]:
-        return self.request({"cmd": "text_input", "text": text}, "text_input_queued")
+    def text_input(
+        self, text: str, *, wait: bool = False, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """Queue text; optionally await its numbered completion on supporting mods."""
+        with self.exchange():
+            queued = self.request(
+                {"cmd": "text_input", "text": text}, "text_input_queued", timeout=timeout
+            )
+            input_id = queued.get("input_id")
+            if not wait or input_id is None:
+                return queued
+            done = self.wait_event(
+                "text_input_done", timeout, predicate=lambda row: row.get("input_id") == input_id
+            )
+            if done.get("ok") is False:
+                raise ModProtocolError(f"text_input: {done.get('reason', 'failed')}")
+            return done
 
     def chat_send(self, text: str, timeout: float | None = None) -> dict[str, Any]:
         return self.request({"cmd": "chat_send", "text": text}, "chat_send_queued", timeout=timeout)

@@ -5,6 +5,36 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_input_events") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        CaptureTest test;
+        if (mode == "seh") test = CaptureTest::Fault;
+        else if (mode == "cpp") test = CaptureTest::Cpp;
+        else if (mode == "timeout") test = CaptureTest::Deferred;
+        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        auto const target = j.value("target", std::string{});
+        if (target == "screen") queueUiQuery({UiOperation::Screen, 0, test});
+        else if (target == "text" || target == "key") {
+            if (!mAllowInputInject.load() || !mWorld.inWorld()) {
+                enqueue(R"({"event":"error","reason":"input_test_unavailable"})");
+            } else if (target == "text") queueTextInput("selftest", test);
+            else if (test == CaptureTest::Deferred) enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            else {
+                InputInjection item;
+                item.kind = InputKind::Hid;
+                item.code = 72;
+                item.test = test;
+                auto id = queueInputInjection(item);
+                if (!id) enqueue(R"({"event":"error","reason":"inject_queue_full"})");
+                else enqueue(nlohmann::json{{"event", "key_event_queued"}, {"input_id", id}}.dump());
+            }
+        } else enqueue(R"({"event":"error","reason":"bad_test_target"})");
+        return true;
+    }
     if (cmd == "key_event" || cmd == "key_state" || cmd == "mouse_event") {
         if (!hooksAllowed()) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
@@ -35,24 +65,11 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_text"})");
             return true;
         }
-        {
-            std::lock_guard lock(mTextMutex);
-            mTextPending = std::move(text);
-        }
-        enqueue(R"({"event":"text_input_queued"})");
+        queueTextInput(std::move(text));
         return true;
     }
     if (cmd == "screen") {
-        auto              client = ll::service::getClientInstance();
-        std::string const name   = client ? client->getScreenName() : std::string{};
-        enqueue(
-            nlohmann::json{
-                {"event",    "screen"      },
-                {"name",     name          },
-                {"in_world", mWorld.inWorld()},
-            }
-                .dump()
-        );
+        queueUiQuery({UiOperation::Screen});
         return true;
     }
     if (cmd == "key_event") {
@@ -65,11 +82,13 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         bool const repeat = j.value("repeat", false) || j.value("repeat_ms", 0) > 0;
         std::string const via = j.value("via", std::string{"hid"});
         InputInjection item{};
-        item.kind   = via == "queue" ? 0 : (via == "hardware" ? 3 : (via == "raw" ? 4 : 2));
+        item.kind = via == "queue" ? InputKind::Queue : (via == "hardware" ? InputKind::Hardware
+                    : (via == "raw" ? InputKind::Raw : InputKind::Hid));
         item.code   = static_cast<std::uint8_t>(code);
         item.data   = down ? 1 : 0;
         item.repeat = repeat;
-        if (!queueInputInjection(item)) {
+        auto const inputId = queueInputInjection(item);
+        if (!inputId) {
             enqueue(R"({"event":"error","reason":"inject_queue_full"})");
             return true;
         }
@@ -79,6 +98,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         enqueue(
             nlohmann::json{
                 {"event",  "key_event_queued"},
+                {"input_id", inputId},
                 {"code",   code             },
                 {"down",   down             },
                 {"repeat", repeat           },
@@ -95,20 +115,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_key"})");
             return true;
         }
-        auto& states = Keyboard::_states();
-        enqueue(
-            nlohmann::json{
-                {"event",         "key_state"              },
-                {"code",          code                     },
-                {"down",          states[code] != 0        },
-                {"events",        mKeyEventCount.load()    },
-                {"injected_seen", mKeyInjectedSeen.load()  },
-                {"last_code",     mKeyLastCode.load()      },
-                {"last_action",   mKeyLastAction.load()    },
-                {"pending",       mInjectHead.load() - mInjectTail.load()},
-            }
-                .dump()
-        );
+        queueUiQuery({UiOperation::KeyState, code});
         return true;
     }
     if (cmd == "mouse_event") {
@@ -151,7 +158,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         std::int16_t const dx = clampShort(j.value("dx", 0));
         std::int16_t const dy = clampShort(j.value("dy", 0));
         InputInjection item{};
-        item.kind = 1;
+        item.kind = InputKind::Mouse;
         item.code = static_cast<std::uint8_t>(action);
         item.data = static_cast<std::int8_t>(std::clamp(data, -128, 127));
         item.dx   = dx;
@@ -160,7 +167,8 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         item.x      = clampShort(j.value("x", 0));
         item.y      = clampShort(j.value("y", 0));
         std::uint64_t const before = mMouseEventCount.load(std::memory_order_relaxed);
-        if (!queueInputInjection(item)) {
+        auto const inputId = queueInputInjection(item);
+        if (!inputId) {
             enqueue(R"({"event":"error","reason":"inject_queue_full"})");
             return true;
         }
@@ -171,6 +179,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         enqueue(
             nlohmann::json{
                 {"event",         "mouse_event_queued"},
+                {"input_id", inputId},
                 {"action",        action               },
                 {"data",          data                 },
                 {"dx",            dx                   },

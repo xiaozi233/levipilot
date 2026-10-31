@@ -64,10 +64,10 @@ xmake -j4 -y
 | `spool_flush` | 立即把内存中的记录刷到 spool 文件 |
 | `selftest_av` / `selftest_crash` | 自检：请求级访问违例被隔离 / 进程级崩溃取证（后者需 `allow_crash_test=true`） |
 | `start` / `stop` | 逐 tick 采样（`tick` 事件） |
-| `key_event` | `code,down,repeat,repeat_ms,via=hid/hardware/raw/queue`；`hid`=HID `onKeyDown`（Virtual）、`hardware`=Hardware 且标记注入、`raw`=Hardware 无注入标记（等价真人按键）、`queue`=`Keyboard::_inputs()`；需 `allow_input_inject=true` |
+| `key_event` | `code,down,repeat,repeat_ms,via=hid/hardware/raw/queue`；`hid`=HID `onKeyDown`（Virtual）、`hardware`=Hardware 且标记注入、`raw`=Hardware 无注入标记（等价真人按键）、`queue`=`Keyboard::_inputs()`；需 `allow_input_inject=true`；接受回带 `input_id`，应用后发 `input_event_done/ok/reason` |
 | `key_state` | `code`；游戏侧 `Keyboard::_states`、LL KeyInputEvent 计数、注入计数 |
 | `mouse_event` | `action`（`move/left/right/middle/wheel/x1/x2/move_relative` 或 0–7）、`data/down`、`dx,dy,x,y`；走 `MouseDevice::feed` |
-| `text_input` | `text`；通过 HID `onTextInput` 往当前输入框送字符（需 `allow_input_inject`） |
+| `text_input` | `text`；通过 HID `onTextInput` 往当前输入框送字符（需 `allow_input_inject`）；queued 回带 `input_id`，独立 `text_input_done/ok/reason`；Python 可用 `text_input(..., wait=True)` 等完成 |
 | `chat_send` | `text`；复制捕获的 `CommandRequestPacket` 模板并发往服务端（需 `allow_packet_inject`） |
 | `op_self` | `level`（0–4）；在服务端玩家上设置命令权限（H2 自检用，需 `allow_packet_inject`） |
 | `commands_enabled` | 读/写世界的 `mCommandsEnabled`（`value` 可选） |
@@ -197,10 +197,17 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **575/575**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+当前基线：live selftest **619/619**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **308/308**。常用实测数字：
+离线单测 **313/313**。常用实测数字：
+
+2026-10-31 事件输入/文本/UI 查询：`--input-events-world "超平坦测试"` **51/51**，
+完整现场 **619/619**（无跳过）、离线 **313/313**。单事件局部 SEH/C++、编号结果、
+128 项满队列、文本忙/截止、失败后取消 Enter、正常文本立即 Enter 的真实命令回显，
+以及重连 held 释放、退出取消/主菜单查询/重进通过。构建/静态/profile、安装哈希一致，
+113 个既有 crash 文件无新增/修改。tick 不再取文本锁或创建自有输入字符串/JSON；
+SDK 内部及移动/飞行、玩家名、封包注入等其余边界仍待治理，未做性能提升对照。
 
 2026-10-31 ECS 快照：`--ecs-capture-world "超平坦测试"` **51/51**，完整现场
 **575/575**（无跳过）、离线 **308/308**。五个接口已移出 tick，客户端/服务端 context
@@ -448,6 +455,15 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   退出取消、重连丢弃旧结果。最多 1024 条组件/失败 id、4096 次 storage 访问、512 字节
   原始数据；超限标记 truncated，坏 storage 保留 skipped/partial。scope 表示本次实际读取侧。
   context 必须对应当前客户端或服务端 registry，否则返回 context_not_found；原始地址可能复用。
+- 事件级输入的 128 项队列同时保存待应用事件和待消费结果；满时返回 inject_queue_full。
+  key_event/mouse_event 的 queued 只表示接受，input_event_done 的 ok 表示注入调用成功，
+  不保证 UI/世界采用该输入。断线/退出取消旧代次，后续 tick 释放跟踪的 held 键，失败重试。
+  尚未进入传输队列的旧代次结果在重连时丢弃，已入队行仍遵循 replay 契约。
+- 文本使用单独请求槽，重叠返回 text_input_busy；后序按键等待文本完成或 2 秒截止。
+  文本失败/超时会取消后序旧输入，按编号回 input_cancelled，以免 Enter 提交残留文字；
+  后续新请求仍可提交。完成回执只确认 HID 调用及 UI 消费窗口，
+  实际效果须以聊天记录或世界状态回读验证。screen/key_state 由客户端队列读取并后台回复，
+  共享的 UI 查询槽有 ui_query_busy 和 2 秒截止；文本在途不占用 UI 查询槽。
 - spool 每 100 ms 或 64 KB 刷一次，进程被强杀时最多丢最后约 100 ms 的记录；队列溢出
   会写一条 `queue_dropped` 标记进 spool。
 - `mem_write` 默认关闭，开启后每次写入在 `harness-boot.log` 留一行审计。

@@ -26,7 +26,8 @@ scenario DSL / LLM / shell
 | `ProbeMod.cpp` | mod 生命周期、tick 前后编排、钩子注册、错误上报；世界生命周期委托 `WorldSession` |
 | `Internal.h` / `Internal.cpp` | 共享工具：数学、JSON 解析、物品/方块辅助、输入快照 |
 | `Input.cpp` | 移动/视角注入、按键事件、左右键动作、macro 的单 tick 应用 |
-| `InputEvents.cpp` | HID/键鼠事件注入队列与事件计数 |
+| `InputEvents.cpp` | HID/键鼠事件注入、文本顺序屏障、客户端 UI 查询与后台回执 |
+| `InputEventModel.h` | 有界事件及结果槽、文本屏障、代次取消与请求独享的文本/UI 快照；不依赖游戏 SDK |
 | `TaskModel.h` | 独立于游戏 SDK 的任务类型、单活动任务控制器、固定事件队列 |
 | `Tasks.cpp` | 六种任务的逐 tick 计算，只写定长结果，不格式化 JSON |
 | `TaskEvents.cpp` | 任务状态/事件 JSON、服务端物品使用调度与 SEH 隔离 |
@@ -111,6 +112,17 @@ scenario DSL / LLM / shell
 输入、视角、传送合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
 载荷按 64 位原子字读写，tick 有界校验序号，竞争时保留上一份已验证快照，不等待写者。
 其他跨线程状态使用互斥量（任务、背包等请求）或原子量（各种 `*Requested`、`mRunning`）。
+
+事件级按键/鼠标使用 128 项 `InjectedEventQueue`；每项一直保留到 tick 应用与后台结果消费
+都完成，队列满显式拒绝。tick 每个事件独立 SEH/C++ 隔离并恢复注入标记，不取冷侧锁。
+重连/退出更新输入代次，tick 先释放跟踪的 held 键，再清除旧代次请求；释放失败留待后续重试。
+文本由独占 `TextCapture` 在客户端平台队列注入，环中的屏障保证前序按键先进入游戏，
+文本经过 UI 消费窗口后才放行后续 Enter。重复文本返回 busy，2 秒截止终结屏障；
+文本失败/超时取消后续旧输入，保留同一连接上的编号取消回执，避免提交残留文字。
+完成表示 HID 调用及消费窗口结束，不证明当前输入框接受了文字。
+`screen/key_state` 由独立 `UiCapture` 在客户端平台队列读取，后台格式化，文本在途不占用
+UI 查询槽。两类请求均有截止、取消与重连隔离，旧成功字段和 queued 回执保留。
+
 任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
 重入控制器；游戏调用不得同步等待另一个需要任务锁的线程。

@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **308/308**，现场 **575/575**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **313/313**，现场 **619/619**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -801,6 +801,31 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   `queue`（`Keyboard::_inputs` 直推）。双击空格必须走 Hardware origin（脚本用 `hardware`；
   锁关着时 `raw` 也行，锁一开就被丢），`raw` 平时只用于验证 `input_lock`（见「真实输入锁」）。
   强能力由 `allow_input_inject` 门禁（默认 false），每次注入写 boot log。
+- 2026-10-31 输入队列加固：`InjectedEventQueue` 的 128 个槽同时持有事件与应用结果，
+  后台消费结果前不复用槽；`input_id` 单调编号，`input_event_done` 明确应用结果。
+  单事件局部 SEH/C++ 隔离，注入标记在边界外恢复；故障不重放整批旧事件。
+  冷侧准入/消费/取消共用锁，tick 不取该锁、不创建自有字符串/JSON。
+  重连/退出改变代次，下一次 tick 先释放跟踪的 held 输入；释放失败保留重试。
+- `text_input` 不再覆盖共享字符串：独占 `TextCapture` 持有文本，重叠返回
+  `text_input_busy`，2 秒截止；环内文本屏障先等待前序按键进入游戏，再由平台队列调用
+  `onTextInput`。调用后跨两个 player tick 边界，后台报告 `text_input_done` 才释放后序键。
+  超时/取消同样终结屏障，文本失败时更新输入代次、释放 held 并取消后序旧输入，
+  同一连接仍回带编号的 input_cancelled；重连才丢弃旧代次结果。迟到回调不影响新请求。
+  queued 回执保持兼容，Python 默认仍返回接受回执；`text_input(..., wait=True)` 按 `input_id` 等完成并传播失败，旧 mod 无
+  编号时回退接受回执。完成不证明 UI 接受文字；现场以实际命令的聊天回显验证顺序。
+- `screen/key_state` 走独立 `UiCapture`，在客户端平台队列读取，spool 格式化；主菜单
+  `screen` 可响应。共享 UI 查询槽有 `ui_query_busy`、2 秒截止、取消和重连隔离，文本
+  在途不占用该槽。`screen` 新增 `truncated`；旧返回字段保留。
+- 本轮验收：离线 **313/313**，`--input-events-world "超平坦测试"` **51/51**，
+  完整现场 **619/619**（无跳过）。native 覆盖 200000 次并发环绕、满队列、顺序屏障、
+  异常后继续、代次取消和迟到请求隔离；Python 覆盖完成编号、失败和旧 mod 回退。
+  现场验证两个故障后 raw 输入仍受锁拦截，文本 busy 不覆盖、2 秒截止、128 项满队列，
+  文本失败后的 Enter 被取消且聊天仍打开，正常文本立即 Enter 有真实命令回显；
+  重连释放 held、退出取消、主菜单查询和重进恢复通过。构建/静态/profile 全绿，
+  安装/构建/打包 DLL SHA-256 一致：
+  `34F743E7C41FD699DE6BFB96F66888DD8428DF7C861F7AB01B28A4205A81622E`。
+  113 个既有 crash 文件无新增/修改。尚未现场注入 held 释放失败，也未热卸载或做性能
+  对照；SDK 内部不在队列零分配保证内。证据 `out/reliability-input-*`。
 - **鼠标（G2）**：`MouseDevice::feed(action, data, x, y, dx, dy, force)` 是 `MouseInputEvent`
   的发布入口；`mouse_event {action,...}` 同样在 tick 里 drain。
   `action=move`(0) + dx 能转向；`left/right` 只更新 `MouseInputEvent` 计数，在 1.26.51.01 上
@@ -878,8 +903,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **575/575**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **308/308**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **619/619**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **313/313**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

@@ -281,6 +281,7 @@ bool ProbeMod::captureScan(LocalPlayer& player, ScanQuery const& request, ScanSn
 }
 
 void ProbeMod::resetQueries() {
+    resetInputEvents();
     mStateCapture.reset();
     mButtonCapture.reset();
     mBlockCapture.reset();
@@ -291,6 +292,7 @@ void ProbeMod::resetQueries() {
     mEcsCapture.reset();
 }
 void ProbeMod::cancelQueries(char const* reason) {
+    cancelInputEvents(reason);
     mStateCapture.cancel(reason);
     mButtonCapture.cancel(reason);
     mBlockCapture.cancel(reason);
@@ -302,6 +304,7 @@ void ProbeMod::cancelQueries(char const* reason) {
 }
 
 void ProbeMod::drainQueries() {
+    drainInputEvents();
     drainEntities();
     drainEcs();
     auto const now     = GetTickCount64();

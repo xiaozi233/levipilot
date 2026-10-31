@@ -88,6 +88,9 @@ class ModModelTests(unittest.TestCase):
     def test_ecs_bounded_rows_failures_and_queued_lifecycle(self) -> None:
         self.run_native("ecs_model")
 
+    def test_input_order_barriers_failures_cancellation_and_concurrent_wrap(self) -> None:
+        self.run_native("input_event_model")
+
     def test_macro_playback_ownership_failures_and_restart(self) -> None:
         self.run_native("macro_playback_model")
 

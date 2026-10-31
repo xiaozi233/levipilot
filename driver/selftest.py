@@ -267,6 +267,7 @@ def check_dispatch_compatibility(client: ModClient, checks: Checks) -> None:
 
 def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
     """Exercise each CLI domain over the actual pipe, without changing the world."""
+    was_locked = bool(client.state().get("input", {}).get("locked"))
     commands = (
         ("diagnostics", ["ping"], '"event": "pong"'),
         ("input", ["mouse"], '"event": "mouse"'),
@@ -317,6 +318,7 @@ def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
         )
     finally:
         client.connect()
+        client.input_lock(was_locked)
 
 
 def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
@@ -443,6 +445,7 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
     for attempt in range(3):
         old_session = client._session
         client.reconnect()
+        client.input_lock(bool(original.get("input", {}).get("locked")))
         checks.check(
             f"connection_session_{attempt}",
             client._session is not old_session
@@ -1526,6 +1529,213 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
             restored = settle(client, on_ground=True)
             checks.check("tick_stream_world_still", restored["ok"], str(restored))
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
+
+
+def check_input_events(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Exercise production event failures, text ordering, and UI thread queries."""
+    if not checks.check("input_events_in_world", client.state().get("in_world") is True):
+        return
+    client.input_lock(True)
+    if not checks.check(
+        "input_events_locked", client.state().get("input", {}).get("locked") is True
+    ):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+
+    def inject(target: str, mode: str) -> dict[str, Any]:
+        return {"cmd": "selftest_input_events", "target": target, "mode": mode}
+
+    def event_done(input_id: int) -> dict[str, Any]:
+        return client.wait_event(
+            "input_event_done", 4, predicate=lambda row: row.get("input_id") == input_id
+        )
+
+    def text_done(input_id: int) -> dict[str, Any]:
+        return client.wait_event(
+            "text_input_done", 4, predicate=lambda row: row.get("input_id") == input_id
+        )
+
+    def unique(event: str, input_id: int) -> bool:
+        try:
+            client.wait_event(event, 0.12, predicate=lambda row: row.get("input_id") == input_id)
+        except ModTimeout:
+            return True
+        return False
+
+    checks.check("input_ui_screen", client.screen().get("name") == "hud_screen")
+    for mode, reason in (("seh", "input_fault"), ("cpp", "input_failed")):
+        queued = client.request(inject("key", mode), "key_event_queued")
+        done = event_done(int(queued["input_id"]))
+        checks.check(f"input_key_{mode}", done.get("ok") is False and done.get("reason") == reason)
+        checks.check(
+            f"input_key_{mode}_unique", unique("input_event_done", int(queued["input_id"]))
+        )
+        good = client.key_event(72, False, via="hardware")
+        checks.check(
+            f"input_key_{mode}_recovery", event_done(int(good["input_id"])).get("ok") is True
+        )
+        count = int(client.key_state(72)["events"])
+        raw = client.key_event(72, True, via="raw")
+        event_done(int(raw["input_id"]))
+        checks.check(
+            f"input_key_{mode}_guard_restored", int(client.key_state(72)["events"]) == count
+        )
+        client.key_event(72, False, via="raw")
+
+    for mode, reason in (
+        ("seh", "ui_query_fault"),
+        ("cpp", "capture_failed"),
+        ("timeout", "capture_timeout"),
+    ):
+        client.send(inject("screen", mode))
+        if mode == "timeout":
+            client.ping()  # Dispatch fence: query is occupied before submitting again.
+            busy = client.request({"cmd": "screen"}, "error")
+            checks.check("input_ui_busy", busy.get("reason") == "ui_query_busy")
+        failed = client.wait_event("error", 4, predicate=lambda row: row.get("phase") == "ui_query")
+        checks.check(f"input_ui_{mode}", failed.get("reason") == reason, str(failed))
+        checks.check(f"input_ui_{mode}_recovery", client.screen().get("name") == "hud_screen")
+
+    for mode, reason in (
+        ("seh", "text_input_fault"),
+        ("cpp", "capture_failed"),
+        ("timeout", "capture_timeout"),
+    ):
+        queued = client.request(inject("text", mode), "text_input_queued")
+        if mode == "timeout":
+            busy = client.request({"cmd": "text_input", "text": "must_not_replace"}, "error")
+            checks.check(
+                "input_text_busy_preserves_request", busy.get("reason") == "text_input_busy"
+            )
+            following = client.key_event(72, False)
+            try:
+                client.wait_event(
+                    "input_event_done",
+                    0.12,
+                    predicate=lambda row, input_id=following["input_id"]: (
+                        row.get("input_id") == input_id
+                    ),
+                )
+                blocked = False
+            except ModTimeout:
+                blocked = True
+            checks.check("input_text_blocks_following_keys", blocked)
+            checks.check("input_text_ui_independent", client.screen().get("name") == "hud_screen")
+        failed = text_done(int(queued["input_id"]))
+        checks.check(
+            f"input_text_{mode}",
+            failed.get("ok") is False and failed.get("reason") == reason,
+            str(failed),
+        )
+        checks.check(
+            f"input_text_{mode}_unique", unique("text_input_done", int(queued["input_id"]))
+        )
+        if mode == "timeout":
+            cancelled = event_done(int(following["input_id"]))
+            checks.check(
+                "input_text_failure_cancels_following",
+                cancelled.get("ok") is False and cancelled.get("reason") == "input_cancelled",
+                str(cancelled),
+            )
+        good = client.key_event(72, False)
+        checks.check(
+            f"input_text_{mode}_recovery", event_done(int(good["input_id"])).get("ok") is True
+        )
+
+    # One deferred text owns a slot. Another 127 events fit, and the next one
+    # must reject explicitly instead of losing an old event or its result.
+    queued = client.request(inject("text", "timeout"), "text_input_queued")
+    wire = (json.dumps({"cmd": "key_event", "code": 72, "down": False}) + "\n") * 128
+    client.send_raw(wire.encode())
+    accepted: list[int] = []
+    rejected = 0
+    for _ in range(128):
+        row = client.wait_event(("key_event_queued", "error"), 4)
+        if row["event"] == "key_event_queued":
+            accepted.append(int(row["input_id"]))
+        elif row.get("reason") == "inject_queue_full":
+            rejected += 1
+    checks.check(
+        "input_event_bounded_capacity",
+        len(accepted) == 127 and rejected == 1,
+        f"accepted={len(accepted)} rejected={rejected}",
+    )
+    checks.check(
+        "input_event_full_text_timeout",
+        text_done(int(queued["input_id"])).get("reason") == "capture_timeout",
+    )
+    checks.check(
+        "input_event_full_cancellation",
+        all(event_done(input_id).get("reason") == "input_cancelled" for input_id in accepted),
+    )
+
+    # No sleep between text and Enter: verify actual command execution through
+    # the server's chat reply, rather than only checking that chat closed.
+    token = f"input_order_{time.monotonic_ns()}"
+    try:
+        client.key_event(191)
+        client.key_event(191, False)
+        checks.check("input_order_chat_open", wait_screen(client, "chat_screen") == "chat_screen")
+        failed_text = client.request(inject("text", "timeout"), "text_input_queued")
+        cancelled_enter = client.key_event(13)
+        cancelled_up = client.key_event(13, False)
+        checks.check(
+            "input_failed_text_terminal",
+            text_done(int(failed_text["input_id"])).get("reason") == "capture_timeout",
+        )
+        checks.check(
+            "input_failed_text_cancels_enter",
+            event_done(int(cancelled_enter["input_id"])).get("reason") == "input_cancelled"
+            and event_done(int(cancelled_up["input_id"])).get("reason") == "input_cancelled",
+        )
+        checks.check(
+            "input_failed_text_keeps_chat_open", client.screen().get("name") == "chat_screen"
+        )
+        queued = client.text_input(f"say {token}")
+        enter = client.key_event(13)
+        client.key_event(13, False)
+        checks.check("input_order_text_done", text_done(int(queued["input_id"])).get("ok") is True)
+        checks.check("input_order_enter_done", event_done(int(enter["input_id"])).get("ok") is True)
+        checks.check("input_order_chat_closed", wait_screen(client, "hud_screen") == "hud_screen")
+        history = client.chat_history(limit=64)
+        checks.check(
+            "input_order_command_executed", token in json.dumps(history, ensure_ascii=False)
+        )
+    finally:
+        if client.screen().get("name") == "chat_screen":
+            client.key_event(27)
+            client.key_event(27, False)
+            wait_screen(client, "hud_screen")
+
+    if world:
+        client.key_event(72, True, via="hardware")
+        wait_ticks(client, 2)
+        client.close()
+        client.connect()
+        client.input_lock(True)
+        wait_ticks(client, 3)
+        checks.check("input_reconnect_releases_held", client.key_state(72).get("down") is False)
+        queued = client.request(inject("text", "timeout"), "text_input_queued")
+        client.key_event(72, True)
+        try:
+            client.leave_world()
+            client.wait_event("world_left", 45)
+            done = text_done(int(queued["input_id"]))
+            checks.check("input_world_cancels_text", done.get("reason") == "world_left", str(done))
+            checks.check("input_menu_screen_responsive", bool(client.screen().get("name")))
+            rejected = client.request({"cmd": "key_state", "code": 72}, "error")
+            checks.check("input_menu_key_rejected", rejected.get("reason") == "not_in_world")
+        finally:
+            client.enter_world_ready(world)
+            client.wait_in_world(timeout=60)
+            checks.check("input_world_still", settle(client, on_ground=True)["ok"])
+        checks.check("input_world_no_stale_key", client.key_state(72).get("down") is False)
+        checks.check("input_world_screen_recovery", client.screen().get("name") == "hud_screen")
+
+    checks.check("input_tick_alive", bool(client.ping()) and client.state().get("in_world") is True)
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("input_handled_fault_no_dump", after == before)
 
 
 def check_ecs_capture(client: ModClient, checks: Checks, world: str | None = None) -> None:
@@ -2892,6 +3102,12 @@ def main(argv: list[str] | None = None) -> int:
         "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
     )
     modes.add_argument(
+        "--input-events-only", action="store_true", help="check guarded input and text ordering"
+    )
+    modes.add_argument(
+        "--input-events-world", metavar="WORLD", help="also check input reconnect/leave/rejoin"
+    )
+    modes.add_argument(
         "--ecs-capture-only", action="store_true", help="check owned ECS snapshots and failures"
     )
     modes.add_argument(
@@ -2967,7 +3183,9 @@ def main(argv: list[str] | None = None) -> int:
         return checks.finish()
 
     if (
-        args.ecs_capture_only
+        args.input_events_only
+        or args.input_events_world
+        or args.ecs_capture_only
         or args.ecs_capture_world
         or args.query_capture_only
         or args.query_lifecycle_world
@@ -2986,7 +3204,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.ecs_capture_only or args.ecs_capture_world:
+            if args.input_events_only or args.input_events_world:
+                check_input_events(client, checks, args.input_events_world)
+            elif args.ecs_capture_only or args.ecs_capture_world:
                 check_ecs_capture(client, checks, args.ecs_capture_world)
             elif args.macro_playback_only or args.macro_playback_world:
                 check_macro_playback(client, checks, args.macro_playback_world)
@@ -3008,7 +3228,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "ecs_capture_error"
+                "input_events_error"
+                if args.input_events_only or args.input_events_world
+                else "ecs_capture_error"
                 if args.ecs_capture_only or args.ecs_capture_world
                 else "macro_playback_error"
                 if args.macro_playback_only or args.macro_playback_world
@@ -3110,6 +3332,7 @@ def main(argv: list[str] | None = None) -> int:
         check_binary_capture(client, checks)
         check_macro_playback(client, checks)
         check_ecs_capture(client, checks)
+        check_input_events(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

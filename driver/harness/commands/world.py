@@ -129,8 +129,10 @@ class WorldCommands(PipeConnection):
     ) -> dict[str, Any]:
         """Clear input/tasks/macro, then teleport to a known feet pose.
 
-        The server teleport lands on the next tick; callers that need a settled
-        state should wait a few ticks before starting a run.
+        ``reset_done`` accepts the request; it is not the teleport result. New
+        mods include ``teleport_id``: wait for the matching ``teleported`` event
+        before checking the pose. A terminal ``error`` may indicate partial
+        side effects; never retry blindly. Only reset clears potion effects.
         """
         message: dict[str, Any] = {"cmd": "reset", "x": float(x), "y": float(y), "z": float(z)}
         if yaw is not None:
@@ -148,6 +150,11 @@ class WorldCommands(PipeConnection):
         yaw: float | None = None,
         pitch: float | None = None,
     ) -> dict[str, Any]:
+        """Wait for the server teleport call; use state/settle to verify arrival.
+
+        Supplying either angle sets the omitted angle to zero; omitting both
+        keeps the server rotation. Potion effects are preserved.
+        """
         message: dict[str, Any] = {"cmd": "teleport", "x": float(x), "y": float(y), "z": float(z)}
         if yaw is not None:
             message["yaw"] = float(yaw)

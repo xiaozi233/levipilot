@@ -6,12 +6,14 @@
 #include "mod/FlightModel.h"
 #include "mod/InputEventModel.h"
 #include "mod/MacroPlaybackModel.h"
+#include "mod/MovementModel.h"
 #include "mod/PacketTap.h"
 #include "mod/PlayerIdentityModel.h"
 #include "mod/PoseModel.h"
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
 #include "mod/TaskModel.h"
+#include "mod/TeleportModel.h"
 #include "mod/TickStreamModel.h"
 #include "mod/WorldSession.h"
 
@@ -68,16 +70,6 @@ struct Checkpoint {
     float z     = 0.0f;
     float yaw   = 0.0f;
     float pitch = 0.0f;
-};
-
-struct TeleportRequest {
-    float x            = 0.0f;
-    float y            = 0.0f;
-    float z            = 0.0f;
-    bool  hasRotation  = false;
-    float yaw          = 0.0f;
-    float pitch        = 0.0f;
-    bool  clearEffects = false;
 };
 
 class ProbeMod {
@@ -236,7 +228,7 @@ private:
     void          dispatchUseTask(std::uint64_t id);
     void          beginTask();
     nlohmann::json taskStatusJson();
-    void           aimAt(LocalPlayer& player, Vec3 const& point);
+    [[nodiscard]] bool aimAt(LocalPlayer& player, Vec3 const& point);
 
     // World flow: start/leave an existing world without going through the UI.
     void enterWorld(std::string const& name, std::string const& id, int intent, bool force);
@@ -245,7 +237,7 @@ private:
     void reportSignInState();
     void setOptions(std::string const& text);
     void saveOptions();
-    void resetPlayer(
+    std::uint64_t resetPlayer(
         float x,
         float y,
         float z,
@@ -257,10 +249,18 @@ private:
     );
     void loadAutoConfig();
     void registerCommands(CommandRegistry& registry);
-    void applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
+    [[nodiscard]] bool applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
     void updateFocusState();
 
-    void applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
+    [[nodiscard]] bool applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
+    bool applyLegacyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
+    template <class Apply> bool guardedControl(detail::ControlOp op, Apply&& apply);
+    void drainControlDiagnostics();
+    detail::ControlDiagnostics mControlDiagnostics;
+    std::array<std::atomic<detail::ControlTest>, detail::ControlDiagnostics::Operations> mControlTests{};
+    std::atomic_bool mControlCleanupPending{false};
+    std::atomic<std::uint32_t> mControlHeldMask{0};
+    void publishHeldInput();
     // Real-input path: translate the desired digital key state into Hardware
     // HID key edges. Legacy flag/queue/handler/impulse paths are gated behind
     // input_cfg force.
@@ -273,7 +273,7 @@ private:
     // Tasks.cpp. Reads/writes the shared lastX/lastZ/haveLast/stuckTicks/
     // jumpCooldown fields directly on the task.
     template <typename TaskT, bool CountJumps = false>
-    void walkToward(
+    [[nodiscard]] bool walkToward(
         ClientInstance& client,
         LocalPlayer&    player,
         TaskT&          task,
@@ -286,7 +286,10 @@ private:
         float           edgeLookahead
     );
     bool applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick, bool eventLevel);
-    void requestServerTeleport(LocalPlayer& player, TeleportRequest const& request);
+    std::uint64_t queueTeleport(detail::TeleportQuery query, bool resetControls = false, std::uint64_t timeout = 2000);
+    void drainTeleport();
+    void cancelTeleport(char const* reason, bool discard = false);
+    void captureTeleport(detail::TeleportQuery const& query, detail::TeleportSnapshot& out);
     void applySlotRequest(LocalPlayer& player, detail::SlotQuery const& request, detail::SlotSnapshot& out);
     void captureState(
         ClientInstance&               client,
@@ -372,7 +375,7 @@ private:
     bool drainLegacyLocked();
     void drainTickStreams();
 
-    // Movement, look and teleport requests share one transactional mailbox so
+    // Movement and look requests share one transactional mailbox so
     // the client tick can take a single lock-free snapshot. Atomic payload
     // words make concurrent reads legal. Command sequence numbers make each
     // command visible exactly once, which
@@ -390,8 +393,6 @@ private:
         float           lookPitch    = 0.0f;
         int             lookTicks    = 0;
         std::uint32_t   lookSeq      = 0;
-        TeleportRequest teleport;
-        std::uint32_t   teleportSeq = 0;
     };
 
     template <typename Fn>
@@ -409,7 +410,6 @@ private:
 
     // safeTickPre/Post stage helpers; each keeps the exact ordering the
     // monolithic functions had (ProbeMod.cpp).
-    void consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests);
     bool queueFlight(detail::FlightQuery query, std::uint64_t timeout = 2000);
     void drainFlight();
     void tickFlightAssertion(LocalPlayer& player);
@@ -435,7 +435,6 @@ private:
     float         mActiveLookYaw      = 0.0f;
     float         mActiveLookPitch    = 0.0f;
     int           mActiveLookTicks    = 0;
-    std::uint32_t mSeenTeleportSeq    = 0;
 
     bool mPrevSprint  = false;
     bool mPrevSneak   = false;
@@ -483,7 +482,7 @@ private:
     std::atomic_bool mInjectingClick{false};
     // Set while the mod itself applies a turn (look/task), so the background
     // input guard lets it through.
-    std::atomic_bool mInjectingLook{false};
+    std::atomic<std::uint32_t> mInjectingLook{0}; // Overlapping client/tick turns.
     // Written by enable()/config and read on the tick thread.
     std::atomic_bool mBackgroundGuard{true};
     bool             mForeground     = true;
@@ -518,6 +517,10 @@ private:
     std::atomic<int>            mInputController{0};
     std::atomic<int>            mInputFocus{0};
     detail::FlightCapture mFlightCapture;
+    detail::TeleportCapture mTeleportCapture{detail::TeleportStage::Server, "teleport_stage_invalid"};
+    std::mutex mTeleportMutex; // Cold admission, scheduling and lifecycle only.
+    std::atomic<std::uint64_t> mTeleportGeneration{0};
+    std::uint64_t mNextTeleportId = 0; // Cold-owned.
     detail::FlightAssertion mFlightAssertion;
     std::mutex mFlightMutex; // Cold admission, completion and lifecycle only.
     std::atomic<std::uint64_t> mFlightGeneration{0};

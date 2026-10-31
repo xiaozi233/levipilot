@@ -67,6 +67,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             watchesRemoved = watchesOk ? watchesBefore : 0;
         }
         if (tasksLevel) {
+            cancelTeleport("panic");
             cancelTasks("panic");
             beginTask();
         }
@@ -214,6 +215,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["player_identity"] = {{"valid", identity.valid != 0}, {"epoch", mPoseEpoch.load()},
             {"sample_tick", identity.tick}, {"uuid_a", identity.uuidA}, {"uuid_b", identity.uuidB},
             {"faults", identityFailures.fault}, {"failures", identityFailures.cpp}, {"empty", identityFailures.empty}};
+        out["controls"] = {{"injecting_input", mInjectingInput.load()}, {"injecting_look", mInjectingLook.load() != 0},
+            {"cleanup_pending", mControlCleanupPending.load()}, {"held_mask", mControlHeldMask.load()}};
         out["world_entry"]     = mWorld.entryStatus();
         out["recording"]       = mLegacyStream.active();
         out["tick"]                  = mTick.load();

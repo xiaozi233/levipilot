@@ -146,10 +146,12 @@ void ProbeMod::checkpointLoad(std::string const& name) {
     }
     // Restoring a position must not strip potion effects (protection,
     // parkour potions) -- only the explicit reset command does that.
-    resetPlayer(point.x, point.y, point.z, true, point.yaw, true, point.pitch, false);
+    auto const teleportId = resetPlayer(point.x, point.y, point.z, true, point.yaw, true, point.pitch, false);
+    if (!teleportId) return;
     enqueue(
         nlohmann::json{
             {"event", "checkpoint_loaded"},
+            {"teleport_id", teleportId},
             {"name",  name               },
             {"x",     point.x            },
             {"y",     point.y            },

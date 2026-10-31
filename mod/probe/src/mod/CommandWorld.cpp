@@ -133,7 +133,7 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
         queueClientTask([this] { saveOptions(); });
         return true;
     }
-    if (cmd == "teleport") {
+    if (cmd == "teleport" || cmd == "selftest_teleport") {
         double x = 0.0, y = 0.0, z = 0.0;
         double yaw = 0.0, pitch = 0.0;
         // Non-finite or out-of-world values would flow into the server /tp
@@ -146,20 +146,41 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"x|y|z|yaw|pitch"})");
             return true;
         }
-        updateRequests([&j, x, y, z, yaw, pitch](RequestBlock& request) {
-            request.teleport.x           = static_cast<float>(x);
-            request.teleport.y           = static_cast<float>(y);
-            request.teleport.z           = static_cast<float>(z);
-            request.teleport.hasRotation = j.contains("yaw") || j.contains("pitch");
-            request.teleport.yaw         = static_cast<float>(yaw);
-            request.teleport.pitch       = static_cast<float>(pitch);
-            // reset() stores true here; the flag must not leak into later
-            // teleports, or one reset silently strips every potion effect for
-            // the rest of the session (observed as "protection vanished").
-            request.teleport.clearEffects = false;
-            ++request.teleportSeq;
-        });
-        // "teleported" is emitted from the server thread once the move is applied.
+        TeleportQuery query;
+        query.x = static_cast<float>(x);
+        query.y = static_cast<float>(y);
+        query.z = static_cast<float>(z);
+        query.hasRotation = j.contains("yaw") || j.contains("pitch");
+        query.yaw = static_cast<float>(yaw);
+        query.pitch = static_cast<float>(pitch);
+        bool reset = false;
+        std::uint64_t timeout = 2000;
+        if (cmd == "selftest_teleport") {
+            if (!mAllowSelftestStress.load()) {
+                enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+                return true;
+            }
+            auto const mode = j.value("mode", std::string{});
+            if (mode == "seh") query.test = TeleportTest::Seh;
+            else if (mode == "cpp") query.test = TeleportTest::Cpp;
+            else if (mode == "timeout") query.test = TeleportTest::Deferred;
+            else if (mode == "queue") query.test = TeleportTest::Queue;
+            else if (mode == "after_effects") query.test = TeleportTest::AfterEffects;
+            else if (mode == "after_teleport") query.test = TeleportTest::AfterTeleport;
+            else if (mode == "stale_epoch") query.test = TeleportTest::Obsolete;
+            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            auto const testTimeout = j.value("timeout_ms", 250);
+            if (testTimeout < 100 || testTimeout > 10000) {
+                enqueue(R"({"event":"error","reason":"bad_test_timeout"})");
+                return true;
+            }
+            timeout = static_cast<std::uint64_t>(testTimeout);
+            reset = j.value("reset", false);
+            query.clearEffects = reset;
+        }
+        // A fresh value keeps reset's clearEffects flag out of later teleports.
+        // The spool thread submits server work and formats the terminal reply.
+        queueTeleport(query, reset, timeout);
         return true;
     }
     if (cmd == "reset") {

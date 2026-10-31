@@ -9,6 +9,7 @@ from ..connection import PipeConnection
 
 class InputCommands(PipeConnection):
     def move(self, forward: float = 0.0, strafe: float = 0.0, ticks: int = 1) -> dict[str, Any]:
+        """Accept a desired movement; asynchronous SDK failures emit control_error."""
         return self.request(
             {
                 "cmd": "move",
@@ -34,6 +35,11 @@ class InputCommands(PipeConnection):
         lmb: bool = False,
         ticks: int = 1,
     ) -> dict[str, Any]:
+        """Accept desired controls; failed application stops this desired state.
+
+        The acceptance reply precedes application. New mods emit control_error
+        on application failures and retry uncertain key/button releases.
+        """
         return self.request(
             {
                 "cmd": "set",

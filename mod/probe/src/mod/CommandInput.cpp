@@ -5,6 +5,38 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_controls") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        if (mode == "off") {
+            for (auto& test : mControlTests) test = ControlTest::None;
+            enqueue(R"({"event":"control_test_armed"})");
+            return true;
+        }
+        if (!mAllowInputInject.load() || !mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"input_test_unavailable"})");
+            return true;
+        }
+        ControlTest test;
+        if (mode == "seh_before") test = ControlTest::SehBefore;
+        else if (mode == "cpp_before") test = ControlTest::CppBefore;
+        else if (mode == "seh_after") test = ControlTest::SehAfter;
+        else if (mode == "cpp_after") test = ControlTest::CppAfter;
+        else if (mode == "unavailable") test = ControlTest::Unavailable;
+        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        auto const operation = j.value("operation", std::string{});
+        for (unsigned i = 0; i < ControlDiagnostics::Operations; ++i) {
+            if (operation != controlOpName(static_cast<ControlOp>(i))) continue;
+            mControlTests[i] = test;
+            enqueue(R"({"event":"control_test_armed"})");
+            return true;
+        }
+        enqueue(R"({"event":"error","reason":"bad_test_operation"})");
+        return true;
+    }
     if (cmd == "selftest_input_events") {
         if (!mAllowSelftestStress.load()) {
             enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");

@@ -68,6 +68,7 @@ void ProbeMod::spoolThreadLoop() {
             drainMacroRecording();
             drainMacroPlayback();
             drainClicks();
+            drainControlDiagnostics();
             if (auto result = hookTakeCallResult()) enqueue(result->dump());
             reportPoseFaults();
             reportRecordFault();
@@ -103,6 +104,7 @@ void ProbeMod::spoolThreadLoop() {
         drainMacroRecording();
         drainMacroPlayback();
         drainClicks();
+        drainControlDiagnostics();
         if (auto result = hookTakeCallResult()) enqueue(result->dump());
         reportPoseFaults();
         reportRecordFault();

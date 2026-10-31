@@ -6,6 +6,14 @@ namespace probe {
 
 namespace {
 
+bool failControls(TaskStep& step) {
+    step.finished = true;
+    step.waypoint = step.useReady = false;
+    step.outcome.ok = false;
+    step.outcome.reason = "input_failed";
+    return true;
+}
+
 template <typename Advance>
 TaskStep taskTickWithSeh(Advance&& advance) {
     TaskStep step;
@@ -84,7 +92,7 @@ Steering steerToward(LocalPlayer& player, float x, float z, float distance, floa
 // reads/writes the shared lastX/lastZ/haveLast/stuckTicks/jumpCooldown fields
 // directly on the task.
 template <typename TaskT, bool CountJumps>
-void ProbeMod::walkToward(
+bool ProbeMod::walkToward(
     ClientInstance& client,
     LocalPlayer&    player,
     TaskT&          task,
@@ -98,7 +106,7 @@ void ProbeMod::walkToward(
 ) {
     auto const steering = steerToward(player, targetX, targetZ, distance, tolerance);
     if (std::fabs(steering.turn) > 0.01f) {
-        applyTurnDelta(player, Vec2{0.0f, steering.turn});
+        if (!applyTurnDelta(player, Vec2{0.0f, steering.turn})) return false;
     }
 
     Vec3 const pos = player.getFeetPos();
@@ -144,22 +152,22 @@ void ProbeMod::walkToward(
     state.sprint  = task.sprint && steering.forward == 1.0f;
     state.active  = true;
     state.jump    = wantJump;
-    applyControls(client, player, state);
+    return applyControls(client, player, state);
 }
 
-void ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
+bool ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
     Vec3 const   eye   = player.getHeadPos();
     double const dx    = point.x - eye.x;
     double const dy    = point.y - eye.y;
     double const dz    = point.z - eye.z;
     double const horiz = std::sqrt(dx * dx + dz * dz);
     if (horiz < 1.0e-6 && std::fabs(dy) < 1.0e-6) {
-        return;
+        return true;
     }
     float const yaw   = yawTo(dx, dz);
     float const pitch = pitchTo(dy, horiz);
     auto const& rot   = player.getRotation();
-    applyTurnDelta(player, Vec2{rot.x - pitch, wrapDegrees(yaw - rot.y)});
+    return applyTurnDelta(player, Vec2{rot.x - pitch, wrapDegrees(yaw - rot.y)});
 }
 
 void ProbeMod::cancelTasks(char const* reason) { mTasks.cancel(reason); }
@@ -195,7 +203,11 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
                 releaseMacroIfRequested();
                 if (mSeenTaskId != id) {
                     mSeenTaskId = id;
-                    applyControls(client, player, ControlState{});
+                    if (!applyControls(client, player, ControlState{})) {
+                        TaskStep failed;
+                        failControls(failed);
+                        return failed;
+                    }
                 }
                 TaskStep step;
                 step.finished = std::visit(
@@ -214,7 +226,7 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
                 if (step.finished) {
                     // Keep a successful jump pressed until origin consumes this tick.
                     bool const keepJumpPress = std::holds_alternative<JumpTask>(state) && step.outcome.ok;
-                    if (!keepJumpPress) applyControls(client, player, ControlState{});
+                    if (!keepJumpPress && !applyControls(client, player, ControlState{})) failControls(step);
                 }
                 return step;
             });
@@ -223,10 +235,11 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
     );
     if (active && !advanced) {
         auto const stopped = guardedTaskTick([&] {
-            applyControls(client, player, ControlState{});
-            return TaskStep{};
+            TaskStep step;
+            if (!applyControls(client, player, ControlState{})) failControls(step);
+            return step;
         });
-        if (stopped.finished) cancelTasks("task_fault");
+        if (stopped.finished) cancelTasks(stopped.outcome.reason);
     }
     return active;
 }
@@ -254,7 +267,7 @@ bool ProbeMod::tickNavigate(ClientInstance& client, LocalPlayer& player, Navigat
         return finish("timeout", false);
     }
 
-    walkToward<NavigateTask, true>(
+    bool const applied = walkToward<NavigateTask, true>(
         client,
         player,
         task,
@@ -266,7 +279,7 @@ bool ProbeMod::tickNavigate(ClientInstance& client, LocalPlayer& player, Navigat
         task.jumpDistance,
         task.edgeLookahead
     );
-    return false;
+    return applied ? false : failControls(step);
 }
 
 bool ProbeMod::tickJump(ClientInstance& client, LocalPlayer& player, JumpTask& task, TaskStep& step) {
@@ -312,7 +325,7 @@ bool ProbeMod::tickJump(ClientInstance& client, LocalPlayer& player, JumpTask& t
     if (task.hasYaw) {
         float const delta = std::clamp(wrapDegrees(task.yaw - rot.y), -35.0f, 35.0f);
         if (std::fabs(delta) > 0.01f) {
-            applyTurnDelta(player, Vec2{0.0f, delta});
+            if (!applyTurnDelta(player, Vec2{0.0f, delta})) return finish(false, "input_failed");
         }
     } else if (task.mode == JumpMode::Distance && (task.forward != 0.0f || task.x != 0.0f || task.z != 0.0f)) {
         float const dx = task.x - static_cast<float>(pos.x);
@@ -321,7 +334,7 @@ bool ProbeMod::tickJump(ClientInstance& client, LocalPlayer& player, JumpTask& t
             float const yaw   = yawTo(dx, dz);
             float const delta = std::clamp(wrapDegrees(yaw - rot.y), -35.0f, 35.0f);
             if (std::fabs(delta) > 0.01f) {
-                applyTurnDelta(player, Vec2{0.0f, delta});
+                if (!applyTurnDelta(player, Vec2{0.0f, delta})) return finish(false, "input_failed");
             }
         }
     }
@@ -331,7 +344,7 @@ bool ProbeMod::tickJump(ClientInstance& client, LocalPlayer& player, JumpTask& t
     state.sprint  = task.sprint;
     state.active  = task.forward != 0.0f || task.sprint || trigger;
     state.jump    = trigger;
-    applyControls(client, player, state);
+    if (!applyControls(client, player, state)) return finish(false, "input_failed");
     if (trigger) {
         return finish(true, "triggered");
     }
@@ -375,7 +388,7 @@ bool ProbeMod::tickRoute(ClientInstance& client, LocalPlayer& player, RouteTask&
         return true;
     }
 
-    walkToward(
+    bool const applied = walkToward(
         client,
         player,
         task,
@@ -387,7 +400,7 @@ bool ProbeMod::tickRoute(ClientInstance& client, LocalPlayer& player, RouteTask&
         point.jumpDistance,
         point.edgeLookahead
     );
-    return false;
+    return applied ? false : failControls(step);
 }
 
 bool ProbeMod::tickMine(LocalPlayer& player, MineTask& task, TaskStep& step) {
@@ -427,7 +440,7 @@ bool ProbeMod::tickMine(LocalPlayer& player, MineTask& task, TaskStep& step) {
         return finish("timeout", false, name);
     }
 
-    aimAt(player, center);
+    if (!aimAt(player, center)) return finish("input_failed", false, name);
 
     if (!task.started) {
         int       face = -1;
@@ -570,7 +583,7 @@ bool ProbeMod::tickPlace(LocalPlayer& player, PlaceTask& task, TaskStep& step) {
             against.y + 0.5f + static_cast<float>(off.y) * 0.5f,
             against.z + 0.5f + static_cast<float>(off.z) * 0.5f,
         };
-        aimAt(player, clickPoint);
+        if (!aimAt(player, clickPoint)) return finish("input_failed", false, "");
         if (task.slot >= 0) {
             // Re-applied in afterPlayerTick, where the hotbar write sticks.
             mSlotRequest.store(task.slot);

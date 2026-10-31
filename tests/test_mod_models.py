@@ -94,8 +94,14 @@ class ModModelTests(unittest.TestCase):
     def test_input_order_barriers_failures_cancellation_and_concurrent_wrap(self) -> None:
         self.run_native("input_event_model")
 
+    def test_control_edge_recovery_nested_flags_and_concurrent_diagnostics(self) -> None:
+        self.run_native("movement_model")
+
     def test_flight_assertion_budget_and_staged_lifecycle(self) -> None:
         self.run_native("flight_model")
+
+    def test_teleport_admission_partial_mutations_and_stale_callbacks(self) -> None:
+        self.run_native("teleport_model")
 
     def test_macro_playback_ownership_failures_and_restart(self) -> None:
         self.run_native("macro_playback_model")

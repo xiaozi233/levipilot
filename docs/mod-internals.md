@@ -4,11 +4,17 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **315/315**，现场 **698/698**（未跳过）；
+同步收集 tick，停止失败会传递错误。当前离线全量 **317/317**，现场 **868/868**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
 ## 注入时机
+
+移动/视角调用使用局部 SEH/C++、固定诊断计数、失败传播与默认按键释放重试。
+`--controls-only` **126/126**，本批合并传送后的离线 **317/317**、完整现场 **868/868**。
+失败消费并停止原输入/视角序列；默认路径的 held 释放成功才清除，不自动重放不确定按下。
+status.controls 暴露 held/cleanup/注入标记，control_error 是按操作汇总的后台诊断，
+不等同于逐请求完成。默认键位 Hardware HID 契约不变；范围与限制见 reliability-repairs.md。
 
 - Hook `LocalPlayer::$normalTick`（LL 实例 hook），在 `origin()` **之前**注入输入、之后采样。
   这与 dmf-mpk 的 macro 注入时机一致；`ClientLevelTickEvent` 偏晚，跳跃/按键会被覆盖。
@@ -65,8 +71,15 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
 
 ## 服务端权威操作
 
-- **传送**：`ServerInstance::queueForServerThread` → 按 UUID/名字找到服务端 `Player` →
-  `Actor::teleport(pos, dimension, rotation)`。坐标是脚部。
+- **传送**：spool 从 `TeleportCapture` 投递
+  `ServerInstance::queueForServerThread` → 按 UUID/世界代次共用 `ServerPlayerContext` →
+  `Actor::teleport(pos, dimension, rotation)`。坐标是脚部；不再读取客户端玩家名或在 tick 投递。
+  `teleport_queued`/`reset_done`/`checkpoint_loaded` 带 `teleport_id`，成功接受后唯一终结为
+  `teleported` 或带 `phase=teleport` 的 error；2 秒截止，忙时 `teleport_busy`，退出/panic
+  取消、重连丢弃旧回执。错误保守 `partial=true`，不重试已开始的副作用；仅 reset 清效果，
+  普通 teleport/checkpoint 保留效果。未给角度保留朝向，只给一个角度时另一个仍为零。
+  `selftest_teleport` 需 `allow_selftest_stress`；`driver/selftest.py --teleport-only` 验证故障、
+  效果/朝向回读与恢复（44/44），`--teleport-world` 另验真实重连/退出/重进（49/49）。
 - **飞行**：客户端和服务端玩家同时 `setAbility(MayFly/Flying)`；只写客户端时，传送后
   服务端 abilities 会把 `flying` 同步回来。
 - **命令**：服务器线程 + `PlayerCommandOrigin` + `MinecraftCommands::executeCommand`，
@@ -541,13 +554,12 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
 
 ## tick 开销测量与请求块（T9）
 
-- 请求块 seqlock：`mInput`/`mLook`/`mTeleport` 合并成一个 `RequestBlock`。管道线程在
-  `mRequestWriteMutex` 下写入并推进 `mRequestSeq`（奇数=写入中）；tick 线程每 tick 只做一次
-  `readRequests()` 原子快照，**读路径不再取任何 mutex**。每条命令带自己的序号
-  （`inputSeq/jumpSeq/lookSeq/teleportSeq`），tick 侧用本地计数器消费一次并自行递减
-  `ticks`，所以 `ticks<0`（直到 stop）和一次性 jump/teleport 的语义不变。
+- 请求块：移动/跳跃/look 共用 `RequestBlock`。`RequestMailbox` 冷侧在写锁内构造私有副本，
+  成功后按 64 位原子载荷发布；tick 每次 `readRequests()` 最多尝试 8 次，竞争时保留上次
+  已验证快照，不等待写者。每条命令带自己的 `inputSeq/jumpSeq/lookSeq`，tick 侧消费一次
+  并递减本地 ticks，`ticks<0` 仍表示直到 stop。传送已移出该请求块。
   `beginTask`/内部错误仍会写块（罕见），但只占写锁，不走读路径。
-- 快照同时用于 teleport（进 tick 前）、移动和 look（tick 后），保证同一 tick 看到一致的一组请求。
+- 移动和 look 使用同一份有效快照；跨客户端/服务端的传送不宣称与它们同 tick 原子生效。
 - `onPlayerTick` 进入时取一次 QPC，`safeTickPre` 结束后算 pre 耗时；`afterPlayerTick` 同理算
   post 耗时。`hook_us = pre + post`（不含 `origin()` 的游戏 tick），
   `tick_us` 是相邻两次 pre 开始的间隔。
@@ -922,9 +934,19 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **698/698**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **315/315**。
-完整套件之后的退出收尾异常仍待复核，见“物品栏”与 `reliability-repairs.md`。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **868/868**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **317/317**。
+本批最终姿态/能力/站稳与释放/解锁已回读恢复；此前退出异常根因仍待复核，未宣称已修复。
+
+### 移动/视角与传送（2026-10-31）
+
+- `--controls-only` **126/126**；传送专项 **44/44**，`--teleport-world "超平坦测试"`
+  **49/49**；完整 **868/868**（无跳过），离线 **317/317**。调用前/后 SEH/C++、
+  不可用返回、实际绑定/游戏状态释放、停止后不重放、任务与两类宏失败及恢复通过。
+  传送覆盖 busy/超时/队列失败/过期身份、部分副作用、效果与朝向、唯一回执和真实生命周期。
+- 完整构建、ruff check/format、mypy（90 files）、profile、三份 DLL 哈希一致；113 个既有
+  crash 文件无新增/修改。最终恢复通过，未做性能对照/现场热卸载；封包注入/内部错误
+  上报及其余 SDK 边界仍属第 12 项。验收日志与哈希见 `reliability-repairs.md`。
 
 ### 玩家身份快照（2026-10-31）
 

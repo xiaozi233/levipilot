@@ -37,7 +37,7 @@ class PhysicalInputContractTests(unittest.TestCase):
         source = (ROOT / "mod/probe/src/mod/Input.cpp").read_text(encoding="utf-8")
         # The direct impulse may only live behind the legacy early-return branch.
         real = source.split("bool ProbeMod::applyRealInput", 1)[1].split(
-            "void ProbeMod::applyControls", 1
+            "bool ProbeMod::applyControls", 1
         )[0]
         self.assertNotIn("jumpFromGround", real)
         self.assertNotIn("_updateClientMoveVector", real)

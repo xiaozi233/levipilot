@@ -281,6 +281,7 @@ bool ProbeMod::captureScan(LocalPlayer& player, ScanQuery const& request, ScanSn
 }
 
 void ProbeMod::resetQueries() {
+    cancelTeleport("capture_cancelled", true);
     cancelFlight("capture_cancelled", true);
     resetInputEvents();
     mStateCapture.reset();
@@ -293,6 +294,7 @@ void ProbeMod::resetQueries() {
     mEcsCapture.reset();
 }
 void ProbeMod::cancelQueries(char const* reason) {
+    cancelTeleport(reason);
     cancelFlight(reason);
     cancelInputEvents(reason);
     mStateCapture.cancel(reason);
@@ -306,6 +308,7 @@ void ProbeMod::cancelQueries(char const* reason) {
 }
 
 void ProbeMod::drainQueries() {
+    drainTeleport();
     drainFlight();
     drainInputEvents();
     drainEntities();

@@ -49,6 +49,7 @@ scenario DSL / LLM / shell
 | `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
 | `PoseModel.h` | 单 tick 姿态原子载荷快照、有界一致读取、世界代次隔离与故障计数 |
 | `PlayerIdentityModel.h` / `PlayerIdentity.cpp` | 无字符串/锁的 UUID 身份快照、局部采样边界与世界代次校验；冷侧读者不访问客户端玩家 |
+| `TeleportModel.h` / `Server.cpp` | 服务端独占传送请求、修改前准入、后台唯一回执与取消 |
 | `Options.cpp` | 运行时改选项并写回 `options.txt` |
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
@@ -111,7 +112,7 @@ scenario DSL / LLM / shell
   结构化异常由 `dispatchWithSeh` 转成 `internal_error`。请求、录制采样及客户端/服务端回调的
   SEH 边界在当前线程标记异常归属，已处理故障不会被 first-chance VEH 误记为进程崩溃。
 
-输入、视角、传送合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
+输入、视角合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
 载荷按 64 位原子字读写，tick 有界校验序号，竞争时保留上一份已验证快照，不等待写者。
 其他跨线程状态使用互斥量（任务、背包等请求）或原子量（各种 `*Requested`、`mRunning`）。
 
@@ -174,6 +175,20 @@ UI 查询槽。两类请求均有截止、取消与重连隔离，旧成功字�
 
 JSON 逐 tick 录制（内部名 legacy）与跑酷事件已迁到固定队列、局部 SEH 和后台格式化；
 旧 JSON 接口仍供 Python、CLI 与跑酷使用，二进制环形录制作为另一套协议并存。
+
+传送的 `TeleportCapture` 从服务端阶段开始，spool 投递独占
+请求并格式化唯一结果；tick 不再读取玩家名、分配任务或处理传送槽。按 UUID/世界代次
+共用 `ServerPlayerContext`，忙时拒绝，2 秒截止，退出/panic 取消，重连丢弃旧请求。
+reset/checkpoint 的成功事件仍表示接受，附 `teleport_id`；`teleported` 才表示服务端调用
+返回，实际到达用 state/settle 回读。失败保守 partial，不回滚或自动重放已开始的 SDK 调用。
+
+移动/视角的逐边沿/视角调用采用局部异常边界与 bool 失败传播；固定原子计数交
+spool 生成 control_error，status.controls 提供 held 与清理标记。默认控制对不确定按下
+保留释放意图，释放成功后才清除；失败序列停止，后续先清理再接纳新输入。视角 scope
+使用计数支持平台队列/tick 交错。接受回执、后台诊断与实际完成是不同语义；专项
+126/126、传送生命周期 49/49、完整 868/868 通过，边界见 reliability-repairs.md；
+未覆盖的 SDK 路径仍待治理，未做性能对照或现场热卸载。
+
 二进制 `RecordBuffer` 在冷侧准备存储、tick 无锁准入与发布，停止等待已准入采样。
 采样故障、退出和卸载终结当前 record_id，冷侧发送一次 `record_failed`；停止/导出保留
 失败及部分帧。Python 默认拒绝失败或丢行，显式部分导出仍校验代次，实验会话保留原异常。

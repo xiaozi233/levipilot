@@ -122,7 +122,7 @@ xmake -j4 -y
 | `fly` | `enabled`；客户端与服务端分阶段设置，两侧完成后回 `fly_ok`；接受时另发 `flight_queued{flight_id}` |
 | `togglefly` | `on`（可选，缺省=切换）；开关"双击空格切换飞行"的 `MayFly`，两侧应用后回 `togglefly_ok{mayfly,gamemode,flying,flight_id}`，客户端保留 8 tick 重断言；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
 | `input_lock` | `on`；锁住真实硬件键鼠与相机转向（注入照常），见「限制」 |
-| `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威；**不动药水效果** |
+| `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威；**不动药水效果**；`teleport_id` 关联接受/唯一结果，忙时拒绝，2 秒截止 |
 | `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试（只有它会清效果） |
 | `command` | `command`（可带 `/`）、`player?`；服务端线程以本地 UUID 或显式完整玩家名执行，保留 `@s`/`~`；身份未知/玩家不存在明确失败，不改用控制台 |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
@@ -190,6 +190,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
+传送已移出 tick，复用 UUID/世界代次解析，后台调度及回执。
+reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` 再回读到达；失败可能
+已部分清效果/传送，不自动重放。忙时拒绝，退出/panic 取消，重连丢弃旧请求。
+专项入口为 `driver/selftest.py --teleport-only`（44/44）/ `--teleport-world WORLD`（49/49）。
+
 `start/stop` 的 JSON 逐 tick 录制仍供 Python、DSL 与跑酷使用；内部采样改为固定队列，
 后台生成 JSON。保留旧字段，新增 `record_id/truncated`；`stopped` 增加 `ok/rows/record_id`，
 失败原因包括 `capture_fault/capture_failed/buffer_full/world_left/disabled`。Python 会传播明确
@@ -197,11 +202,19 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **698/698**（跑之前先 `clear @s` 清空快捷栏，否则
+当前基线：live selftest **868/868**（跑之前先 `clear @s` 清空快捷栏，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **315/315**。本轮完整自检后的清理出现世界退出，主菜单 `ready=false`，
-原因待查，最终姿态未恢复；这不计入上述自检通过数。常用实测数字：
+离线单测 **317/317**。最终坐标/朝向/能力/站稳、释放与解锁已回读恢复；113 个既有
+crash 文件无新增/修改，安装/构建/打包哈希一致。此前身份批次的收尾退出异常在用户
+正常退出重启后恢复，本轮未复现；其根因仍待复核。常用实测数字：
+
+移动/视角故障恢复：control_error 后台诊断和 status.controls；
+move/set/look 的接受回执不代表应用成功，失败会停止该序列，默认路径先重试不确定的
+按键/鼠标释放，再接纳新状态。`driver/selftest.py --controls-only` **126/126**，
+任务 input_failed、两类宏 playback_fault 与恢复通过；默认键位 Hardware HID 路径不变。
+本批合并传送后的完整/离线验收见上述基线。未做性能对照/现场热卸载，封包注入、
+内部错误上报及其余 SDK 边界仍待治理，详见 docs/reliability-repairs.md。
 
 2026-10-31 玩家身份：`--player-identity-world "超平坦测试"` **41/41**，完整现场
 **698/698**（无跳过）、离线 **315/315**。UUID/世界代次快照替代每 tick 玩家名分配与锁；

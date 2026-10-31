@@ -147,8 +147,8 @@ EntityStage ProbeMod::captureEntityStage(EntityStage stage, EntityQuery const& q
             out.pitch = pitchTo(dy, std::sqrt(dx * dx + dz * dz));
             auto const rot = player->getRotation();
             float dyaw = wrapDegrees(out.yaw - rot.y), dpitch = rot.x - out.pitch;
-            if (std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f)
-                applyTurnDelta(*player, Vec2{dpitch, dyaw});
+            if ((std::fabs(dyaw) > 1.0e-5f || std::fabs(dpitch) > 1.0e-5f)
+                && !applyTurnDelta(*player, Vec2{dpitch, dyaw})) out.error = "look_failed";
         })) out.error = "entities_fault";
     // RequestMailbox owns a lock: keep it outside the raw SEH frame so an AV
     // cannot bypass lock destruction. A failed game read never injects input.

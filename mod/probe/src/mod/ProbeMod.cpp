@@ -282,7 +282,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     tickInputInjection();
     tickPacketInject(player);
 
-    // T9: one lock-free snapshot of movement/look/teleport requests per tick.
+    // T9: one lock-free snapshot of movement/look requests per tick.
     RequestBlock const requests = readRequests();
 
     if (mResetInputButtons.exchange(false, std::memory_order_acq_rel)) {
@@ -290,8 +290,6 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         mHandlerStates.fill(false);
         mPrevJump = false;
     }
-
-    consumeTeleportRequest(player, requests);
 
     tickFlightAssertion(player);
 
@@ -313,15 +311,6 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
 
     consumeMovementRequests(*client, player, requests);
     consumeLookRequests(player, requests);
-}
-
-void ProbeMod::consumeTeleportRequest(LocalPlayer& player, RequestBlock const& requests) {
-    // Queued teleport goes through the integrated server so the position is
-    // authoritative; a client-only _setPos is corrected back on the next tick.
-    if (requests.teleportSeq != mSeenTeleportSeq) {
-        mSeenTeleportSeq = requests.teleportSeq;
-        requestServerTeleport(player, requests.teleport);
-    }
 }
 
 void ProbeMod::registerCommands(CommandRegistry& registry) {
@@ -398,10 +387,12 @@ void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& play
         state.active        = true;
         apply               = true;
     }
-    if (apply) {
-        applyControls(client, player, state);
-    } else {
-        applyControls(client, player, ControlState{});
+    if (!applyControls(client, player, apply ? state : ControlState{})) {
+        // This sequence is consumed. Do not silently replay an unbounded
+        // desired state after an uncertain edge; a new request may restart it.
+        mActiveInput = ControlState{};
+        mActiveInputTicks = 0;
+        mJumpRequestPending = false;
     }
 }
 
@@ -416,7 +407,11 @@ void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requ
     }
     bool const lookActive = mActiveLookTicks != 0;
     if (lookActive) {
-        auto const rot = player.getRotation();
+        Vec2 rot;
+        if (!guardedControl(ControlOp::LookRead, [&] { rot = player.getRotation(); return true; })) {
+            mActiveLookTicks = 0;
+            return;
+        }
         // _applyTurnDelta uses the opposite pitch sign from ActorRotation.x.
         float dy = mActiveLookRelative ? mActiveLookYaw : wrapDegrees(mActiveLookYaw - rot.y);
         float dp = mActiveLookRelative ? -mActiveLookPitch : (rot.x - mActiveLookPitch);
@@ -424,7 +419,7 @@ void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requ
             --mActiveLookTicks;
         }
         if (std::fabs(dy) > 1.0e-5f || std::fabs(dp) > 1.0e-5f) {
-            applyTurnDelta(player, Vec2{dp, dy});
+            if (!applyTurnDelta(player, Vec2{dp, dy})) mActiveLookTicks = 0;
         }
     }
 }
@@ -567,13 +562,9 @@ bool ProbeMod::allowTurnDelta() const {
     return detail::isGameForeground();
 }
 
-void ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
-    struct Guard {
-        std::atomic_bool& flag;
-        explicit Guard(std::atomic_bool& value) : flag(value) { flag = true; }
-        ~Guard() { flag = false; }
-    } guard{mInjectingLook};
-    player._applyTurnDelta(delta);
+bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
+    InjectionCountScope injecting(mInjectingLook);
+    return guardedControl(ControlOp::Turn, [&] { player._applyTurnDelta(delta); return true; });
 }
 
 void ProbeMod::updateFocusState() {

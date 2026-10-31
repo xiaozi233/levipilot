@@ -15,6 +15,8 @@
     py -3.11 driver/selftest.py --tick-safety-world "超平坦测试"  # plus menu cancellation/pose invalidation
     py -3.11 driver/selftest.py --binary-capture-only  # binary recording failures and retained rows
     py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
+    py -3.11 driver/selftest.py --teleport-only  # owned server teleport faults and side effects
+    py -3.11 driver/selftest.py --teleport-world "超平坦测试"  # plus reconnect/leave/rejoin
     py -3.11 driver/selftest.py --ecs-capture-only  # bounded ECS snapshots and stage failures
     py -3.11 driver/selftest.py --ecs-capture-world "超平坦测试"  # plus reconnect and leave/rejoin
     py -3.11 driver/selftest.py --macro-playback-only  # guarded replay, release and frame ownership
@@ -1531,6 +1533,168 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
 
 
+def check_controls(client: ModClient, checks: Checks) -> None:
+    """Exercise real control calls, uncertain edges, failure propagation and retry."""
+    original = client.state()
+    if not checks.check("controls_in_world", original.get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    client.input_lock(True)
+    client.input_cfg(mode=0, jump_impulse=0)
+    macro_name = f"selftest_controls_{time.monotonic_ns()}"
+    macro_path = directory / "macros" / f"{macro_name}.json"
+    client.stop_move()
+    settle(client, on_ground=True)
+
+    def arm(operation: str, mode: str) -> None:
+        client.request(
+            {"cmd": "selftest_controls", "operation": operation, "mode": mode},
+            "control_test_armed",
+        )
+
+    def recovery() -> dict[str, Any]:
+        deadline = time.monotonic() + 4
+        while True:
+            state: dict[str, Any] = client.status().get("controls", {})
+            if (
+                state.get("held_mask") == 0
+                and state.get("cleanup_pending") is False
+                and state.get("injecting_input") is False
+                and state.get("injecting_look") is False
+            ) or time.monotonic() >= deadline:
+                return state
+            time.sleep(0.01)
+
+    def diagnostic(operation: str, mode: str, prefix: str = "controls") -> None:
+        row = client.wait_event(
+            "control_error", 4, predicate=lambda row: row.get("operation") == operation
+        )
+        key = (
+            "faults"
+            if mode.startswith("seh")
+            else ("failures" if mode.startswith("cpp") else "unavailable")
+        )
+        checks.check(f"{prefix}_{operation}_{mode}_reported", int(row.get(key, 0)) == 1, str(row))
+        state = recovery()
+        checks.check(
+            f"{prefix}_{operation}_{mode}_releases",
+            state.get("held_mask") == 0
+            and state.get("cleanup_pending") is False
+            and state.get("injecting_input") is False
+            and state.get("injecting_look") is False,
+            str(state),
+        )
+        wait_ticks(client, 2)
+        current = client.state()
+        checks.check(
+            f"{prefix}_{operation}_{mode}_game_released",
+            current["input"].get("w") is False
+            and current["input"].get("jump") is False
+            and client.key_state(int(current["bindings"]["forward"])).get("down") is False,
+        )
+
+    try:
+        for operation in ("key_down", "key_up", "mouse_down", "mouse_up", "turn", "look_read"):
+            for mode in ("seh_before", "cpp_before", "seh_after", "cpp_after", "unavailable"):
+                client.stop_move()
+                client.look(0, relative=True)
+                recovery()
+                # Rebase the previous after-call fault's local turn through
+                # the authoritative server before testing the next sequence.
+                # A late camera correction must not look like replay.
+                if operation in ("turn", "look_read"):
+                    client.teleport(
+                        *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                        yaw=float(original["yaw"]),
+                        pitch=float(original["pitch"]),
+                    )
+                    wait_ticks(client, 4)
+                if operation in ("key_up", "mouse_up"):
+                    client.set_input(
+                        forward=1 if operation == "key_up" else 0,
+                        lmb=operation == "mouse_up",
+                        ticks=-1,
+                    )
+                    wait_ticks(client, 2)
+                arm(operation, mode)
+                if operation in ("turn", "look_read"):
+                    client.look(6, relative=True, ticks=-1)
+                elif operation in ("key_up", "mouse_up"):
+                    client.stop_move()
+                else:
+                    client.set_input(
+                        forward=1 if operation == "key_down" else 0,
+                        lmb=operation == "mouse_down",
+                        ticks=-1,
+                    )
+                diagnostic(operation, mode)
+                if operation in ("turn", "look_read"):
+                    yaw = float(client.state()["yaw"])
+                    wait_ticks(client, 4)
+                    after_yaw = float(client.state()["yaw"])
+                    checks.check(
+                        f"controls_{operation}_{mode}_not_replayed",
+                        abs((after_yaw - yaw + 180) % 360 - 180) < 0.05,
+                        f"before={yaw:.6f}, after={after_yaw:.6f}",
+                    )
+        for operation in ("bindings", "actions"):
+            arm(operation, "seh_before")
+            diagnostic(operation, "seh_before")
+        for operation in ("key_down", "turn"):
+            settle(client, on_ground=True)
+            arm(operation, "seh_after")
+            result = client.jump_when(
+                mode="now",
+                forward=0.25,
+                yaw=float(client.state()["yaw"]) + 15 if operation == "turn" else None,
+            )
+            checks.check(
+                f"controls_task_{operation}_fails",
+                result.get("ok") is False and result.get("reason") == "input_failed",
+                str(result),
+            )
+            diagnostic(operation, "seh_after", "controls_task")
+        for event_level in (False, True):
+            client.macro_save(macro_name, [["true", *["false"] * 8, "5", "0"]] * 4)
+            client.macro_load(macro_name)
+            arm("turn", "seh_after")
+            started = client.macro_run(event_level=event_level)
+            done = client.wait_event(
+                "macro_done",
+                4,
+                predicate=lambda row, run_id=started["run_id"]: row.get("run_id") == run_id,
+            )
+            checks.check(
+                f"controls_macro_{event_level}_turn_fails",
+                done.get("ok") is False and done.get("reason") == "playback_fault",
+                str(done),
+            )
+            diagnostic("turn", "seh_after", f"controls_macro_{event_level}")
+        settle(client, on_ground=True)
+        fresh = client.jump_when(mode="now")
+        checks.check("controls_fresh_task_recovers", fresh.get("ok") is True, str(fresh))
+        settle(client, on_ground=True)
+        checks.check(
+            "controls_ping_alive", bool(client.ping()) and client.state()["in_world"] is True
+        )
+    finally:
+        arm("", "off")
+        client.macro_stop()
+        macro_path.unlink(missing_ok=True)
+        client.stop_move()
+        client.look(0, relative=True)
+        recovery()
+        client.teleport(
+            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+            yaw=float(original["yaw"]),
+            pitch=float(original["pitch"]),
+        )
+        settle(client, on_ground=True)
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("controls_handled_fault_no_dump", after == before)
+
+
 def check_player_identity(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Verify UUID-only local resolution, failed samples and world retirement."""
     original = client.state()
@@ -1673,6 +1837,182 @@ def check_player_identity(client: ModClient, checks: Checks, world: str | None =
             identity_ready(True)
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     checks.check("identity_handled_fault_no_dump", after == before)
+
+
+def check_teleport(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Verify server teleport ownership, partial failures and session isolation."""
+    original = client.state()
+    if not checks.check(
+        "teleport_ready",
+        original.get("in_world") is True and not original.get("effects"),
+        "requires a world and no existing potion effects",
+    ):
+        return
+    client.input_lock(True)
+    client.set_input()
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    position = {axis: float(original[f"feet_{axis}"]) for axis in "xyz"}
+    yaw, pitch = float(original["yaw"]), float(original["pitch"])
+    checkpoint = f"selftest_teleport_{time.monotonic_ns()}"
+
+    def complete(teleport_id: int) -> dict[str, Any]:
+        return client.wait_event(
+            ("teleported", "error"),
+            4,
+            predicate=lambda row: row.get("teleport_id") == teleport_id,
+        )
+
+    def unique(teleport_id: int) -> bool:
+        try:
+            client.wait_event(
+                ("teleported", "error"),
+                0.12,
+                predicate=lambda row: row.get("teleport_id") == teleport_id,
+            )
+        except ModTimeout:
+            return True
+        return False
+
+    def marker() -> None:
+        client.command("effect @s speed 6000 0 true")
+        wait_ticks(client, 2)
+        if not any(int(effect.get("id", -1)) == 1 for effect in client.state().get("effects", [])):
+            raise ValueError("teleport fixture failed to apply speed effect")
+
+    def has_marker() -> bool:
+        return any(int(effect.get("id", -1)) == 1 for effect in client.state().get("effects", []))
+
+    def inject(mode: str, *, reset: bool = False, timeout: int = 250) -> dict[str, Any]:
+        return {
+            "cmd": "selftest_teleport",
+            **position,
+            "yaw": yaw + 35,
+            "pitch": 0,
+            "mode": mode,
+            "reset": reset,
+            "timeout_ms": timeout,
+        }
+
+    def restore_pose() -> dict[str, Any]:
+        reply = client.teleport(**position, yaw=yaw, pitch=pitch)
+        wait_ticks(client, 4)
+        return reply
+
+    try:
+        marker()
+        reply = restore_pose()
+        checks.check(
+            "teleport_server_result",
+            reply.get("source") == "server" and reply.get("ok") is True,
+            str(reply),
+        )
+        checks.check("teleport_preserves_effects", has_marker())
+        client.teleport(**position, yaw=yaw + 25, pitch=15)
+        client.teleport(**position)  # Neither angle keeps both current values.
+        wait_ticks(client, 4)
+        state = client.state()
+        checks.check(
+            "teleport_keeps_rotation",
+            abs((float(state["yaw"]) - yaw - 25 + 180) % 360 - 180) < 0.1
+            and abs(float(state["pitch"]) - 15) < 0.1,
+        )
+        client.teleport(**position, yaw=yaw)
+        wait_ticks(client, 4)
+        checks.check("teleport_partial_rotation_zero", abs(float(client.state()["pitch"])) < 0.1)
+        client.checkpoint_save(checkpoint)
+        accepted = client.checkpoint_load(checkpoint)
+        loaded = complete(int(accepted["teleport_id"]))
+        checks.check("teleport_checkpoint_complete", loaded.get("ok") is True and has_marker())
+        for mode, reason, reset in (
+            ("seh", "teleport_fault", False),
+            ("cpp", "teleport_failed", False),
+            ("timeout", "teleport_timeout", False),
+            ("queue", "server_task_queue_failed", False),
+            ("stale_epoch", "world_left", False),
+            ("after_effects", "teleport_fault", True),
+            ("after_teleport", "teleport_fault", False),
+        ):
+            restore_pose()
+            marker()
+            accepted = client.request(inject(mode, reset=reset), ("teleport_queued", "reset_done"))
+            teleport_id = int(accepted["teleport_id"])
+            result = complete(teleport_id)
+            checks.check(
+                f"teleport_{mode}",
+                result.get("phase") == "teleport"
+                and result.get("reason") == reason
+                and result.get("partial") is True,
+                str(result),
+            )
+            checks.check(f"teleport_{mode}_unique", unique(teleport_id))
+            wait_ticks(client, 4)
+            state = client.state()
+            expected_yaw = yaw + 35 if mode == "after_teleport" else yaw
+            checks.check(
+                f"teleport_{mode}_side_effects",
+                has_marker() == (mode != "after_effects")
+                and abs((float(state["yaw"]) - expected_yaw + 180) % 360 - 180) < 0.1,
+            )
+            checks.check(f"teleport_{mode}_recovery", restore_pose().get("ok") is True)
+
+        marker()
+        accepted = client.request(inject("timeout", timeout=1500), "teleport_queued")
+        rejected = client.request({"cmd": "reset", **position}, "error")
+        checks.check(
+            "teleport_busy_reset", rejected.get("reason") == "teleport_busy" and has_marker()
+        )
+        rejected = client.request({"cmd": "checkpoint_load", "name": checkpoint}, "error")
+        checks.check("teleport_busy_checkpoint", rejected.get("reason") == "teleport_busy")
+        rejected = client.request({"cmd": "teleport", **position, "x": "invalid"}, "error")
+        checks.check("teleport_bad_param_preserves", rejected.get("reason") == "bad_param")
+        result = complete(int(accepted["teleport_id"]))
+        checks.check("teleport_busy_original", result.get("reason") == "teleport_timeout")
+        accepted = client.reset(**position, yaw=yaw, pitch=pitch)
+        result = complete(int(accepted["teleport_id"]))
+        wait_ticks(client, 4)
+        checks.check(
+            "teleport_reset_clears_effects",
+            result.get("effects_cleared") is True and not client.state().get("effects"),
+        )
+        accepted = client.request(inject("timeout", timeout=10000), "teleport_queued")
+        client.request({"cmd": "panic", "level": "tasks"}, "panic_done")
+        result = complete(int(accepted["teleport_id"]))
+        checks.check("teleport_panic_cancels", result.get("reason") == "panic")
+        checks.check("teleport_panic_recovers", restore_pose().get("ok") is True)
+        if world:
+            accepted = client.request(inject("timeout", timeout=10000), "teleport_queued")
+            client.close()
+            client.connect()
+            client.input_lock(True)
+            checks.check("teleport_reconnect_fresh", restore_pose().get("ok") is True)
+            checks.check("teleport_reconnect_no_stale", unique(int(accepted["teleport_id"])))
+            accepted = client.request(inject("timeout", timeout=10000), "teleport_queued")
+            try:
+                client.leave_world()
+                client.wait_event("world_left", 45)
+                result = complete(int(accepted["teleport_id"]))
+                checks.check("teleport_world_cancel", result.get("reason") == "world_left")
+                rejected = client.request({"cmd": "teleport", **position}, "error")
+                checks.check("teleport_menu_rejects", rejected.get("reason") == "not_in_world")
+            finally:
+                client.enter_world_ready(world)
+                client.wait_in_world(timeout=60)
+            checks.check("teleport_world_recovers", restore_pose().get("ok") is True)
+    finally:
+        client.command("effect @s clear")
+        client.checkpoint_delete(checkpoint)
+        restore_pose()
+    restored = client.state()
+    checks.check(
+        "teleport_pose_restored",
+        all(abs(float(restored[f"feet_{axis}"]) - position[axis]) < 0.1 for axis in "xyz")
+        and abs((float(restored["yaw"]) - yaw + 180) % 360 - 180) < 0.1
+        and abs(float(restored["pitch"]) - pitch) < 0.1,
+    )
+    checks.check("teleport_alive", bool(client.ping()) and restored.get("in_world") is True)
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("teleport_handled_fault_no_dump", after == before)
 
 
 def check_flight(client: ModClient, checks: Checks, world: str | None = None) -> None:
@@ -3436,6 +3776,15 @@ def main(argv: list[str] | None = None) -> int:
         "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
     )
     modes.add_argument(
+        "--teleport-only", action="store_true", help="check owned server teleports and failures"
+    )
+    modes.add_argument(
+        "--teleport-world", metavar="WORLD", help="also check teleport reconnect/leave/rejoin"
+    )
+    modes.add_argument(
+        "--controls-only", action="store_true", help="check control faults and input release"
+    )
+    modes.add_argument(
         "--player-identity-only",
         action="store_true",
         help="check local UUID sampling and server resolution",
@@ -3533,7 +3882,10 @@ def main(argv: list[str] | None = None) -> int:
         return checks.finish()
 
     if (
-        args.player_identity_only
+        args.teleport_only
+        or args.teleport_world
+        or args.controls_only
+        or args.player_identity_only
         or args.player_identity_world
         or args.flight_only
         or args.flight_world
@@ -3558,7 +3910,11 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.player_identity_only or args.player_identity_world:
+            if args.teleport_only or args.teleport_world:
+                check_teleport(client, checks, args.teleport_world)
+            elif args.controls_only:
+                check_controls(client, checks)
+            elif args.player_identity_only or args.player_identity_world:
                 check_player_identity(client, checks, args.player_identity_world)
             elif args.flight_only or args.flight_world:
                 check_flight(client, checks, args.flight_world)
@@ -3586,7 +3942,11 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_capture(client, checks)
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "identity_error"
+                "teleport_error"
+                if args.teleport_only or args.teleport_world
+                else "controls_error"
+                if args.controls_only
+                else "identity_error"
                 if args.player_identity_only or args.player_identity_world
                 else "flight_error"
                 if args.flight_only or args.flight_world
@@ -3697,6 +4057,8 @@ def main(argv: list[str] | None = None) -> int:
         check_input_events(client, checks)
         check_flight(client, checks)
         check_player_identity(client, checks)
+        check_controls(client, checks)
+        check_teleport(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

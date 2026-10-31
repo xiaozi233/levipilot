@@ -14,11 +14,14 @@ namespace probe::detail {
 template <class Query, class Snapshot, class Stage>
 class StagedCapture {
 public:
-    explicit StagedCapture(char const* invalidStage = "capture_stage_invalid") : mInvalidStage(invalidStage) {}
+    explicit StagedCapture(char const* invalidStage = "capture_stage_invalid")
+    : StagedCapture(Stage::Client, invalidStage) {}
+    explicit StagedCapture(Stage firstStage, char const* invalidStage = "capture_stage_invalid")
+    : mFirstStage(firstStage), mInvalidStage(invalidStage) {}
 
     struct Request {
-        Request(Query value, std::uint64_t now, std::uint64_t timeout, char const* invalidStage)
-        : query(value), deadline(now + timeout), stageError(invalidStage) {}
+        Request(Query value, std::uint64_t now, std::uint64_t timeout, char const* invalidStage, Stage firstStage)
+        : query(value), deadline(now + timeout), stageError(invalidStage), stage(firstStage) {}
 
         std::optional<Stage> dispatch() {
             auto expected = Phase::Pending;
@@ -61,7 +64,7 @@ public:
         std::atomic<Phase> phase{Phase::Pending};
         std::atomic<char const*> failure{nullptr};
         std::atomic_bool consuming{false};
-        Stage stage = Stage::Client;
+        Stage stage;
     };
 
     struct Completion {
@@ -95,7 +98,7 @@ public:
 
     std::shared_ptr<Request> begin(Query query, std::uint64_t now, std::uint64_t timeout = 2000) {
         if (mCurrent.load(std::memory_order_acquire)) return {};
-        std::shared_ptr<Request> request = std::make_unique<Request>(query, now, timeout, mInvalidStage);
+        std::shared_ptr<Request> request = std::make_unique<Request>(query, now, timeout, mInvalidStage, mFirstStage);
         std::shared_ptr<Request> expected;
         if (!mCurrent.compare_exchange_strong(expected, request)) return {};
         return request;
@@ -122,6 +125,7 @@ public:
 
 private:
     std::atomic<std::shared_ptr<Request>> mCurrent;
+    Stage const mFirstStage;
     char const* const mInvalidStage;
 };
 

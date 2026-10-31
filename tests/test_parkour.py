@@ -7,14 +7,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from driver.harness import ModProtocolError
 from driver.parkour import (
     Tick,
     compare_runs,
     load_ticks,
+    read_until_run_end,
     segment_jumps,
     splits,
     summarize,
 )
+from tests.test_transport import FakeClient
 
 
 def tick(
@@ -111,6 +114,33 @@ class JumpSegmentationTests(unittest.TestCase):
         jumps = segment_jumps(ticks)
         self.assertEqual(len(jumps), 1)
         self.assertTrue(jumps[0].jumped)
+
+
+class RecordingTests(unittest.TestCase):
+    def test_macro_stop_drains_until_recording_receipt(self) -> None:
+        client = FakeClient()
+        for event in (
+            {"event": "tick", "record_id": 3, "tick": 1},
+            {"event": "macro_done"},
+            {"event": "tick", "record_id": 3, "tick": 2},
+            {"event": "stopped", "record_id": 2, "ok": True},
+            {"event": "tick", "record_id": 3, "tick": 3},
+            {"event": "stopped", "record_id": 3, "ok": True},
+        ):
+            client._session.lines.put(event)
+        rows = read_until_run_end(client, 8, record_id=3)
+        self.assertEqual([row["tick"] for row in rows], [1, 2, 3])
+        self.assertEqual(client.sent, [{"cmd": "stop"}])
+        self.assertEqual(client.readline()["record_id"], 2)
+
+    def test_failure_preserves_partial_rows_and_propagates(self) -> None:
+        client = FakeClient()
+        client._session.lines.put({"event": "tick", "tick": 1})
+        client._session.lines.put({"event": "stopped", "ok": False, "reason": "capture_fault"})
+        rows = []
+        with self.assertRaisesRegex(ModProtocolError, "capture_fault"):
+            read_until_run_end(client, 8, samples=rows)
+        self.assertEqual([row["tick"] for row in rows], [1])
 
 
 class SummaryTests(unittest.TestCase):

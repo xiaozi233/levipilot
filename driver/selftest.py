@@ -12,6 +12,8 @@
     py -3.11 driver/selftest.py --query-lifecycle-world "超平坦测试"  # reconnect/leave/rejoin
     py -3.11 driver/selftest.py --entry-lifecycle-world "超平坦测试"  # startup watchdog/recovery
     py -3.11 driver/selftest.py --overhead-only  # read concurrently across a full sample-ring wrap
+    py -3.11 driver/selftest.py --tick-stream-only  # JSON recording order/faults and parkour events
+    py -3.11 driver/selftest.py --tick-stream-world "超平坦测试"  # plus leave/rejoin recording lifecycle
 
 Covers: pipe, state, inventory read/write/give/clear, teleport, server command,
 entity query, look-at, attack and interact. The original slot-0 item and the
@@ -43,6 +45,7 @@ from driver.harness.lab import Builder, double_space_fly, settle, swim_drive, sw
 from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry, decode_dump  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
+from driver.parkour import read_until_run_end  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
 
 # Fixed swim fixture: 3x3x10 water column inside a stone shell at (900, 900).
@@ -913,6 +916,230 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
         )
 
 
+def check_tick_streams(client: ModClient, checks: Checks, world: str | None = None) -> None:
+    """Exercise the real producer/consumer boundary and explicit failure outcomes."""
+    original = client.state()
+    if not checks.check("tick_stream_in_world", original.get("in_world") is True):
+        return
+
+    def collect(started: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows = []
+        while True:
+            row = client.wait_event(
+                ("tick", "stopped"),
+                5,
+                predicate=lambda row: row.get("record_id") == started["record_id"],
+            )
+            if row["event"] == "stopped":
+                return rows, row
+            rows.append(row)
+
+    def no_late(record_id: int) -> bool:
+        try:
+            client.wait_event(
+                ("tick", "stopped"), 0.2, predicate=lambda row: row.get("record_id") == record_id
+            )
+        except ModTimeout:
+            return True
+        return False
+
+    started = client.start(8)
+    rows, done = collect(started)
+    checks.check(
+        "tick_stream_exact_max",
+        [row["tick"] for row in rows] == list(range(1, 9))
+        and done.get("ok") is True
+        and done.get("reason") == "max_ticks"
+        and done.get("rows") == 8,
+        str(done),
+    )
+    required = {
+        "x",
+        "y",
+        "z",
+        "vx",
+        "vy",
+        "vz",
+        "yaw",
+        "pitch",
+        "on_ground",
+        "in_air",
+        "jump_edge",
+        "block_below",
+        "block_feet",
+        "block_head",
+        "sprint",
+        "sneak",
+        "jump",
+        "w",
+        "a",
+        "s",
+        "d",
+        "action_sprint",
+        "input_sprint",
+        "input_sprint_down",
+        "health",
+    }
+    checks.check(
+        "tick_stream_fields",
+        all(required <= row.keys() and not row.get("truncated") for row in rows),
+    )
+    checks.check("tick_stream_unique_terminal", no_late(started["record_id"]))
+
+    started = client.start()
+    before = int(client.status()["tick"])
+    for value in (-1, 1.5, "bad", None):
+        rejected = client.request({"cmd": "start", "max_ticks": value}, "error")
+        checks.check(f"tick_stream_invalid_{value}", rejected.get("reason") == "bad_param")
+    rejected = client.request({"cmd": "start", "max_ticks": 1}, "error")
+    status = client.status()
+    checks.check(
+        "tick_stream_busy_preserves_session",
+        rejected.get("reason") == "recording_busy"
+        and status.get("recording") is True
+        and int(status["tick"]) >= before,
+    )
+    wait_ticks(client, 4)
+    done = client.stop()
+    rows = [
+        client.wait_event(
+            "tick", 2, predicate=lambda row: row.get("record_id") == started["record_id"]
+        )
+        for _ in range(int(done["rows"]))
+    ]
+    checks.check(
+        "tick_stream_stop_drains_admitted",
+        done.get("ok") is True
+        and done.get("reason") == "client"
+        and len(rows) >= 4
+        and [row["tick"] for row in rows] == list(range(1, len(rows) + 1)),
+        str(done),
+    )
+    checks.check("tick_stream_no_sample_after_stop", no_late(started["record_id"]))
+    for i in range(4):
+        rows = client.record(3)
+        checks.check(
+            f"tick_stream_restart_{i}",
+            [row["tick"] for row in rows] == [1, 2, 3]
+            and len({row["record_id"] for row in rows}) == 1,
+        )
+
+    for mode, reason in (
+        ("seh", "capture_fault"),
+        ("cpp", "capture_failed"),
+        ("overflow", "buffer_full"),
+    ):
+        started = client.request(
+            {"cmd": "selftest_tick_stream", "mode": mode}, ("started", "error")
+        )
+        if started.get("event") == "error":
+            checks.check("tick_stream_fault_gate", False, str(started))
+            break
+        rows, done = collect(started)
+        checks.check(
+            f"tick_stream_{mode}_terminal",
+            done.get("ok") is False
+            and done.get("reason") == reason
+            and len(rows) == (3 if mode == "overflow" else 0),
+            str(done),
+        )
+        checks.check(f"tick_stream_{mode}_unique", no_late(started["record_id"]))
+        acknowledged = client.request({"cmd": "stop"}, "stopped")
+        checks.check(f"tick_stream_{mode}_failure_retained", acknowledged == done)
+        checks.check(
+            f"tick_stream_{mode}_recovery", len(client.record(2)) == 2 and bool(client.ping())
+        )
+
+    for mode, reason in (("seh", "capture_fault"), ("cpp", "capture_failed")):
+        client.request(
+            {"cmd": "selftest_tick_stream", "target": "parkour", "mode": mode},
+            "tick_stream_test_armed",
+        )
+        diagnostic = client.wait_event("parkour_diagnostic", 3)
+        checks.check(
+            f"parkour_{mode}_isolated",
+            diagnostic.get("reason") == reason and diagnostic.get("count") == 1,
+            str(diagnostic),
+        )
+        checks.check(
+            f"parkour_{mode}_recovery",
+            client.state().get("in_world") is True and wait_ticks(client, 2) >= 2,
+        )
+
+    name = f"selftest_tick_stream_{time.monotonic_ns()}"
+    path = Path(str(client.status()["spool"])).parent / "macros" / f"{name}.json"
+    try:
+        client.macro_save(name, [["false"] * 9 for _ in range(4)])
+        client.macro_load(name)
+        started = client.start(40)
+        client.send({"cmd": "macro_run", "loop": False})
+        rows = read_until_run_end(client, 40, record_id=started["record_id"])
+        checks.check(
+            "tick_stream_parkour_consumer",
+            4 <= len(rows) < 40
+            and [row["tick"] for row in rows] == list(range(1, len(rows) + 1))
+            and client.status().get("recording") is False,
+            f"rows={len(rows)}",
+        )
+    finally:
+        path.unlink(missing_ok=True)
+
+    # Use a real fall after fault recovery; a pure model cannot prove event delivery.
+    safe = original.get("on_ground") and not original.get("in_water") and not original.get("flying")
+    if checks.check("parkour_live_fixture", bool(safe), "dry ground, not flying"):
+        pos = [float(original[f"feet_{axis}"]) for axis in "xyz"]
+        client.stop_move()
+        # Discard already delivered landings before creating this fall.
+        with contextlib.suppress(ModTimeout):
+            while True:
+                client.wait_event("player_landed", 0.05)
+        try:
+            client.teleport(pos[0], pos[1] + 3, pos[2])
+            landed = client.wait_event("player_landed", 5)
+            final = settle(client, on_ground=True)
+            checks.check(
+                "parkour_landed_after_fault",
+                float(landed.get("fall_distance", 0)) >= 1.5
+                and final["ok"]
+                and abs(float(final["state"]["feet_y"]) - pos[1]) < 0.1,
+                str(landed),
+            )
+        finally:
+            client.teleport(*pos, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            settle(client, on_ground=True)
+
+    if world:
+        started = client.start()
+        try:
+            wait_ticks(client, 4)
+            client.leave_world()
+            client.wait_event("world_left", 45)
+            rows, done = collect(started)
+            checks.check(
+                "tick_stream_world_cancel",
+                done.get("reason") == "world_left"
+                and done.get("ok") is False
+                and len(rows) >= 4
+                and len(rows) == done.get("rows"),
+                str(done),
+            )
+            checks.check("tick_stream_world_no_late", no_late(started["record_id"]))
+            deadline = time.monotonic() + 45
+            while not client.worlds().get("ready"):
+                if time.monotonic() >= deadline:
+                    raise ModTimeout("tick stream: main menu did not become ready")
+                time.sleep(0.1)
+            refused = client.request({"cmd": "start"}, "error")
+            checks.check("tick_stream_menu_rejected", refused.get("reason") == "not_in_world")
+        finally:
+            client.enter_world_ready(world)
+            client.wait_in_world(timeout=60)
+            client.teleport(*(float(original[f"feet_{axis}"]) for axis in "xyz"))
+            restored = settle(client, on_ground=True)
+            checks.check("tick_stream_world_still", restored["ok"], str(restored))
+        checks.check("tick_stream_world_recovery", len(client.record(3)) == 3)
+
+
 def check_overhead_window(client: ModClient, checks: Checks, *, wrap: bool = False) -> None:
     """Verify published window bounds/legacy metrics while real ticks overwrite it."""
     start = client.overhead()
@@ -1613,6 +1840,14 @@ def main(argv: list[str] | None = None) -> int:
         help="read overhead concurrently across 1100 real ticks and verify record path counters",
     )
     modes.add_argument(
+        "--tick-stream-only",
+        action="store_true",
+        help="check JSON streams and parkour event safety",
+    )
+    modes.add_argument(
+        "--tick-stream-world", metavar="WORLD", help="also check stream termination on leave/rejoin"
+    )
+    modes.add_argument(
         "--entry-lifecycle-world",
         metavar="WORLD",
         help="save/leave, check entry timeout/quarantine and missing join recovery, then restore WORLD",
@@ -1690,10 +1925,14 @@ def main(argv: list[str] | None = None) -> int:
         or args.query_lifecycle_world
         or args.macro_limit_only
         or args.entry_lifecycle_world
+        or args.tick_stream_only
+        or args.tick_stream_world
     ):
         try:
             client.input_lock(True)
-            if args.entry_lifecycle_world:
+            if args.tick_stream_only or args.tick_stream_world:
+                check_tick_streams(client, checks, args.tick_stream_world)
+            elif args.entry_lifecycle_world:
                 check_entry_lifecycle(client, checks, args.entry_lifecycle_world)
             elif args.macro_limit_only:
                 check_macro_record_limits(client, checks)
@@ -1785,6 +2024,7 @@ def main(argv: list[str] | None = None) -> int:
         check_task_lifecycle(client, checks)
         check_query_capture(client, checks)
         check_macro_record_limits(client, checks)
+        check_tick_streams(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 

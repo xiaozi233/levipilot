@@ -64,6 +64,9 @@ class ModModelTests(unittest.TestCase):
     def test_record_session_and_wraparound(self) -> None:
         self.run_native("record_model")
 
+    def test_tick_stream_order_terminal_races_and_parkour_baselines(self) -> None:
+        self.run_native("tick_stream_model")
+
     def test_atomic_ring_publication_and_overwrite(self) -> None:
         self.run_native("atomic_ring_model")
 

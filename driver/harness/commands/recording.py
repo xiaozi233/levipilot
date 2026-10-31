@@ -16,7 +16,15 @@ class RecordingCommands(PipeConnection):
         return self.request({"cmd": "start", "max_ticks": int(max_ticks)}, "started")
 
     def stop(self) -> dict[str, Any]:
-        return self.request({"cmd": "stop"}, "stopped")
+        reply = self.request({"cmd": "stop"}, "stopped")
+        self.check_recording_result(reply)
+        return reply
+
+    @staticmethod
+    def check_recording_result(reply: dict[str, Any]) -> None:
+        """Old mods omit ok; an explicit failure must not look like a complete run."""
+        if reply.get("ok") is False:
+            raise ModProtocolError(f"recording: {reply.get('reason', 'failed')}")
 
     def record_bin_start(self, period: int = 1, timeout: float | None = None) -> dict[str, Any]:
         """Start the fixed-size binary tick ring (T4)."""
@@ -86,7 +94,8 @@ class RecordingCommands(PipeConnection):
     ) -> list[dict[str, Any]]:
         samples: list[dict[str, Any]] = []
         with self.exchange():
-            self.start(max_ticks)
+            started = self.start(max_ticks)
+            record_id = started.get("record_id")
             try:
                 if move_ticks:
                     self.send(
@@ -100,13 +109,19 @@ class RecordingCommands(PipeConnection):
                 while True:
                     # wait_event preserves unrelated notifications without
                     # immediately rereading the same deferred notification.
-                    message = self.wait_event(("tick", "stopped", "moving", "stopping"))
+                    message = self.wait_event(
+                        ("tick", "stopped", "moving", "stopping"),
+                        predicate=lambda row: (
+                            record_id is None or row.get("record_id", record_id) == record_id
+                        ),
+                    )
                     event = message.get("event")
                     if event == "tick":
                         samples.append(message)
                         if on_sample is not None:
                             on_sample(message)
                     elif event == "stopped":
+                        self.check_recording_result(message)
                         break
             except BaseException:
                 # Leaving the mod recording (max_ticks=0 is unbounded) would

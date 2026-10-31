@@ -147,7 +147,7 @@ class ModAgent:
 
     def stop_recording(self) -> dict[str, Any]:
         try:
-            self.client.request({"cmd": "stop"}, "stopped")
+            self.client.stop()
         finally:
             self._end_recording()
         samples = list(self._samples)

@@ -190,10 +190,22 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
-当前基线：live selftest **377/377**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
+`start/stop` 的 JSON 逐 tick 录制仍供 Python、DSL 与跑酷使用；内部采样改为固定队列，
+后台生成 JSON。保留旧字段，新增 `record_id/truncated`；`stopped` 增加 `ok/rows/record_id`，
+失败原因包括 `capture_fault/capture_failed/buffer_full/world_left/disabled`。Python 会传播明确
+失败；重复 stop 保留原终结结果。在途 start 返回 `recording_busy`，主菜单不接受开始。
+队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
+同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
+
+当前基线：live selftest **411/411**（跑之前先 `clear @s` 腾一个空快捷栏位置，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress`；2026-10-31 全套，无跳过，含异常恢复、宏会话、聊天、服务端物品使用与查询采样检查）、
-离线单测 **289/289**。常用实测数字：
+离线单测 **296/296**。常用实测数字：
+
+2026-10-31 JSON 录制/跑酷事件：`--tick-stream-world "超平坦测试"` **39/39**，完整现场
+**411/411**（无跳过）、离线 **296/296**。覆盖有序终结、无迟到采样、异常/缓冲满唯一失败与
+恢复、主菜单拒绝和退出重进；4 tick 宏排出 5 条连续样本，真实落地在故障后仍可观察。
+构建/静态/profile 检查与安装哈希一致，无新增/修改 crash 文件。
 
 2026-10-31 实体/快捷栏迁移：查询专项 **99/99**、断线/退出/重进 **16/16**，
 完整现场 **377/377**（无跳过）、离线 **289/289**。实体查询、信息、攻击、交互和看向共用
@@ -201,7 +213,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 退出取消、重连丢弃；至多 512 行，文字截断报告 `truncated`。实体 JSON 移到 spool。
 快捷栏保持 tick 后应用和原 `select_slot_ok`/`select_slot_done`，完成回执改为后台格式化，
 在途拒绝 `select_slot_busy`，主菜单明确拒绝。已开始的游戏调用不支持超时抢占；
-SDK 名称分配与 legacy/事件/宏热路径仍待治理。构建/静态/profile 检查与安装哈希一致，
+SDK 名称分配与宏等热路径仍待治理。构建/静态/profile 检查与安装哈希一致，
 无新增/修改 crash 文件。交互仍为输入 best effort，不保证所有实体都发生世界交互。
 
 2026-10-31 Overhead 统计环：`--overhead-only` **7/7**，真实推进 1100 tick、

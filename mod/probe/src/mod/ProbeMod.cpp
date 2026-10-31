@@ -133,6 +133,7 @@ bool ProbeMod::disable() {
         return true;
     }
 
+    stopLegacy(StreamEnd::Disabled, false);
     cancelTasks("disabled");
     mChatCapture.cancel("disabled");
     cancelQueries("disabled");
@@ -188,7 +189,6 @@ bool ProbeMod::disable() {
         std::lock_guard lock(mQueueMutex);
         mQueue.clear();
     }
-    mRecording = false;
     getSelf().getLogger().info("harness: disabled");
     return true;
 }
@@ -641,9 +641,9 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 
     // Parkour events: landing (with fall distance), damage and death. These
     // run on every tick, independent of JSON/binary recording.
-    tickParkourEvents(player);
+    tickParkourEvents(player, tickIndex);
 
-    emitLegacyTickJson(*client, player, tickIndex);
+    captureLegacyTick(*client, player);
 }
 
 void ProbeMod::recordTickPose(LocalPlayer& player) {
@@ -696,117 +696,6 @@ void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
     mScanCapture.advance([&](auto const& request, auto& out) {
         return request.test != CaptureTest::Deferred && captureScan(player, request, out);
     });
-}
-
-void ProbeMod::tickParkourEvents(LocalPlayer& player) {
-    float const health   = player.getHealth();
-    auto const  pose     = player.getFeetPos();
-    bool const  onGround = player.isOnGround();
-    if (!onGround) {
-        if (!mWasAirborne) {
-            mWasAirborne = true;
-            mAirStartY   = static_cast<float>(pose.y);
-        }
-    } else if (mWasAirborne) {
-        mWasAirborne = false;
-        float const fall = mAirStartY - static_cast<float>(pose.y);
-        if (fall >= 0.75f) {
-            enqueue(
-                nlohmann::json{
-                    {"event",         "player_landed"                       },
-                    {"fall_distance", finiteOrZero(fall)                    },
-                    {"x",             finiteOrZero(static_cast<float>(pose.x))},
-                    {"y",             finiteOrZero(static_cast<float>(pose.y))},
-                    {"z",             finiteOrZero(static_cast<float>(pose.z))},
-                    {"health",        finiteOrZero(health)                  },
-            }
-                    .dump()
-            );
-        }
-    }
-    if (health < mLastHealth - 0.01f) {
-        enqueue(
-            nlohmann::json{
-                {"event",  "player_hurt"                       },
-                {"health", finiteOrZero(health)                },
-                {"damage", finiteOrZero(mLastHealth - health)  },
-        }
-                .dump()
-        );
-    }
-    if (health <= 0.0f && mLastHealth > 0.0f) {
-        enqueue(
-            nlohmann::json{
-                {"event", "player_died"                                  },
-                {"x",     finiteOrZero(static_cast<float>(pose.x))       },
-                {"y",     finiteOrZero(static_cast<float>(pose.y))       },
-                {"z",     finiteOrZero(static_cast<float>(pose.z))       },
-        }
-                .dump()
-        );
-    }
-    mLastHealth = health;
-}
-
-void ProbeMod::emitLegacyTickJson(ClientInstance& client, LocalPlayer& player, std::uint64_t tickIndex) {
-    // Compatibility JSON recording; the binary ring is the zero-alloc path.
-    if (!mRecording.load(std::memory_order_relaxed)) {
-        return;
-    }
-
-    auto const& pos = player.getPosition();
-    auto        vel = player.getVelocity();
-    auto const  rot = player.getRotation();
-    auto        in  = readInput(client);
-
-    bool actionSprint = false;
-    if (auto action = player.getEntityContext().tryGetComponent<PlayerActionComponent>()) {
-        actionSprint = action->mPlayerActions->test(PlayerActionStartSprinting);
-    }
-
-    auto const  feet     = player.getFeetPos();
-    bool const  onGround = player.isOnGround();
-    int const   fx       = static_cast<int>(std::floor(feet.x));
-    int const   fy       = static_cast<int>(std::floor(feet.y));
-    int const   fz       = static_cast<int>(std::floor(feet.z));
-    int const   hy       = static_cast<int>(std::floor(feet.y + 1.8f));
-    auto const& source   = player.getDimensionBlockSourceConst();
-
-    nlohmann::json j;
-    j["event"]             = "tick";
-    j["tick"]              = tickIndex;
-    j["x"]                 = finiteOrZero(static_cast<float>(pos.x));
-    j["y"]                 = finiteOrZero(static_cast<float>(pos.y));
-    j["z"]                 = finiteOrZero(static_cast<float>(pos.z));
-    j["vx"]                = finiteOrZero(static_cast<float>(vel.x));
-    j["vy"]                = finiteOrZero(static_cast<float>(vel.y));
-    j["vz"]                = finiteOrZero(static_cast<float>(vel.z));
-    j["yaw"]               = finiteOrZero(rot.y);
-    j["pitch"]             = finiteOrZero(rot.x);
-    j["on_ground"]         = onGround;
-    j["in_air"]            = !onGround;
-    j["jump_edge"]         = mJumpEdgeThisTick;
-    j["block_below"]       = blockName(source, fx, fy - 1, fz);
-    j["block_feet"]        = blockName(source, fx, fy, fz);
-    j["block_head"]        = blockName(source, fx, hy, fz);
-    j["sprint"]            = player.isSprinting();
-    j["sneak"]             = player.isSneaking();
-    j["jump"]              = in.jump;
-    j["w"]                 = in.w;
-    j["a"]                 = in.a;
-    j["s"]                 = in.s;
-    j["d"]                 = in.d;
-    j["action_sprint"]     = actionSprint;
-    j["input_sprint"]      = in.sprint;
-    j["input_sprint_down"] = in.sprint;
-    j["health"]            = player.getHealth();
-    enqueue(j.dump());
-
-    auto max = mMaxTicks.load(std::memory_order_relaxed);
-    if (max != 0 && tickIndex >= max) {
-        mRecording = false;
-        enqueue(R"({"event":"stopped","reason":"max_ticks"})");
-    }
 }
 
 bool ProbeMod::allowTurnDelta() const {

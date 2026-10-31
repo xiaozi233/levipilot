@@ -4,7 +4,7 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。离线全量 **289/289**，现场 **377/377**（未跳过）；
+同步收集 tick，停止失败会传递错误。离线全量 **296/296**，现场 **411/411**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
@@ -126,6 +126,39 @@ SHA-256 相同：`32DD07EEA2C07BE6A0F1FCD9E42327C652650AD42C00B9F902F66302E8D5DC
   SEH/C++/超时唯一终结和恢复、busy、快捷栏空/非空/边界回读、断线与真实退出重进。
   安装/构建 DLL SHA-256 为 `B55D3DD56823A4C0CCAE438A4B8713054197E7465DFCD3AC53AD1C708F0063C5`，
   无新增/修改 crash 文件；实体攻击血量回读 9→8。日志 `out/reliability-entities-*`。
+
+## JSON 录制与跑酷事件（2026-10-31）
+
+`start/stop` 是仍被 `client.record()`、场景 DSL 与跑酷工具使用的 JSON 逐 tick 接口，
+与 `record_start/record_stop` 的二进制环并存。`TickStreamModel.h` 将会话准入、定长队列与
+终结状态独立为无游戏依赖的模型；`TickStreams.cpp` 负责局部 SEH 采样与后台格式化。
+
+- 每次录制独立 `record_id`，样本 `tick` 从 1 连续计数；仍保留旧全局计数重置与所有样本字段。
+  开始前验证非负整数，在途 `start` 返回 `recording_busy`，不会重置原录制。
+  只在世界内且版本可用时接受开始，主菜单返回 `not_in_world`。
+- tick 不取录制/传输锁，不构造自有 JSON/string；通过单次 CAS 接纳采样，写固定 256 行的
+  单生产者队列。方块名从 SDK 返回的 const 引用直接拷到 255 字节 UTF-8 文本，截断显式报告。
+  队列基础设施与 reducer 有原生零分配检查；不据此宣称整个游戏访问器或 mod tick 零分配。
+- 命令/spool 通过冷侧锁串行消费与会话切换；停止关闭准入、等待已接纳读取退出、排出所有
+  样本后再发送 `stopped`。自动到顶同样在最后一条之后唯一终结。回执增加 `ok/rows/record_id`，
+  `capture_fault/capture_failed/buffer_full/world_left/disabled` 是失败；显式重复 stop 保留
+  上一终结结果。正常队列约容纳 12.8 秒的 20 Hz 采样，满后明确失败而不覆盖旧行。
+- Python 检查明确的 `ok=false`，兼容旧 mod 缺少 ok 的回执，并按 record_id 忽略旧会话事件。
+  跑酷工具同时识别 `macro_done/macro_stopped`，主动停止采样并读到其终结回执；异常时
+  保留已采样的部分数据，不把失败录制当成成功。
+- 跑酷 landed/hurt/died 每 tick 只更新 POD reducer 和固定事件队列，spool 保留原事件字段并
+  增加 tick。首次采样建立血量基线，避免带伤进入时误报 hurt；退出/开始进入时更新世界代次，
+  故障后清空基线，后台丢弃旧世界尚未格式化的事件。满队列/采样失败报告 `parkour_diagnostic`。
+- 受控故障入口 `selftest_tick_stream` 仅在 `allow_selftest_stress` 开启时可用。overflow 专项用
+  每会话有效容量 3 和后台消费延迟验证生产分支，不阻塞游戏线程，也不声称测过 13 秒真实阻塞。
+- 验收：专项 **39/39**（含真实退出/重进）、完整现场 **411/411**（无跳过）、离线
+  **296/296**。原生模型跑 10 万次队列并发交接，覆盖已准入采样/停止竞争、失败终结优先、
+  零分配和基线重建；现场 4 tick 宏排出 5 条连续采样，故障后落地距离 2.9216。
+  构建/ruff check/format/mypy/profile 检查通过，无新增/修改 crash 文件。
+  安装与构建 DLL SHA-256 均为
+  `60756A2AB9FE4BD845C13F05C1AD9736B7B742670B99107DCD51D1EE29D19114`。
+  复现 `driver/selftest.py --tick-stream-only` / `--tick-stream-world "超平坦测试"`；
+  日志 `out/reliability-tick-stream-*`。宏、其余读取边界和 SDK 分配仍是后续范围。
 
 ## Macro
 
@@ -735,8 +768,8 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **377/377**
-（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **289/289**。
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **411/411**
+（`allow_input_inject`/`allow_selftest_stress` 开启）、离线单测 **296/296**。
 
 ### 客户端 I/O（2026-10-28；离线）
 

@@ -7,16 +7,47 @@ namespace probe {
 
 bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& j) {
     if (cmd == "start") {
-        mTick      = 0;
-        mMaxTicks  = j.value("max_ticks", std::uint64_t{0});
-        mRecording = true;
-        enqueue(R"({"event":"started"})");
+        if (j.contains("max_ticks") && (!j["max_ticks"].is_number_integer()
+            || (!j["max_ticks"].is_number_unsigned() && j["max_ticks"].get<std::int64_t>() < 0))) {
+            enqueue(R"({"event":"error","reason":"bad_param"})");
+            return true;
+        }
+        auto const maxTicks = j.value("max_ticks", std::uint64_t{0});
+        if (!mWorld.inWorld()) enqueue(R"({"event":"error","reason":"not_in_world"})");
+        else if (!hooksAllowed()) enqueue(R"({"event":"error","reason":"version_mismatch"})");
+        else if (!startLegacy(maxTicks)) enqueue(R"({"event":"error","reason":"recording_busy"})");
         return true;
     }
     if (cmd == "stop") {
-        mRecording = false;
+        stopLegacy(StreamEnd::Client, true);
         flushSpool(true);
-        enqueue(R"({"event":"stopped","reason":"client"})");
+        return true;
+    }
+    if (cmd == "selftest_tick_stream") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        StreamTest test = StreamTest::None;
+        if (mode == "seh") test = StreamTest::Fault;
+        else if (mode == "cpp") test = StreamTest::Cpp;
+        else if (mode != "overflow") {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
+        auto const target = j.value("target", std::string{"legacy"});
+        if (target == "parkour" && test != StreamTest::None) {
+            mParkourTest.store(test);
+            enqueue(R"({"event":"tick_stream_test_armed"})");
+        } else if (target == "legacy") {
+            if (!startLegacy(0, mode == "overflow" ? 3 : 256, test, mode == "overflow" ? 1000 : 0))
+                enqueue(R"({"event":"error","reason":"recording_busy"})");
+        } else enqueue(R"({"event":"error","reason":"bad_test_target"})");
         return true;
     }
     if (cmd == "record_start") {

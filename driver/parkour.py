@@ -298,19 +298,32 @@ def _write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
-def read_until_run_end(client: ModClient, max_ticks: int) -> list[dict[str, Any]]:
-    """Collect tick events until the macro or the recording stops."""
+def read_until_run_end(
+    client: ModClient,
+    max_ticks: int,
+    *,
+    record_id: int | None = None,
+    samples: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """On macro completion, close recording and collect through its final receipt."""
     timeout = max(5.0, max_ticks / TICKS_PER_SECOND + 10.0)
-    ticks: list[dict[str, Any]] = []
+    ticks = [] if samples is None else samples
+    stop_sent = False
     while True:
-        message = client.readline(timeout=timeout)
+        message = client.wait_event(
+            ("tick", "macro_done", "macro_stopped", "stopped"),
+            timeout=timeout,
+            predicate=lambda row: record_id is None or row.get("record_id", record_id) == record_id,
+        )
         event = message.get("event")
         if event == "tick":
             ticks.append(message)
-        elif event in {"macro_stopped", "stopped"}:
+        elif event in {"macro_done", "macro_stopped"} and not stop_sent:
+            client.send({"cmd": "stop"})
+            stop_sent = True
+        elif event == "stopped":
+            client.check_recording_result(message)
             return ticks
-        elif event == "error":
-            raise ModPipeError(str(message.get("reason", message)))
 
 
 def record_macro(
@@ -329,14 +342,14 @@ def record_macro(
         if start is not None:
             client.reset(*start, yaw=yaw, pitch=pitch)
             time.sleep(0.2)
-        client.start(max_ticks)
+        started = client.start(max_ticks)
         client.send({"cmd": "macro_run", "loop": False})
-        rows = read_until_run_end(client, max_ticks)
-        with contextlib.suppress(ModPipeError):
-            client.stop()
+        read_until_run_end(client, max_ticks, record_id=started.get("record_id"), samples=rows)
     finally:
         # Flush whatever was collected before closing: a disconnect or a mod
         # error mid-run must not discard the rows that already arrived.
+        with contextlib.suppress(ModPipeError):
+            client.stop()
         _write_jsonl(out, rows)
         client.close()
     return [Tick.from_mapping(row) for row in rows]
@@ -384,11 +397,9 @@ def run_attempts(
         for attempt in range(1, attempts + 1):
             client.reset(*start, yaw=yaw, pitch=pitch)
             time.sleep(0.2)
-            client.start(max_ticks)
+            started = client.start(max_ticks)
             client.send({"cmd": "macro_run", "loop": False})
-            rows = read_until_run_end(client, max_ticks)
-            with contextlib.suppress(ModPipeError):
-                client.stop()
+            rows = read_until_run_end(client, max_ticks, record_id=started.get("record_id"))
             time.sleep(0.1)
             state = client.state()
 
@@ -439,6 +450,8 @@ def run_attempts(
                 json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
             )
     finally:
+        with contextlib.suppress(ModPipeError):
+            client.stop()
         client.close()
 
     if not results:

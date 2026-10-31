@@ -59,6 +59,7 @@ scenario DSL / LLM / shell
 | `PipeChannel.h` | 管道线程独占的 overlapped 句柄、超时、取消与 I/O 回收；不依赖 Bedrock SDK |
 | `TransportModel.h` | 有界 JSONL 分帧与复用缓冲的批量写入；不依赖 Bedrock SDK |
 | `RecordModel.h` | 采样准入、start/stop 生命周期与原子发布的定长记录；不依赖 Bedrock SDK |
+| `TickStreamModel.h` / `TickStreams.cpp` | JSON 录制与跑酷事件的定长单生产者队列、采样边界、录制终结顺序与后台格式化 |
 | `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
 | `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |

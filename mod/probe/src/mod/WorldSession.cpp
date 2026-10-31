@@ -96,6 +96,7 @@ void WorldSession::start() {
     mEpoch.fetch_add(1);
     auto& bus          = ll::event::EventBus::getInstance();
     mStartJoinListener = bus.emplaceListener<ll::event::client::ClientStartJoinLevelEvent>([this](auto& event) {
+        mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);
         // Manual UI starts share the same observation and terminal contract.
         if (mEntry.snapshot().phase == WorldEntryModel::Phase::Idle) mEntry.begin(GetTickCount64());
         mPhase = Phase::Entering;
@@ -122,6 +123,8 @@ void WorldSession::start() {
     });
     mExitListener      = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
         mInWorld = false;
+        mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);
+        mOwner.mLegacyWorldLeft.store(true, std::memory_order_release);
         mOwner.mChatCapture.cancel("world_left");
         mOwner.cancelQueries("world_left");
         mOwner.cancelTasks("world_left");

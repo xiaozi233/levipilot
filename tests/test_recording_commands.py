@@ -10,6 +10,36 @@ from tests.test_transport import FakeClient
 
 
 class RecordingCommandsTests(unittest.TestCase):
+    def test_recording_terminal_failure_is_not_success(self) -> None:
+        for reason in ("capture_fault", "capture_failed", "buffer_full", "world_left"):
+            with self.subTest(reason=reason):
+                client = FakeClient()
+                client._session.lines.put({"event": "started"})
+                client._session.lines.put({"event": "tick", "tick": 1})
+                client._session.lines.put({"event": "stopped", "ok": False, "reason": reason})
+                with self.assertRaisesRegex(ModProtocolError, reason):
+                    client.record(3)
+
+    def test_stop_propagates_failed_auto_stop(self) -> None:
+        client = FakeClient()
+        client._session.lines.put({"event": "stopped", "ok": False, "reason": "buffer_full"})
+        with self.assertRaisesRegex(ModProtocolError, "buffer_full"):
+            client.stop()
+
+    def test_record_ignores_old_session_rows_and_terminals(self) -> None:
+        client = FakeClient()
+        stale = {"event": "stopped", "record_id": 1, "ok": False, "reason": "capture_fault"}
+        client._defer(stale)
+        for event in (
+            {"event": "started", "record_id": 2},
+            {"event": "tick", "record_id": 1, "tick": 99},
+            {"event": "tick", "record_id": 2, "tick": 1},
+            {"event": "stopped", "record_id": 2, "ok": True},
+        ):
+            client._session.lines.put(event)
+        self.assertEqual([row["tick"] for row in client.record(1)], [1])
+        self.assertEqual(client.readline(), stale)
+
     def test_record_preserves_buffered_and_live_notifications_in_order(self) -> None:
         client = FakeClient()
         buffered = {"event": "notice", "seq": 1}

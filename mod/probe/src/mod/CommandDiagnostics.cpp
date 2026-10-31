@@ -161,7 +161,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["event"]           = "status";
         out["in_world"]        = mWorld.inWorld();
         out["world_entry"]     = mWorld.entryStatus();
-        out["recording"]       = mRecording.load();
+        out["recording"]       = mLegacyStream.active();
         out["tick"]            = mTick.load();
         out["macro_playing"]   = mMacroPlaying.load();
         out["macro_index"]     = mMacroIndex.load();

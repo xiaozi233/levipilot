@@ -6,6 +6,7 @@
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
 #include "mod/TaskModel.h"
+#include "mod/TickStreamModel.h"
 #include "mod/WorldSession.h"
 
 #include "ll/api/event/Listener.h"
@@ -384,9 +385,20 @@ private:
     std::uint64_t              mTickStartQpc     = 0;
     std::uint64_t              mPrevTickStartQpc = 0;
     std::uint64_t              mPreUs            = 0;
-    std::atomic_bool           mRecording{false};
     std::atomic<std::uint64_t> mTick{0};
-    std::atomic<std::uint64_t> mMaxTicks{0};
+    // Tick writes fixed samples; commands/spool serialize consumption and
+    // lifecycle with this cold-only lock. No transport or JSON on the tick.
+    detail::LegacyStream<> mLegacyStream;
+    std::mutex mLegacyMutex;
+    detail::LegacyStream<>::Completion mLegacyLastCompletion;
+    std::atomic<detail::StreamTest> mLegacyTest{detail::StreamTest::None};
+    std::atomic_bool mLegacyWorldLeft{false};
+    std::uint64_t mLegacyDrainAfterMs = 0; // Cold lock; gated overflow selftest.
+    bool startLegacy(std::uint64_t maxTicks, std::size_t capacity = 256,
+                     detail::StreamTest test = detail::StreamTest::None, std::uint64_t drainDelayMs = 0);
+    void stopLegacy(detail::StreamEnd reason, bool reply);
+    bool drainLegacyLocked();
+    void drainTickStreams();
 
     // Movement, look and teleport requests share one transactional mailbox so
     // the client tick can take a single lock-free snapshot. Atomic payload
@@ -434,8 +446,8 @@ private:
     void consumeLookRequests(LocalPlayer& player, RequestBlock const& requests);
     void recordTickPose(LocalPlayer& player);
     void runCaptureRequests(ClientInstance& client, LocalPlayer& player);
-    void tickParkourEvents(LocalPlayer& player);
-    void emitLegacyTickJson(ClientInstance& client, LocalPlayer& player, std::uint64_t tickIndex);
+    void tickParkourEvents(LocalPlayer& player, std::uint64_t tick);
+    void captureLegacyTick(ClientInstance& client, LocalPlayer& player);
     // Tick-thread consumption state for the block above.
     std::uint32_t mSeenInputSeq = 0;
     ControlState  mActiveInput;
@@ -499,10 +511,12 @@ private:
     // Written by enable()/config and read on the tick thread.
     std::atomic_bool mBackgroundGuard{true};
     bool             mForeground     = true;
-    // Parkour event tracking (tick thread only).
-    float               mLastHealth      = 20.0f;
-    bool                mWasAirborne     = false;
-    float               mAirStartY       = 0.0f;
+    detail::ParkourTracker mParkourTracker; // Tick-owned; reset on generation changes.
+    detail::TickQueue<detail::ParkourEvent, 256> mParkourEvents;
+    std::atomic<std::uint64_t> mParkourGeneration{0};
+    std::uint64_t mParkourSeenGeneration = 0;
+    std::atomic<detail::StreamTest> mParkourTest{detail::StreamTest::None};
+    std::atomic<std::uint64_t> mParkourLost{0}, mParkourFaults{0}, mParkourFailures{0};
     int                 mCursorShowCalls = 0;
     // Reset from the pipe thread (mouse_clear/macro_rec_start), read/written
     // on the tick thread.

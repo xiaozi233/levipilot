@@ -256,6 +256,17 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertFalse(agent._recording)
         self.assertFalse(client._session.consumers)
 
+    def test_failed_recording_terminal_unsubscribes_without_success(self) -> None:
+        agent, client = self.make_recording_agent()
+        client._session.lines.put({"event": "started"})
+        agent.start_recording()
+        client._session.lines.put({"event": "tick", "tick": 1})
+        client._session.lines.put({"event": "stopped", "ok": False, "reason": "capture_fault"})
+        with self.assertRaisesRegex(ModProtocolError, "capture_fault"):
+            agent.stop_recording()
+        self.assertFalse(agent._recording)
+        self.assertFalse(client._session.consumers)
+
     def test_start_does_not_collect_ticks_from_previous_session(self) -> None:
         agent, client = self.make_recording_agent()
         client._session.lines.put({"event": "tick", "tick": 99})

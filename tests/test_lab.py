@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import math
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from driver.harness import ModProtocolError
@@ -348,6 +349,13 @@ class DisconnectReportTests(unittest.TestCase):
         self.assertEqual(report["state"]["event"], "probe_failed")
         self.assertEqual(report["packet_stats"], {"id_faults": 2, "byte_faults": 3})
         self.assertEqual(report["packet_tap"]["hits"][0]["seq"], 4)
+        self.assertTrue(path.is_absolute())
+        dump = next(
+            call.args[0]
+            for call in client.request.call_args_list
+            if call.args[0].get("cmd") == "inbound_dump"
+        )
+        self.assertEqual(Path(dump["path"]), path.with_suffix(".inbound.json"))
 
 
 class WorldStateTests(unittest.TestCase):

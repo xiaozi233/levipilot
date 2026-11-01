@@ -951,7 +951,7 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 从 `mod/README.md` 迁入的逐项实测记录；与上文各专题小节互为补充（上文讲设计，这里记数字与复现要点）。
 
 按主题归档的稳定结论；逐轮验收的执行记录（其中的通过数会随时间过时）见 git 历史
-与 [`../docs/refactoring.md`](../docs/refactoring.md)。当前基线：live selftest **992/992**
+与 [`../docs/refactoring.md`](../docs/refactoring.md)。历史全覆盖基线：live selftest **992/992**
 （输入、自检压力及两类封包能力开启）、离线单测 **346/346**。
 本批最终姿态/能力/站稳与释放/解锁已回读恢复；此前退出异常根因仍待复核，未宣称已修复。
 
@@ -1041,6 +1041,20 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 本批最终数字与日志见 `reliability-repairs.md`「Python 连接遗弃回收」。
 显式 `with`/`finally close` 仍是首选；GC 不释放仍有业务引用的 client。
 此处没有修改 C++/DLL，不以这项验收排除 mod 侧其他挂起或 BadPacket。
+
+### 断开后导出路径与回执（2026-11-01 22:20 后续）
+
+`capture_disconnect_report` 先 resolve 输出目录。飞行专项中的 inbound_dump 也用绝对路径，
+并通过 request 等待专用回执，避免游戏在另一个 cwd 写相对 out 路径失败，或让导出 error
+串到后面的 packet_drain。`--diagnostic-export-only --require-complete` 只导出现有环，
+不武装钩子，现场 **3/3**；相关离线 **24/24**。
+最终全量离线 **377/377**，ruff check/format、mypy（93文件）、profiles up to date、
+roles56/63通过。日志 `out/diagnostic-export-{offline,tests,live}.log`。
+
+同轮第14项候选现场 **28/29，1 fail**：packet187/size48/error104 后90/Block，
+因此候选源码和安装均撤回，未提交。最终恢复回读 **11/11**，121个crash无新增/修改。
+证据、未完成范围与逆向交接见 `notes/badpacket-187-20261101.md`，
+不能把候选的376/376离线或构建通过表述为现场验收通过。
 
 ### 客户端 I/O（2026-10-28；离线）
 
@@ -1140,7 +1154,8 @@ mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 W
 
 - `lab.swim_drive`：HID 前进+疾跑键 → 轮询 ADF bit57（`fnv1a("ActorDataFlagComponent")`，
   30 B 内位 57）；深水离底 4–5 tick 进入，松键即退出。
-- `lab.jump_key`：拍空格（HID Space），与 `jump` 的 jumpFromGround 弧线一致（selftest 对比）。
+- `lab.jump_key`：拍空格（HID Space）。旧版曾与 legacy `jumpFromGround` 弧线比较；
+  现行 `jump` 自身也走 Hardware HID，具体以「起跳方式」小节的当前契约为准。
 - selftest `swim_drive_entered` / `swim_drive_dive`（俯冲 $v_y<-0.15$）/ `swim_stop_clears`。
 
 ### 真实输入锁（input_lock，2026-10-24）

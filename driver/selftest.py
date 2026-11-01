@@ -3209,10 +3209,10 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
                 )
                 # seq -> tick/id mapping, so a violation tick can be matched to
                 # the exact packet the sender serialized.
-                # Ask the mod to write the ring itself: with two clients attached
-                # a pipe reply can be delivered to the other connection.
-                client.send({"cmd": "inbound_dump", "path": f"{bytes_dump}.inbound.json"})
-                time.sleep(0.3)
+                # The game's working directory differs from the driver's. Wait
+                # for this receipt so an export error cannot poison packet_drain.
+                inbound_path = Path(f"{bytes_dump}.inbound.json").resolve()
+                client.request({"cmd": "inbound_dump", "path": str(inbound_path)}, "inbound_dump")
                 index = client.packet_drain(0, 1024)
                 Path(f"{bytes_dump}.drain.json").write_text(
                     json.dumps(index, ensure_ascii=False), encoding="utf-8"
@@ -4588,6 +4588,21 @@ def check_connection_lifecycle(client: ModClient, checks: Checks) -> None:
         checks.check(f"connection_{label}_reconnect", client.ping().get("event") == "pong")
 
 
+def check_diagnostic_export(client: ModClient, checks: Checks) -> None:
+    """Export existing buffers without arming hooks or changing the world."""
+    report_path = capture_disconnect_report(client, "out", tag="selftest-diagnostic-export")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    dump = report["inbound_dump"]
+    checks.check("diagnostic_report_absolute", report_path.is_absolute(), str(report_path))
+    inbound_path = Path(dump["path"])
+    checks.check(
+        "diagnostic_inbound_export",
+        dump.get("ok") is True and inbound_path.is_absolute() and inbound_path.is_file(),
+        str(dump),
+    )
+    checks.check("diagnostic_export_receipt_consumed", client.ping().get("event") == "pong")
+
+
 def check_mod_core_live(client: ModClient, checks: Checks) -> None:
     """Exercise installed transport/recording without input, world edits or RE."""
     status = client.status()
@@ -4835,6 +4850,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--radius", type=float, default=10.0)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument(
+        "--diagnostic-export-only",
+        action="store_true",
+        help="export existing diagnostic buffers without arming hooks or changing the world",
+    )
+    modes.add_argument(
         "--client-io-only",
         action="store_true",
         help="run offline decoder/recording/spool regressions without connecting to the game",
@@ -5075,6 +5095,13 @@ def main(argv: list[str] | None = None) -> int:
 def run_live(
     client: ModClient, checks: Checks, args: argparse.Namespace, observation: ViolationObservation
 ) -> int:
+    if args.diagnostic_export_only:
+        try:
+            check_diagnostic_export(client, checks)
+        except (ModPipeError, OSError, ValueError, KeyError) as exc:
+            checks.check("diagnostic_export_error", False, str(exc))
+        return 0
+
     if args.connection_only:
         try:
             check_connection_lifecycle(client, checks)

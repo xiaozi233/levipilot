@@ -202,6 +202,13 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 [`../docs/mod-internals.md`](../docs/mod-internals.md#python-连接资源生命周期2026-11-01)。
 这项修复只涉及 Python；未替换 DLL，也不代表所有 Errno 22 原因均已消除。
 
+同日诊断导出后续：`py -3.11 driver/selftest.py --diagnostic-export-only --require-complete`
+**3/3**。修复游戏与 driver 工作目录不同导致的相对路径失败，并等待导出回执，
+避免旧错误串到下一条命令。只导出现有环，不安装 hook 或修改世界。
+最终离线 **377/377**，ruff/format/mypy和profiles/roles检查通过。
+实体/飞行身份解析候选现场28/29失败，已撤回源码和安装；第14项仍未完成。
+详见 [`现场与交接`](../docs/notes/badpacket-187-20261101.md)。
+
 传送已移出 tick，复用 UUID/世界代次解析，后台调度及回执。
 reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` 再回读到达；失败可能
 已部分清效果/传送，不自动重放。忙时拒绝，退出/panic 取消，重连丢弃旧请求。
@@ -363,7 +370,8 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；潜行约 0.30x。
 - 跳跃逐 tick 位移 0.4200 / 0.3332 / 0.2481 / 0.1648…（顶点 1.252 格、滞空 11 tick），
-  连续跳与原版轨迹误差 < 0.0001 格；起跳沿必须走 `LocalPlayer::jumpFromGround`。
+  连续跳与原版轨迹误差 < 0.0001 格。这组历史测量使用 legacy `jumpFromGround`；
+  现行默认起跳使用 Hardware HID 按键，见下文「限制」，不能据旧数据恢复直接冲量。
 - `navigate` 约 5.2 格 27 tick 到达（误差 0.26 格）；`mine` 创造模式 1 tick、`place`
   3 tick 回读验证；存档点 `checkpoint_load` 落点误差 0.000 格。
 - 事件级宏回放三次落点误差 **0.0000**；疾跑三组对照 B≈C≈0.2805 格/tick。
@@ -624,17 +632,24 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 位置验证。专项复现 `py -3.11 driver/selftest.py --record-medium-only --require-complete`，
 本批 11/11；首轮完整 1053/1055 的失败记录保留，完整重跑结果见 mod-internals。
 
-2026-10-31 **23:38:53** 最新完整自检在 flight finally 恢复期间自然退档，
+2026-10-31 **23:38:53** 那轮完整自检在 flight finally 恢复期间自然退档，
 结果 **465/466，1 fail、0 skip**。观察无事前空窗，新增两行非合成记录：
 callback=`response=3/packet_id=39/packet_size=34/error_value=104`；
 同 tick 861、同线程的 screen=`disconnect_reason=90/context=Block`。
-SDK 公开枚举中 39 是 **SetActorData**；size 参数边界、104 含义、方向及具体成因仍未知。
+SDK 公开枚举中 39 是 **SetActorData**。当时尚未确认 size/104 的边界，后续见下段。
 这次已验证 mod 自己读到自然错误页原因，不需要桌面点击；上下文/详情均截断，不能当完整文本。
 原配置恢复并重启加载，真实错误页 recover exit 0，最终状态回读 16/16，113 个 crash 无变化。
 离线 **362/362**、ruff/format/mypy、C++ 构建与 profile 检查通过；**完整现场尚未全绿**，
 水池修复仅专项验收，不据此提交为全套通过。证据与边界见
 [`mod-internals`](../docs/mod-internals.md)，后续可转交
 [`诊断提示词`](../docs/notes/prompts/badpacket-setactordata-20261031.md)。
+
+2026-11-01 BadPacket 后续：证据册 §36–§43 已确认入队/出队深拷贝、长度取 string size、
+此路径无帧长度前缀；旧「声明 23」和「邻居 payload 混入」定论撤回。
+id 39 为 CerealOnly 的 SetActorData，尚缺失败的 34 字节原帧来定位具体字段。
+后续调查记录完整现场 **1065/1066**（0 failed、1 required skip），仍不能称完整覆盖全绿。
+见 [`证据册`](../docs/notes/badpacket-setactordata-20261031.md) §43。
+有限 hook/无 hook 窗口未复现不排除 mod 的间接影响。
 
 ## License
 

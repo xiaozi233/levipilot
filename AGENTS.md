@@ -28,13 +28,14 @@ LEVIPILOT_VIOLATION_DUMP=out/violation.json py -3.11 driver/selftest.py
 py -3.11 driver/selftest.py --violation-only   # 合成记录验证设施，不是真实违规
 py -3.11 driver/selftest.py --require-complete # 必需覆盖 skip 也返回失败；仍需完整权限/空槽前提
 py -3.11 driver/selftest.py --connection-only --require-complete # 空闲时验证遗弃/退出后的管道重连
+py -3.11 driver/selftest.py --diagnostic-export-only --require-complete # 导出现有环，不安装 hook
 
 # 无游戏单测 / 静态检查
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 显式 SKIP 保留在分母；992/992 是历史全绿基线，最新完整退档中止，见 reliability-repairs
+# 显式 SKIP 保留在分母；992/992 是历史全覆盖基线，后续 1065/1066 有 1 required skip
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
@@ -275,16 +276,11 @@ SetActorData（非 UpdateAbilitiesPacket）。
 本批未执行新增逆向；后续诊断提示词为
 `docs/notes/prompts/badpacket-setactordata-20261031.md`。不自行推送，不把当前失败提交为全绿。
 
-2026-11-01 封包调查已闭合到帧层：三次自然复现（tick 454 / 1389 / 1881）都发生在**进世界后
-400–2000 tick**、飞行能力切换之后，约 1/6 概率。第三次同时拿到失败切片字节：188 的帧
-（23 B）= 自己的 id+body（7 B）+ **16 B 邻居 SetActorData payload**，而同 run 正常 188 全为 7 B、
-发送侧 body 全为 5 B ⇒ **帧写出侧把邻居 payload 并进了本帧，不是传输截断**；解析器读完 body 剩
-16 B，`ensureReadCompleted` 判 104 → `BadPacket(90)` / `ClientDisconnection-90` / `Block`。
-帧声明值目前只是**旁证倾向 23**（多包 tick 首包尺寸恒等于自身长度 ⇒ 切分独立于后续包；
-23 = 7 + 16），**长度字段尚未直读，未定案**。mod 侧无直接写入点，但**未排除**对象共享/时序/
-hook ABI 的间接影响。仪器：`violation_text`（整段原文，4 KB×8 槽）、`inbound_drain`
-（解析入口切片 + 前置字节）、`inbound_sample`（复现轮用 1）。证据册
-`docs/notes/badpacket-setactordata-20261031.md` §12–§15。
+2026-11-01 BadPacket 当前以证据册 §36–§43 为准：入队/出队深拷贝、长度取源 string
+size，这条路径**没有帧长度前缀**。早期「声明 23」「邻居 payload 混入」定论已撤回，
+不可再按旧 §12–§15 作为已闭合根因。id39 = SetActorData、CerealOnly，仍缺失败的
+34 字节原帧来定位具体 cereal 字段。带 hook 20 窗口、无 hook 7 窗口未复现，不能排除
+mod 间接影响。后续完整现场 1065/1066（0 fail、1 required skip），不是完整覆盖全绿。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage
@@ -296,9 +292,15 @@ hook ABI 的间接影响。仪器：`violation_text`（整段原文，4 KB×8 �
 `--mod-core-live-only` **33/33**（仅管道与录制，无逆向命令/输入注入/世界修改）。
 完整 222/222 是此前现场基线，本轮未重跑默认全套。
 
-任务提示词不在仓库内（本地维护）。
+任务提示词见 `docs/notes/prompts/`；历史提示词与旧结论不能覆盖当前验收口径。
 
 后续修复与结构改善（优先级以 `docs/code-quality-review.md` 为准）：
+
+2026-11-01 22:20 第14项候选现场28/29失败（packet187/size48/error104→90），
+已将候选另存out补丁并撤回源码/安装，不能标完成。原DLL/配置恢复，状态回读11/11，
+121个原有crash无变化。后续需要新增逆向，当前停在
+`docs/notes/prompts/badpacket-187-followup-20261101.md`，不自行继续逆向。
+第16项具名类型在658d90a已落地，本轮文档已校准；原清单仍有12–15四项未结。
 
 - ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化；宏播放已迁
   `MacroPlayback`，宏录制/输入的整体会话所有权仍在第 13 项

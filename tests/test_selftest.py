@@ -176,6 +176,28 @@ class InterruptedSelftestTests(unittest.TestCase):
                 self.assertIs(caught.exception, cause)
                 self.assertIn("cleanup player unknown", cause.__notes__[0])
 
+    def test_flight_dump_uses_absolute_path_and_consumes_its_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = Mock()
+            client.state.return_value = {"in_world": True, "gamemode": 0}
+            client.status.return_value = {"spool": str(Path(directory) / "spool.jsonl")}
+            cause = ModPipeError("first flight failure")
+            client.command.side_effect = cause
+            client.packet_bytes.return_value = {"hits": [], "count": 0}
+            client.packet_drain.return_value = {"hits": [], "count": 0}
+            target = str(Path(directory) / "violation.json")
+            with (
+                patch.dict("os.environ", {"LEVIPILOT_VIOLATION_DUMP": target}),
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(ModPipeError) as caught,
+            ):
+                check_flight(client, Checks())
+            self.assertIs(caught.exception, cause)
+            client.request.assert_any_call(
+                {"cmd": "inbound_dump", "path": str(Path(f"{target}.inbound.json").resolve())},
+                "inbound_dump",
+            )
+
     def test_cleanup_failure_without_primary_still_fails(self):
         with (
             self.assertRaisesRegex(ModPipeError, "cleanup alone"),

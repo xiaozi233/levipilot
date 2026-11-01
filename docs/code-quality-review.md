@@ -24,11 +24,19 @@
 | 7 | P2 / 部分重构 | `Server.cpp::serverPlayerContext/captureTeleport`、`Flight.cpp`、`Entities.cpp::captureEntityStage` | 背包四组写入、命令、权限与物品使用已共用 ServerPlayerContext，按 UUID/世界代次解析，显式命令玩家名仍支持。未知玩家不再静默使用控制台 origin。传送已接入共享解析器并通过现场验收；实体/飞行仍有独立解析与名字兜底；继续统一身份策略及领域错误，不跨线程保存 Actor 指针。 |
 | 8 | P2 / 验证完善 | `driver/selftest_support.py::Checks`、`driver/selftest.py` | 已实现 pass/fail/skip 三态，缺少权限/空槽或相机干扰的缺测进入分母，--require-complete 遇必需 skip 返回失败；四组 finally 保留首错，默认/专项共用观察导出。设施及必需 skip 现场对照已通过，完整验收在跟踪文档记录；领域检查仍需继续按 fixture 拆分，不能由统计改造推断交互效果均已覆盖。 |
 | 9 | P2 / 本批完成 | `State.cpp::captureState/stateJson` | 原方块读取失败被静默吞掉，响应缺字段却像完整成功。现局部 SEH 返回 partial/warnings，正常查询可恢复；专项验证失败字段缺省、其他字段存在及后续恢复。整条采样 C++ 异常走明确的 capture_failed，不再静默成功。 |
-| 10 | P3 / 重构 | `TaskModel.h::PlaceTask::phase`、`Tasks.cpp::tickPlace`、`Input.cpp::applyControls` | phase=0/1/2 和 mode 的位数语义分散在分支中，读代码时依赖记忆，新增阶段/模式容易漏分支。引入 PlacePhase 和具名输入模式位；只在协议边界保留兼容数字。顺带移除构建已报告的未用 Key 常量。 |
-| 11 | P3 / 文档完善 | `docs/mod-internals.md` 的历史“移动、跳跃与输入”与实验辅助小节、`docs/architecture.md` 的 CI 说明、`skills/bedrock-re/SKILL.md` 的旧基线 | 局部仍把 jumpFromGround 写成默认路径，或称完整 mod 仅本机构建；与当前 HID 默认实现、GitHub mod-build 作业不符。把历史实测明确标为 legacy，把现行契约与验收基线集中维护；不要删除原始历史证据。 |
+| 10 | P3 / 已实现，文档已校准 | `TaskModel.h::PlaceTask::phase`、`Tasks.cpp::tickPlace`、`Input.cpp::applyControls` | `658d90a` 已引入 PlacePhase、ControlInputMode、JumpImpulse；使用处均按具名阶段/标志判断，仅在协议边界转换兼容数字。本轮核对实际代码并清理仍把这些类型列为待做的记录，未重做既有实现。 |
+| 11 | P3 / 已校准原定范围 | `docs/mod-internals.md` 的历史“移动、跳跃与输入”与实验辅助小节、`docs/architecture.md` 的 CI 说明、`skills/bedrock-re/SKILL.md` 的旧基线 | jumpFromGround 数据已标为 legacy，现行默认 Hardware HID、完整 mod CI 与历史/当前验收分开表述；本轮补正 lab.jump_key 说明、过期“当前基线”及原清单状态。原始历史证据保留。 |
 | 补充 | P2 / 已修复 | `OverheadModel.h`、`Overhead.cpp::overheadRecord/overheadJson` | 原普通 Sample 的跨线程数据竞争已改为 AtomicRing 原子载荷与完整窗口验证；读取失败显式 busy，不计算无效分位数。native 覆盖 20 万次写入/四读者与零分配，现场跨 1100 tick、1741 次读取全部一致，专项 7/7、完整 330/330。旧统计数字保留为历史证据，未用来宣称收益。 |
 
 ## 已修复问题与验收界限
+
+2026-11-01 最新进展：Python 遗弃连接回收已提交 `8f55472`，离线 **376/376**、
+真实连接专项 **11/11**。BadPacket 的当前权威结论见证据册 §36–§43：深拷贝、
+无长度前缀，仍缺失败原帧以定位具体字段；下文 465/466 与 362/362 为历史轮次数字。
+类型枚举在 `658d90a` 已落地，本文的现行状态以表格为准。
+同日后续诊断导出修复：离线377/377、只读现场3/3。第14项候选现场28/29失败后已撤回，
+仍未完成；本次packet187/size48/error104与逆向停止点见
+[`现场与交接`](notes/badpacket-187-20261101.md)。原清单12–15四项仍有未结范围。
 
 2026-10-31 后续：命令包来源模板已改定长值载荷，注入移出 tick 并复用独占分阶段生命周期，
 详情见 reliability-repairs.md；通用 PacketTap 的 getId/序列化已补局部 SEH/C++、故障计数和

@@ -362,7 +362,8 @@ def capture_disconnect_report(
         "packet_stats": probe("packet_stats", client.packet_stats),
         "packet_tap": probe("packet_tap", lambda: client.packet_drain(0, tap_limit)),
     }
-    directory = Path(directory)
+    # The mod writes in the game's working directory, not the driver's cwd.
+    directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{tag}-{captured}.json"
     # The parse-boundary ring is the only place the offending frame was seen, and

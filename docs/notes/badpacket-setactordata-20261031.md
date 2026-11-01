@@ -1827,3 +1827,49 @@ py -3.11 out/live_inbound_capture.py      # 2 秒一轮，落盘 out/live-inboun
 
 ⇒ 环元素拿到的是**独立副本**；之后连接把 `conn+0x1B0` 清空/重写都不会影响已入队的元素。
 「入队后源缓冲被覆盖导致内容与长度不一致」这条猜想**排除**。
+
+---
+
+## §41 完整现场 selftest 验收（2026-11-01 20:44）
+
+配置：`allow_input_inject / allow_selftest_stress / allow_hook_va /
+allow_packet_capture / allow_packet_inject` 全开；进世界后先 `/clear @s`。
+
+```
+1065/1066 checks passed (0 failed, 1 skipped, 1 required skips)
+```
+
+**唯一的 skip 正好是这个案子的结论**：
+
+```
+SKIP  inbound_slice_framing  (declared length unreadable: framed=0/256)
+```
+
+这条检查原本要在切片前面的字节里读「帧声明的长度」；256 个样本里 0 个读得到 ——
+与 §39 的静态结论（这条路上没有帧长度前缀、切片不是更大缓冲的子区间）一致。
+也就是说：**不是检查坏了，是这条架构上不存在它要找的东西**。
+
+同一轮里：
+
+```
+PASS  inbound_slice_packet_id  ([19, 29, 31, 39, 48, 49, 58, 144, 174, 175, 314, 344])
+PASS  inbound_slice_known_ids
+PASS  violation_session_armed / violation_drain / violation_session_stopped
+NOTE  violation_dump  (4 rows)
+```
+
+落盘的 4 行全部是 `synthetic: true`（设施自测行），**没有真实违规**。
+
+### 一条运维坑（`[实测]`）
+
+第一次跑同一套 selftest 直接失败：
+
+```
+FAIL  violation_session_armed  (start: 等待 mod 响应超时（30.0s）)
+error: 尚未连接
+```
+
+原因是上一条探针脚本连上管道发了几条命令后**没有 `close()` 就退出**，
+mod 侧管道随后不可达（`ModPipeError ... [Errno 22]`），游戏进程还活着但不再服务。
+重启游戏 + 探针显式 `close()` 后，同一套 selftest 一次跑完 1065/1066。
+⇒ 写探针脚本一律 `try/finally: client.close()`。

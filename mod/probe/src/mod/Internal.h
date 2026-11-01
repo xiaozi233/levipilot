@@ -481,6 +481,10 @@ nlohmann::json inboundDrainJson(std::uint64_t since, std::size_t limit);
 nlohmann::json inboundSampleJson(int sample);
 nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit);
 nlohmann::json memmoveProbeJson(bool on, int packetId);
+// Send-path suspect probe: writes frames whose length never appears in healthy
+// traffic to <modDir>/suspect-<pid>.jsonl, with a stack. Read-only.
+nlohmann::json sendProbeJson(bool on, bool allowVa, bool inWorld, std::uint64_t address,
+                             std::uint64_t serializeAddress = 0);
 nlohmann::json violationWatchSynthetic();
 nlohmann::json disconnectRouteProbe(int reason, std::string const& codeword, std::string const& details);
 

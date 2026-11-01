@@ -1,6 +1,6 @@
 # 接手提示词：飞行专项再次出现 BadPacket(90)，packet 187 / size 48
 
-请在 `D:\mcbe-harness` 接续调查，先读 `AGENTS.md`、
+请在本仓库根目录接续调查，先读 `AGENTS.md`、
 `docs/notes/badpacket-setactordata-20261031.md` §36–§43 及
 `docs/notes/badpacket-187-20261101.md`。使用 `py -3.11`，不要启动子 agent，
 不要自行推送，不修改游戏校验结果或吞掉断开。保留其他会话改动。

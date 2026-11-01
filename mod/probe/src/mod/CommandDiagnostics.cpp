@@ -188,6 +188,43 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         enqueue(inboundSampleJson(j.value("sample", 4)).dump());
         return true;
     }
+    if (cmd == "send_probe") {
+        bool const    on      = j.value("on", true);
+        std::uint64_t address = 0;
+        if (j.contains("addr")) {
+            auto const& value = j["addr"];
+            if (value.is_string()) {
+                try {
+                    address = std::stoull(value.get<std::string>(), nullptr, 16);
+                } catch (...) {
+                    address = 0;
+                }
+            } else if (value.is_number_unsigned()) {
+                address = value.get<std::uint64_t>();
+            }
+        }
+        std::uint64_t serializeAddress = 0;
+        if (j.contains("addr2")) {
+            auto const& value = j["addr2"];
+            if (value.is_string()) {
+                try {
+                    serializeAddress = std::stoull(value.get<std::string>(), nullptr, 16);
+                } catch (...) {
+                    serializeAddress = 0;
+                }
+            } else if (value.is_number_unsigned()) {
+                serializeAddress = value.get<std::uint64_t>();
+            }
+        }
+        enqueue(sendProbeJson(
+                    on,
+                    mAllowHookVa.load(std::memory_order_relaxed),
+                    mWorld.inWorld(),
+                    address,
+                    serializeAddress
+        ).dump());
+        return true;
+    }
     if (cmd == "violation_stats") {
         enqueue(violationWatchStats().dump());
         return true;

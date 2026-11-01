@@ -2101,3 +2101,60 @@ void detourHandleViolation(...) {
   的 `DisconnectPacket`/错误串再也不会把它挤出环。
 
 实测确认字段已上线：`'inbound_frozen' in stats → True, False`（未触发时）。
+
+---
+
+## §47 复现成功：失败帧 = 6 字节前缀 + 一个完整 187 帧（2026-11-01 22:59）
+
+首错冻结 + `inbound_sample(1)` 之后第一次飞行专项就复现了，并且**原帧留在环里**，
+由 `disconnect-20261101-225903.inbound.json` 带出。
+
+### 现场
+
+```
+callback  tick 577  tid 42092  response=3  packet_id=29  packet_size=55  error_value=34
+text      "Vector size value <14718> is larger than available data bytes <51>.readNoHeader failed! packetId: 29"
+```
+
+同一 tick、同一线程的三条记录（`[实测]`）：
+
+```
+idx 2309  size 35  bb 01 01 00 00 00 ff ff ff ff 02 04 01 01 00 ff ff 0f 00 ff 00 00 00 cd cc 4c 3d 00 00 80 3f cd cc cc 3d
+idx 2310  size  7  bc 01 00 00 00 00 01
+idx 2311  size 55  1d 01 fe 72 51 41 | bb 01 00 01 33 43 9f 41 00 00 00 01 00 00 00 | 01 01 00 00 00 ff ff ff ff 02 04 01 01 00 ff ff 0f 00 ff 00 00 00 cd cc 4c 3d 00 00 80 3f cd cc cc 3d
+```
+
+### 对齐（`[实测]`）
+
+- 去掉前 6 字节 `1d 01 fe 72 51 41`，剩下 **49 字节是一个完整的 187 帧**：
+  `bb 01`（id 187）+ 47 字节 payload；
+- 与正常 35 字节的 187 帧**共享 34 字节尾部**；
+- 多出来的 13 字节 `00 01 33 43 9f 41 00 00 00 01 00 00 00` 落在 id 之后，
+  其中 `33 43 9f 41` = float 19.9 —— 这是**多一个 ability layer**（飞行测试正在加层），
+  属于正常内容。
+
+### 读取器身份（`[代码]`）
+
+- `0x14357DC30` = `mov eax,0x1D; ret` → **`UpdateAttributesPacket::getId()`**；
+  vtable 槽 `0x14E7C1B08`，name 槽 `0x14E7C1B10`（`0x14357DC40`）；
+- 写函数 `0x14357DC60` 的顺序是 **`"Actor Runtime ID"` → `"Attribute List"`**；
+- 所以读侧布局 = `actorId varint` + **`vector count` varint** + 条目。
+- 把它套到那 6 字节：`1d`(id 29) + `01`(actorId=1) + `fe 72`(**count = 14718**)，
+  读完后剩 **55 − 4 = 51** 字节 —— 与现场文本 `<14718> / <51>` **逐字对上**。
+
+### 结论（`[推断]`，与原始 187/104 一致）
+
+1. 这 6 字节是**另一个包（UpdateAttributes）残留的前缀**，真正的包（187）从 **offset 6** 开始；
+2. 也就是说**发送侧把新包写在了已有 6 字节内容之后**，而不是从 0 开始；
+3. 于是解析器按"缓冲第一个字节就是包 id"去读，读到假 id 29 和一个荒谬的 vector count；
+4. 同样的错位在另一个时刻会让**真正的包**（187）读完后还剩尾巴 → `read() incomplete`，
+   正是 22:20:40 那次 `packetId: 187 / error 104` 的形状。
+
+### 下一步（已定位到具体要问的问题）
+
+- 谁在 `conn+0x1B0` 上写了那 6 字节、又是谁在 offset 6 续写？
+- 探针：hook `sub_1416B0490`（publish/serialize 入口），记录
+  `(tid, 目标连接, 清理后的 size, 写入后的 size, 第一帧 id)`；若两个线程在**同一个连接**
+  上交替进入，就是共享缓冲的并发写。
+- 复现成本已大幅下降：**飞行专项 + sample=1 + 冻结，两次跑两次都出问题**
+  （22:54 一次进程直接消失、22:59 一次完整复现）。

@@ -1496,6 +1496,9 @@ vtable 基准 = 0x14e78d0a0（该槽在 +0x40，与调用点 `[vtable+0x40]` 一
 与出队用的 **0x28 字节元素**不是同一个结构——它更像同一对象里的另一个环
 （位图 + 指针数组），不是那个装包 string 的环。
 
+> **本节结论已撤回**，见 §38：`+0x08` 就是入队方；当时把
+> `lea rcx,[rcx+rcx*4]` 之后的 `[rdx+rcx*8+0x10]` 误读成 8 字节索引。
+
 ⇒ 装包 string 的环，其**入队方还没有定位到**；已排除：vtable 前 10 槽里
 `+0x08 / +0x10 / +0x18 / +0x20 / +0x38` 这几个（它们的偏移形态不符）。
 
@@ -1505,3 +1508,112 @@ vtable 基准 = 0x14e78d0a0（该槽在 +0x40，与调用点 `[vtable+0x40]` 一
 2. 写进解析缓冲的 size 就是**该元素自己的 size**（`[r15+0x10]`）；
 3. 因此失败样本的 2/8/23/36 是**入队时**就写进槽里的值；
 4. 入队方尚未定位（不再靠猜：vtable 候选已逐条排除，需要继续沿 `[obj+0x88]` 的写入点搜）。
+
+---
+
+## §38 入队方定位：vtable +0x08 = `sub_140D7CFC0`（2026-11-01 19:0x）
+
+### 结论先行
+
+- 0x28 元素环的**入队函数就是 `sub_140D7CFC0`**（vtable `0x14e78d0a0` 的 +0x08 槽）；
+  §37 对它的排除**撤回**。
+- 它把源 `std::string const&` 的 **`+0x10`（MSVC `_Mysize`）**写进元素 `+0x10`；
+  出队再把同一元素搬进解析缓冲。中间没有任何一层改写长度。
+- 因此「解析看到的 size」=「入队那一刻源 string 的 `size()`」。
+
+### 静态（`[代码]`，capstone 反汇编 + vtable 槽）
+
+入队 `sub_140D7CFC0(this, std::string const& src)`，快路径写元素：
+
+```
+140d7d037  mov r15, qword ptr [rbx + 0x10]     ; r15 = src.size()   (rbx = src)
+140d7d03b  cmp qword ptr [rbx + 0x18], 0x10
+140d7d040  jb  0x140d7d045
+140d7d042  mov rbx, qword ptr [rbx]            ; 堆字符串：取数据指针
+...
+140d7d2da  mov rdx, qword ptr [r13 + 0x88]     ; node->elements
+140d7d2e1  lea rcx, [rcx + rcx*4]              ; rcx = index * 5
+140d7d2e5  mov qword ptr [rdx + rcx*8], rdi      ; elem +0x00
+140d7d2e9  mov qword ptr [rdx + rcx*8 + 8], r14  ; elem +0x08
+140d7d2ee  mov qword ptr [rdx + rcx*8 + 0x10], r15  ; elem +0x10 = SIZE
+140d7d2f3  mov qword ptr [rdx + rcx*8 + 0x18], rsi  ; elem +0x18 = capacity
+140d7d2f8  mov qword ptr [rdx + rcx*8 + 0x20], rbx  ; elem +0x20 = 时间戳(ns)
+140d7d2fd  mov qword ptr [r13 + 0x40], rax        ; 写索引 = (idx+1) & mask
+```
+
+换节点慢路径 `0x140d7d35b` 写同样的 5 个 qword，再 `inc rdx; and rdx,[rax+0x90];
+mov [rax+0x40],rdx`。节点扩容：`lea rax,[r14+r14*4]; lea rcx,[rax*8+0xae]`
+（`capacity*0x28 + 0xAE`）。
+
+§37 误判的原因：`[rdx + rcx*8 + 0x10]` 里的 `rcx` 不是索引本身，而是
+`lea rcx,[rcx+rcx*4]` 之后的 `idx*5`，再乘 8 正好 0x28 —— 与出队
+`lea r15,[rbx+rbx*4]; shl r15,3` 是同一个步长。`mov [rax+rcx+0x88], r9`
+则是新建节点时写「元素数组指针」（`rax` = 新分配块，`rcx` = 对齐补偿），
+不是元素写入。
+
+### 动态对质（`[实测]`，2026-11-01 18:5x，hook_install va=…cfc0）
+
+`mem_arg=1, mem_offset=0x10, mem_size=8`（读源 string 的 size），3–6 秒窗口：
+
+| 连接对象 | 命中 | size 分布 |
+| --- | --- | --- |
+| `0x243f1145370` | 320 | 21×118, 23×68, 22×67, 14×51, 17×13, 15×2, 18×1 |
+| `0x243f1140210` | 61 | 95×61 |
+
+同窗口解析边界（`inbound_drain`，`packet_size`）：
+
+```
+21×34 / 23×25 / 22×18 / 14×16 / 95×14 / 17×6
+```
+
+payload 首字节（`mem_arg=1, mem_offset=0, mem_deref=1, mem_size=32`）：
+
+```
+对象 A : 6f 09… / 6f 0d… / 6f 14… / 6f 19…（包 id 0x6f=111），另有 27 0e 01 00（id 39=SetActorData）
+对象 B : 90 01 00 40（上行帧标记 0x90 0x01）
+```
+
+解析切片的 `context_hex` 首字节同样是 `6f`（21/23/22/14 那批）与 `90`（95 那批）——
+**内容级一致**，不是只靠数量吻合。
+
+### 调用链（`[代码]`）
+
+```
+0x140D7CFC0(入队)  ← 0x1416B08C0  ← 0x1416B0490  ← 0x140D809E0 (vtable +0xC0)
+                                                   ← 0x1412FA610
+                                                   ← 0x1416F0210
+0x1416B08C0 ← 0x1416B0B50
+```
+
+`0x1416B0A15`–`0x1416B0A3C` 这一段是真正的入队调用点（尾调用进 CFG 分派）：
+
+```
+1416b0a09  mov rcx, [rax + 0x118]      ; 连接对象
+1416b0a15  mov r8d, [rdi + 0x0C]
+1416b0a19  mov r9d, [rdi + 0x28]
+1416b0a1d  mov rax, [rcx]              ; vtable
+1416b0a20  mov rax, [rax + 8]          ; +0x08 = 入队
+1416b0a2b  mov rdx, rsi                ; ← rsi = [rbx+0x1b0]：连接自己的序列化缓冲
+1416b0a3c  jmp r10                     ; guard_dispatch_icall
+```
+
+即：**入队的源 string 是连接对象的序列化缓冲 `conn+0x1b0`**，
+`0x1416B0490` 每次都先把它清空（`[str+0x10]=0`、`[str+0x18]≥0x10` 时写 `[str]=0`），
+再交给包序列化路径写入，最后原样入队。
+
+### 完整结论链（修订版）
+
+1. 解析缓冲 = 环元素出队的拷贝（`sub_140D7D470`）；
+2. 元素 size 由入队 `sub_140D7CFC0` 写，取值就是源 string 的 `_Mysize`；
+3. 源 string 是连接对象的序列化缓冲（`conn+0x1b0`），由 `sub_1416B0490` 清空后交给序列化；
+4. ⇒ 失败样本的 2 / 8 / 23 / 36 **就是发送侧序列化出来的长度**；
+   环、出队、解析三层都不再改写长度。
+   责任面由此从「组帧/队列」收窄到「序列化写入 `conn+0x1b0` 的那一层」。
+
+### 观察到的风险（`[实测]`，未定案）
+
+- 用通用 VA detour hook 入队 6 秒内稳定（0 lost），可以放心做短窗口采样；
+- 同一次实验里随后安装 `dispatch_addr=0x1416C6070` 的 hook，进程立刻退出
+  （boot log：`violation watch: installed` 之后 `pipe: peek failed`，进程消失）。
+  这与早前「`sub_1416C6070` 的 ABI/返回约定不符，不能挂」的结论一致：
+  **不要再挂 dispatch**。

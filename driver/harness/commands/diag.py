@@ -145,6 +145,32 @@ class DiagnosticsCommands(PipeConnection):
             "violation_drain",
         )
 
+    def send_probe(
+        self,
+        on: bool = True,
+        *,
+        addr: int | str | None = None,
+        serialize_addr: int | str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Read-only probe on the packet send path.
+
+        ``addr`` is the enqueue role (``@client_packet_enqueue``) and
+        ``serialize_addr`` the serializer (``@client_packet_send_serialize``).
+        Frames whose length never appears in healthy traffic are appended to
+        ``<modDir>/suspect-<pid>.jsonl`` with a stack, because the affected
+        sessions sometimes die before the pipe can be drained. Requires
+        ``allow_hook_va`` and an active world.
+        """
+        message: dict[str, Any] = {"cmd": "send_probe", "on": bool(on)}
+        if addr is not None:
+            message["addr"] = hex(addr) if isinstance(addr, int) else addr
+        if serialize_addr is not None:
+            message["addr2"] = (
+                hex(serialize_addr) if isinstance(serialize_addr, int) else serialize_addr
+            )
+        return self.request(message, "send_probe", timeout=timeout)
+
     def selftest_busy(self, us: int = 1000, ticks: int = 20) -> dict[str, Any]:
         """Burn ``us`` microseconds in the tick for ``ticks`` ticks (metric proof)."""
         return self.request(

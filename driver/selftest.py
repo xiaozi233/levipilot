@@ -2457,6 +2457,11 @@ def check_violation_watch(client: ModClient, checks: Checks) -> None:
         )
         stats = client.violation_stats()
         checks.check(
+            "inbound_freeze_clear",
+            client.violation_stats().get("inbound_frozen") is False,
+            "a healthy session must not be frozen",
+        )
+        checks.check(
             "violation_watch_stats_active",
             stats.get("active") is True
             and int(stats.get("capacity", 0)) > 0
@@ -2472,6 +2477,11 @@ def check_violation_watch(client: ModClient, checks: Checks) -> None:
         )
         synthetic = client.violation_watch(mode="synthetic")
         checks.check("violation_synthetic_ok", synthetic.get("ok") is True, str(synthetic))
+        checks.check(
+            "inbound_freeze_ignores_synthetic",
+            client.violation_stats().get("inbound_frozen") is False,
+            "the synthetic row never goes through the callback hook",
+        )
         # The page text is a std::string with no fixed bound; the full-text ring
         # must return it whole even when it is longer than a record row.
         long_details = "page " + "x" * 600
@@ -2576,6 +2586,10 @@ def check_violation_watch(client: ModClient, checks: Checks) -> None:
                     "violation_watch_stats_stopped", client.violation_stats().get("active") is False
                 )
                 checks.check(
+                    "inbound_freeze_reset_on_stop",
+                    client.violation_stats().get("inbound_frozen") is False,
+                )
+                checks.check(
                     "violation_watch_state_alive",
                     bool(client.state().get("in_world")) and client.ping().get("event") == "pong",
                 )
@@ -2589,6 +2603,62 @@ def check_violation_watch(client: ModClient, checks: Checks) -> None:
                     )
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     checks.check("violation_watch_no_dump", after == before)
+
+
+def check_send_probe(client: ModClient, checks: Checks) -> None:
+    """Read-only send-path probe: install, observe traffic without dumps, stop.
+
+    The probe only reads `[netSystem+0x1B0]` and the enqueued string; a healthy
+    session must therefore report hits (traffic exists) and zero dumps (no frame
+    length outside the healthy set). Nothing here may change a packet.
+    """
+    if not checks.check("send_probe_in_world", client.state().get("in_world") is True):
+        return
+    enqueue = violation_watch_address(client, "@client_packet_enqueue")
+    serializer = violation_watch_address(client, "@client_packet_send_serialize")
+    checks.check(
+        "send_probe_roles",
+        enqueue is not None and serializer is not None,
+        f"enqueue={hex(enqueue) if enqueue else None} serialize={hex(serializer) if serializer else None}",
+    )
+    if enqueue is None or serializer is None:
+        return
+    started = client.send_probe(True, addr=enqueue, serialize_addr=serializer)
+    if started.get("event") == "error":
+        checks.check(
+            "send_probe_gate",
+            started.get("reason") == "hook_va_disabled",
+            str(started),
+        )
+        checks.skip("send_probe_observation", "allow_hook_va is disabled")
+        return
+    try:
+        checks.check(
+            "send_probe_start",
+            started.get("active") is True and started.get("serialize_hooked") is True,
+            str({k: started.get(k) for k in ("active", "serialize_hooked")}),
+        )
+        checks.check(
+            "send_probe_path",
+            str(started.get("path", "")).endswith(".jsonl"),
+            str(started.get("path")),
+        )
+        wait_ticks(client, 12)
+        stopped = client.send_probe(False)
+        checks.check("send_probe_hits", int(stopped.get("hits", 0)) > 0, str(stopped))
+        checks.check(
+            "send_probe_no_dumps",
+            int(stopped.get("dumps", -1)) == 0,
+            "healthy traffic must not produce suspect frames",
+        )
+        checks.check("send_probe_stopped", stopped.get("active") is False, str(stopped))
+        checks.check(
+            "send_probe_state_alive",
+            bool(client.state().get("in_world")) and client.ping().get("event") == "pong",
+        )
+    finally:
+        with preserve_failure(checks, "send_probe"):
+            client.send_probe(False)
 
 
 def check_packet_injection(client: ModClient, checks: Checks, world: str | None = None) -> None:
@@ -5162,6 +5232,7 @@ def run_live(
             elif args.violation_only:
                 with observation.gap("violation_selftest"):
                     check_violation_watch(client, checks)
+                check_send_probe(client, checks)
             elif args.packet_injection_only or args.packet_injection_world:
                 check_packet_injection(client, checks, args.packet_injection_world)
             elif args.tick_recovery_only or args.tick_recovery_world:
@@ -5341,6 +5412,7 @@ def run_live(
         check_packet_injection(client, checks)
         with observation.gap("violation_selftest"):
             check_violation_watch(client, checks)
+        check_send_probe(client, checks)
         check_packet_tap(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)

@@ -2284,3 +2284,24 @@ packet_id 111  packet_size 54  error_value 104  response 3
 
 harness 侧能做的只是**规避**：避免在服务端 tick 外并发触发发包
 （例如飞行/能力改动的注入节奏），以及把这条结论作为已知限制记录下来。
+
+### §49 附：新代码的现场验收（2026-11-02 00:34）
+
+`send_probe` 与首错冻结都补了 selftest 检查，完整现场重跑覆盖新 mod：
+
+```
+1076/1077 checks passed (0 failed, 1 skipped, 1 required skips)
+```
+
+新增全 PASS：
+
+```
+inbound_freeze_clear              / inbound_freeze_ignores_synthetic / inbound_freeze_reset_on_stop
+send_probe_in_world               / send_probe_roles (enqueue=…cfc0 serialize=…0490)
+send_probe_start                  / send_probe_path / send_probe_hits (154) / send_probe_no_dumps / send_probe_stopped
+```
+
+- 唯一 skip 仍是 `inbound_slice_framing (declared length unreadable: framed=0/256)`，
+  与 §39「这条路上没有帧长度前缀」互证；
+- `send_probe_hits=154 / dumps=0`：健康流量确实进过探针，且没有产生可疑帧，
+  说明探针的过滤条件在正常游玩下是安静的。

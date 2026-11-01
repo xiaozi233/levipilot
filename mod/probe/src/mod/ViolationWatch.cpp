@@ -150,6 +150,7 @@ std::atomic<std::uint32_t> gMemmoveFilter{0}; // 0 = record every copy
 struct CopySlot {
     std::atomic<std::uint64_t> addr{0};
     std::atomic<std::uint32_t> count{0};
+    std::atomic<std::uint32_t> assignSize{0};
 };
 constexpr std::size_t kCopySlots = 4;
 CopySlot gCopySlots[kCopySlots];
@@ -174,6 +175,33 @@ void noteCopy(std::uint64_t dst) {
             }
         }
     }
+}
+
+void noteAssign(std::uint64_t buffer, std::uint32_t size) {
+    for (std::size_t index = 0; index < kCopySlots; ++index) {
+        std::uint64_t expected = gCopySlots[index].addr.load(std::memory_order_relaxed);
+        if (expected == buffer) {
+            gCopySlots[index].assignSize.store(size, std::memory_order_relaxed);
+            return;
+        }
+        if (expected == 0) {
+            std::uint64_t empty = 0;
+            if (gCopySlots[index].addr.compare_exchange_strong(empty, buffer,
+                                                               std::memory_order_relaxed)) {
+                gCopySlots[index].assignSize.store(size, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
+}
+
+std::uint32_t takeAssignSize(std::uint64_t buffer) {
+    for (std::size_t index = 0; index < kCopySlots; ++index) {
+        if (gCopySlots[index].addr.load(std::memory_order_relaxed) == buffer) {
+            return gCopySlots[index].assignSize.load(std::memory_order_relaxed);
+        }
+    }
+    return 0;
 }
 
 std::uint32_t takeCopies(std::uint64_t buffer) {
@@ -288,7 +316,7 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.errorValue = static_cast<std::int32_t>(probe.readPtr);
     record.category   = probe.begin;
     record.pad0       = takeCopies(probe.begin);
-    record.assignSize = gAssignSize.load(std::memory_order_relaxed);
+    record.assignSize = takeAssignSize(probe.begin);
     gPacketBegin.store(probe.begin, std::memory_order_relaxed);
     record.contextSize = copySlice(probe.begin, probe.size, record.context);
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
@@ -423,11 +451,22 @@ std::int64_t detourAssign(void* target, void* a2, void* a3) {
         result = reinterpret_cast<AssignFn>(gAssignOrigin)(target, a2, a3);
     }
     gAssignCalls.fetch_add(1, std::memory_order_relaxed);
+    // The prologue is `mov rdi, rdx`, so the string is the *second* argument
+    // (the first one is copied into rbx and used elsewhere).
     std::uint64_t const wanted = gPacketString.load(std::memory_order_relaxed);
-    if (wanted != 0 && reinterpret_cast<std::uint64_t>(target) == wanted) {
+    if (wanted != 0 && reinterpret_cast<std::uint64_t>(a2) == wanted) {
         std::uint32_t size = 0;
         if (readMemory(wanted + 0x10, &size, sizeof(size))) {
             gAssignSize.store(size, std::memory_order_relaxed);
+            // Key by the data pointer: that is what the parse boundary reports,
+            // not the string object's own address.
+            std::uint64_t dataPtr = wanted;
+            std::uint64_t field = 0;
+            if (readMemory(wanted, &field, sizeof(field)) && field >= 0x10000
+                && field < 0x00007FFFFFFFFFFFull) {
+                dataPtr = field;
+            }
+            noteAssign(dataPtr, size);
         }
         gAssignCount.fetch_add(1, std::memory_order_relaxed);
     }

@@ -101,6 +101,16 @@ class DiagnosticsCommands(PipeConnection):
             "violation_text",
         )
 
+    def memmove_probe(self, on: bool = True, timeout: float | None = None) -> dict[str, Any]:
+        """Record the memmove that fills the per-packet string, in both directions.
+
+        Only copies whose destination is the packet buffer are kept, so the
+        source pointer and the copied length are the ones the framing layer
+        used -- the numbers a length prefix would carry.
+        """
+        return self.request({"cmd": "memmove_probe", "on": bool(on)}, "memmove_probe",
+                            timeout=timeout)
+
     def inbound_sample(self, sample: int = 4, timeout: float | None = None) -> dict[str, Any]:
         """Set the parse-boundary sampling stride (1 = keep every packet).
 

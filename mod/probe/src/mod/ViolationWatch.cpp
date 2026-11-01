@@ -106,6 +106,12 @@ std::atomic<std::uint64_t> gInboundSampled{0};
 // normal play; 1:1 is for a reproduction run, where the packet before the
 // disconnect matters more than the history behind it.
 std::atomic<std::uint32_t> gInboundMask{3};
+constexpr std::uint8_t kMemmoveKind = 9;
+using MemmoveFn = void* (*)(void*, void const*, std::size_t);
+ll::memory::FuncPtr        gMemmoveOrigin = nullptr;
+std::atomic_bool           gMemmoveInstalled{false};
+std::atomic_bool           gMemmoveEnabled{false};
+std::atomic<std::uint64_t> gPacketBegin{0};
 std::atomic<std::uint64_t> gInboundBytes{0};
 
 bool initializeInboundRing() {
@@ -209,6 +215,7 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.packetSize = static_cast<std::uint32_t>(probe.size);
     record.errorValue = static_cast<std::int32_t>(probe.readPtr);
     record.category   = probe.begin;
+    gPacketBegin.store(probe.begin, std::memory_order_relaxed);
     record.contextSize = copySlice(probe.begin, probe.size, record.context);
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
     // that is the batch buffer or a container over it, these bytes show it.
@@ -313,6 +320,36 @@ bool initializeTextRing() {
         gTextReady.store(true, std::memory_order_release);
     }
     return true;
+}
+
+// The packet bytes reach the reused string through one memmove whose target is
+// that string's buffer. Recording (source, length, source neighbourhood) for
+// exactly those copies is what separates "the length came from a prefix" from
+// "the length is the buffer's". The probe only compares an address per call and
+// forwards everything untouched.
+struct MemmoveBlob {
+    std::uint64_t src    = 0;
+    std::uint64_t len    = 0;
+    char          before[16] = {};
+    char          after[16]  = {};
+};
+
+void* detourMemmove(void* dst, void const* src, std::size_t length) {
+    auto const begin = gPacketBegin.load(std::memory_order_relaxed);
+    if (gMemmoveEnabled.load(std::memory_order_relaxed) && begin != 0
+        && reinterpret_cast<std::uint64_t>(dst) == begin && length < 4096) {
+        MemmoveBlob blob{};
+        blob.src = reinterpret_cast<std::uint64_t>(src);
+        blob.len = length;
+        if (blob.src > sizeof(blob.before)) {
+            readMemory(blob.src - sizeof(blob.before), blob.before, sizeof(blob.before));
+        }
+        readMemory(blob.src, blob.after, sizeof(blob.after));
+        publishText(kMemmoveKind, std::string_view(reinterpret_cast<char const*>(&blob),
+                                                   sizeof(blob)));
+    }
+    if (gMemmoveOrigin == nullptr) return dst;
+    return reinterpret_cast<MemmoveFn>(gMemmoveOrigin)(dst, src, length);
 }
 
 bool initializeRing() {
@@ -688,6 +725,26 @@ nlohmann::json violationWatchStats() {
     };
 }
 
+nlohmann::json memmoveProbeJson(bool on) {
+    std::lock_guard lock(gInstallMutex);
+    if (on && !gMemmoveInstalled.load(std::memory_order_acquire)) {
+        if (ll::memory::hook(
+                reinterpret_cast<ll::memory::FuncPtr>(&memmove),
+                ll::memory::toFuncPtr(&detourMemmove),
+                &gMemmoveOrigin,
+                ll::memory::HookPriority::Normal,
+                true
+            ) == 0) {
+            gMemmoveInstalled.store(true, std::memory_order_release);
+        }
+    }
+    gMemmoveEnabled.store(on && gMemmoveInstalled.load(std::memory_order_acquire),
+                          std::memory_order_release);
+    return nlohmann::json{{"event", "memmove_probe"},
+                          {"on", gMemmoveEnabled.load(std::memory_order_acquire)},
+                          {"hooked", gMemmoveInstalled.load(std::memory_order_acquire)}};
+}
+
 nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {
     nlohmann::json rows = nlohmann::json::array();
     std::uint64_t head = gTextRing.head();
@@ -714,15 +771,29 @@ nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {
             cursor = index + 1;
             continue;
         }
-        std::string text(record.text, record.len);
-        rows.push_back(nlohmann::json{
+        nlohmann::json row{
             {"index", index + 1},
             {"tick", record.tick},
-            {"kind", record.kind == 2 ? "screen" : "callback"},
+            {"kind", record.kind == 2 ? "screen"
+                     : record.kind == kMemmoveKind ? "memmove" : "callback"},
             {"len", record.len},
             {"truncated", record.truncated != 0},
-            {"text", std::move(text)},
-        });
+        };
+        if (record.kind == kMemmoveKind && record.len == sizeof(MemmoveBlob)) {
+            // Binary: emit the fields so the reply stays valid UTF-8.
+            MemmoveBlob blob{};
+            std::memcpy(&blob, record.text, sizeof(blob));
+            row["src"] = hexText(blob.before[0] == 0 ? "" : "", 0); // placeholder overwritten below
+            row["src"] = nlohmann::json::array();
+            row.erase("src");
+            row["src_addr"] = blob.src;
+            row["copy_len"] = blob.len;
+            row["before_hex"] = hexText(blob.before, sizeof(blob.before));
+            row["after_hex"] = hexText(blob.after, sizeof(blob.after));
+        } else {
+            row["text"] = std::string(record.text, record.len);
+        }
+        rows.push_back(std::move(row));
         ++count;
         cursor = index + 1;
     }

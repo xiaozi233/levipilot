@@ -152,6 +152,10 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         enqueue(violationTextJson(since, limit).dump());
         return true;
     }
+    if (cmd == "memmove_probe") {
+        enqueue(memmoveProbeJson(j.value("on", true)).dump());
+        return true;
+    }
     if (cmd == "inbound_sample") {
         enqueue(inboundSampleJson(j.value("sample", 4)).dump());
         return true;

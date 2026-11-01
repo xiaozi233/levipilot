@@ -478,6 +478,7 @@ nlohmann::json violationDrainJson(std::uint64_t since, std::size_t limit);
 nlohmann::json inboundDrainJson(std::uint64_t since, std::size_t limit);
 nlohmann::json inboundSampleJson(int sample);
 nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit);
+nlohmann::json memmoveProbeJson(bool on);
 nlohmann::json violationWatchSynthetic();
 nlohmann::json disconnectRouteProbe(int reason, std::string const& codeword, std::string const& details);
 

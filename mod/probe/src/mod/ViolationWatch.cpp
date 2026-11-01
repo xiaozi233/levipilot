@@ -95,8 +95,10 @@ void detourLoopEntry(void* a1, void* a2) {
     // id-144 head (`90 01`) is uplink, everything else is downlink, and only
     // the downlink object is what the packet-violation investigation needs.
     std::uint64_t owner = 0;
-    if (a1 != nullptr && readMemory(reinterpret_cast<std::uint64_t>(a1), &owner, sizeof(owner))
-        && owner != 0) {
+    // Once the downlink context is known this hook does no memory access at all:
+    // every read here is on the parse path and one of them triggered the hang.
+    if (gPacketString.load(std::memory_order_relaxed) == 0 && a1 != nullptr
+        && readMemory(reinterpret_cast<std::uint64_t>(a1), &owner, sizeof(owner)) && owner != 0) {
         std::uint64_t const stringAddr = owner + 0x128;
         std::uint64_t       dataPtr    = stringAddr;
         std::uint64_t       field      = 0;
@@ -455,19 +457,15 @@ std::int64_t detourAssign(void* target, void* a2, void* a3) {
     // (the first one is copied into rbx and used elsewhere).
     std::uint64_t const wanted = gPacketString.load(std::memory_order_relaxed);
     if (wanted != 0 && reinterpret_cast<std::uint64_t>(a2) == wanted) {
-        std::uint32_t size = 0;
-        if (readMemory(wanted + 0x10, &size, sizeof(size))) {
-            gAssignSize.store(size, std::memory_order_relaxed);
-            // Key by the data pointer: that is what the parse boundary reports,
-            // not the string object's own address.
-            std::uint64_t dataPtr = wanted;
-            std::uint64_t field = 0;
-            if (readMemory(wanted, &field, sizeof(field)) && field >= 0x10000
-                && field < 0x00007FFFFFFFFFFFull) {
-                dataPtr = field;
-            }
-            noteAssign(dataPtr, size);
-        }
+        // No readMemory here: this runs on the parse path and the guarded read
+        // can deadlock against a lock the caller already holds. `wanted` was
+        // matched against the known packet string, so a plain load is safe.
+        std::uint32_t size = *reinterpret_cast<std::uint32_t*>(wanted + 0x10);
+        gAssignSize.store(size, std::memory_order_relaxed);
+        std::uint64_t field = *reinterpret_cast<std::uint64_t*>(wanted);
+        std::uint64_t dataPtr =
+            (field >= 0x10000 && field < 0x00007FFFFFFFFFFFull) ? field : wanted;
+        noteAssign(dataPtr, size);
         gAssignCount.fetch_add(1, std::memory_order_relaxed);
     }
     return result;

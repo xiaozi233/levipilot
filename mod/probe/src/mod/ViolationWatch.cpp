@@ -112,6 +112,7 @@ ll::memory::FuncPtr        gMemmoveOrigin = nullptr;
 std::atomic_bool           gMemmoveInstalled{false};
 std::atomic_bool           gMemmoveEnabled{false};
 std::atomic<std::uint64_t> gPacketBegin{0};
+std::atomic<std::uint32_t> gMemmoveFilter{0}; // 0 = record every copy
 std::atomic<std::uint64_t> gInboundBytes{0};
 
 bool initializeInboundRing() {
@@ -334,10 +335,30 @@ struct MemmoveBlob {
     char          after[16]  = {};
 };
 
+// First varint of a packet buffer: one byte below 0x80, two bytes otherwise.
+bool bufferStartsWithId(std::uint64_t address, std::uint32_t wanted) {
+    std::uint8_t bytes[2]{};
+    if (!readMemory(address, bytes, sizeof(bytes))) return false;
+    std::uint32_t id = bytes[0] & 0x7Fu;
+    if ((bytes[0] & 0x80u) != 0) id |= static_cast<std::uint32_t>(bytes[1] & 0x7Fu) << 7;
+    return id == wanted;
+}
+
 void* detourMemmove(void* dst, void const* src, std::size_t length) {
+    // readMemory and the ring publish may themselves reach memmove; a nested
+    // call must go straight through or the hook recurses on the pipe thread.
+    static thread_local bool busy = false;
+    if (busy) {
+        if (gMemmoveOrigin == nullptr) return dst;
+        return reinterpret_cast<MemmoveFn>(gMemmoveOrigin)(dst, src, length);
+    }
+    busy = true;
     auto const begin = gPacketBegin.load(std::memory_order_relaxed);
+    auto const filter = gMemmoveFilter.load(std::memory_order_relaxed);
     if (gMemmoveEnabled.load(std::memory_order_relaxed) && begin != 0
-        && reinterpret_cast<std::uint64_t>(dst) == begin && length < 4096) {
+        && reinterpret_cast<std::uint64_t>(dst) == begin && length < 4096
+        && (filter == 0
+            || bufferStartsWithId(reinterpret_cast<std::uint64_t>(src), filter))) {
         MemmoveBlob blob{};
         blob.src = reinterpret_cast<std::uint64_t>(src);
         blob.len = length;
@@ -348,6 +369,7 @@ void* detourMemmove(void* dst, void const* src, std::size_t length) {
         publishText(kMemmoveKind, std::string_view(reinterpret_cast<char const*>(&blob),
                                                    sizeof(blob)));
     }
+    busy = false;
     if (gMemmoveOrigin == nullptr) return dst;
     return reinterpret_cast<MemmoveFn>(gMemmoveOrigin)(dst, src, length);
 }
@@ -725,8 +747,10 @@ nlohmann::json violationWatchStats() {
     };
 }
 
-nlohmann::json memmoveProbeJson(bool on) {
+nlohmann::json memmoveProbeJson(bool on, int packetId) {
     std::lock_guard lock(gInstallMutex);
+    gMemmoveFilter.store(packetId > 0 ? static_cast<std::uint32_t>(packetId) : 0u,
+                         std::memory_order_relaxed);
     if (on && !gMemmoveInstalled.load(std::memory_order_acquire)) {
         if (ll::memory::hook(
                 reinterpret_cast<ll::memory::FuncPtr>(&memmove),
@@ -738,10 +762,17 @@ nlohmann::json memmoveProbeJson(bool on) {
             gMemmoveInstalled.store(true, std::memory_order_release);
         }
     }
+    if (!on && gMemmoveInstalled.load(std::memory_order_acquire)) {
+        if (ll::memory::unhook(reinterpret_cast<ll::memory::FuncPtr>(&memmove),
+                               ll::memory::toFuncPtr(&detourMemmove), true)) {
+            gMemmoveInstalled.store(false, std::memory_order_release);
+        }
+    }
     gMemmoveEnabled.store(on && gMemmoveInstalled.load(std::memory_order_acquire),
                           std::memory_order_release);
     return nlohmann::json{{"event", "memmove_probe"},
                           {"on", gMemmoveEnabled.load(std::memory_order_acquire)},
+                          {"filter_id", gMemmoveFilter.load(std::memory_order_relaxed)},
                           {"hooked", gMemmoveInstalled.load(std::memory_order_acquire)}};
 }
 

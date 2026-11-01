@@ -153,7 +153,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         return true;
     }
     if (cmd == "memmove_probe") {
-        enqueue(memmoveProbeJson(j.value("on", true)).dump());
+        enqueue(memmoveProbeJson(j.value("on", true), j.value("id", 0)).dump());
         return true;
     }
     if (cmd == "inbound_sample") {

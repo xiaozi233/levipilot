@@ -63,7 +63,7 @@ struct ViolationRecord {
 // correlation. This captures a whole string without allocating in the callback:
 // eight preallocated slots, published with a memcpy and drained off-thread.
 constexpr std::size_t kViolationText     = 4096;
-constexpr std::size_t kTextCapacity      = 8;
+constexpr std::size_t kTextCapacity      = 64;
 
 struct TextRecord {
     std::uint64_t seq       = 0;

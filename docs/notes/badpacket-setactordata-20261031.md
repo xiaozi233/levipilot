@@ -1406,3 +1406,55 @@ size 23  r9 0x7ffed000   r9_size 0
 
 下一步：把这条路径的**入口条件**与 `rbx` 初值读清楚（它来自哪个字段/哪个容器长度），
 以及它和另一条“按字节拷贝”的路径如何分支。这是纯静态工作。
+
+## 36. 读通 `sub_140D7D470`：它是在**出队环形缓冲**（`[代码]`，2026-11-01 17:5x）
+
+逐条读完整个函数（217 条指令），写 size 的那些指令所在的路径完整如下：
+
+```
+0x140d7d5ca  lea  r15, [rbx + rbx*4]        ; r15 = rbx*5
+0x140d7d5ce  shl  r15, 3                    ; r15 = rbx*40 (0x28)   ← 元素大小
+0x140d7d5d2  add  r15, [r14 + 0x88]         ; r15 = 环底 + 索引*0x28
+0x140d7d5d9  lea  rax, [rbp - 0x30]
+0x140d7d5dd  cmp  rax, r15
+0x140d7d5e0  je   0x140d7d65a                ; 同一对象则跳过搬移
+0x140d7d635  movups xmm0, [r15]              ; 元素里的 std::string
+0x140d7d639  movups xmm1, [r15 + 0x10]
+0x140d7d63e  movaps [rbp - 0x20], xmm1       ; ← size / capacity 落到局部
+0x140d7d642  movaps [rbp - 0x30], xmm0       ; ← 数据指针落到局部
+0x140d7d646  mov qword [r15 + 0x10], 0       ; 清空该元素的 size
+0x140d7d64e  mov qword [r15 + 0x18], 0xf     ; capacity=15
+0x140d7d656  mov byte  [r15], 0
+0x140d7d65a  mov rax, [r15 + 0x20]           ; 元素第 0x20 字节里的附加字段
+0x140d7d65e  mov [rbp - 0x10], rax
+...
+0x140d7d6b4  inc  rbx                         ; ← 环索引 +1
+0x140d7d6b7  and  rbx, [r14 + 0x90]           ; ← 与掩码相与（环形回绕）
+0x140d7d6be  mov  [r14], rbx                  ; 写回索引
+0x140d7d6c1  mov  rbx, [rbp - 0x20]           ; rbx = 刚搬出来那个元素的 size
+0x140d7d6c5  test rbx, rbx
+0x140d7d6c8  je   0x140d7d6f4                  ; size==0 走另一分支
+0x140d7d6e2  cmp  rbx, [rdi + 0x18]           ; size <= 目标容量?
+0x140d7d6e7  call sub_14009DAF0               ; 不够则扩容
+0x140d7d707  mov  [rdi + 0x10], rbx           ; ← 目标 string 的 size = 元素 size
+0x140d7d714  call memmove                     ; 从元素搬 rbx 字节
+0x140d7d719  mov  byte [r14 + rbx], 0         ; 补 NUL
+```
+
+### 结论（`[代码]`）
+
+1. `sub_140D7D470` **不是“算长度再拷贝”**，而是**从一个环形缓冲出队一个元素**：
+   元素 0x28 字节（`std::string` 0x20 + 一个 qword @+0x20），
+   环底在 `[r14+0x88]`、索引在 `[r14]`、掩码在 `[r14+0x90]`。
+2. 写进解析缓冲的 **size，就是那个元素自己的 `size`**（`[rbp-0x20]` 来自 `[r15+0x10]`）。
+3. 因此“长度从哪来”的答案在本层是：**长度是入队方写进环槽的值**，出队只是搬运。
+
+### 与 897/897 基线的关系
+
+正常时每个槽装的就是一个完整包（size = 包长），出队照搬，所以解析看到的 size 恒等于包长；
+失败样本的槽 size 是 2 / 8 / 23 / 36 —— 说明**入队那一刻**这个槽的 size 就已经是这个值。
+
+### 下一步（唯一剩余的静态目标）
+
+找**谁往这个环入队**：写 `[r14+0x88]`/`[r14]`/元素 `+0x10` 的地方。
+（环索引与掩码已给出特征：`and reg, [..+0x90]`、`lea reg,[idx+idx*4]; shl reg,3`。）

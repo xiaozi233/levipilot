@@ -118,7 +118,8 @@ class DiagnosticsCommands(PipeConnection):
         return self.request(
             {"cmd": "memmove_probe", "on": bool(on), "id": int(packet_id)},
             "memmove_probe",
-                            timeout=timeout)
+            timeout=timeout,
+        )
 
     def inbound_sample(self, sample: int = 4, timeout: float | None = None) -> dict[str, Any]:
         """Set the parse-boundary sampling stride (1 = keep every packet).

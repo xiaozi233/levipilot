@@ -79,7 +79,7 @@ std::atomic<std::uint64_t> gNetContext{0};
 // The assign that fills the packet string also writes its size. Capturing the
 // size right after the call, filtered on the packet string's address, gives the
 // length that the writer intended for this packet.
-using AssignFn = std::int64_t (*)(void*, void*, void*);
+using AssignFn = std::int64_t (*)(void*, void*, void*, void*);
 using DispatchFn = std::int64_t (*)(void*, void*);
 ll::memory::FuncPtr        gDispatchOrigin = nullptr;
 std::atomic_bool           gDispatchInstalled{false};
@@ -454,10 +454,10 @@ bool bufferStartsWithId(std::uint64_t address, std::uint32_t wanted) {
     return id == wanted;
 }
 
-std::int64_t detourAssign(void* target, void* a2, void* a3) {
+std::int64_t detourAssign(void* target, void* a2, void* a3, void* a4) {
     std::int64_t result = 0;
     if (gAssignOrigin != nullptr) {
-        result = reinterpret_cast<AssignFn>(gAssignOrigin)(target, a2, a3);
+        result = reinterpret_cast<AssignFn>(gAssignOrigin)(target, a2, a3, a4);
     }
     gAssignCalls.fetch_add(1, std::memory_order_relaxed);
     // The prologue is `mov rdi, rdx`, so the string is the *second* argument
@@ -481,8 +481,8 @@ std::int64_t detourAssign(void* target, void* a2, void* a3) {
         blob.len = size;
         // Keep both raw arguments so the caller's own decoding can be checked
         // against the size that was actually written.
-        std::uint64_t const arg1 = reinterpret_cast<std::uint64_t>(a3);
-        std::uint64_t const arg2 = reinterpret_cast<std::uint64_t>(a2);
+        std::uint64_t const arg1 = reinterpret_cast<std::uint64_t>(a4); // r9
+        std::uint64_t const arg2 = reinterpret_cast<std::uint64_t>(a3);
         std::memcpy(blob.before, &arg1, sizeof(arg1));
         std::memcpy(blob.after, &arg2, sizeof(arg2));
         publishText(kAssignCallerKind, std::string_view(reinterpret_cast<char const*>(&blob),
@@ -1036,6 +1036,10 @@ nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {
             std::memcpy(&arg2, blob.after, sizeof(arg2));
             row["arg1"] = arg1;
             row["arg2"] = arg2;
+            if (arg1 > 0x10000) {
+                std::uint64_t srcSize = 0;
+                if (readMemory(arg1 + 0x10, &srcSize, sizeof(srcSize))) row["arg1_size"] = srcSize;
+            }
         } else if (record.kind == kDispatchKind && record.len == sizeof(MemmoveBlob)) {
             MemmoveBlob blob{};
             std::memcpy(&blob, record.text, sizeof(blob));

@@ -689,6 +689,19 @@
         "[代码] 连接种类 -> 文案：case 3 \"ClientDisconnection\"、case 4 \"ServerDisconnection\"、case 1 \"Prerequisites\"、case 2 \"InitialConnection\"；错误页 \"ClientDisconnection-<reason>\" 由它拼出，只表示连接侧，不区分谁发起断开。"
       ]
     },
+    "@client_packet_string_assign": {
+      "strategy": [
+        "dr_watch:net_ctx+0x138",
+        "writer of the per-packet string in the parse loop chain"
+      ],
+      "address": "0x140D7D470",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[实测] 在 net_ctx+0x138 上装硬件写断点，命中 tid 恒为下行解析线程；陷阱前一条为 0x140d7d707 `mov [rdi+10h], rbx`，紧跟 memmove(dst, r9, rbx) 与补 NUL，位于本函数内。",
+        "[代码] 栈上返回地址链：0x1416ab781（解析循环 call sub_140D935E0 之后）→ 0x140d937ea → 0x1416c608d → 本函数，rdi 即逐包 string 对象（net_ctx+0x128）。"
+      ]
+    },
     "@client_packet_parse_loop": {
       "strategy": [
         "callers:@client_read_no_header -> sub_1416AB0E0",

@@ -33,7 +33,8 @@ struct ViolationRecord {
     std::int32_t  packetId        = 0; // MinecraftPacketIds of the offending packet
     std::int32_t  errorValue      = 0; // std::error_code::value()
     std::uint32_t packetSize      = 0;
-    std::uint32_t pad0            = 0;
+    std::uint32_t pad0            = 0; // copies into the packet buffer since the last parse
+    std::uint32_t assignSize      = 0; // size the string assign wrote for this buffer
     std::uint64_t category        = 0; // std::error_category const*, session-local
     std::uint8_t  contextSize     = 0;
     std::uint8_t  contextTruncated = 0;

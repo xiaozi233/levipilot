@@ -44,6 +44,7 @@ class DiagnosticsCommands(PipeConnection):
         *,
         addr: int | str | None = None,
         loop_addr: int | str | None = None,
+        assign_addr: int | str | None = None,
         mode: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
@@ -61,6 +62,10 @@ class DiagnosticsCommands(PipeConnection):
             message["addr"] = hex(addr) if isinstance(addr, int) else addr
         if loop_addr is not None:
             message["loop_addr"] = hex(loop_addr) if isinstance(loop_addr, int) else loop_addr
+        if assign_addr is not None:
+            message["assign_addr"] = (
+                hex(assign_addr) if isinstance(assign_addr, int) else assign_addr
+            )
         if mode:
             message["mode"] = mode
         expected = "violation_synthetic" if mode == "synthetic" else "violation_watch"

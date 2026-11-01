@@ -74,6 +74,16 @@ using LoopEntryFn = void (*)(void*, void*);
 ll::memory::FuncPtr        gLoopOrigin = nullptr;
 std::atomic_bool           gLoopInstalled{false};
 std::atomic<std::uint64_t> gNetContext{0};
+// The assign that fills the packet string also writes its size. Capturing the
+// size right after the call, filtered on the packet string's address, gives the
+// length that the writer intended for this packet.
+using AssignFn = std::int64_t (*)(void*, void*, void*);
+ll::memory::FuncPtr        gAssignOrigin = nullptr;
+std::atomic_bool           gAssignInstalled{false};
+std::atomic<std::uint64_t> gPacketString{0};
+std::atomic<std::uint32_t> gAssignSize{0};
+std::atomic<std::uint64_t> gAssignCount{0};
+std::atomic<std::uint64_t> gAssignCalls{0};
 
 void detourLoopEntry(void* a1, void* a2) {
     for (int spin = 0; spin < 200000; ++spin) {
@@ -84,6 +94,7 @@ void detourLoopEntry(void* a1, void* a2) {
         std::uint64_t owner = 0;
         if (readMemory(reinterpret_cast<std::uint64_t>(a1), &owner, sizeof(owner))) {
             gNetContext.store(owner, std::memory_order_relaxed);
+            gPacketString.store(owner + 0x128, std::memory_order_relaxed);
         }
     }
     if (gLoopOrigin == nullptr) return;
@@ -114,6 +125,8 @@ ll::memory::FuncPtr        gMemmoveOrigin = nullptr;
 std::atomic_bool           gMemmoveInstalled{false};
 std::atomic_bool           gMemmoveEnabled{false};
 std::atomic<std::uint64_t> gPacketBegin{0};
+
+
 std::atomic<std::uint32_t> gMemmoveFilter{0}; // 0 = record every copy
 // Write counter keyed by buffer address: the downlink and uplink buffers
 // interleave, so a single counter would be cleared by the other direction.
@@ -258,6 +271,7 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.errorValue = static_cast<std::int32_t>(probe.readPtr);
     record.category   = probe.begin;
     record.pad0       = takeCopies(probe.begin);
+    record.assignSize = gAssignSize.load(std::memory_order_relaxed);
     gPacketBegin.store(probe.begin, std::memory_order_relaxed);
     record.contextSize = copySlice(probe.begin, probe.size, record.context);
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
@@ -384,6 +398,23 @@ bool bufferStartsWithId(std::uint64_t address, std::uint32_t wanted) {
     std::uint32_t id = bytes[0] & 0x7Fu;
     if ((bytes[0] & 0x80u) != 0) id |= static_cast<std::uint32_t>(bytes[1] & 0x7Fu) << 7;
     return id == wanted;
+}
+
+std::int64_t detourAssign(void* target, void* a2, void* a3) {
+    std::int64_t result = 0;
+    if (gAssignOrigin != nullptr) {
+        result = reinterpret_cast<AssignFn>(gAssignOrigin)(target, a2, a3);
+    }
+    gAssignCalls.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t const wanted = gPacketString.load(std::memory_order_relaxed);
+    if (wanted != 0 && reinterpret_cast<std::uint64_t>(target) == wanted) {
+        std::uint32_t size = 0;
+        if (readMemory(wanted + 0x10, &size, sizeof(size))) {
+            gAssignSize.store(size, std::memory_order_relaxed);
+        }
+        gAssignCount.fetch_add(1, std::memory_order_relaxed);
+    }
+    return result;
 }
 
 void recordCopy(void* dst, void const* src, std::size_t length) {
@@ -608,6 +639,7 @@ nlohmann::json drainRing(Ring& ring, std::size_t capacity, std::uint64_t since,
             {"category",   record.category == 0 ? nlohmann::json(nullptr)
                                                 : nlohmann::json(record.category)},
             {"copies",     record.pad0                                      },
+            {"assign_size", record.assignSize                               },
             {"source",     record.source == 3 ? "inbound"
                            : record.source == 2 ? "screen" : "callback"          },
             {"context_hex", hexText(record.context, record.contextSize)       },
@@ -644,7 +676,7 @@ std::uint64_t gameModuleBase() {
 }
 
 nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld,
-                                   std::uint64_t loopAddress) {
+                                   std::uint64_t loopAddress, std::uint64_t assignAddress) {
     std::lock_guard lock(gInstallMutex);
     if (!allowVa) return errorJson("violation_watch_disabled");
     if (!inWorld) return errorJson("not_in_world");
@@ -700,6 +732,20 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
             ProbeMod::getInstance().bootLog("violation watch: loop hook unavailable");
         }
     }
+    if (assignAddress != 0 && !gAssignInstalled.load(std::memory_order_acquire)
+        && hookAddressExecutable(assignAddress)) {
+        if (ll::memory::hook(
+                reinterpret_cast<ll::memory::FuncPtr>(assignAddress),
+                ll::memory::toFuncPtr(&detourAssign),
+                &gAssignOrigin,
+                ll::memory::HookPriority::Normal,
+                true
+            ) == 0) {
+            gAssignInstalled.store(true, std::memory_order_release);
+        } else {
+            ProbeMod::getInstance().bootLog("violation watch: assign hook unavailable");
+        }
+    }
     initializeTextRing();
     if (!gInboundInstalled.load(std::memory_order_acquire) && initializeInboundRing()) {
         if (ll::memory::hook(
@@ -725,6 +771,7 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
         {"screen_hooked", screenHooked     },
         {"inbound_hooked", gInboundInstalled.load(std::memory_order_acquire)},
         {"loop_hooked", gLoopInstalled.load(std::memory_order_acquire)},
+        {"assign_hooked", gAssignInstalled.load(std::memory_order_acquire)},
         {"screen_error",  screenHooked ? nlohmann::json(nullptr)
                                        : nlohmann::json("screen_hook_failed")},
     };
@@ -787,6 +834,9 @@ nlohmann::json violationWatchStats() {
         {"inbound_ready", gInboundReady.load(std::memory_order_acquire)},
         {"loop_hooked", gLoopInstalled.load(std::memory_order_acquire)},
         {"net_ctx", gNetContext.load(std::memory_order_relaxed)},
+        {"assign_hooked", gAssignInstalled.load(std::memory_order_acquire)},
+        {"assign_count", gAssignCount.load(std::memory_order_relaxed)},
+        {"assign_calls", gAssignCalls.load(std::memory_order_relaxed)},
         {"text_ready", gTextReady.load(std::memory_order_acquire)},
         {"text_head", gTextRing.head()},
         {"inbound_head", gInboundRing.head()},

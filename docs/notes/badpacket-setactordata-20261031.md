@@ -1688,3 +1688,53 @@ context "BinaryStream read() incomplete.readNoHeader fai…"
 等长时捕获（`out/live_inbound_capture.py`，2 秒一轮落盘）在自然复现时
 抓到出事那一帧的 `context_hex`，再逐字段比对一个正常的 id 39 帧，
 定位是哪个字段的长度/类型读偏了。
+
+---
+
+## §40 id 39 的读写被序列化模式门控（`[代码]`，2026-11-01 19:2x）
+
+用包名反查类：
+
+```
+.rdata 字符串 "SetActorDataPacket" @ 0x14ebdba91
+xref  -> sub_143DF6E30：*a2 = "SetActorDataPacket"; a2[1] = 18;   // getName()
+该函数在 vtable 中的槽 @ 0x14e7cfd90（表基 0x14e7cfd00，槽位 +0x90）
+```
+
+这张表里的关键槽：
+
+| 槽 | 地址 | 作用（按代码） |
+| --- | --- | --- |
+| +0x90 | `0x143df6e30` | `getName()` → `"SetActorDataPacket"` |
+| +0x98 | `0x143df6e50` | 旧格式读写：`mode = vtbl[0x60]()`，`if (mode == 5)` 走 cereal |
+| +0xA8 | `0x143df7630` | 包装层：建读上下文后 `(*vtbl[0x38])(this, stream, ctx)` |
+| +0xB0 | `0x143df7cc0` | cereal 模式实现：`if (mode != 5) …"tried to serialize (read) using a different mode"` |
+
+`0x143df7cc0` 开头的断言串就是
+
+```
+"Packet defined using SerializationMode::CerealOnly tried to serialize (read)
+ using a different mode: {}"
+```
+
+⇒ 这个包在 1.26.51.01 上是 **CerealOnly**，读写都走 cereal 二进制归档；
+`BinaryStream read() incomplete`（104）发生在**包自己的反序列化内部**，
+与外层队列无关（§36–§39 已把外层排除干净）。
+
+### 由此得到的判定
+
+1. 34 字节的帧是完整的（§39），出错的只能是**帧内 payload 的字段编码**；
+2. 因为是 cereal 归档，字段边界由归档自身（类型 + 长度）决定，
+   一个写侧/读侧不一致的字段（类型宽度、容器长度、variant 下标）就足以让归档提前读空；
+3. 这类不一致只在**特定内容**下触发，所以是低频而不是必现。
+
+### 仍缺的最后一环
+
+出事那一帧的原始字节。长时捕获已在跑：
+
+```
+py -3.11 out/live_inbound_capture.py      # 2 秒一轮，落盘 out/live-inbound-<stamp>.jsonl
+```
+
+自然复现时，断线前最后几行 `context_hex` 就是那一帧；拿到后与正常 id 39 帧
+逐字段对比，即可定位到具体字段。

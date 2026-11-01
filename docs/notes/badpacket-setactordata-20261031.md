@@ -1617,3 +1617,74 @@ payload 首字节（`mem_arg=1, mem_offset=0, mem_deref=1, mem_size=32`）：
   （boot log：`violation watch: installed` 之后 `pipe: peek failed`，进程消失）。
   这与早前「`sub_1416C6070` 的 ABI/返回约定不符，不能挂」的结论一致：
   **不要再挂 dispatch**。
+
+---
+
+## §39 「声明长度」模型退场：这条路上没有帧长度前缀（2026-11-01 19:0x）
+
+复核意见要求「直接读取帧长度前缀，或证明切分函数的数据流」。两条都做了，结论是
+**这条路上根本没有帧长度前缀**，因此「声明长度 23」这个提法在本层不成立。
+
+### 1. 入队方的帧格式（`[代码]`）
+
+`sub_1416B0490`（= `NetworkSystem` 的「把包投递给连接」）：
+
+```c
+memcpy(Src, a2, 0xB0);                       // 克隆包对象
+v8 = alloc(0xB8); memcpy(v8, Src, 0xB0); v8[0xB0] = a4;
+for (v9 = 55; v9 != 59; ++v9)                // 55..58 四个观察者槽
+    if (a1[v9]) (*a1[v9]->vtbl[0x50])(a1[v9], v41, a3);
+v16 = a1[54];  v16[2] = 0;                   // ★ 序列化缓冲 = *(a1+0x1B0)，先清空 size
+if (v16[3] >= 0x10) v16 = *v16;
+*(u8*)v16 = 0;
+v17 = a1[54];  a1[50] = v17; a1[51] = v17[2]; a1[52] = 0;   // a1+0x190 流视图
+(*a1[45]->vtbl[0x60])(a1+45, packetId | (a4<<10) | (peer<<12), "Header Data", 0);
+(*a3->vtbl[0x28])(a3, a1+45, v21, v22);      // ★ peer 把 payload 追加进去
+...
+sub_1416B08C0(a1, a2, a3, a1[54]);           // ★ 把 *(a1+0x1B0) 这个 string 广播入队
+```
+
+也就是说，一帧 = `varint 包 id`（由 `"Header Data"` 写入）+ `payload`，
+**没有任何长度字段**；长度就是这个 `std::string` 自己的 `_Mysize`。
+
+### 2. 切分函数的数据流（`[实测]`，`out/live-inbound-*.jsonl`）
+
+`violation_watch` 的入边记录里 `packet_id` **不是 MC 包 id**，而是「第几个参数带流」
+（`record.packetId = argIndex`，见 `publishInbound`）。真正有用的是：
+
+- `parent_view` / `parent_size`：**4444 行里 0 行命中** —— 切片从来不是某个更大流的子区间；
+- `before_hex`：多数是 `8e 8e 8e …`（堆填充字节），说明切片就是自己那块分配的开头；
+- `error_value` = 进入 `readNoHeader` 时的 `readPtr`：`6f…` 那批恒为 1、`90 01…` 那批恒为 2,
+  正好等于包 id varint 的字节宽度 —— 说明调用方先读掉 id 再进 `readNoHeader`。
+
+⇒ 没有「外层缓冲 + 长度前缀 → 切一刀」的结构。切片长度 100% 等于
+入队时那个 `std::string` 的长度；`2 / 8 / 23 / 36` 不是被谁声明出来的，
+是序列化结果本来就这么长。
+
+### 3. 这改变了结论边界
+
+| 旧说法 | 现状 |
+| --- | --- |
+| 「帧声明长度 23，实际只有 7」 | **撤回**：本层没有声明长度 |
+| 「切片包含额外邻居 payload」 | **撤回**：切片不属于任何更大缓冲（parent_view 恒 0） |
+| 「队列/解析可能改写长度」 | **排除**：入队写 `_Mysize`，出队 `memmove(size)`，中间无可改点 |
+| 责任面 | 收窄到 **序列化写入 `a1+0x1B0` 的那一层**（`"Header Data"` + `peer->vtbl[0x28]`） |
+
+### 4. 现有失败样本能说明什么
+
+已存样本 `out/diagnostic-full-final-violation.json`：
+
+```
+packet_id 39 / packet_size 34 / error_value 104 / response 3
+context "BinaryStream read() incomplete.readNoHeader fai…"
+```
+
+按本节的模型：这是一个 **34 字节的完整帧**（1 字节 id + 33 字节 payload），
+序列化时就是 34 字节；是**包内部的字段读不齐**（`ensureReadCompleted` → 104），
+不是外层把帧切短了。
+
+### 5. 下一步（可执行的唯一一条）
+
+等长时捕获（`out/live_inbound_capture.py`，2 秒一轮落盘）在自然复现时
+抓到出事那一帧的 `context_hex`，再逐字段比对一个正常的 id 39 帧，
+定位是哪个字段的长度/类型读偏了。

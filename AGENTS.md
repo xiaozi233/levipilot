@@ -253,8 +253,17 @@ profiles/roles（up to date / 50/57）通过。完整两轮 **1053/1055**（水�
 水池修复专项 **11/11**，新完整在 flight 收尾中止，尚未覆盖到修复后的水池。
 自然事件同 tick 861/tid 30828：callback `response=3/packet_id=39/packet_size=34/
 error_value=104`，随后 screen `disconnect_reason=90/context=Block`；SDK 枚举确认 39 是
-SetActorData（非 UpdateAbilitiesPacket）。mod 自读错误页与回调关联已有真实样本，
-但 size 参数边界、104 含义、方向、具体字段及成因仍 unresolved；上下文/详情均截断。
+SetActorData（非 UpdateAbilitiesPacket）。
+2026-11-01 已把外层查清（证据册 §36–§43）：解析缓冲是 0x28 元素环出队的**深拷贝**，
+元素 size 由入队 `sub_140D7CFC0` 从源 string 的 `_Mysize` 原样写入；这条路上**没有帧
+长度前缀**，切片也不是更大缓冲的子区间（`parent_view` 0/4444）；id 39 是
+`SetActorDataPacket` 且 **CerealOnly**，104 发生在它自己的 cereal 归档里。
+⇒ `size 参数边界 / 104 含义 / 方向` 已闭合，「声明长度被切短」「切片含邻居 payload」
+两种旧说法撤回；**只剩“具体哪个字段让归档提前读空” unresolved**，需要出事那一帧的
+原始字节（带 hook 采集 20 个进世界窗口、无 hook 对照 7 个窗口均未复现）。
+复现后一条命令即可取证：`py -3.11 out/live_inbound_capture.py` 自动落 `.mark`，
+再 `py -3.11 out/analyze_mark.py <mark>` 逐字段比对；探针一律 `client.close()`，
+否则管道会卡死到必须重启游戏。
 不可由 packet_capture=false/chat_sent=0 排除原生状态同步的间接影响。
 真实错误页 recover exit 0；原配置逐字节恢复并重启加载，最终姿态/能力/背包/输入等
 回读 **16/16**，113 个 crash 无新增/修改。证据见 `docs/reliability-repairs.md`。

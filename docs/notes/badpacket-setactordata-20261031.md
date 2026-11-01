@@ -1900,3 +1900,53 @@ mod 侧管道随后不可达（`ModPipeError ... [Errno 22]`），游戏进程�
 不再服务，必须重启游戏。第二次是在 `world_state` 拼错成 `client.world_state()`、
 异常分支把 client 扔掉之后立刻复现。
 ⇒ 探针脚本的统一写法：`try/finally: client.close()`；异常分支里丢掉 client 之前先 close。
+
+---
+
+## §43 收尾：结论、边界与未解决项（2026-11-01 21:1x）
+
+### 已闭合（每条都有代码地址或实测出处）
+
+1. **解析缓冲的来源**：`sub_140D7D470` 是 0x28 元素环的出队，元素 = `std::string(0x20)`
+   + 时间戳（`+0x20`），把元素自己的 `_Mysize` 原样 `memmove` 进解析缓冲。
+2. **谁写这个长度**：入队 `sub_140D7CFC0`（vtable `0x14e78d0a0` 的 **+0x08**）把源 string
+   的 `_Mysize` 写进元素 `+0x10`；且是**深拷贝**（堆串走 `operator new(容量+1)` + `memcpy`），
+   与发送缓冲不共享。
+3. **只有一个生产者**：全镜像里落在该节点布局（`[n]`/`[n+0x40]`/`[n+0x80]`/`[n+0x88]`/
+   `[n+0x90]`）上的 `and reg,[reg+0x90]` 只有入队两处、出队一处、析构一处。
+4. **没有帧长度前缀**：入边记录 4444 行里 `parent_view` 恒 0，`before_hex` 是堆填充；
+   selftest 的 `inbound_slice_framing (declared length unreadable: framed=0/256)` 独立互证。
+   ⇒ 「帧声明 23、实际 7」「切片里混进邻居 payload」两个旧说法**撤回**。
+5. **失败包的身份**：id 39 = `SetActorDataPacket`（`getName` @ `0x143DF6E30`），
+   **CerealOnly**（`0x143DF7CC0` 的断言串），104 是它自己反序列化时流没对齐，
+   外层队列/解析/调度都是忠实的。
+6. **责任面**：`sub_1416B0490`（清空 `conn+0x1B0` → 写 `"Header Data"` → peer 序列化 →
+   入队）这一段产出的**包内容**。
+
+### 未解决
+
+**34 字节的 id 39 帧里，是哪一个字段/哪一条 cereal 条目让归档提前读空。**
+这需要出事那一刻的原帧字节；静态上已经走到 schema 驱动的 cereal 加载器
+（`BasicLoader::load(...) [Type = SetActorDataPacketPayload]`），再往下必须有样本。
+
+采样现状（均未复现）：
+
+| 采集 | 进世界窗口 | 结果 |
+| --- | --- | --- |
+| 带 hook（`out/live_inbound_capture.py`） | 20 | 0 真实违规（1 次误报已改名 `.false-positive`，1 次 synthetic 已改名 `.synthetic`） |
+| 无 hook 对照（`out/control_run.py`） | 7 | 0，`world_state` 全程 `world` |
+
+### 下次一条命令即可续上
+
+```bash
+py -3.11 out/live_inbound_capture.py     # 2 秒落盘 + 新最大长度 + callback 违规→.mark + 每 2 分钟进世界
+py -3.11 out/analyze_mark.py out/<mark>  # 拿到后：id varint、可疑偏移、是否“一帧两包”
+```
+
+运维铁律：**探针脚本必须 `client.close()`**（`try/finally`），否则 mod 管道会卡到
+`Errno 22`，只能重启游戏（§41/§42 各复现一次）。
+
+### 本轮验收
+
+- 完整现场 selftest **1065/1066**（0 failed，唯一 skip 与 §39 互证）
+- 离线单测 **372/372**；roles 校验 **56/63**

@@ -266,8 +266,9 @@ SetActorData（非 UpdateAbilitiesPacket）。mod 自读错误页与回调关联
 （23 B）= 自己的 id+body（7 B）+ **16 B 邻居 SetActorData payload**，而同 run 正常 188 全为 7 B、
 发送侧 body 全为 5 B ⇒ **帧写出侧把邻居 payload 并进了本帧，不是传输截断**；解析器读完 body 剩
 16 B，`ensureReadCompleted` 判 104 → `BadPacket(90)` / `ClientDisconnection-90` / `Block`。
-帧声明值判定为 **23**（多包 tick 首包尺寸恒等于自身长度 ⇒ 切分按声明长度；23 = 7 + 16，
-即写出侧把邻居 payload 计入了帧长度）。mod 侧无写入点、无补丁。仪器：`violation_text`（整段原文，4 KB×8 槽）、`inbound_drain`
+帧声明值目前只是**旁证倾向 23**（多包 tick 首包尺寸恒等于自身长度 ⇒ 切分独立于后续包；
+23 = 7 + 16），**长度字段尚未直读，未定案**。mod 侧无直接写入点，但**未排除**对象共享/时序/
+hook ABI 的间接影响。仪器：`violation_text`（整段原文，4 KB×8 槽）、`inbound_drain`
 （解析入口切片 + 前置字节）、`inbound_sample`（复现轮用 1）。证据册
 `docs/notes/badpacket-setactordata-20261031.md` §12–§15。
 

@@ -283,7 +283,8 @@ string 的 `_Mysize` 原样写入；这条路上**没有帧长度前缀**，切�
 size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序列化缓冲被两个线程并发
 使用**（同 tick 两个 tid 交替、before/after 链条自相矛盾，产出粘连帧 → 104 → BadPacket）。
 早期「声明 23」「邻居 payload 混入」定论已撤回。harness 不打补丁，只做规避；
-完整现场 1065/1066（0 fail、1 required skip），不是完整覆盖全绿。
+完整现场 1076/1077（0 fail、1 required skip，skip 是 `inbound_slice_framing`），
+不是完整覆盖全绿；`send_probe` 与首错冻结均有 selftest 检查。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage

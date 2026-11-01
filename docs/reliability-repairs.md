@@ -27,6 +27,27 @@
 原清单完成 11/16；第 12 项进行中，13–16 未完成。补充审阅的宏硬上限、世界进入
 看门狗与 Overhead 统计环并发已修复；第 12 项其余范围不能因局部验收通过而自动算完成。
 
+## Python 连接遗弃回收（2026-11-01）
+
+用户的 §41–§43 调查记录了探针未 close 后管道不可达的现场。自有客户端里可确认的
+泄漏是后台读线程持有含订阅的 session：遗弃 client 仍留下句柄，回调捕获 client 时还会
+通过线程形成永久可达循环。本批未新增逆向，也未改 C++ 或安装 DLL。
+
+- `_PipeSession` 保留请求/订阅，独立 `_PipeStream` 保留 I/O；读线程与 finalizer 仅持 stream。
+- 显式/GC 关闭、EOF、接收溢出共用释放。短锁转移资源，锁外关句柄/join；旧连接隔离。
+- 线程建立、启动或握手失败（含 KeyboardInterrupt/非法 protocol）关闭当代句柄并重抛。
+- `selftest --connection-only --require-complete` **11/11，0 fail、0 skip**：空闲准入、
+  普通遗弃、订阅循环遗弃、子进程正常退出与 os._exit 后重连/ping。原进程 PID 39708，
+  世界保持运行；结束时任务/录制/控制空闲，queue_dropped/pipe_write_timeouts 均为 0。
+- 离线全量 **376/376**；其中 transport **46/46**。ruff check/format、mypy（93 文件）通过，
+  profiles up to date、roles **56/63**。日志 `out/pipe-lifecycle-{offline,tests,live}.log`。
+  首次全量的新增 EOF 假句柄缺少 fileno 已修正，上述数字是修正后的完整重跑。
+
+仍要求探针用 `with ModClient()` 或 `try/finally: client.close()`；GC 不负责活跃引用。
+本批证明遗弃连接和进程退出后可以重连，不宣称所有 Errno 22、历史高频查询挂起或
+BadPacket 均已修复。完整游戏功能套件本批未重跑。用户最新 BadPacket 结论以证据册
+§36–§43 为准（深拷贝、无长度前缀、尚缺失败原帧），下文为各历史轮次的原始记录。
+
 ## 诊断可靠性与自检结果收尾（2026-10-31 深夜）
 
 ### 最新现场：自然违规与错误页已关联，成因仍待定位

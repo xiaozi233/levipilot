@@ -14,20 +14,22 @@ class PanicCommandsTests(unittest.TestCase):
             with self.subTest(rows=rows):
                 client = FakeClient()
                 for row in rows:
-                    client._session.lines.put(row)
+                    client._session.stream.lines.put(row)
                 self.assertEqual(client.panic("tasks"), done)
                 self.assertEqual(client.readline(), cancelled)
                 self.assertEqual(client.sent, [{"cmd": "panic", "level": "tasks"}])
 
     def test_command_rejection_is_still_an_error(self):
         client = FakeClient()
-        client._session.lines.put({"event": "error", "reason": "bad_panic_level"})
+        client._session.stream.lines.put({"event": "error", "reason": "bad_panic_level"})
         with self.assertRaisesRegex(ModProtocolError, "bad_panic_level"):
             client.panic()
 
     def test_unrelated_fault_is_not_suppressed(self):
         client = FakeClient()
-        client._session.lines.put({"event": "error", "phase": "tick", "reason": "internal_error"})
+        client._session.stream.lines.put(
+            {"event": "error", "phase": "tick", "reason": "internal_error"}
+        )
         with self.assertRaisesRegex(ModProtocolError, "internal_error"):
             client.panic()
 
@@ -35,4 +37,4 @@ class PanicCommandsTests(unittest.TestCase):
         client = FakeClient()
         with self.assertRaises(ModTimeout):
             client.panic(timeout=0)
-        self.assertTrue(client._session.stopped.is_set())
+        self.assertTrue(client._session.stream.stopped.is_set())

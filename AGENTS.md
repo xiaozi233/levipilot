@@ -27,6 +27,7 @@ py -3.11 driver/dev.py recover --world "超平坦测试"
 LEVIPILOT_VIOLATION_DUMP=out/violation.json py -3.11 driver/selftest.py
 py -3.11 driver/selftest.py --violation-only   # 合成记录验证设施，不是真实违规
 py -3.11 driver/selftest.py --require-complete # 必需覆盖 skip 也返回失败；仍需完整权限/空槽前提
+py -3.11 driver/selftest.py --connection-only --require-complete # 空闲时验证遗弃/退出后的管道重连
 
 # 无游戏单测 / 静态检查
 py -3.11 -m unittest discover -s tests -v
@@ -104,6 +105,10 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 
 - Windows 同步句柄上挂起的 `ReadFile` 会阻塞同一句柄的 `WriteFile` ⇒ 客户端必须用轮询读线程
   （`PeekNamedPipe`），不能用阻塞读。
+- Python 探针仍用 `with ModClient()` 或 `try/finally: client.close()`。连接的后台读线程与
+  GC finalizer 只能持 `_PipeStream`，不能经带订阅的 `_PipeSession` 反向保活 client。
+  EOF/溢出主动关闭句柄；GC 只兜底无引用（含已不可达订阅循环）的 client，不回收活跃引用。
+  该修复已留 `--connection-only`；不要由此宣称所有 Errno 22 或 mod 侧管道挂起均已解决。
 - `command` 的方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / verify 为准。
 - `GameMode::interact` 在空物品上下文会崩 ⇒ `interact_entity` 只做转向 + 注入使用按钮（best effort）。
 - 直接写客户端位置（`StateVector`/`ActorSetPositionRequest`）会被服务端覆盖；位置是服务端权威。

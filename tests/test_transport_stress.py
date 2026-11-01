@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import _winapi
 import contextlib
+import gc
 import json
 import msvcrt
 import os
@@ -11,15 +12,73 @@ import queue
 import threading
 import unittest
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from driver.harness.connection import PipeConnection, _PipeSession
+from driver.harness.connection import PipeConnection, _PipeSession, _PipeStream
 from driver.harness.errors import ModDisconnected
 from driver.harness.protocol import LineDecoder
 
 
 class TransportStressTests(unittest.TestCase):
+    def test_abandoned_client_and_subscription_cycle_release_real_pipe(self) -> None:
+        name = rf"\\.\pipe\levipilot-orphan-{uuid.uuid4().hex}"
+        ready = threading.Event()
+        failures: queue.Queue[BaseException] = queue.Queue()
+        generations = 4
+
+        def serve() -> None:
+            try:
+                for _ in range(generations):
+                    handle = _winapi.CreateNamedPipe(name, 3, 8, 1, 4096, 4096, 0, 0)
+                    try:
+                        ready.set()
+                        try:
+                            _winapi.ConnectNamedPipe(handle, overlapped=False)
+                        except OSError as exc:
+                            if exc.winerror != 535:
+                                raise
+                        fd = msvcrt.open_osfhandle(handle, os.O_BINARY)
+                    except BaseException:
+                        _winapi.CloseHandle(handle)
+                        raise
+                    with os.fdopen(fd, "r+b", buffering=0) as pipe:
+                        pipe.write(b'{"event":"hello","protocol":4}\n')
+                        with contextlib.suppress(OSError):
+                            self.assertFalse(pipe.read(1), "client must close its end")
+            except BaseException as exc:
+                failures.put(exc)
+                ready.set()
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        self.assertTrue(ready.wait(5))
+        for cycle in (False, True, False, True):
+            client = PipeConnection(pipe_name=name, connect_timeout=5).connect()
+            # A worker retaining the session would make this cycle reachable
+            # forever, even though the application has dropped the client.
+            if cycle:
+                client.subscribe("tick", lambda _row, owner=client: owner.protocol)
+            stream = client._session.stream
+            reader = stream.reader
+            assert reader is not None
+            reference = weakref.ref(client)
+            try:
+                del client
+                gc.collect()
+                self.assertIsNone(reference(), "reader/finalizer retained its owner")
+                self.assertTrue(stream.stopped.wait(2))
+                reader.join(2)
+                self.assertFalse(reader.is_alive())
+                self.assertIsNone(stream.handle)
+            finally:
+                stream.close()
+        server.join(5)
+        if not failures.empty():
+            raise failures.get_nowait()
+        self.assertFalse(server.is_alive(), "server did not recover after abandoned clients")
+
     def test_real_pipe_reconnects_and_serializes_competing_requests(self) -> None:
         name = rf"\\.\pipe\levipilot-test-{uuid.uuid4().hex}"
         ready = threading.Event()
@@ -81,7 +140,9 @@ class TransportStressTests(unittest.TestCase):
                 for generation in range(generations):
                     client.reconnect()
                     sessions.append(client._session)
-                    self.assertTrue(all(session.stopped.is_set() for session in sessions[:-1]))
+                    self.assertTrue(
+                        all(session.stream.stopped.is_set() for session in sessions[:-1])
+                    )
 
                     def exchange(seq: int, expected: int = generation) -> None:
                         reply = client.request({"cmd": "echo", "seq": seq}, "echo")
@@ -109,13 +170,21 @@ class TransportStressTests(unittest.TestCase):
         self.assertFalse(server.is_alive(), "named-pipe server did not finish")
         self.assertEqual(len({id(session) for session in sessions}), generations)
         self.assertTrue(
-            all(session.reader is None and session.handle is None for session in sessions)
+            all(
+                session.stream.reader is None and session.stream.handle is None
+                for session in sessions
+            )
         )
 
     def test_reader_overflow_stops_only_the_old_session(self) -> None:
         payload = b'{"event":"tick"}\n' * 8193
 
         class Pipe:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
             def fileno(self):
                 return 1
 
@@ -126,7 +195,8 @@ class TransportStressTests(unittest.TestCase):
             available._obj.value = len(payload)
             return True
 
-        old = _PipeSession(handle=Pipe())
+        old = _PipeSession(stream=_PipeStream(handle=Pipe()))
+        pipe = old.stream.handle
         fresh = _PipeSession()
         client = PipeConnection()
         client._session = fresh
@@ -134,14 +204,16 @@ class TransportStressTests(unittest.TestCase):
             patch("driver.harness.connection.msvcrt.get_osfhandle", return_value=1),
             patch("driver.harness.connection.kernel32.PeekNamedPipe", side_effect=peek),
         ):
-            PipeConnection._read_loop(old)
-        self.assertTrue(old.stopped.is_set())
-        self.assertEqual(old.lines.qsize(), 8192)
-        self.assertIn("溢出", old.failure)
-        self.assertFalse(fresh.stopped.is_set())
-        self.assertTrue(fresh.lines.empty())
+            PipeConnection._read_loop(old.stream)
+        self.assertTrue(old.stream.stopped.is_set())
+        self.assertTrue(pipe.closed)
+        self.assertIsNone(old.stream.handle)
+        self.assertEqual(old.stream.lines.qsize(), 8192)
+        self.assertIn("溢出", old.stream.failure)
+        self.assertFalse(fresh.stream.stopped.is_set())
+        self.assertTrue(fresh.stream.lines.empty())
         client._session = old
-        while not old.lines.empty():
+        while not old.stream.lines.empty():
             client.readline(timeout=0)
         with self.assertRaisesRegex(ModDisconnected, "溢出"):
             client.readline(timeout=0)

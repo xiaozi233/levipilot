@@ -13,6 +13,7 @@ import msvcrt
 import queue
 import threading
 import time
+import weakref
 from collections import deque
 from collections.abc import Callable, Iterator
 from ctypes import wintypes
@@ -46,18 +47,46 @@ def pipe_error_hint(error: OSError | None) -> str:
 
 
 @dataclass
-class _PipeSession:
-    """All reader-visible state belongs to one connection generation."""
+class _PipeStream:
+    """Reader-owned I/O, without callbacks that could retain the client."""
 
     handle: Any = None
     lines: queue.Queue[dict[str, Any]] = field(default_factory=lambda: queue.Queue(maxsize=8192))
     stopped: threading.Event = field(default_factory=threading.Event)
     reader: threading.Thread | None = None
+    failure: str = "pipe 已关闭（游戏退出或 mod 被卸载）"
+    _close_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def close(self) -> None:
+        # The reader's finally and an explicit/GC close may race. Transfer the
+        # resources once, then close/join outside the lock so the reader can exit.
+        with self._close_lock:
+            self.stopped.set()
+            with contextlib.suppress(queue.Full):
+                self.lines.put_nowait({"event": "__closed__"})
+            handle, self.handle = self.handle, None
+            reader, self.reader = self.reader, None
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                handle.close()
+        if (
+            reader is not None
+            and reader.ident is not None
+            and reader is not threading.current_thread()
+        ):
+            reader.join(timeout=1.0)
+
+
+@dataclass
+class _PipeSession:
+    """Request state and subscriptions belong to one connection generation."""
+
+    stream: _PipeStream = field(default_factory=_PipeStream)
+    finalizer: weakref.finalize | None = None
     pending: deque[dict[str, Any]] = field(default_factory=deque)
     consumers: dict[str, dict[object, Callable[[dict[str, Any]], None]]] = field(
         default_factory=dict
     )
-    failure: str = "pipe 已关闭（游戏退出或 mod 被卸载）"
 
 
 class PipeConnection:
@@ -79,8 +108,8 @@ class PipeConnection:
 
     @property
     def connected(self) -> bool:
-        session = self._session
-        return session.handle is not None and not session.stopped.is_set()
+        stream = self._session.stream
+        return stream.handle is not None and not stream.stopped.is_set()
 
     @contextlib.contextmanager
     def exchange(self) -> Iterator[None]:
@@ -109,25 +138,28 @@ class PipeConnection:
                 time.sleep(0.2)
                 continue
 
-            session = _PipeSession(handle=handle)
+            stream = _PipeStream(handle=handle)
+            session = _PipeSession(stream=stream)
             self._session = session
-            session.reader = threading.Thread(
-                target=self._read_loop,
-                args=(session,),
-                name="mod-pipe-reader",
-                daemon=True,
-            )
-            session.reader.start()
+            # The finalizer holds only I/O state. Neither it nor the worker may
+            # retain the client through a subscription callback or bound method.
             try:
+                session.finalizer = weakref.finalize(self, _PipeStream.close, stream)
+                stream.reader = threading.Thread(
+                    target=self._read_loop,
+                    args=(stream,),
+                    name="mod-pipe-reader",
+                    daemon=True,
+                )
+                stream.reader.start()
                 hello = self._next_line(self.connect_timeout)
-            except ModPipeError:
-                self.close()
+                if hello.get("event") != "hello":
+                    raise ModPipeError(f"握手失败：{hello!r}")
+                self.protocol = int(hello.get("protocol", 0))
+                self.hello = cast(HelloEvent, hello)
+            except BaseException:
+                self._disconnect(session)
                 raise
-            if hello.get("event") != "hello":
-                self.close()
-                raise ModPipeError(f"握手失败：{hello!r}")
-            self.protocol = int(hello.get("protocol", 0))
-            self.hello = cast(HelloEvent, hello)
             return self
         raise ModPipeError(
             f"无法连接 {self.pipe_name}: {last_error}\n提示：{pipe_error_hint(last_error)}"
@@ -143,7 +175,7 @@ class PipeConnection:
         return self
 
     @staticmethod
-    def _read_loop(session: _PipeSession) -> None:
+    def _read_loop(stream: _PipeStream) -> None:
         """Poll for data instead of blocking in ``read``.
 
         Windows serialises I/O on a synchronous pipe handle: a ``ReadFile``
@@ -153,11 +185,11 @@ class PipeConnection:
         """
         decoder = LineDecoder()
         try:
-            handle = session.handle
+            handle = stream.handle
             if handle is None:
                 return
             os_handle = msvcrt.get_osfhandle(handle.fileno())
-            while not session.stopped.is_set():
+            while not stream.stopped.is_set():
                 available = wintypes.DWORD(0)
                 ok = kernel32.PeekNamedPipe(
                     os_handle,
@@ -170,7 +202,7 @@ class PipeConnection:
                 if not ok:
                     break
                 if available.value == 0:
-                    session.stopped.wait(0.005)
+                    stream.stopped.wait(0.005)
                     continue
                 chunk = handle.read(available.value)
                 if not chunk:
@@ -181,30 +213,30 @@ class PipeConnection:
                     except json.JSONDecodeError:
                         continue
                     if isinstance(message, dict):
-                        session.lines.put_nowait(message)
+                        stream.lines.put_nowait(message)
         except queue.Full:
-            session.failure = "pipe 接收队列溢出；连接已终止"
+            stream.failure = "pipe 接收队列溢出；连接已终止"
         except (OSError, ValueError):
             pass
         finally:
-            session.stopped.set()
-            with contextlib.suppress(queue.Full):
-                session.lines.put_nowait({"event": "__closed__"})
+            # Release even when the caller never attempts another read/close.
+            stream.close()
 
     def _next_line(self, timeout: float | None = None) -> dict[str, Any]:
         wait = self.timeout if timeout is None else timeout
         session = self._session
+        stream = session.stream
         deadline = time.monotonic() + max(0.0, wait)
         while True:
-            if session.stopped.is_set() and session.lines.empty():
-                raise ModDisconnected(session.failure)
+            if stream.stopped.is_set() and stream.lines.empty():
+                raise ModDisconnected(stream.failure)
             try:
-                message = session.lines.get(timeout=max(0.0, deadline - time.monotonic()))
+                message = stream.lines.get(timeout=max(0.0, deadline - time.monotonic()))
             except queue.Empty as exc:
                 raise ModTimeout(f"等待 mod 响应超时（{wait:.1f}s）") from exc
             if message.get("event") == "__closed__":
                 self._disconnect(session)
-                raise ModDisconnected(session.failure)
+                raise ModDisconnected(stream.failure)
             consumers = tuple(session.consumers.get(str(message.get("event")), {}).values())
             if not consumers:
                 return message
@@ -247,16 +279,10 @@ class PipeConnection:
 
     @staticmethod
     def _disconnect(session: _PipeSession) -> None:
-        session.stopped.set()
-        with contextlib.suppress(queue.Full):
-            session.lines.put_nowait({"event": "__closed__"})
-        handle, session.handle = session.handle, None
-        if handle is not None:
-            with contextlib.suppress(OSError):
-                handle.close()
-        reader, session.reader = session.reader, None
-        if reader is not None and reader is not threading.current_thread():
-            reader.join(timeout=1.0)
+        if session.finalizer is not None:
+            session.finalizer()
+        else:
+            session.stream.close()
 
     def send(self, message: dict[str, Any]) -> None:
         if not self.connected:
@@ -272,8 +298,8 @@ class PipeConnection:
         """Finish short writes and translate all pipe I/O failures consistently."""
         with self.exchange():
             session = self._session
-            handle = session.handle
-            if handle is None or session.stopped.is_set():
+            handle = session.stream.handle
+            if handle is None or session.stream.stopped.is_set():
                 raise ModDisconnected("尚未连接")
             view = memoryview(payload)
             try:

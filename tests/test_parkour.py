@@ -127,7 +127,7 @@ class RecordingTests(unittest.TestCase):
             {"event": "tick", "record_id": 3, "tick": 2},
             {"event": "stopped", "record_id": 3, "ok": True},
         ):
-            client._session.lines.put(event)
+            client._session.stream.lines.put(event)
         rows = []
         with self.assertRaisesRegex(ModProtocolError, "macro playback: playback_fault"):
             read_until_run_end(client, 8, record_id=3, run_id=5, samples=rows)
@@ -145,7 +145,7 @@ class RecordingTests(unittest.TestCase):
             {"event": "tick", "record_id": 3, "tick": 3},
             {"event": "stopped", "record_id": 3, "ok": True},
         ):
-            client._session.lines.put(event)
+            client._session.stream.lines.put(event)
         rows = read_until_run_end(client, 8, record_id=3)
         self.assertEqual([row["tick"] for row in rows], [1, 2, 3])
         self.assertEqual(client.sent, [{"cmd": "stop"}])
@@ -153,8 +153,10 @@ class RecordingTests(unittest.TestCase):
 
     def test_failure_preserves_partial_rows_and_propagates(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "tick", "tick": 1})
-        client._session.lines.put({"event": "stopped", "ok": False, "reason": "capture_fault"})
+        client._session.stream.lines.put({"event": "tick", "tick": 1})
+        client._session.stream.lines.put(
+            {"event": "stopped", "ok": False, "reason": "capture_fault"}
+        )
         rows = []
         with self.assertRaisesRegex(ModProtocolError, "capture_fault"):
             read_until_run_end(client, 8, samples=rows)

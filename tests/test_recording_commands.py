@@ -12,7 +12,7 @@ from tests.test_transport import FakeClient
 class RecordingCommandsTests(unittest.TestCase):
     def test_binary_stop_propagates_failed_recording(self) -> None:
         client = FakeClient()
-        client._session.lines.put(
+        client._session.stream.lines.put(
             {"event": "record_stopped", "ok": False, "reason": "capture_fault"}
         )
         with self.assertRaisesRegex(ModProtocolError, "capture_fault"):
@@ -56,7 +56,7 @@ class RecordingCommandsTests(unittest.TestCase):
 
     def test_macro_partial_save_is_reported_as_failed_recording(self) -> None:
         client = FakeClient()
-        client._session.lines.put(
+        client._session.stream.lines.put(
             {
                 "event": "macro_rec_saved",
                 "ok": False,
@@ -70,22 +70,24 @@ class RecordingCommandsTests(unittest.TestCase):
     def test_macro_save_accepts_legacy_receipt_without_ok(self) -> None:
         client = FakeClient()
         receipt = {"event": "macro_rec_saved", "ticks": 3}
-        client._session.lines.put(receipt)
+        client._session.stream.lines.put(receipt)
         self.assertEqual(client.macro_record_stop(), receipt)
 
     def test_recording_terminal_failure_is_not_success(self) -> None:
         for reason in ("capture_fault", "capture_failed", "buffer_full", "world_left"):
             with self.subTest(reason=reason):
                 client = FakeClient()
-                client._session.lines.put({"event": "started"})
-                client._session.lines.put({"event": "tick", "tick": 1})
-                client._session.lines.put({"event": "stopped", "ok": False, "reason": reason})
+                client._session.stream.lines.put({"event": "started"})
+                client._session.stream.lines.put({"event": "tick", "tick": 1})
+                client._session.stream.lines.put(
+                    {"event": "stopped", "ok": False, "reason": reason}
+                )
                 with self.assertRaisesRegex(ModProtocolError, reason):
                     client.record(3)
 
     def test_stop_propagates_failed_auto_stop(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "stopped", "ok": False, "reason": "buffer_full"})
+        client._session.stream.lines.put({"event": "stopped", "ok": False, "reason": "buffer_full"})
         with self.assertRaisesRegex(ModProtocolError, "buffer_full"):
             client.stop()
 
@@ -99,7 +101,7 @@ class RecordingCommandsTests(unittest.TestCase):
             {"event": "tick", "record_id": 2, "tick": 1},
             {"event": "stopped", "record_id": 2, "ok": True},
         ):
-            client._session.lines.put(event)
+            client._session.stream.lines.put(event)
         self.assertEqual([row["tick"] for row in client.record(1)], [1])
         self.assertEqual(client.readline(), stale)
 
@@ -114,7 +116,7 @@ class RecordingCommandsTests(unittest.TestCase):
             {"event": "tick", "tick": 1},
             {"event": "stopped"},
         ):
-            client._session.lines.put(event)
+            client._session.stream.lines.put(event)
         deferred = client._defer
         seen = set()
 
@@ -159,8 +161,8 @@ class RecordingCommandsTests(unittest.TestCase):
         for failure in ("callback", "move"):
             with self.subTest(failure=failure):
                 client = FakeClient()
-                client._session.lines.put({"event": "started"})
-                client._session.lines.put({"event": "tick", "tick": 1})
+                client._session.stream.lines.put({"event": "started"})
+                client._session.stream.lines.put({"event": "tick", "tick": 1})
                 send = client.send
 
                 def send_or_fail(message, *, mode=failure, sender=send):

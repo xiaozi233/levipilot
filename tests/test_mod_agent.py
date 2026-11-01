@@ -221,14 +221,14 @@ class RecordingIntegrationTests(unittest.TestCase):
         def respond(message):
             nonlocal tick
             if message["cmd"] == "start":
-                client._session.lines.put({"event": "started"})
+                client._session.stream.lines.put({"event": "started"})
             elif message["cmd"] == "status":
                 tick += 1
-                client._session.lines.put({"event": "tick", "tick": tick})
-                client._session.lines.put({"event": "status", "tick": tick})
+                client._session.stream.lines.put({"event": "tick", "tick": tick})
+                client._session.stream.lines.put({"event": "status", "tick": tick})
             else:
-                client._session.lines.put({"event": "tick", "tick": tick + 1})
-                client._session.lines.put({"event": "stopped"})
+                client._session.stream.lines.put({"event": "tick", "tick": tick + 1})
+                client._session.stream.lines.put({"event": "stopped"})
 
         with patch.object(client, "send", side_effect=respond):
             agent.start_recording()
@@ -240,9 +240,9 @@ class RecordingIntegrationTests(unittest.TestCase):
 
     def test_stop_failure_propagates_and_unsubscribes(self) -> None:
         agent, client = self.make_recording_agent()
-        client._session.lines.put({"event": "started"})
+        client._session.stream.lines.put({"event": "started"})
         agent.start_recording()
-        client._session.lines.put({"event": "error", "reason": "stop_failed"})
+        client._session.stream.lines.put({"event": "error", "reason": "stop_failed"})
         with self.assertRaisesRegex(ModProtocolError, "stop_failed"):
             agent.stop_recording()
         self.assertFalse(agent._recording)
@@ -250,7 +250,7 @@ class RecordingIntegrationTests(unittest.TestCase):
 
     def test_start_failure_unsubscribes(self) -> None:
         agent, client = self.make_recording_agent()
-        client._session.lines.put({"event": "error", "reason": "start_failed"})
+        client._session.stream.lines.put({"event": "error", "reason": "start_failed"})
         with self.assertRaisesRegex(ModProtocolError, "start_failed"):
             agent.start_recording()
         self.assertFalse(agent._recording)
@@ -258,10 +258,12 @@ class RecordingIntegrationTests(unittest.TestCase):
 
     def test_failed_recording_terminal_unsubscribes_without_success(self) -> None:
         agent, client = self.make_recording_agent()
-        client._session.lines.put({"event": "started"})
+        client._session.stream.lines.put({"event": "started"})
         agent.start_recording()
-        client._session.lines.put({"event": "tick", "tick": 1})
-        client._session.lines.put({"event": "stopped", "ok": False, "reason": "capture_fault"})
+        client._session.stream.lines.put({"event": "tick", "tick": 1})
+        client._session.stream.lines.put(
+            {"event": "stopped", "ok": False, "reason": "capture_fault"}
+        )
         with self.assertRaisesRegex(ModProtocolError, "capture_fault"):
             agent.stop_recording()
         self.assertFalse(agent._recording)
@@ -269,11 +271,11 @@ class RecordingIntegrationTests(unittest.TestCase):
 
     def test_start_does_not_collect_ticks_from_previous_session(self) -> None:
         agent, client = self.make_recording_agent()
-        client._session.lines.put({"event": "tick", "tick": 99})
-        client._session.lines.put({"event": "started"})
+        client._session.stream.lines.put({"event": "tick", "tick": 99})
+        client._session.stream.lines.put({"event": "started"})
         agent.start_recording()
-        client._session.lines.put({"event": "tick", "tick": 1})
-        client._session.lines.put({"event": "stopped"})
+        client._session.stream.lines.put({"event": "tick", "tick": 1})
+        client._session.stream.lines.put({"event": "stopped"})
         self.assertEqual([row["t"] for row in agent.stop_recording()["samples"]], [1])
         self.assertEqual(client.readline()["tick"], 99)
 

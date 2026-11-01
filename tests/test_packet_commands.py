@@ -12,14 +12,14 @@ class PacketCommandsTests(unittest.TestCase):
         old = {"event": "chat_sent", "packet_id": 3, "ok": False, "reason": "world_left"}
         done = {"event": "chat_sent", "packet_id": 4, "ok": True}
         for row in ({"event": "chat_send_queued", "packet_id": 4}, old, done):
-            client._session.lines.put(row)
+            client._session.stream.lines.put(row)
         self.assertEqual(client.chat_send("/say test", wait=True), done)
         self.assertEqual(client.readline(), old)
 
     def test_wait_propagates_failure(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "chat_send_queued", "packet_id": 4})
-        client._session.lines.put(
+        client._session.stream.lines.put({"event": "chat_send_queued", "packet_id": 4})
+        client._session.stream.lines.put(
             {"event": "chat_sent", "packet_id": 4, "ok": False, "reason": "packet_inject_fault"}
         )
         with self.assertRaisesRegex(ModProtocolError, "packet_inject_fault"):
@@ -32,5 +32,5 @@ class PacketCommandsTests(unittest.TestCase):
         ):
             with self.subTest(reply=reply):
                 client = FakeClient()
-                client._session.lines.put(reply)
+                client._session.stream.lines.put(reply)
                 self.assertEqual(client.chat_send("/say test", wait=wait), reply)

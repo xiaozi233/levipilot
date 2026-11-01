@@ -14,7 +14,7 @@ from unittest.mock import patch
 import driver.harness as public_api
 import driver.harness.client as client_api
 import driver.transport_mod as legacy_api
-from driver.harness.connection import PipeConnection, _PipeSession, pipe_error_hint
+from driver.harness.connection import PipeConnection, _PipeSession, _PipeStream, pipe_error_hint
 from driver.transport_mod import (
     Harness,
     LineDecoder,
@@ -114,7 +114,7 @@ class WriteTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 client = ModClient()
                 pipe = self.Pipe()
-                client._session.handle = pipe
+                client._session.stream.handle = pipe
                 if raw:
                     client.send_raw(b"\xffpartial")
                     expected = b"\xffpartial"
@@ -132,11 +132,11 @@ class WriteTests(unittest.TestCase):
                     client = ModClient()
                     pipe = self.Pipe()
                     setattr(pipe, failure, True)
-                    client._session.handle = pipe
+                    client._session.stream.handle = pipe
                     payload = {"cmd": "ping"} if method == "send" else b"raw"
                     with self.assertRaisesRegex(ModDisconnected, "pipe 写入失败"):
                         getattr(client, method)(payload)
-                    self.assertIsNone(client._session.handle)
+                    self.assertIsNone(client._session.stream.handle)
                     self.assertTrue(pipe.closed)
 
     def test_disconnection_precedes_serialization_but_encoding_errors_keep_connection(self) -> None:
@@ -145,10 +145,10 @@ class WriteTests(unittest.TestCase):
         with self.assertRaisesRegex(ModDisconnected, "尚未连接"):
             client.send(message)
         pipe = self.Pipe()
-        client._session.handle = pipe
+        client._session.stream.handle = pipe
         with self.assertRaises(TypeError):
             client.send(message)
-        self.assertIs(client._session.handle, pipe)
+        self.assertIs(client._session.stream.handle, pipe)
         self.assertEqual(pipe.data, b"")
         client.close()
 
@@ -159,15 +159,15 @@ class RequestTests(unittest.TestCase):
         samples = []
         unsubscribe = client.subscribe("tick", samples.append)
         for tick in range(5000):
-            client._session.lines.put({"event": "tick", "tick": tick})
-        client._session.lines.put({"event": "notice"})
-        client._session.lines.put({"event": "pong"})
+            client._session.stream.lines.put({"event": "tick", "tick": tick})
+        client._session.stream.lines.put({"event": "notice"})
+        client._session.stream.lines.put({"event": "pong"})
         self.assertEqual(client.ping()["event"], "pong")
         self.assertEqual(len(samples), 5000)
         self.assertEqual(client.readline(), {"event": "notice"})
         unsubscribe()
         unsubscribe()  # Cleanup is idempotent.
-        client._session.lines.put({"event": "tick", "tick": 5000})
+        client._session.stream.lines.put({"event": "tick", "tick": 5000})
         self.assertEqual(client.readline()["tick"], 5000)
 
     def test_subscriptions_belong_to_one_connection_generation(self) -> None:
@@ -176,7 +176,7 @@ class RequestTests(unittest.TestCase):
         unsubscribe = client.subscribe("tick", samples.append)
         old_session = client._session
         client._session = _PipeSession()
-        client._session.lines.put({"event": "tick", "tick": 1})
+        client._session.stream.lines.put({"event": "tick", "tick": 1})
         self.assertEqual(client.readline()["tick"], 1)
         self.assertFalse(samples)
         unsubscribe()
@@ -189,10 +189,10 @@ class RequestTests(unittest.TestCase):
             raise RuntimeError("consumer failed")
 
         client.subscribe("tick", fail)
-        client._session.lines.put({"event": "tick"})
+        client._session.stream.lines.put({"event": "tick"})
         with self.assertRaisesRegex(RuntimeError, "consumer failed"):
             client.ping()
-        self.assertTrue(client._session.stopped.is_set())
+        self.assertTrue(client._session.stream.stopped.is_set())
 
     def test_notifications_do_not_extend_request_deadline(self) -> None:
         client = FakeClient()
@@ -203,20 +203,20 @@ class RequestTests(unittest.TestCase):
             now = 2.0
 
         client.subscribe("tick", slow_consumer)
-        client._session.lines.put({"event": "tick"})
-        client._session.lines.put({"event": "pong"})
+        client._session.stream.lines.put({"event": "tick"})
+        client._session.stream.lines.put({"event": "pong"})
         with (
             patch("driver.harness.connection.time.monotonic", side_effect=lambda: now),
             self.assertRaises(ModTimeout),
         ):
             client.ping()
-        self.assertTrue(client._session.stopped.is_set())
+        self.assertTrue(client._session.stream.stopped.is_set())
 
     def test_preserves_unrelated_events(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "tick", "tick": 1})
-        client._session.lines.put({"event": "moving"})
-        client._session.lines.put({"event": "pong"})
+        client._session.stream.lines.put({"event": "tick", "tick": 1})
+        client._session.stream.lines.put({"event": "moving"})
+        client._session.stream.lines.put({"event": "pong"})
         self.assertEqual(client.request({"cmd": "ping"}, "pong")["event"], "pong")
         self.assertEqual(client.readline(), {"event": "tick", "tick": 1})
         self.assertEqual(client.readline(), {"event": "moving"})
@@ -224,7 +224,7 @@ class RequestTests(unittest.TestCase):
     def test_deferred_events_cannot_satisfy_a_new_request(self) -> None:
         client = FakeClient()
         client._session.pending.append({"event": "pong", "old": True})
-        client._session.lines.put({"event": "pong", "old": False})
+        client._session.stream.lines.put({"event": "pong", "old": False})
         self.assertFalse(client.request({"cmd": "ping"}, "pong")["old"])
         self.assertTrue(client.readline()["old"])
 
@@ -245,11 +245,11 @@ class RequestTests(unittest.TestCase):
         client._session.pending.extend({"event": "tick"} for _ in range(4096))
         with self.assertRaisesRegex(ModProtocolError, "4096"):
             client._defer({"event": "tick"})
-        self.assertTrue(client._session.stopped.is_set())
+        self.assertTrue(client._session.stream.stopped.is_set())
 
     def test_error_event_raises_protocol_error(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "error", "reason": "not_in_world"})
+        client._session.stream.lines.put({"event": "error", "reason": "not_in_world"})
         with self.assertRaises(ModProtocolError) as caught:
             client.request({"cmd": "state"}, "state")
         self.assertIn("not_in_world", str(caught.exception))
@@ -261,17 +261,89 @@ class RequestTests(unittest.TestCase):
 
     def test_closed_pipe_raises_disconnected(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "__closed__"})
+        client._session.stream.lines.put({"event": "__closed__"})
         with self.assertRaises(ModDisconnected):
             client.request({"cmd": "ping"}, "pong")
 
 
 class SessionTests(unittest.TestCase):
+    def test_reader_eof_releases_handle_without_client_action(self) -> None:
+        class Pipe(WriteTests.Pipe):
+            def fileno(self):
+                return 1
+
+        pipe = Pipe()
+        stream = _PipeStream(handle=pipe)
+        with (
+            patch("driver.harness.connection.msvcrt.get_osfhandle", return_value=1),
+            patch("driver.harness.connection.kernel32.PeekNamedPipe", return_value=False),
+        ):
+            PipeConnection._read_loop(stream)
+        self.assertTrue(pipe.closed)
+        self.assertIsNone(stream.handle)
+        self.assertTrue(stream.stopped.is_set())
+        self.assertEqual(stream.lines.get_nowait(), {"event": "__closed__"})
+
+    def test_concurrent_stream_close_transfers_handle_once(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        closes = []
+
+        class Pipe:
+            def close(self):
+                closes.append(1)
+                entered.set()
+                release.wait(3)
+
+        stream = _PipeStream(handle=Pipe())
+        closer = threading.Thread(target=stream.close)
+        closer.start()
+        try:
+            self.assertTrue(entered.wait(3))
+            stream.close()
+        finally:
+            release.set()
+            closer.join(3)
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(closes, [1])
+        self.assertIsNone(stream.handle)
+
+    def test_failed_start_or_handshake_releases_the_open_handle(self) -> None:
+        for failure in (
+            RuntimeError("reader start failed"),
+            KeyboardInterrupt(),
+            ValueError("protocol"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                client = PipeConnection()
+                pipe = WriteTests.Pipe()
+                with (
+                    patch("builtins.open", return_value=pipe),
+                    patch("driver.harness.connection.threading.Thread.start") as start,
+                    patch.object(client, "_next_line") as hello,
+                ):
+                    if isinstance(failure, RuntimeError):
+                        start.side_effect = failure
+                    elif isinstance(failure, ValueError):
+                        hello.return_value = {"event": "hello", "protocol": "invalid"}
+                    else:
+                        hello.side_effect = failure
+                    with self.assertRaises(type(failure)):
+                        client.connect()
+                self.assertTrue(pipe.closed)
+                self.assertFalse(client.connected)
+                assert client._session.finalizer is not None
+                self.assertFalse(client._session.finalizer.alive)
+                client.close()
+
     def test_late_old_reader_cannot_write_into_a_new_session(self) -> None:
         entered = threading.Event()
         release = threading.Event()
 
         class Pipe:
+            def close(self):
+                pass
+
             def fileno(self):
                 return 1
 
@@ -282,7 +354,7 @@ class SessionTests(unittest.TestCase):
                 return b'{"event":"old_data"}\n'
 
         client = FakeClient()
-        old = _PipeSession(handle=Pipe())
+        old = _PipeSession(stream=_PipeStream(handle=Pipe()))
         fresh = _PipeSession()
 
         def peek(_handle, _buffer, _size, _read, available, _left):
@@ -293,7 +365,7 @@ class SessionTests(unittest.TestCase):
             patch("driver.harness.connection.msvcrt.get_osfhandle", return_value=1),
             patch("driver.harness.connection.kernel32.PeekNamedPipe", side_effect=peek),
         ):
-            reader = threading.Thread(target=PipeConnection._read_loop, args=(old,))
+            reader = threading.Thread(target=PipeConnection._read_loop, args=(old.stream,))
             reader.start()
             try:
                 self.assertTrue(entered.wait(3))
@@ -302,10 +374,10 @@ class SessionTests(unittest.TestCase):
                 release.set()
                 reader.join(3)
         self.assertFalse(reader.is_alive())
-        self.assertEqual(old.lines.get_nowait()["event"], "old_data")
-        self.assertEqual(old.lines.get_nowait()["event"], "__closed__")
-        self.assertTrue(fresh.lines.empty())
-        self.assertFalse(fresh.stopped.is_set())
+        self.assertEqual(old.stream.lines.get_nowait()["event"], "old_data")
+        self.assertEqual(old.stream.lines.get_nowait()["event"], "__closed__")
+        self.assertTrue(fresh.stream.lines.empty())
+        self.assertFalse(fresh.stream.stopped.is_set())
 
     def test_close_wakes_a_blocked_consumer(self) -> None:
         client = FakeClient()
@@ -333,26 +405,28 @@ class TaskRequestTests(unittest.TestCase):
             {"event": "navigate_started", "task_id": 2},
             {"event": "navigated", "task_id": 2, "ok": True},
         ):
-            client._session.lines.put(row)
+            client._session.stream.lines.put(row)
         self.assertEqual(client.navigate(0, 0)["task_id"], 2)
         self.assertEqual(client.readline()["task_id"], 1)
 
     def test_cancellation_is_a_typed_error_without_closing_the_pipe(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "use_started", "task_id": 3})
-        client._session.lines.put({"event": "task_cancelled", "task_id": 3, "reason": "replaced"})
+        client._session.stream.lines.put({"event": "use_started", "task_id": 3})
+        client._session.stream.lines.put(
+            {"event": "task_cancelled", "task_id": 3, "reason": "replaced"}
+        )
         with self.assertRaises(ModTaskCancelled) as caught:
             client.use_item()
         self.assertEqual(caught.exception.task_id, 3)
         self.assertEqual(caught.exception.reason, "replaced")
-        self.assertFalse(client._session.stopped.is_set())
+        self.assertFalse(client._session.stream.stopped.is_set())
 
     def test_task_rejects_an_old_mod_without_generation_ids(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "jump_when_started"})
+        client._session.stream.lines.put({"event": "jump_when_started"})
         with self.assertRaisesRegex(ModProtocolError, "task_id"):
             client.jump_when()
-        self.assertTrue(client._session.stopped.is_set())
+        self.assertTrue(client._session.stream.stopped.is_set())
 
 
 class WaitReadyTests(unittest.TestCase):
@@ -369,7 +443,7 @@ class WaitReadyTests(unittest.TestCase):
 
             def connect(self):  # type: ignore[override]
                 self.connects += 1
-                self._session.handle = Handle()
+                self._session.stream.handle = Handle()
                 return self
 
             def ping(self):  # type: ignore[override]
@@ -435,24 +509,28 @@ class EnterWorldRetryTests(unittest.TestCase):
 
     def test_wait_enter_settled_skips_ticks(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "tick", "tick": 1})
-        client._session.lines.put({"event": "enter_world_settled", "ok": True})
+        client._session.stream.lines.put({"event": "tick", "tick": 1})
+        client._session.stream.lines.put({"event": "enter_world_settled", "ok": True})
         self.assertTrue(client.wait_enter_settled(0.5)["ok"])
 
     def test_wait_enter_settled_filters_late_previous_entry(self) -> None:
         client = FakeClient()
-        client._session.lines.put({"event": "enter_world_settled", "entry_id": 1, "ok": True})
-        client._session.lines.put({"event": "enter_world_settled", "entry_id": 2, "ok": False})
+        client._session.stream.lines.put(
+            {"event": "enter_world_settled", "entry_id": 1, "ok": True}
+        )
+        client._session.stream.lines.put(
+            {"event": "enter_world_settled", "entry_id": 2, "ok": False}
+        )
         self.assertFalse(client.wait_enter_settled(0.5, entry_id=2)["ok"])
         self.assertEqual(client.readline(0.5)["entry_id"], 1)
 
     def test_enter_ready_matches_acknowledged_entry(self) -> None:
         class TaggedClient(FakeClient):
             def enter_world(self, name=None, **kwargs):  # type: ignore[override]
-                self._session.lines.put(
+                self._session.stream.lines.put(
                     {"event": "enter_world_settled", "entry_id": 10, "ok": False}
                 )
-                self._session.lines.put(
+                self._session.stream.lines.put(
                     {"event": "enter_world_settled", "entry_id": 11, "ok": True}
                 )
                 return {"event": "enter_world_result", "entry_id": 11, "ok": True}

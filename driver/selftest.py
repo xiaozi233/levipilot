@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gc
 import itertools
 import json
 import math
@@ -51,6 +52,7 @@ import os
 import subprocess
 import sys
 import time
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -615,7 +617,7 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
         checks.check(
             f"connection_session_{attempt}",
             client._session is not old_session
-            and old_session.stopped.is_set()
+            and old_session.stream.stopped.is_set()
             and client.ping().get("event") == "pong",
         )
 
@@ -4516,6 +4518,76 @@ def check_lifecycle_stress(
                 raise
 
 
+def check_connection_lifecycle(client: ModClient, checks: Checks) -> None:
+    """Read-only connection recovery after GC and normal/abrupt child exits."""
+    status = client.status()
+    controls = status.get("controls", {})
+    idle = (
+        not any(
+            status.get(key)
+            for key in ("recording", "record_active", "macro_playing", "macro_recording")
+        )
+        and not client.task_status().get("active")
+        and not any(
+            controls.get(key)
+            for key in ("held_mask", "injecting_input", "injecting_look", "cleanup_pending")
+        )
+    )
+    if not checks.check(
+        "connection_idle", idle, "reconnecting requires idle controls/tasks/recording"
+    ):
+        return
+    for cycle in (False, True):
+        label = "cycle" if cycle else "plain"
+        client.close()
+        abandoned = ModClient(client.pipe_name, connect_timeout=10, timeout=5).connect()
+        stream = abandoned._session.stream
+        reader = stream.reader
+        try:
+            checks.check(f"connection_{label}_ping", abandoned.ping().get("event") == "pong")
+            if cycle:
+                abandoned.subscribe("tick", lambda _row, owner=abandoned: owner.protocol)
+            reference = weakref.ref(abandoned)
+            del abandoned
+            gc.collect()
+            if reader is not None:
+                reader.join(2)
+            checks.check(
+                f"connection_{label}_released",
+                reference() is None
+                and stream.handle is None
+                and stream.stopped.is_set()
+                and reader is not None
+                and not reader.is_alive(),
+            )
+        finally:
+            stream.close()
+        client.connect()
+        checks.check(f"connection_{label}_reconnect", client.ping().get("event") == "pong")
+
+    for abrupt in (False, True):
+        label = "abrupt_exit" if abrupt else "normal_exit"
+        client.close()
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys; from driver.harness import ModClient; "
+                "c=ModClient(sys.argv[1], connect_timeout=10, timeout=5).connect(); "
+                "assert c.ping()['event']=='pong'; " + ("os._exit(0)" if abrupt else "sys.exit(0)"),
+                client.pipe_name,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        checks.check(f"connection_{label}", child.returncode == 0, child.stderr)
+        client.connect()
+        checks.check(f"connection_{label}_reconnect", client.ping().get("event") == "pong")
+
+
 def check_mod_core_live(client: ModClient, checks: Checks) -> None:
     """Exercise installed transport/recording without input, world edits or RE."""
     status = client.status()
@@ -4533,6 +4605,7 @@ def check_mod_core_live(client: ModClient, checks: Checks) -> None:
     if not checks.check("mod_core_installed", status.get("pipe_write_timeout_ms") == 5000):
         return
     checks.check("mod_core_state", client.state().get("in_world") is True)
+    check_connection_lifecycle(client, checks)
     reply = client.request({"cmd": "__mod_core_unknown__"}, "error")
     checks.check("mod_core_unknown_cmd", reply.get("reason") == "unknown_cmd")
 
@@ -4915,6 +4988,11 @@ def main(argv: list[str] | None = None) -> int:
         help="inject missing/failed server work and verify task termination/recovery in a world",
     )
     modes.add_argument(
+        "--connection-only",
+        action="store_true",
+        help="check abandoned clients and process-exit reconnects; no world changes or RE",
+    )
+    modes.add_argument(
         "--mod-core-live-only",
         action="store_true",
         help="check installed pipe/recording only; no RE, input injection or world edits",
@@ -4931,6 +5009,8 @@ def main(argv: list[str] | None = None) -> int:
             ["tests.test_mod_models"]
             if args.mod_core_only
             else [
+                "tests.test_transport.SessionTests",
+                "tests.test_transport_stress",
                 "tests.test_transport.LineDecoderTests",
                 "tests.test_recording_commands",
                 "tests.test_mod_agent.RecordingIntegrationTests",
@@ -4995,6 +5075,13 @@ def main(argv: list[str] | None = None) -> int:
 def run_live(
     client: ModClient, checks: Checks, args: argparse.Namespace, observation: ViolationObservation
 ) -> int:
+    if args.connection_only:
+        try:
+            check_connection_lifecycle(client, checks)
+        except (ModPipeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            checks.check("connection_lifecycle_error", False, str(exc))
+        return 0
+
     if args.overhead_only:
         try:
             check_overhead_window(client, checks, wrap=True)

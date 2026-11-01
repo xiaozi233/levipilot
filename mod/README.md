@@ -197,6 +197,11 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
+2026-11-01 Python 连接生命周期：新增 `py -3.11 driver/selftest.py --connection-only --require-complete`
+专项，验证客户端遗弃（含订阅循环）、正常退出和 `os._exit` 后的真实重连。实现与本批验收见
+[`../docs/mod-internals.md`](../docs/mod-internals.md#python-连接资源生命周期2026-11-01)。
+这项修复只涉及 Python；未替换 DLL，也不代表所有 Errno 22 原因均已消除。
+
 传送已移出 tick，复用 UUID/世界代次解析，后台调度及回执。
 reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` 再回读到达；失败可能
 已部分清效果/传送，不自动重放。忙时拒绝，退出/panic 取消，重连丢弃旧请求。
@@ -567,6 +572,10 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   当前只做诊断，**不做** mod 侧看门狗：回收卡住的管道要在另一个线程 `CloseHandle`，
   这与 `PipeChannel` 的阻塞/overlapped I/O 生命周期竞争（历史坑），在稳定复现前不动。
   规避：分批查询、脚本结束前 `close()`；卡住时重启游戏。
+- Python 客户端已补遗弃连接的 GC 兜底，以及读线程 EOF/队列溢出后的主动关句柄。
+  脚本仍应使用 `with ModClient()` 或 `try/finally: client.close()`；仍被引用的对象不会自动回收。
+  `--connection-only` 会先拒绝活跃控制/任务/录制，再检查遗弃与进程退出后的重连；
+  不清空世界、不注入输入。该验证不覆盖上面的高频查询挂起边界。
 - 二进制环固定 **524288 条 × 64 B = 32 MiB payload**，加约 4 MiB 发布序号，单写者
   （tick 线程）；start/stop 等待已准入的采样完成，dump 不会读取被覆写到一半的行。
   `record_dump` 默认

@@ -287,8 +287,12 @@ driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 因此 `request` / `wait_ticks` 消费响应时也会采集 tick，且不会把采样堆积到 pending 队列。
 
 `ModClient` 用独立轮询线程读取同步管道，避免挂起的 `ReadFile` 阻塞写入。
-每次连接建立 `_PipeSession`，独占句柄、停止信号、读队列和延后事件；读取线程只持有
-自己的 session，重连不会重用停止信号或消息队列。`close()` 可唤醒阻塞消费者。
+每次连接建立 `_PipeSession`，独占订阅和延后事件；其 `_PipeStream` 独占句柄、停止信号、
+读队列和读线程。读取线程与 `weakref.finalize` 仅持 stream，不经订阅回调保活客户端；
+客户端被遗弃（包括订阅循环引用被 GC 回收）时会关闭句柄，读线程遇 EOF/溢出也主动关闭。
+重连不复用停止信号或消息队列，旧代关闭不会碰新连接。`close()` 幂等并唤醒阻塞消费者，
+资源取走受短锁保护，实际 close/join 在锁外完成。脚本仍应使用 `with ModClient() as client`
+或 `try/finally: client.close()`；GC 只兜底无引用对象，不负责结束仍被业务持有的连接。
 
 `exchange()` 使用可重入锁串行化一个完整请求/任务工作流，protocol 4 没有通用请求 ID，
 不支持同一连接多路并发响应。低层 `send` + `readline` 多步调用应放在同一个 exchange 中；

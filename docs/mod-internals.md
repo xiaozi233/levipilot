@@ -8,8 +8,10 @@
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
-最新完整现场为 **465/466**，在 flight 清理中自然退档，不能视为当前全绿；
-SetActorData/104/90 的现场链及未解决范围见文末「自然断开诊断链与恢复」。
+BadPacket 后续调查记录的完整现场为 **1065/1066**（0 failed、1 required skip），
+未达到完整覆盖门禁；此前 465/466 是自然退档那轮。最新包队列/无长度前缀的结论与
+尚缺失败原帧的范围见 `notes/badpacket-setactordata-20261031.md` §36–§43。
+下列新连接专项不替代完整现场验收。
 
 ## 注入时机
 
@@ -1024,6 +1026,21 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 - 最终构建/静态/profile 与安装哈希一致，113 个既有 crash 文件无新增/修改；玩家站稳、
   输入解锁、任务/两种状态录制/宏停止。日志 `out/reliability-flight-*`；尚未现场热卸载
   或做性能对照，不能把重断言基础设施的零自有分配推广为所有 SDK 调用零分配。
+
+### Python 连接资源生命周期（2026-11-01）
+
+`connection.py` 将请求订阅 `_PipeSession` 与后台 I/O `_PipeStream` 分开。
+读线程和 `weakref.finalize` 仅持后者，避免订阅回调捕获 client 时形成后台线程可达的
+永久循环。显式 close、GC、读线程 EOF/队列溢出共用资源释放；短锁只负责取走句柄/线程，
+关句柄和有界 join 在锁外执行。启动/握手异常（含 KeyboardInterrupt、坏 protocol）
+也释放当前代次。轮询 PeekNamedPipe、协议 4 和公开 Python API 保持不变。
+
+离线 transport 回归 **46/46**，包括真实 Windows 管道的四代遗弃（交替有/无订阅循环）、
+32 代竞争请求、EOF/溢出主动释放、并发关闭、迟到旧读者与启动/握手失败。
+现场入口为 `py -3.11 driver/selftest.py --connection-only --require-complete`；
+本批最终数字与日志见 `reliability-repairs.md`「Python 连接遗弃回收」。
+显式 `with`/`finally close` 仍是首选；GC 不释放仍有业务引用的 client。
+此处没有修改 C++/DLL，不以这项验收排除 mod 侧其他挂起或 BadPacket。
 
 ### 客户端 I/O（2026-10-28；离线）
 

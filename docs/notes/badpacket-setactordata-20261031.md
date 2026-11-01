@@ -1950,3 +1950,66 @@ py -3.11 out/analyze_mark.py out/<mark>  # 拿到后：id varint、可疑偏移�
 
 - 完整现场 selftest **1065/1066**（0 failed，唯一 skip 与 §39 互证）
 - 离线单测 **372/372**；roles 校验 **56/63**
+
+---
+
+## §44 续案：packet 187 / 48 字节 / 104（2026-11-01 22:20:40Z 现场）
+
+接 `docs/notes/prompts/badpacket-187-followup-20261101.md`。先回答第一个问题：
+**现有原始数据够不够定位这一帧？答案是不够。**
+
+### 1. 现场元数据（`[实测]`，来自 `out/server-context-*`）
+
+```
+callback  tick 1341  tid 39772  response=3  packet_id=187  packet_size=48  error_value=104
+text      "BinaryStream read() incomplete\nreadNoHeader failed! packetId: 187"（65 字节，未截断）
+screen    ClientDisconnection-90 / Block，Date 2026-11-01T14:20:40Z
+```
+
+### 2. 入边环（`[实测]`，`server-context-failure-inbound-all.json`）
+
+- 324 行，tick 1178–1341，`lost=0`，`supported=false`（导出时 hook 已停）；
+- 采集口径 `inbound_sample=4`：**1296 次入口命中 → 324 条采样**；
+- 环里 id 187 共 **17 条，全部 7 字节**（`bb 01 00 00 00 00 01`）；
+- **没有任何 48 字节的行**（size 分布：7×12、14×34、15×3、17×12、18×5、21×97、
+  22×54、23×45、35×17、39×1、40×2、72×1、94×3、95×37、96×1）；
+- tick 1341 只有一行：`tid 43756`、72 字节、`9c 01 00 04 f6 02 41
+  "BinaryStream read() incomplete"` —— 这是**断开包**（teardown 之后），不是原帧。
+
+### 3. 包 tap（`[实测]`，`failure-packet-index/bytes.json`）
+
+- index 385 行、bytes 241 行，覆盖 tick 1206–1341；
+- id 187 的 body 全部 **33 字节**（`serialized: true`；帧 = 2 字节 varint id + 33 = 35）；
+- **没有 48 字节的包**；
+- tick 1341 只有 `send id 144` 与 `recv id 47`，最后一条 187 在 tick 1340 seq 381。
+
+### 4. 为什么原帧不在存档里
+
+1. `inbound_sample=4` 是 1/4 采样，失败那一帧有 **75%** 概率根本不被记录；
+2. 失败的包不会走到 tap 的 recv 注入点（解析失败 → 不派发），所以 tap 也没有；
+3. 断开后环仍在被 teardown 流量覆盖，导出时没有「首错即冻结」。
+
+⇒ 缺的就是**那一刻的 48 字节原帧**。最小采集方案见 §46。
+
+### 5. 187 的类定位（`[代码]`，静态）
+
+- `0x143575080` = `mov eax, 0xBB; ret` → `UpdateAbilitiesPacket::getId()`（187）；
+- 该函数在 vtable 槽 `0x14E7C1B98`；相邻槽 `0x14E7C1BA0` = `0x143575090`（名字回退函数，
+  字面量 `"UpdateAbilitiesPacket"` @ `0x14EBDAF9`，长度 21）；
+- 槽布局与 SetActorData 同构（以 name 槽为基准）：
+
+| 相对 name | UpdateAbilities | SetActorData（对照） |
+| --- | --- | --- |
+| +0x08 | `0x140c44940` | 同 |
+| +0x10 | `0x1416c20f0` | 同 |
+| +0x18 | `0x1435750b0` | `0x143df6e50`（写，mode 门控） |
+| +0x20 | `0x143575710` | `0x143df7630`（读包装） |
+| +0x28/+0x30 | `0x140c43f60` / `0x1416c2660` | 同 |
+| +0x38 | `0x143575140` | `0x143df7060` |
+| +0x68 / +0x70 | `0x143575b00` / `0x143575da0` | `0x143df7a20` / `0x143df7cc0` |
+
+- **关键差异**：SetActorData 的 cereal 实现 `0x143df7cc0` 在 `0x143df7fa1` 引用
+  `"Packet defined using SerializationMode::CerealOnly…"` 断言串；而 187 这一族的
+  `0x143575b00 / 0x143575da0 / 0x143575140 / 0x143575710 / 0x1435750b0` **一处都没有**。
+  ⇒ `[推断]` **187 不走 CerealOnly**，不能把 §40 的结论套过来；它的 104 要在
+  它自己的 legacy 读写里找。

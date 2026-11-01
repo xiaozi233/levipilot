@@ -3,6 +3,8 @@
 #include "mc/client/gui/oreui/DisconnectScreen.h"
 #include "mc/deps/core/utility/ReadOnlyBinaryStream.h"
 
+#include <intrin.h>
+
 
 using namespace probe::detail;
 
@@ -82,6 +84,7 @@ using DispatchFn = std::int64_t (*)(void*, void*);
 ll::memory::FuncPtr        gDispatchOrigin = nullptr;
 std::atomic_bool           gDispatchInstalled{false};
 constexpr std::uint8_t kDispatchKind = 10;
+constexpr std::uint8_t kAssignCallerKind = 11;
 ll::memory::FuncPtr        gAssignOrigin = nullptr;
 std::atomic_bool           gAssignInstalled{false};
 std::atomic<std::uint64_t> gPacketString{0};
@@ -470,6 +473,14 @@ std::int64_t detourAssign(void* target, void* a2, void* a3) {
         std::uint64_t dataPtr =
             (field >= 0x10000 && field < 0x00007FFFFFFFFFFFull) ? field : wanted;
         noteAssign(dataPtr, size);
+        // Who asked for this write: the return address is the code right after
+        // the call, i.e. the function that computed the length. Zero memory
+        // access, so it stays safe on this path.
+        MemmoveBlob blob{};
+        blob.src = reinterpret_cast<std::uint64_t>(_ReturnAddress());
+        blob.len = size;
+        publishText(kAssignCallerKind, std::string_view(reinterpret_cast<char const*>(&blob),
+                                                        sizeof(blob)));
         gAssignCount.fetch_add(1, std::memory_order_relaxed);
     }
     return result;
@@ -1008,7 +1019,12 @@ nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {
             {"len", record.len},
             {"truncated", record.truncated != 0},
         };
-        if (record.kind == kDispatchKind && record.len == sizeof(MemmoveBlob)) {
+        if (record.kind == kAssignCallerKind && record.len == sizeof(MemmoveBlob)) {
+            MemmoveBlob blob{};
+            std::memcpy(&blob, record.text, sizeof(blob));
+            row["caller"] = blob.src;
+            row["assigned"] = blob.len;
+        } else if (record.kind == kDispatchKind && record.len == sizeof(MemmoveBlob)) {
             MemmoveBlob blob{};
             std::memcpy(&blob, record.text, sizeof(blob));
             std::uint8_t words[32]{};

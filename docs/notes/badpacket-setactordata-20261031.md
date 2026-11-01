@@ -1251,3 +1251,31 @@ net_ctx+0x10 -> 静态 0x14e75e360
 
 本仓库侧的证据已足够支撑到这个交接点：解析链完整、长度来源定位到“进入解析链之前的 string size”，
 且已证明解析器忠实使用了那个值。
+
+## 32. x64dbg 通道打通情况（2026-11-01 16:5x）
+
+### 可用
+
+- 插件已装：`D:ddbgeleased\pluginsddbg-MCP-Server.dp64`；
+- 服务需手动 `StartMCPServer`（在 x64dbg 命令栏执行；已用 GUI 自动化执行成功），
+  监听 `127.0.0.1:9094`；
+- 认证：`Authorization: Bearer <token>`，token 在
+  `D:ddbgeleased\mcp_config.json`（`AuthToken`）里；
+- 传输是 **Streamable HTTP**（`POST /`），不是 `/mcp`（那会 401）；
+- 自写客户端 `out/x64mcp.py` 可用，工具集含 `AttachProcess / LoadBinary /
+  ExecuteDebuggerCommand / SetBreakpoint / GetCallStack / ReadMemory / ListModules` 等。
+
+### 不可用：attach 到任何进程都失败
+
+- 对游戏（pid 7776）执行 `attach`/`AttachProcess`：状态始终 `NO_TARGET`，
+  GUI 状态栏显示 `无法打开进程 7776！`；
+- 用 **notepad** 做对照（同用户、非提权）：同样失败 ⇒ **不是目标的问题，是这条 attach 通道本身不工作**；
+- 换成管理员实例（UAC 拉起）仍失败；且管理员实例下 Windows UIPI 会挡住 UI 自动化
+  （`capture_app: target runs elevated...`），所以提权反而两头受限；
+- 我们自己 `OpenProcess(0x1F0FFF, pid=7776)` 成功，说明句柄权限不是原因。
+
+### 下一步（二选一）
+
+1. **LoadBinary 路线**：让 x64dbg 直接启动 `Minecraft.Windows.exe`（dev.py 也是直接起这个 exe），
+   再在运行中的进程上设 `bphws <net_ctx+0x138>, w, 8`；需要重启游戏，且要确认 GDK 游戏能在调试器下正常进世界；
+2. 回到 mod 内观测，但换成**不碰 CRT、不碰上层调用链**的落点——目前没有找到更安全的钩点。

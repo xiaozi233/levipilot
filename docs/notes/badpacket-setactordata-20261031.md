@@ -2013,3 +2013,61 @@ screen    ClientDisconnection-90 / Block，Date 2026-11-01T14:20:40Z
   `0x143575b00 / 0x143575da0 / 0x143575140 / 0x143575710 / 0x1435750b0` **一处都没有**。
   ⇒ `[推断]` **187 不走 CerealOnly**，不能把 §40 的结论套过来；它的 104 要在
   它自己的 legacy 读写里找。
+
+### §44 附：tap 的 `serialized` 不等于原帧（`[代码]`）
+
+`PacketTap.cpp:766` 里 `{"serialized", record.error == ByteError::None}` —— 它表示
+**tap 自己重新序列化成功**，不是抓到了线上的原始字节；而且本项目已测过
+`BatchedNetworkPeer::sendPacket` 在本地单机是 0 调用（loopback 不过 peer 层）。
+所以即便 tap 里出现了 tick 1341 的 187，那些字节也只能拿来做 `[参考]`，
+不能当成失败原帧。
+
+---
+
+## §45 最小采集设计：首错冻结（2026-11-01）
+
+### 为什么会丢
+
+§44 已定位三条同时起作用：`inbound_sample=4` 的 1/4 采样、失败包不进 tap、
+断开后 teardown 流量继续写环把关键行冲掉。
+
+### 设计（只改我们自己的记录，不改游戏行为）
+
+1. `inbound_sample(1)`：每次 `Packet::readNoHeader` 入口都记；
+2. **首错冻结**：违规回调里一看到 `response != 0 && !synthetic`，就把
+   `gInboundFrozen` 置真；`detourReadBoundary` 在冻结后**不再 publish** ——
+   teardown 的 `DisconnectPacket`/错误串就冲不掉已记录的原帧；
+3. 冻结后导出顺序固定：先 `inbound_drain`，再 `violation_text`，最后 `violation_watch(False)`；
+4. 导出时把 callback 的 `packet_size`（48）与环里最后一条 `packet_size` 对齐校验，
+   不一致就明确写「未取到原帧」。
+
+### 验收这条采集本身
+
+- 合成一次违规（selftest 的 `violation_watch(mode="synthetic")` 不算，要用真实路径），
+  确认冻结后环不再增长；
+- 正常游玩 10 分钟，确认 `inbound_hits` 增长但环只在冻结时停止。
+
+---
+
+## §46 A/B 对照设计：只改 probe.dll 身份解析（2026-11-01）
+
+现场那次 187/48/104 是在**候选补丁 DLL**（统一 `ServerPlayerContext`）下出现的，
+基线从未在飞行专项里复现过同样的帧。按提示词要求，先设计、不先下结论。
+
+### 唯一变量
+
+| 变量 | A（基线） | B（候选） |
+| --- | --- | --- |
+| `probe.dll` | `out/server-context-before/probe.dll` | `out/server-context-candidate/` 里的候选 |
+| 其余 | 同一 world、同一 `selftest --flight-world` 参数、同一 `harness.json`、同一启动方式、同一采集口径（sample=1 + 首错冻结） | 同左 |
+
+### 判定
+
+- A 也复现 187/48/104 → 与候选重构**无关**（时间相邻不算因果）；
+- A 连续 ≥3 次不复现、B 稳定复现 → 候选嫌疑成立，再用最小差异二分；
+- 两边都不复现 → 本轮无结论，保留为 unresolved，不推测。
+
+### 每次运行必须记录
+
+DLL SHA256、游戏 pid、`crash-*` 清单有无新增、失败时刻 tick/tid、以及原帧是否取到。
+失败后按仓库规矩恢复配置、回读姿态/能力/背包/输入，再重启。

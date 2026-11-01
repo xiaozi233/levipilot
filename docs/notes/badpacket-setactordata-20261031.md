@@ -1289,7 +1289,8 @@ eleased\mcp_config.json`（`AuthToken`）里；
 ### 环境
 
 - 本机 x64dbg 已是 2026.05.27 快照（标题栏 `May 27 2026`），即最新；
-- 新插件 `x64dbg_mcp.dp64` 已装到 `D:ddbgeleased\plugins\`，旧插件改名 `.disabled`；
+- 新插件 `x64dbg_mcp.dp64` 已装到 `D:ddbg
+eleased\plugins\`，旧插件改名 `.disabled`；
 - 配置 `plugins/x64dbg-mcp/config.json`：`auto_start_mcp_on_plugin_load` 置 true 后
   **自动监听 `127.0.0.1:3000`**（不需要再手敲命令），端点 `POST /mcp`，默认无鉴权；
 - 客户端 `out/x64mcp.py` 已改指 3000；工具 79 个，含 `debug_attach_pid / breakpoint_set* /
@@ -1316,3 +1317,36 @@ eleased\mcp_config.json`（`AuthToken`）里；
   再在运行中的调试目标上设 `bphws <net_ctx+0x138>, w, 8`。
 - 需要确认 GDK 版能否在调试器下正常进世界；若不能，这条路也关闭，
   则“谁决定这个错误长度”将只能靠静态逆向继续逼近。
+
+## 34. 赋值调用者与参数实测（2026-11-01 17:3x）
+
+用 `_ReturnAddress()` 在赋值钩子里直接取调用者（零访存），再逐个记录寄存器参数。
+
+### 结果（`[实测]`）
+
+| 量 | 值 |
+| --- | --- |
+| 调用者（静态） | **`0x1416c608d`** —— `sub_1416C6070` 里 `call [rip+0xda35a1b]` 的下一条，逐个包都相同 |
+| `a1`(rcx) | 常数指针，逐包不变 |
+| `a2`(rdx) | 常数指针 = `net_ctx+0x128`（我们过滤用的目标 string） |
+| `a3`(r8) | 常数指针，逐包不变 |
+| 写入的 size | 21 / 17 / 14 / 22 …（逐包变化，与解析一致） |
+
+现场再读该对象的字段：`[a2+0x10]` = `0x16` = 22，正是当时那个包的长度；
+`[a2+0]` 是指向包字节的指针。⇒ **a2 就是那个逐包 string，size 写在 +0x10**。
+
+### 结论
+
+1. `[实测]` 三个寄存器参数**都不是长度**（全是逐包不变的指针），长度是赋值函数**内部**算出来的；
+2. `[代码]` `sub_1416C6070` 的调用点固定：`mov rcx,[rcx+8]; mov rax,[rcx]; mov rax,[rax+0x40];
+   call [rip+…]`，返回地址 `0x1416c608d`，与逐包观测一致；
+3. 赋值函数内部：`mov rdi,rdx`（目标 string）、`mov rbx,rcx`、`mov rsi,r8`，
+   之后 `mov [rdi+0x10], rbx` 写 size、`memmove(dst, r9, rbx)` 拷贝 ——
+   **计数 `rbx` 与源 `r9` 都由函数内部推出**，我们的三参透传看不到 `r9`。
+
+### 下一步（精确）
+
+把赋值钩子扩到**四参**（rcx/rdx/r8/r9），记录 `r9`；再在 drain 里读 `[r9+0x10]`。
+若 `[r9+0x10]` 等于写入的 size，则长度就是**源 string 的 size**——
+那就回到“谁把源 string 设成 23 字节”，仍是组帧层那一问；
+若不等，则计数由别的字段/参数决定，需要再拆 `sub_140D7D470` 的内部路径。

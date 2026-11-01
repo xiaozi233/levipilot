@@ -479,6 +479,12 @@ std::int64_t detourAssign(void* target, void* a2, void* a3) {
         MemmoveBlob blob{};
         blob.src = reinterpret_cast<std::uint64_t>(_ReturnAddress());
         blob.len = size;
+        // Keep both raw arguments so the caller's own decoding can be checked
+        // against the size that was actually written.
+        std::uint64_t const arg1 = reinterpret_cast<std::uint64_t>(a3);
+        std::uint64_t const arg2 = reinterpret_cast<std::uint64_t>(a2);
+        std::memcpy(blob.before, &arg1, sizeof(arg1));
+        std::memcpy(blob.after, &arg2, sizeof(arg2));
         publishText(kAssignCallerKind, std::string_view(reinterpret_cast<char const*>(&blob),
                                                         sizeof(blob)));
         gAssignCount.fetch_add(1, std::memory_order_relaxed);
@@ -1024,6 +1030,12 @@ nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {
             std::memcpy(&blob, record.text, sizeof(blob));
             row["caller"] = blob.src;
             row["assigned"] = blob.len;
+            std::uint64_t arg1 = 0;
+            std::uint64_t arg2 = 0;
+            std::memcpy(&arg1, blob.before, sizeof(arg1));
+            std::memcpy(&arg2, blob.after, sizeof(arg2));
+            row["arg1"] = arg1;
+            row["arg2"] = arg2;
         } else if (record.kind == kDispatchKind && record.len == sizeof(MemmoveBlob)) {
             MemmoveBlob blob{};
             std::memcpy(&blob, record.text, sizeof(blob));

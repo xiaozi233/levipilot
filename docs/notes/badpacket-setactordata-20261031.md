@@ -1873,3 +1873,30 @@ error: 尚未连接
 mod 侧管道随后不可达（`ModPipeError ... [Errno 22]`），游戏进程还活着但不再服务。
 重启游戏 + 探针显式 `close()` 后，同一套 selftest 一次跑完 1065/1066。
 ⇒ 写探针脚本一律 `try/finally: client.close()`。
+
+---
+
+## §42 无 hook 对照长跑（2026-11-01 20:59 起）
+
+带 hook 的捕获跑了约 30 个「进世界」窗口（每次进世界都会出现 328–403 字节的 id 39 帧），
+**仍没有真实违规**。唯一落成的 `.mark` 是上一轮 selftest 残留的 `synthetic: true` 行
+（已改名 `.synthetic`）——说明过滤器还要排除 synthetic，已修。
+
+为了回答「是不是 mod 的 hook 造成了它」，现在跑 **完全不装 hook** 的对照：
+
+```
+重启游戏 → violation_stats 确认 active/inbound/loop/assign/callback/screen 全为 False
+→ py -3.11 out/control_run.py      # 同世界、同 2 分钟重进节奏、同 30 秒玩法
+```
+
+- 检测不依赖 hook：断开会卸载关卡，`world_state()` 变成 `disconnect_error`
+  （或管道消失）而**不是我们主动 leave** —— 脚本据此写 `out/control-<stamp>.mark`；
+- 每 2 秒记一行 `{"world","in_world","tick"}`，跑 3 小时（约 90 个进世界窗口）。
+
+### 一条更硬的运维坑（`[实测]`，两次复现）
+
+`ModClient` **没 `close()` 就被丢弃**（异常路径、或进程直接退出）会让 mod 侧管道
+随后不可达：`ModPipeError: 无法连接 … [Errno 22] Invalid argument`，游戏进程还活着但
+不再服务，必须重启游戏。第二次是在 `world_state` 拼错成 `client.world_state()`、
+异常分支把 client 扔掉之后立刻复现。
+⇒ 探针脚本的统一写法：`try/finally: client.close()`；异常分支里丢掉 client 之前先 close。

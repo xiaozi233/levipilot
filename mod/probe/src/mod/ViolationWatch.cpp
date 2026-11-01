@@ -100,6 +100,7 @@ bool initializeInboundRing() {
 // as (pointer, size) first and (begin, end) second: only readMemory is used, so
 // a wrong interpretation costs a failed read, never a fault.
 struct StreamProbe {
+    std::uint64_t object   = 0;
     std::uint64_t begin    = 0;
     std::uint64_t size     = 0;
     std::uint64_t readPtr  = 0;
@@ -114,6 +115,7 @@ bool probeStream(std::uint64_t candidate, StreamProbe& out) {
     if (!plausiblePointer(candidate)) return false;
     std::uint64_t first = 0;
     std::uint64_t second = 0;
+    out.object = candidate;
     if (!readMemory(candidate + 0x28, &first, sizeof(first))) return false;
     if (!readMemory(candidate + 0x30, &second, sizeof(second))) return false;
     if (!readMemory(candidate + 0x38, &out.readPtr, sizeof(out.readPtr))) return false;
@@ -141,7 +143,38 @@ std::uint8_t copySlice(std::uint64_t address, std::uint64_t limit, char* into) {
 }
 
 
-void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* parent) {
+
+// The parse boundary gets a copy, so the bytes before it are not the frame. The
+// copy was made from some buffer, and a stream object that keeps a pointer to
+// its source exposes it as a plain qword field. A field whose target starts with
+// the slice's first bytes is that source; the frame's length varint then ends
+// exactly where the copy begins.
+bool findCopySource(StreamProbe const& child, std::uint64_t& source, std::uint8_t* declared,
+                    std::size_t declaredBytes) {
+    std::uint8_t head[4]{};
+    if (!readMemory(child.begin, head, sizeof(head))) return false;
+    for (std::uint64_t offset = 0; offset < 0x60; offset += 8) {
+        if (offset == 0x28 || offset == 0x30 || offset == 0x38) continue;
+        std::uint64_t field = 0;
+        if (!readMemory(child.object + offset, &field, sizeof(field))) break;
+        if (!plausiblePointer(field) || field == child.begin) continue;
+        std::uint8_t probe[4]{};
+        if (!readMemory(field, probe, sizeof(probe))) continue;
+        if (std::memcmp(probe, head, sizeof(head)) != 0) continue;
+        if (field < declaredBytes) continue;
+        std::uint8_t window[8]{};
+        if (!readMemory(field - declaredBytes, window, sizeof(window))) continue;
+        for (std::size_t index = 0; index < declaredBytes; ++index) {
+            declared[index] = window[sizeof(window) - declaredBytes + index];
+        }
+        source = field;
+        return true;
+    }
+    return false;
+}
+
+void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* parent,
+                    std::uint64_t auxPointer) {
     if (!gInboundReady.load(std::memory_order_acquire)) return;
     auto reservation  = gInboundRing.reserve();
     ViolationRecord record{};
@@ -155,9 +188,9 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.errorValue = static_cast<std::int32_t>(probe.readPtr);
     record.category   = probe.begin;
     record.contextSize = copySlice(probe.begin, probe.size, record.context);
-    // Bytes right after the slice: if the source buffer continued, the batch had
-    // more data and the short slice was declared, not clipped by transport.
-    record.detailSize = copySlice(probe.begin + probe.size, 24, record.detail);
+    // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
+    // that is the batch buffer or a container over it, these bytes show it.
+    record.detailSize = copySlice(auxPointer, 24, record.detail);
     // Bytes before the slice: the frame's length varint ends exactly where the
     // slice starts, so these recover what the framer declared. A copied slice
     // shows unrelated bytes here instead; the two look different enough to tell
@@ -169,6 +202,17 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     // The parent stream, when it is visible, says where this slice was cut from:
     // P.view + P.readPtr == slice start means the frame's length varint ends
     // exactly there, so the last bytes before the slice are the declaration.
+    if (parent == nullptr) {
+        std::uint64_t source = 0;
+        std::uint8_t  declared[4]{};
+        if (findCopySource(probe, source, declared, sizeof(declared))) {
+            record.parentView = source;
+            record.beforeSize = sizeof(declared);
+            for (std::size_t index = 0; index < sizeof(declared); ++index) {
+                record.before[index] = static_cast<char>(declared[index]);
+            }
+        }
+    }
     if (parent != nullptr) {
         record.parentView    = parent->begin;
         record.parentSize    = parent->size;
@@ -214,7 +258,8 @@ void detourReadBoundary(void* a, void* b, void* c, void* d, void* e) {
             }
             gInboundSampled.fetch_add(1, std::memory_order_relaxed);
             publishInbound(index, probes[index],
-                           parentIndex >= 0 ? &probes[parentIndex] : nullptr);
+                           parentIndex >= 0 ? &probes[parentIndex] : nullptr,
+                           reinterpret_cast<std::uint64_t>(candidates[3]));
             used[index] = true;
             if (parentIndex >= 0) used[parentIndex] = true;
             break;

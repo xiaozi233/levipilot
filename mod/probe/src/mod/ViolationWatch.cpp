@@ -113,6 +113,7 @@ std::atomic_bool           gMemmoveInstalled{false};
 std::atomic_bool           gMemmoveEnabled{false};
 std::atomic<std::uint64_t> gPacketBegin{0};
 std::atomic<std::uint32_t> gMemmoveFilter{0}; // 0 = record every copy
+std::atomic<std::uint32_t> gCopiesSinceParse{0};
 std::atomic<std::uint64_t> gInboundBytes{0};
 
 bool initializeInboundRing() {
@@ -216,6 +217,7 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.packetSize = static_cast<std::uint32_t>(probe.size);
     record.errorValue = static_cast<std::int32_t>(probe.readPtr);
     record.category   = probe.begin;
+    record.pad0       = gCopiesSinceParse.exchange(0, std::memory_order_relaxed);
     gPacketBegin.store(probe.begin, std::memory_order_relaxed);
     record.contextSize = copySlice(probe.begin, probe.size, record.context);
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
@@ -354,6 +356,9 @@ void* detourMemmove(void* dst, void const* src, std::size_t length) {
     }
     busy = true;
     auto const begin = gPacketBegin.load(std::memory_order_relaxed);
+    if (begin != 0 && reinterpret_cast<std::uint64_t>(dst) == begin) {
+        gCopiesSinceParse.fetch_add(1, std::memory_order_relaxed);
+    }
     auto const filter = gMemmoveFilter.load(std::memory_order_relaxed);
     if (gMemmoveEnabled.load(std::memory_order_relaxed) && begin != 0
         && reinterpret_cast<std::uint64_t>(dst) == begin && length < 4096
@@ -558,6 +563,7 @@ nlohmann::json drainRing(Ring& ring, std::size_t capacity, std::uint64_t since,
             {"error_value", record.errorValue                                 },
             {"category",   record.category == 0 ? nlohmann::json(nullptr)
                                                 : nlohmann::json(record.category)},
+            {"copies",     record.pad0                                      },
             {"source",     record.source == 3 ? "inbound"
                            : record.source == 2 ? "screen" : "callback"          },
             {"context_hex", hexText(record.context, record.contextSize)       },

@@ -470,7 +470,8 @@ void                          hookResetCalls();
 // ---------------------------------------------------------------------------
 nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld,
                                    std::uint64_t loopAddress = 0,
-                                   std::uint64_t assignAddress = 0);
+                                   std::uint64_t assignAddress = 0,
+                                   std::uint64_t dispatchAddress = 0);
 // Base the running game image is mapped at (ASLR / rewritten preferred base).
 std::uint64_t gameModuleBase();
 nlohmann::json violationWatchStop();

@@ -78,6 +78,10 @@ std::atomic<std::uint64_t> gNetContext{0};
 // size right after the call, filtered on the packet string's address, gives the
 // length that the writer intended for this packet.
 using AssignFn = std::int64_t (*)(void*, void*, void*);
+using DispatchFn = std::int64_t (*)(void*, void*);
+ll::memory::FuncPtr        gDispatchOrigin = nullptr;
+std::atomic_bool           gDispatchInstalled{false};
+constexpr std::uint8_t kDispatchKind = 10;
 ll::memory::FuncPtr        gAssignOrigin = nullptr;
 std::atomic_bool           gAssignInstalled{false};
 std::atomic<std::uint64_t> gPacketString{0};
@@ -471,6 +475,19 @@ std::int64_t detourAssign(void* target, void* a2, void* a3) {
     return result;
 }
 
+std::int64_t detourDispatch(void* a1, void* a2) {
+    // The layer above the string assign: record both arguments and, later on the
+    // pipe thread, the first words of the second one -- if it carries a
+    // {pointer, length} pair, that is where the packet length is decided.
+    MemmoveBlob blob{};
+    blob.src = reinterpret_cast<std::uint64_t>(a1);
+    blob.len = reinterpret_cast<std::uint64_t>(a2);
+    publishText(kDispatchKind, std::string_view(reinterpret_cast<char const*>(&blob),
+                                                sizeof(blob)));
+    if (gDispatchOrigin == nullptr) return 0;
+    return reinterpret_cast<DispatchFn>(gDispatchOrigin)(a1, a2);
+}
+
 void recordCopy(void* dst, void const* src, std::size_t length) {
     static thread_local bool busy = false;
     if (busy) return;
@@ -480,18 +497,14 @@ void recordCopy(void* dst, void const* src, std::size_t length) {
         && reinterpret_cast<std::uint64_t>(dst) == begin && length != 0 && length < 4096) {
         noteCopy(begin);
         auto const filter = gMemmoveFilter.load(std::memory_order_relaxed);
-        if (filter == 0
-            || bufferStartsWithId(reinterpret_cast<std::uint64_t>(src), filter)) {
-            MemmoveBlob blob{};
-            blob.src = reinterpret_cast<std::uint64_t>(src);
-            blob.len = length;
-            if (blob.src > sizeof(blob.before)) {
-                readMemory(blob.src - sizeof(blob.before), blob.before, sizeof(blob.before));
-            }
-            readMemory(blob.src, blob.after, sizeof(blob.after));
-            publishText(kMemmoveKind, std::string_view(reinterpret_cast<char const*>(&blob),
-                                                       sizeof(blob)));
-        }
+        // No readMemory here either: the filter is 0 for this probe (record
+        // every copy) and the source bytes are read at drain time instead.
+        (void)filter;
+        MemmoveBlob blob{};
+        blob.src = reinterpret_cast<std::uint64_t>(src);
+        blob.len = length;
+        publishText(kMemmoveKind, std::string_view(reinterpret_cast<char const*>(&blob),
+                                                   sizeof(blob)));
     }
     busy = false;
 }
@@ -730,7 +743,8 @@ std::uint64_t gameModuleBase() {
 }
 
 nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld,
-                                   std::uint64_t loopAddress, std::uint64_t assignAddress) {
+                                   std::uint64_t loopAddress, std::uint64_t assignAddress,
+                                   std::uint64_t dispatchAddress) {
     std::lock_guard lock(gInstallMutex);
     if (!allowVa) return errorJson("violation_watch_disabled");
     if (!inWorld) return errorJson("not_in_world");
@@ -786,6 +800,18 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
             ProbeMod::getInstance().bootLog("violation watch: loop hook unavailable");
         }
     }
+    if (dispatchAddress != 0 && !gDispatchInstalled.load(std::memory_order_acquire)
+        && hookAddressExecutable(dispatchAddress)) {
+        if (ll::memory::hook(
+                reinterpret_cast<ll::memory::FuncPtr>(dispatchAddress),
+                ll::memory::toFuncPtr(&detourDispatch),
+                &gDispatchOrigin,
+                ll::memory::HookPriority::Normal,
+                true
+            ) == 0) {
+            gDispatchInstalled.store(true, std::memory_order_release);
+        }
+    }
     if (assignAddress != 0 && !gAssignInstalled.load(std::memory_order_acquire)
         && hookAddressExecutable(assignAddress)) {
         if (ll::memory::hook(
@@ -826,6 +852,7 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
         {"inbound_hooked", gInboundInstalled.load(std::memory_order_acquire)},
         {"loop_hooked", gLoopInstalled.load(std::memory_order_acquire)},
         {"assign_hooked", gAssignInstalled.load(std::memory_order_acquire)},
+        {"dispatch_hooked", gDispatchInstalled.load(std::memory_order_acquire)},
         {"screen_error",  screenHooked ? nlohmann::json(nullptr)
                                        : nlohmann::json("screen_hook_failed")},
     };
@@ -981,10 +1008,23 @@ nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {
             {"len", record.len},
             {"truncated", record.truncated != 0},
         };
-        if (record.kind == kMemmoveKind && record.len == sizeof(MemmoveBlob)) {
-            // Binary: emit the fields so the reply stays valid UTF-8.
+        if (record.kind == kDispatchKind && record.len == sizeof(MemmoveBlob)) {
             MemmoveBlob blob{};
             std::memcpy(&blob, record.text, sizeof(blob));
+            std::uint8_t words[32]{};
+            if (blob.len != 0) readMemory(blob.len, words, sizeof(words));
+            row["arg1"] = blob.src;
+            row["arg2"] = blob.len;
+            row["arg2_words"] = hexText(reinterpret_cast<char const*>(words), sizeof(words));
+        } else if (record.kind == kMemmoveKind && record.len == sizeof(MemmoveBlob)) {
+            // Binary: emit the fields so the reply stays valid UTF-8. The source
+            // bytes are read here, on the pipe thread, not in the copy hook.
+            MemmoveBlob blob{};
+            std::memcpy(&blob, record.text, sizeof(blob));
+            if (blob.src > sizeof(blob.before)) {
+                readMemory(blob.src - sizeof(blob.before), blob.before, sizeof(blob.before));
+            }
+            readMemory(blob.src, blob.after, sizeof(blob.after));
             row["src"] = hexText(blob.before[0] == 0 ? "" : "", 0); // placeholder overwritten below
             row["src"] = nlohmann::json::array();
             row.erase("src");

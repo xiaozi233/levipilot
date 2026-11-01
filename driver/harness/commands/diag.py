@@ -45,6 +45,7 @@ class DiagnosticsCommands(PipeConnection):
         addr: int | str | None = None,
         loop_addr: int | str | None = None,
         assign_addr: int | str | None = None,
+        dispatch_addr: int | str | None = None,
         mode: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
@@ -65,6 +66,10 @@ class DiagnosticsCommands(PipeConnection):
         if assign_addr is not None:
             message["assign_addr"] = (
                 hex(assign_addr) if isinstance(assign_addr, int) else assign_addr
+            )
+        if dispatch_addr is not None:
+            message["dispatch_addr"] = (
+                hex(dispatch_addr) if isinstance(dispatch_addr, int) else dispatch_addr
             )
         if mode:
             message["mode"] = mode

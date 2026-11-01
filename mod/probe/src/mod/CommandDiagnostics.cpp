@@ -121,12 +121,26 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                 assignAddress = value.get<std::uint64_t>();
             }
         }
+        std::uint64_t dispatchAddress = 0;
+        if (j.contains("dispatch_addr")) {
+            auto const& value = j["dispatch_addr"];
+            if (value.is_string()) {
+                try {
+                    dispatchAddress = std::stoull(value.get<std::string>(), nullptr, 16);
+                } catch (...) {
+                    dispatchAddress = 0;
+                }
+            } else if (value.is_number_unsigned()) {
+                dispatchAddress = value.get<std::uint64_t>();
+            }
+        }
         enqueue(violationWatchStart(
                     address,
                     mAllowHookVa.load(std::memory_order_relaxed),
                     mWorld.inWorld(),
                     loopAddress,
-                    assignAddress
+                    assignAddress,
+                    dispatchAddress
         ).dump());
         return true;
     }

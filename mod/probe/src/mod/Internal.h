@@ -468,7 +468,8 @@ void                          hookResetCalls();
 // docs/roles (never a constant in the .cpp); the watch is off by default and
 // gated on allow_hook_va.
 // ---------------------------------------------------------------------------
-nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld);
+nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld,
+                                   std::uint64_t loopAddress = 0);
 // Base the running game image is mapped at (ASLR / rewritten preferred base).
 std::uint64_t gameModuleBase();
 nlohmann::json violationWatchStop();

@@ -95,10 +95,24 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             enqueue(R"({"event":"error","reason":"bad_addr"})");
             return true;
         }
+        std::uint64_t loopAddress = 0;
+        if (j.contains("loop_addr")) {
+            auto const& value = j["loop_addr"];
+            if (value.is_string()) {
+                try {
+                    loopAddress = std::stoull(value.get<std::string>(), nullptr, 16);
+                } catch (...) {
+                    loopAddress = 0;
+                }
+            } else if (value.is_number_unsigned()) {
+                loopAddress = value.get<std::uint64_t>();
+            }
+        }
         enqueue(violationWatchStart(
                     address,
                     mAllowHookVa.load(std::memory_order_relaxed),
-                    mWorld.inWorld()
+                    mWorld.inWorld(),
+                    loopAddress
         ).dump());
         return true;
     }

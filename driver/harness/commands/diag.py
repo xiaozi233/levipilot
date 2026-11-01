@@ -43,6 +43,7 @@ class DiagnosticsCommands(PipeConnection):
         on: bool = True,
         *,
         addr: int | str | None = None,
+        loop_addr: int | str | None = None,
         mode: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
@@ -58,6 +59,8 @@ class DiagnosticsCommands(PipeConnection):
         message: dict[str, Any] = {"cmd": "violation_watch", "on": bool(on)}
         if addr is not None:
             message["addr"] = hex(addr) if isinstance(addr, int) else addr
+        if loop_addr is not None:
+            message["loop_addr"] = hex(loop_addr) if isinstance(loop_addr, int) else loop_addr
         if mode:
             message["mode"] = mode
         expected = "violation_synthetic" if mode == "synthetic" else "violation_watch"

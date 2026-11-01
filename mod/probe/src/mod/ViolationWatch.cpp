@@ -67,6 +67,28 @@ TextRing                       gTextRing;
 std::atomic_bool              gTextReady{false};
 std::atomic<std::uint64_t>     gObservationFaults{0};
 std::atomic<std::uint64_t>     gTarget{0};
+// The parse loop's entry gives the object whose member string carries the
+// packet bytes (its owner is *a1). Exporting that pointer lets a debug-register
+// watchpoint be placed on the member's size field to catch its writer.
+using LoopEntryFn = void (*)(void*, void*);
+ll::memory::FuncPtr        gLoopOrigin = nullptr;
+std::atomic_bool           gLoopInstalled{false};
+std::atomic<std::uint64_t> gNetContext{0};
+
+void detourLoopEntry(void* a1, void* a2) {
+    for (int spin = 0; spin < 200000; ++spin) {
+        if (gLoopOrigin != nullptr) break;
+        YieldProcessor();
+    }
+    if (a1 != nullptr && gNetContext.load(std::memory_order_relaxed) == 0) {
+        std::uint64_t owner = 0;
+        if (readMemory(reinterpret_cast<std::uint64_t>(a1), &owner, sizeof(owner))) {
+            gNetContext.store(owner, std::memory_order_relaxed);
+        }
+    }
+    if (gLoopOrigin == nullptr) return;
+    reinterpret_cast<LoopEntryFn>(gLoopOrigin)(a1, a2);
+}
 // Inbound parse boundary. The machine-level shape of Packet::readNoHeader in
 // this build is five pointer-sized arguments with no register return
 // (rcx = packet, rdx = stream, r8/r9, stack = subid); the typed wrapper that
@@ -512,7 +534,8 @@ std::uint64_t gameModuleBase() {
     return reinterpret_cast<std::uint64_t>(GetModuleHandleW(nullptr));
 }
 
-nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld) {
+nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld,
+                                   std::uint64_t loopAddress) {
     std::lock_guard lock(gInstallMutex);
     if (!allowVa) return errorJson("violation_watch_disabled");
     if (!inWorld) return errorJson("not_in_world");
@@ -554,6 +577,20 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
             ProbeMod::getInstance().bootLog("violation watch: screen hook unavailable");
         }
     }
+    if (loopAddress != 0 && !gLoopInstalled.load(std::memory_order_acquire)
+        && hookAddressExecutable(loopAddress)) {
+        if (ll::memory::hook(
+                reinterpret_cast<ll::memory::FuncPtr>(loopAddress),
+                ll::memory::toFuncPtr(&detourLoopEntry),
+                &gLoopOrigin,
+                ll::memory::HookPriority::Normal,
+                true
+            ) == 0) {
+            gLoopInstalled.store(true, std::memory_order_release);
+        } else {
+            ProbeMod::getInstance().bootLog("violation watch: loop hook unavailable");
+        }
+    }
     initializeTextRing();
     if (!gInboundInstalled.load(std::memory_order_acquire) && initializeInboundRing()) {
         if (ll::memory::hook(
@@ -578,6 +615,7 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
         {"module_base",   gameModuleBase() },
         {"screen_hooked", screenHooked     },
         {"inbound_hooked", gInboundInstalled.load(std::memory_order_acquire)},
+        {"loop_hooked", gLoopInstalled.load(std::memory_order_acquire)},
         {"screen_error",  screenHooked ? nlohmann::json(nullptr)
                                        : nlohmann::json("screen_hook_failed")},
     };
@@ -638,6 +676,8 @@ nlohmann::json violationWatchStats() {
         {"inbound_sample", gInboundMask.load(std::memory_order_relaxed) + 1},
         {"inbound_bytes", gInboundBytes.load(std::memory_order_relaxed)},
         {"inbound_ready", gInboundReady.load(std::memory_order_acquire)},
+        {"loop_hooked", gLoopInstalled.load(std::memory_order_acquire)},
+        {"net_ctx", gNetContext.load(std::memory_order_relaxed)},
         {"text_ready", gTextReady.load(std::memory_order_acquire)},
         {"text_head", gTextRing.head()},
         {"inbound_head", gInboundRing.head()},

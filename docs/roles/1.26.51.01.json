@@ -1,720 +1,771 @@
 {
-  "version": "1.26.51.01",
-  "build_id": "1.26.51.1",
-  "resolved_at": "2026-10-28T00:00:00Z",
-  "resolver": "skills/bedrock-re/roles/resolve.py",
-  "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
-  "image_base": "0x140000000",
-  "offsets_ref": "docs/offsets/1.26.51.01.json",
-  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。",
-  "roles": {
-    "@tick_entity_systems": {
-      "strategy": [
-        "string:EntitySystemsManager::tickEntitySystems",
-        "xrefs_to:profiler_record"
-      ],
-      "address": "0x141177690",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 名字记录引用 0x1411779C5；见 docs/reverse-engineering.md §3A"
-      ]
-    },
-    "@entity_systems_main_pass": {
-      "strategy": [
-        "callgraph:from:@tick_entity_systems",
-        "dispatcher:E14"
-      ],
-      "address": "0x1463B0B00",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[代码] tickEntitySystems 的 E14 分派器；[实测] 20 帧调用栈落到 0x1463B0C27"
-      ]
-    },
-    "@entity_systems_secondary_pass": {
-      "strategy": [
-        "callgraph:from:@tick_entity_systems",
-        "dispatcher:E1C"
-      ],
-      "address": "0x1463B1070",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] E1C 分派器；[实测] 客户端通常只跑 E14 + catchup"
-      ]
-    },
-    "@entity_systems_catchup": {
-      "strategy": [
-        "vtable:EntitySystems",
-        "category:13584"
-      ],
-      "address": "0x1463B0DF0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 集合实现与类别向量；catchup 不在主 pass 链上"
-      ]
-    },
-    "@entity_systems_correction": {
-      "strategy": [
-        "vtable:EntitySystems",
-        "category:1358C"
-      ],
-      "address": "0x1463B0F30",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] correction 类别；[实测] 本地世界未触发"
-      ]
-    },
-    "@systems_create": {
-      "strategy": [
-        "vtable:DefaultEntitySystemsCollection",
-        "ctor_writes_vtable"
-      ],
-      "address": "0x1425C25A0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] create 内写 vtable 0x14E8285E0；见 docs/reverse-engineering.md §3B"
-      ]
-    },
-    "@systems_register": {
-      "strategy": [
-        "vtable:slot",
-        "append:category_vector"
-      ],
-      "address": "0x1425C5DD0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 追加 system 到 mAllSystems，再按 mode 追加到类别向量 +0x38/+0x50"
-      ]
-    },
-    "@systems_foreach": {
-      "strategy": [
-        "vtable:slot",
-        "forward:category_vector"
-      ],
-      "address": "0x1425C6CF0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 按类别项正序遍历；tick 顺序 = 注册顺序"
-      ]
-    },
-    "@action_sprint_trigger": {
-      "strategy": [
-        "registration:0x14681FBB7",
-        "tick:0x14B1A9FE0"
-      ],
-      "address": "0x14B1A9FE0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] ActionSprintTriggerSystem tick；注册点早于水阻力系统"
-      ]
-    },
-    "@sprint_input_edge": {
-      "strategy": [
-        "caller:from:@action_sprint_trigger",
-        "input_edge_bits:0x200/0x400"
-      ],
-      "address": "0x14B1AA080",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] setSprinting 的输入边沿调用者之一；另一个是 0x14B1A9F50"
-      ]
-    },
-    "@set_sprinting": {
-      "strategy": [
-        "caller:from:@action_sprint_trigger",
-        "store:ADF_bit3"
-      ],
-      "address": "0x14B17C820",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 写 ADF bit3 并压入 SPRINTING_BOOST 请求；见 docs/fluid-movement.md §3.2"
-      ]
-    },
-    "@sprint_bit_store": {
-      "strategy": [
-        "store:inside:@set_sprinting"
-      ],
-      "address": "0x14B17C870",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] ADF bit3 的写入点；顺序证据见 docs/fluid-movement.md §9.1"
-      ]
-    },
-    "@sprint_boost_init": {
-      "strategy": [
-        "static_init:SharedModifiers::SPRINTING_BOOST",
-        "uuid:D208FC00-42AA-4AAD-9276-D5446530DE43"
-      ],
-      "address": "0x1431BD020",
-      "status": "resolved",
-      "confidence": "constant",
-      "evidence": [
-        "[常量] amount 0.3f、MULTIPLY_TOTAL、operand current；见 docs/fluid-movement.md §3.2"
-      ]
-    },
-    "@move_attr_aggregate": {
-      "strategy": [
-        "reads:AttributeInstance+124",
-        "writes:movement_struct"
-      ],
-      "address": "0x14289A180",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 把移动速度属性当前值拷进移动结构；见 docs/fluid-movement.md §3.2"
-      ]
-    },
-    "@ground_accel_apply": {
-      "strategy": [
-        "formula:speed*(0.546/friction)^3"
-      ],
-      "address": "0x14666CEE0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 写加速模长；运行期 applier 向量 0.13×0.98=0.1274 逐位吻合"
-      ]
-    },
-    "@water_drag": {
-      "strategy": [
-        "reads:ADF_bit3",
-        "vtable:0x14E85AF60"
-      ],
-      "address": "0x142DEE630",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 水阻力读 ADF bit3；见 docs/fluid-movement.md §9.1"
-      ]
-    },
-    "@water_drag_store": {
-      "strategy": [
-        "store:inside:@water_drag"
-      ],
-      "address": "0x142DEE7BC",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 阻力写 vx 的位置；早期观察点顺序曾误判，已由注册序撤回"
-      ]
-    },
-    "@levitation": {
-      "strategy": [
-        "formula:0.8*vy+0.01*(n+1)"
-      ],
-      "address": "0x142DE57E0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 悬浮（Levitation），不是游泳上浮；见 docs/fluid-movement.md §7"
-      ]
-    },
-    "@swim_vertical_branch": {
-      "strategy": [
-        "constants:0.028/0.04/0.15/0.2",
-        "branch:vertical"
-      ],
-      "address": "0x1495EA890",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 泳姿/竖直分支门；0.15/0.2 不是流体上浮"
-      ]
-    },
-    "@modifier_recompute": {
-      "strategy": [
-        "formula:(amount+1)*value",
-        "operation:MULTIPLY_TOTAL"
-      ],
-      "address": "0x142859E10",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] MULTIPLY_TOTAL 重算；见 docs/fluid-movement.md §3.2"
-      ]
-    },
-    "@swim_lambda": {
-      "strategy": [
-        "callgraph:from:@swim_vertical_branch",
-        "lambda:swim_control"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "本版本未唯一锁定，禁止猜测"
-    },
-    "@clip": {
-      "strategy": [
-        "string:clip",
-        "vtable:collision",
-        "callgraph:from:@move_runner"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "本版本未定位，禁止猜测"
-    },
-    "@gate": {
-      "strategy": [
-        "callgraph:from:@move_runner",
-        "branch:step_gate"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "本版本未定位，禁止猜测"
-    },
-    "@step_block": {
-      "strategy": [
-        "vtable:block",
-        "callgraph:from:@move_runner"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "本版本未定位，禁止猜测"
-    },
-    "@move_runner": {
-      "strategy": [
-        "callgraph:from:@tick_entity_systems",
-        "category:travel"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "仅作为调用图锚点使用；地址未定"
-    },
-    "@water_drag_ctor": {
-      "strategy": [
-        "vtable:0x14E85AF60",
-        "callback:slot2:0x14E9A3700"
-      ],
-      "address": "0x142DE0950",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 构造水阻力系统并调用注册回调 0x14685D0B0；见 docs/fluid-movement.md §9.1"
-      ]
-    },
-    "@sprint_register_wrapper": {
-      "strategy": [
-        "wrapper:ActionSprintTrigger",
-        "mode=1"
-      ],
-      "address": "0x1466567E0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 0x14681FBED 调它，r8w=1"
-      ]
-    },
-    "@sprint_register_list": {
-      "strategy": [
-        "categories:E14/catchup/correction/E1C",
-        "mode=1"
-      ],
-      "address": "0x146662E90",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 向 collection register 传 4 个类别"
-      ]
-    },
-    "@water_register_wrapper": {
-      "strategy": [
-        "wrapper:water",
-        "mode=1"
-      ],
-      "address": "0x142DEDF10",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 0x14685D0B0 调它，a3=1"
-      ]
-    },
-    "@water_register_list": {
-      "strategy": [
-        "categories:E14/E1C",
-        "mode=1"
-      ],
-      "address": "0x142DEE020",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 向 collection register 传 2 个类别"
-      ]
-    },
-    "@water_register_callback": {
-      "strategy": [
-        "vtable_slot:off_14E9A3700+0x10",
-        "calls:0x142DEDF10"
-      ],
-      "address": "0x14685D0B0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 水 ctor 的注册回调；传 mode 1"
-      ]
-    },
-    "@liquid_flow_level": {
-      "strategy": [
-        "property:liquid_depth",
-        "returns:-1 when material differs"
-      ],
-      "address": "0x14345D010",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 读 block 状态字 +288 的 liquid_depth 位域；非该液体返回 -1；>=8 表示下落块（falling）"
-      ]
-    },
-    "@liquid_flow_vector": {
-      "strategy": [
-        "callees:from:@liquid_physics_tick",
-        "constant:-6.0@0x14E76B07C",
-        "store_y:0x14345E213"
-      ],
-      "address": "0x14345DE50",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[代码] 4 邻液位差 → 水平向量（自身/邻 liquid_depth>=8 归一为 0，见 0x14345DEBA）；结尾 |v|<1e-4 直接 (0,-6,0)，否则先归一化再 y+=(-6.0)，最后整体再归一化（0x14345E1DC..0x14345E279）",
-        "[代码] 偏置门：自身 liquid_depth>=8 且 4 邻任一邻块或其上方 material 实心标志 byte(+5)!=0（0x14345E0DC..0x14345E1BD），命中即 break，至多一次",
-        "[实测] 1x1 贴墙瀑布 b80=-0.019，开放空气/3x3 居中 -0.005，3x3 贴墙与单方块上悬 -0.019；见 findings/1.26.51.01/cases/liquid-falling-push"
-      ]
-    },
-    "@liquid_flow_angle": {
-      "strategy": [
-        "callees:from:@liquid_flow_vector",
-        "atan2"
-      ],
-      "address": "0x14345ED00",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 用同一 flow 向量算 atan2 流向角（v=0 返回 -1000）；渲染/流向用"
-      ]
-    },
-    "@liquid_physics_tick": {
-      "strategy": [
-        "assert_string:1 LiquidPhysicsSystem",
-        "constant:0.014@0x14E7CA4D0",
-        "store_vel:0x1495E5281/528B/5295"
-      ],
-      "address": "0x1495E44E0",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[代码] 每个 flow source 调 @liquid_flow_vector 后累加（0x1495E51BB）；|Σ|>=1e-4 归一化；k=0.014（material==5 水，0x14E7CA4D0）乘到三个分量并加到 actor+0x18/1C/20",
-        "[实测] 0.8 阻力下 v'=0.8v-0.005（静水）/ -0.019（下落+实心面）；稳态 -0.025 / -0.095"
-      ]
-    },
-    "@liquid_blip": {
-      "strategy": [
-        "live:StateVector+0x1C watch",
-        "constant:0.3 not found as a direct store",
-        "candidate:0x148B618A0 vertical accel add"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [
-        "[实测] 贴墙 + 水面附近 + Space 时 vy 0.34→0.3（2 深水池，probe r01-001）；无墙/深水/不跳跃不触发",
-        "[动态] StateVector+0x1C 观察点在弹跳 tick 命中 0x148B61995（sub_148B618A0 加）、0x1431EC3FB（sub_1431EC2A0 Vec3 拷贝）、重力/阻力写点，无直接 0.3 store；函数地址未定，禁止猜"
-      ]
-    },
-    "@sprint_tick_dispatch": {
-      "strategy": [
-        "tick:0x14B1A9FE0",
-        "visits:PlayerActionComponent"
-      ],
-      "address": "0x14B1A96C0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] ActionSprintTrigger tick 的实体遍历"
-      ]
-    },
-    "@sprint_edge_handler": {
-      "strategy": [
-        "bits:0x200/0x400",
-        "calls:0x14B17C820"
-      ],
-      "address": "0x14B1A9F50",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 0x200→setSprinting(1)，0x400→setSprinting(0)"
-      ]
-    },
-    "@sprint_entity_visitor": {
-      "strategy": [
-        "callgraph:from:0x14B1A96C0",
-        "calls:@sprint_edge_handler"
-      ],
-      "address": "0x14B190B20",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 每个实体调用 edge handler"
-      ]
-    },
-    "@cat_e14": {
-      "strategy": [
-        "category:E14",
-        "dispatcher:0x1463B0B00"
-      ],
-      "address": "0x151DB9E14",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] E14 主 pass 的类别 id"
-      ]
-    },
-    "@cat_catchup": {
-      "strategy": [
-        "category:catchup",
-        "dispatcher:0x1463B0DF0"
-      ],
-      "address": "0x151E13584",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] catchup 类别 id"
-      ]
-    },
-    "@cat_correction": {
-      "strategy": [
-        "category:correction",
-        "dispatcher:0x1463B0F30"
-      ],
-      "address": "0x151E1358C",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] correction 类别 id"
-      ]
-    },
-    "@cat_e1c": {
-      "strategy": [
-        "category:E1C",
-        "dispatcher:0x1463B1070"
-      ],
-      "address": "0x151DB9E1C",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] E1C pass 的类别 id"
-      ]
-    },
-    "@player_action_writer": {
-      "strategy": [
-        "write:PlayerActionComponent bits 0x200/0x400",
-        "callgraph:from:input"
-      ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "本版本未定位；这是“记录位→ADF 写位”2 tick 的最后一环"
-    },
-    "@lava_drag": {
-      "strategy": [
-        "callees:from:LavaTravel",
-        "constant:0.5"
-      ],
-      "address": "0x142DF0B80",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[代码] 两条路径都在 0x142DF0F9A/FA8/FB6 与 0x142DF0DB1/DBF/DCD 对 vx/vy/vz 各乘 0.5；门是 LavaTravelFlag/Navigation 符号位，无液面高度/维度/效果读取",
-        "[实测] 脚在液面下 0.55 与 3 格都是 b50=-0.02、steady=-0.04；有无抗火序列一致"
-      ]
-    },
-    "@lava_gravity": {
-      "strategy": [
-        "callees:from:Gravity",
-        "constant:-0.02@0x142DE352F"
-      ],
-      "address": "0x142DE3260",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 结尾 0x142DE352F 写 -0.02f（0xBCA3D70A），只有 ±半格方块探针，无维度/效果"
-      ]
-    },
-    "@liquid_sim_tick": {
-      "strategy": [
-        "callees:8x @liquid_flow_level",
-        "constant:dropoff/tickdelay@0x14345B41D/0x14345B47C"
-      ],
-      "address": "0x14345B370",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[代码] 液体扩散入口（8 处调 @liquid_flow_level）；material==6 时读 BlockSource→[vtable+0x138]→+0x1A6 维度字节：drop-off = 2-flag（0x14345B40F/41B），tick delay = flag?10:30（0x14345B46A/47C）",
-        "[实测] 80 tick 后下界前沿 +7、主世界 +3，与 drop-off 1/2（液位 7 起算）一致"
-      ]
-    },
-    "@bounce_handler": {
-      "strategy": [
-        "component_id:0x7DF54114 immediate (mov edx)",
-        "apply_restitution caller"
-      ],
-      "address": "0x148B5DB00",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 读 vy 0x148B5DB39、0.080000117f@0x14EA350B0、call 0x141E144A0、vtable+0x3E8、写 ApplyRestitution[1]；见 docs/notes/bounce-12651.md §1"
-      ]
-    },
-    "@block_pos_resolver": {
-      "strategy": [
-        "float -0.2 addss + minY/maxY 同写 + 24B 形状迭代"
-      ],
-      "address": "0x141E144A0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 探针 = minY-0.2；取 centerY<=probe 的最高形状；floor(shape.min)；方块指针 [container+0x18]；见 docs/notes/bounce-12651.md §1"
-      ]
-    },
-    "@bounce_threshold_f32": {
-      "strategy": [
-        "float 0x3DA3D70B in .rdata, movss xref from @bounce_handler"
-      ],
-      "address": "0x14EA350B0",
-      "status": "resolved",
-      "confidence": "constant",
-      "evidence": [
-        "[常量] 0.080000117f，|vy| 门槛（与 45.01 同值）"
-      ]
-    },
-    "@collision_shape_gather": {
-      "strategy": [
-        "write_watch MoveRequest+0x60 -> rip -> decompile host function",
-        "24 B push_back: add [r13+0x60], 0x18 at 0x1431C35FA"
-      ],
-      "address": "0x1431C2F50",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[代码] 收集盒下界 = min(preAABB.minY - 0.5625*1.01, preAABB.minY - 0.2 - |delta.y|)，上界 = maxY + 0.5625；盒缓存在 MoveRequest+0x18，被旧盒包含则直接返回；重建走 a10->vfn[+0xB0](out,&box,1,..) 再写回 +0x58",
-        "[实测] 75 个按 tick 对齐样本：盒下界逐位复现（<1e-4），候选表长度与弹否 0 反例"
-      ]
-    },
-    "@collision_gather_system": {
-      "strategy": [
-        "xrefs_to:@collision_shape_gather -> per-entity system body",
-        "view components {0xAF9E0C56, AABBShapeComponent, 0x9AB0D3FF, MoveRequestComponent}"
-      ],
-      "address": "0x1431DD080",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 系统体把 MoveRequest(第 6 个视图组件) 与收集盒参数传给 0x1431C2F50；两个组件 id 未解析出名字"
-      ]
-    },
-    "@collision_gather_runner": {
-      "strategy": [
-        "xrefs_to:@collision_shape_gather -> entity iterator"
-      ],
-      "address": "0x1431DC500",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 构造视图 {0xAF9E0C56, AABBShapeComponent(3133256655), 0x9AB0D3FF, MoveRequestComponent(1284469384)} 并按实体回调"
-      ]
-    },
-    "@step_box_helper": {
-      "strategy": [
-        "callee of @collision_shape_gather; literal *a3 * 1.01 with autoStep"
-      ],
-      "address": "0x14B177650",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 台阶盒：下扩 autoStep*1.01、上扩 autoStep；调用点 0x1431C314A"
-      ]
-    },
-    "@sweep_box_helper": {
-      "strategy": [
-        "callee of @collision_shape_gather at 0x1431C3193"
-      ],
-      "address": "0x149026EB0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 由 (位移, autoStep, preAABB) 生成第二个候选盒并进并集"
-      ]
-    },
-    "@client_handle_packet_violation": {
-      "strategy": [
-        "unique pair: mov r8d,5 (onClientLevelExit 2nd arg = 5) within 0x140 of mov r8d,5Ah (closeConnection reason = BadPacket)",
-        "sole closeConnection(..., 90, ...) call site in the image"
-      ],
-      "address": "0x1412FA0F0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] a4(PacketViolationResponse)!=3 时提前返回；==3(TerminateConnection) 才在 0x1412FA1C3 传 5 调 onClientLevelExit，再判 isPrimaryClient：真→0x1412FA243 closeConnection(netId, 90, \"\")，假→0x1412FA315 onDisconnect(..., 90, ..., \"DisconnectPacket\")。全库只有这一处用 90 调 closeConnection。",
-        "[常量] 90 = Connection::DisconnectFailReason::BadPacket（mc/network/connection/DisconnectFailReason.h）；与 data/definitions/disconnection_errors/disconnection_error_messaging.json 中 ThemeName=Packet / Codeword=Block 的覆盖集 {105, 48, 49, 50, 90} 一致。",
-        "[实测] 2026-10-31 10:07:19Z（北京时间 18:07:19）现场错误页为 ClientDisconnection-90、主题码字 Block，与设置点一致；具体触发包/错误码 unresolved。"
-      ]
-    },
-    "@client_disconnect_text": {
-      "strategy": [
-        "string:ClientDisconnection xref"
-      ],
-      "address": "0x14049AE20",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 连接种类 -> 文案：case 3 \"ClientDisconnection\"、case 4 \"ServerDisconnection\"、case 1 \"Prerequisites\"、case 2 \"InitialConnection\"；错误页 \"ClientDisconnection-<reason>\" 由它拼出，只表示连接侧，不区分谁发起断开。"
-      ]
-    },
-    "@client_packet_string_assign": {
-      "strategy": [
-        "dr_watch:net_ctx+0x138",
-        "writer of the per-packet string in the parse loop chain"
-      ],
-      "address": "0x140D7D470",
-      "status": "resolved",
-      "confidence": "code+live",
-      "evidence": [
-        "[实测] 在 net_ctx+0x138 上装硬件写断点，命中 tid 恒为下行解析线程；陷阱前一条为 0x140d7d707 `mov [rdi+10h], rbx`，紧跟 memmove(dst, r9, rbx) 与补 NUL，位于本函数内。",
-        "[代码] 栈上返回地址链：0x1416ab781（解析循环 call sub_140D935E0 之后）→ 0x140d937ea → 0x1416c608d → 本函数，rdi 即逐包 string 对象（net_ctx+0x128）。"
-      ]
-    },
-    "@client_packet_parse_loop": {
-      "strategy": [
-        "callers:@client_read_no_header -> sub_1416AB0E0",
-        "per-packet loop: one Packet::readNoHeader call per iteration"
-      ],
-      "address": "0x1416AB0E0",
-      "status": "resolved",
-      "confidence": "code",
-      "evidence": [
-        "[代码] 本函数 0x1416ab0e0..0x1416acf7f 内只调用一次 Packet::readNoHeader（0x1416abe4f），由 runEvents 任务 sub_1416AA7F0 在 LABEL_36 处以 `sub_1416AB0E0(&v49,&v43)` 进入；调用点参数为 rcx=[rbp+var_88]、rdx=&var_160、r8=&var_318（ReadOnlyBinaryStream 栈对象）、r9=[rsi+208h]、栈=[&var_64]。",
-        "[代码] 0x1416aa7f0 本身不是逐包入口：它是 `NetworkSystem::runEvents task`（字符串 `NetworkSystem::runEvents task`、NonOwnerPointer<NetworkSessionOwner> 的 mControlBlock 断言、任务提交 sub_1400A2400）；sub_1419D7D90 是网络运行循环（perf 计时 + profiler + 每次迭代一次 runEvents），不是批循环。2026-11-01 依此更正了旧条目。",
-        "[实测] 在 Packet::readNoHeader 入口测得的切片 = 发送侧 payload+2（187 33→35、188 5→7），即逐包切片；短切片（188 只有 2 字节）在同一入口可见。"
-      ]
-    }
+ "version": "1.26.51.01",
+ "build_id": "1.26.51.1",
+ "resolved_at": "2026-10-28T00:00:00Z",
+ "resolver": "skills/bedrock-re/roles/resolve.py",
+ "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
+ "image_base": "0x140000000",
+ "offsets_ref": "docs/offsets/1.26.51.01.json",
+ "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。",
+ "roles": {
+  "@tick_entity_systems": {
+   "strategy": [
+    "string:EntitySystemsManager::tickEntitySystems",
+    "xrefs_to:profiler_record"
+   ],
+   "address": "0x141177690",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 名字记录引用 0x1411779C5；见 docs/reverse-engineering.md §3A"
+   ]
+  },
+  "@entity_systems_main_pass": {
+   "strategy": [
+    "callgraph:from:@tick_entity_systems",
+    "dispatcher:E14"
+   ],
+   "address": "0x1463B0B00",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] tickEntitySystems 的 E14 分派器；[实测] 20 帧调用栈落到 0x1463B0C27"
+   ]
+  },
+  "@entity_systems_secondary_pass": {
+   "strategy": [
+    "callgraph:from:@tick_entity_systems",
+    "dispatcher:E1C"
+   ],
+   "address": "0x1463B1070",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] E1C 分派器；[实测] 客户端通常只跑 E14 + catchup"
+   ]
+  },
+  "@entity_systems_catchup": {
+   "strategy": [
+    "vtable:EntitySystems",
+    "category:13584"
+   ],
+   "address": "0x1463B0DF0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 集合实现与类别向量；catchup 不在主 pass 链上"
+   ]
+  },
+  "@entity_systems_correction": {
+   "strategy": [
+    "vtable:EntitySystems",
+    "category:1358C"
+   ],
+   "address": "0x1463B0F30",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] correction 类别；[实测] 本地世界未触发"
+   ]
+  },
+  "@systems_create": {
+   "strategy": [
+    "vtable:DefaultEntitySystemsCollection",
+    "ctor_writes_vtable"
+   ],
+   "address": "0x1425C25A0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] create 内写 vtable 0x14E8285E0；见 docs/reverse-engineering.md §3B"
+   ]
+  },
+  "@systems_register": {
+   "strategy": [
+    "vtable:slot",
+    "append:category_vector"
+   ],
+   "address": "0x1425C5DD0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 追加 system 到 mAllSystems，再按 mode 追加到类别向量 +0x38/+0x50"
+   ]
+  },
+  "@systems_foreach": {
+   "strategy": [
+    "vtable:slot",
+    "forward:category_vector"
+   ],
+   "address": "0x1425C6CF0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 按类别项正序遍历；tick 顺序 = 注册顺序"
+   ]
+  },
+  "@action_sprint_trigger": {
+   "strategy": [
+    "registration:0x14681FBB7",
+    "tick:0x14B1A9FE0"
+   ],
+   "address": "0x14B1A9FE0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] ActionSprintTriggerSystem tick；注册点早于水阻力系统"
+   ]
+  },
+  "@sprint_input_edge": {
+   "strategy": [
+    "caller:from:@action_sprint_trigger",
+    "input_edge_bits:0x200/0x400"
+   ],
+   "address": "0x14B1AA080",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] setSprinting 的输入边沿调用者之一；另一个是 0x14B1A9F50"
+   ]
+  },
+  "@set_sprinting": {
+   "strategy": [
+    "caller:from:@action_sprint_trigger",
+    "store:ADF_bit3"
+   ],
+   "address": "0x14B17C820",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 写 ADF bit3 并压入 SPRINTING_BOOST 请求；见 docs/fluid-movement.md §3.2"
+   ]
+  },
+  "@sprint_bit_store": {
+   "strategy": [
+    "store:inside:@set_sprinting"
+   ],
+   "address": "0x14B17C870",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] ADF bit3 的写入点；顺序证据见 docs/fluid-movement.md §9.1"
+   ]
+  },
+  "@sprint_boost_init": {
+   "strategy": [
+    "static_init:SharedModifiers::SPRINTING_BOOST",
+    "uuid:D208FC00-42AA-4AAD-9276-D5446530DE43"
+   ],
+   "address": "0x1431BD020",
+   "status": "resolved",
+   "confidence": "constant",
+   "evidence": [
+    "[常量] amount 0.3f、MULTIPLY_TOTAL、operand current；见 docs/fluid-movement.md §3.2"
+   ]
+  },
+  "@move_attr_aggregate": {
+   "strategy": [
+    "reads:AttributeInstance+124",
+    "writes:movement_struct"
+   ],
+   "address": "0x14289A180",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 把移动速度属性当前值拷进移动结构；见 docs/fluid-movement.md §3.2"
+   ]
+  },
+  "@ground_accel_apply": {
+   "strategy": [
+    "formula:speed*(0.546/friction)^3"
+   ],
+   "address": "0x14666CEE0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 写加速模长；运行期 applier 向量 0.13×0.98=0.1274 逐位吻合"
+   ]
+  },
+  "@water_drag": {
+   "strategy": [
+    "reads:ADF_bit3",
+    "vtable:0x14E85AF60"
+   ],
+   "address": "0x142DEE630",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 水阻力读 ADF bit3；见 docs/fluid-movement.md §9.1"
+   ]
+  },
+  "@water_drag_store": {
+   "strategy": [
+    "store:inside:@water_drag"
+   ],
+   "address": "0x142DEE7BC",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 阻力写 vx 的位置；早期观察点顺序曾误判，已由注册序撤回"
+   ]
+  },
+  "@levitation": {
+   "strategy": [
+    "formula:0.8*vy+0.01*(n+1)"
+   ],
+   "address": "0x142DE57E0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 悬浮（Levitation），不是游泳上浮；见 docs/fluid-movement.md §7"
+   ]
+  },
+  "@swim_vertical_branch": {
+   "strategy": [
+    "constants:0.028/0.04/0.15/0.2",
+    "branch:vertical"
+   ],
+   "address": "0x1495EA890",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 泳姿/竖直分支门；0.15/0.2 不是流体上浮"
+   ]
+  },
+  "@modifier_recompute": {
+   "strategy": [
+    "formula:(amount+1)*value",
+    "operation:MULTIPLY_TOTAL"
+   ],
+   "address": "0x142859E10",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] MULTIPLY_TOTAL 重算；见 docs/fluid-movement.md §3.2"
+   ]
+  },
+  "@swim_lambda": {
+   "strategy": [
+    "callgraph:from:@swim_vertical_branch",
+    "lambda:swim_control"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [],
+   "note": "本版本未唯一锁定，禁止猜测"
+  },
+  "@clip": {
+   "strategy": [
+    "string:clip",
+    "vtable:collision",
+    "callgraph:from:@move_runner"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [],
+   "note": "本版本未定位，禁止猜测"
+  },
+  "@gate": {
+   "strategy": [
+    "callgraph:from:@move_runner",
+    "branch:step_gate"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [],
+   "note": "本版本未定位，禁止猜测"
+  },
+  "@step_block": {
+   "strategy": [
+    "vtable:block",
+    "callgraph:from:@move_runner"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [],
+   "note": "本版本未定位，禁止猜测"
+  },
+  "@move_runner": {
+   "strategy": [
+    "callgraph:from:@tick_entity_systems",
+    "category:travel"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [],
+   "note": "仅作为调用图锚点使用；地址未定"
+  },
+  "@water_drag_ctor": {
+   "strategy": [
+    "vtable:0x14E85AF60",
+    "callback:slot2:0x14E9A3700"
+   ],
+   "address": "0x142DE0950",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 构造水阻力系统并调用注册回调 0x14685D0B0；见 docs/fluid-movement.md §9.1"
+   ]
+  },
+  "@sprint_register_wrapper": {
+   "strategy": [
+    "wrapper:ActionSprintTrigger",
+    "mode=1"
+   ],
+   "address": "0x1466567E0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 0x14681FBED 调它，r8w=1"
+   ]
+  },
+  "@sprint_register_list": {
+   "strategy": [
+    "categories:E14/catchup/correction/E1C",
+    "mode=1"
+   ],
+   "address": "0x146662E90",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 向 collection register 传 4 个类别"
+   ]
+  },
+  "@water_register_wrapper": {
+   "strategy": [
+    "wrapper:water",
+    "mode=1"
+   ],
+   "address": "0x142DEDF10",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 0x14685D0B0 调它，a3=1"
+   ]
+  },
+  "@water_register_list": {
+   "strategy": [
+    "categories:E14/E1C",
+    "mode=1"
+   ],
+   "address": "0x142DEE020",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 向 collection register 传 2 个类别"
+   ]
+  },
+  "@water_register_callback": {
+   "strategy": [
+    "vtable_slot:off_14E9A3700+0x10",
+    "calls:0x142DEDF10"
+   ],
+   "address": "0x14685D0B0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 水 ctor 的注册回调；传 mode 1"
+   ]
+  },
+  "@liquid_flow_level": {
+   "strategy": [
+    "property:liquid_depth",
+    "returns:-1 when material differs"
+   ],
+   "address": "0x14345D010",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 读 block 状态字 +288 的 liquid_depth 位域；非该液体返回 -1；>=8 表示下落块（falling）"
+   ]
+  },
+  "@liquid_flow_vector": {
+   "strategy": [
+    "callees:from:@liquid_physics_tick",
+    "constant:-6.0@0x14E76B07C",
+    "store_y:0x14345E213"
+   ],
+   "address": "0x14345DE50",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] 4 邻液位差 → 水平向量（自身/邻 liquid_depth>=8 归一为 0，见 0x14345DEBA）；结尾 |v|<1e-4 直接 (0,-6,0)，否则先归一化再 y+=(-6.0)，最后整体再归一化（0x14345E1DC..0x14345E279）",
+    "[代码] 偏置门：自身 liquid_depth>=8 且 4 邻任一邻块或其上方 material 实心标志 byte(+5)!=0（0x14345E0DC..0x14345E1BD），命中即 break，至多一次",
+    "[实测] 1x1 贴墙瀑布 b80=-0.019，开放空气/3x3 居中 -0.005，3x3 贴墙与单方块上悬 -0.019；见 findings/1.26.51.01/cases/liquid-falling-push"
+   ]
+  },
+  "@liquid_flow_angle": {
+   "strategy": [
+    "callees:from:@liquid_flow_vector",
+    "atan2"
+   ],
+   "address": "0x14345ED00",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 用同一 flow 向量算 atan2 流向角（v=0 返回 -1000）；渲染/流向用"
+   ]
+  },
+  "@liquid_physics_tick": {
+   "strategy": [
+    "assert_string:1 LiquidPhysicsSystem",
+    "constant:0.014@0x14E7CA4D0",
+    "store_vel:0x1495E5281/528B/5295"
+   ],
+   "address": "0x1495E44E0",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] 每个 flow source 调 @liquid_flow_vector 后累加（0x1495E51BB）；|Σ|>=1e-4 归一化；k=0.014（material==5 水，0x14E7CA4D0）乘到三个分量并加到 actor+0x18/1C/20",
+    "[实测] 0.8 阻力下 v'=0.8v-0.005（静水）/ -0.019（下落+实心面）；稳态 -0.025 / -0.095"
+   ]
+  },
+  "@liquid_blip": {
+   "strategy": [
+    "live:StateVector+0x1C watch",
+    "constant:0.3 not found as a direct store",
+    "candidate:0x148B618A0 vertical accel add"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [
+    "[实测] 贴墙 + 水面附近 + Space 时 vy 0.34→0.3（2 深水池，probe r01-001）；无墙/深水/不跳跃不触发",
+    "[动态] StateVector+0x1C 观察点在弹跳 tick 命中 0x148B61995（sub_148B618A0 加）、0x1431EC3FB（sub_1431EC2A0 Vec3 拷贝）、重力/阻力写点，无直接 0.3 store；函数地址未定，禁止猜"
+   ]
+  },
+  "@sprint_tick_dispatch": {
+   "strategy": [
+    "tick:0x14B1A9FE0",
+    "visits:PlayerActionComponent"
+   ],
+   "address": "0x14B1A96C0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] ActionSprintTrigger tick 的实体遍历"
+   ]
+  },
+  "@sprint_edge_handler": {
+   "strategy": [
+    "bits:0x200/0x400",
+    "calls:0x14B17C820"
+   ],
+   "address": "0x14B1A9F50",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 0x200→setSprinting(1)，0x400→setSprinting(0)"
+   ]
+  },
+  "@sprint_entity_visitor": {
+   "strategy": [
+    "callgraph:from:0x14B1A96C0",
+    "calls:@sprint_edge_handler"
+   ],
+   "address": "0x14B190B20",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 每个实体调用 edge handler"
+   ]
+  },
+  "@cat_e14": {
+   "strategy": [
+    "category:E14",
+    "dispatcher:0x1463B0B00"
+   ],
+   "address": "0x151DB9E14",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] E14 主 pass 的类别 id"
+   ]
+  },
+  "@cat_catchup": {
+   "strategy": [
+    "category:catchup",
+    "dispatcher:0x1463B0DF0"
+   ],
+   "address": "0x151E13584",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] catchup 类别 id"
+   ]
+  },
+  "@cat_correction": {
+   "strategy": [
+    "category:correction",
+    "dispatcher:0x1463B0F30"
+   ],
+   "address": "0x151E1358C",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] correction 类别 id"
+   ]
+  },
+  "@cat_e1c": {
+   "strategy": [
+    "category:E1C",
+    "dispatcher:0x1463B1070"
+   ],
+   "address": "0x151DB9E1C",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] E1C pass 的类别 id"
+   ]
+  },
+  "@player_action_writer": {
+   "strategy": [
+    "write:PlayerActionComponent bits 0x200/0x400",
+    "callgraph:from:input"
+   ],
+   "address": null,
+   "status": "unresolved",
+   "confidence": "none",
+   "evidence": [],
+   "note": "本版本未定位；这是“记录位→ADF 写位”2 tick 的最后一环"
+  },
+  "@lava_drag": {
+   "strategy": [
+    "callees:from:LavaTravel",
+    "constant:0.5"
+   ],
+   "address": "0x142DF0B80",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] 两条路径都在 0x142DF0F9A/FA8/FB6 与 0x142DF0DB1/DBF/DCD 对 vx/vy/vz 各乘 0.5；门是 LavaTravelFlag/Navigation 符号位，无液面高度/维度/效果读取",
+    "[实测] 脚在液面下 0.55 与 3 格都是 b50=-0.02、steady=-0.04；有无抗火序列一致"
+   ]
+  },
+  "@lava_gravity": {
+   "strategy": [
+    "callees:from:Gravity",
+    "constant:-0.02@0x142DE352F"
+   ],
+   "address": "0x142DE3260",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 结尾 0x142DE352F 写 -0.02f（0xBCA3D70A），只有 ±半格方块探针，无维度/效果"
+   ]
+  },
+  "@liquid_sim_tick": {
+   "strategy": [
+    "callees:8x @liquid_flow_level",
+    "constant:dropoff/tickdelay@0x14345B41D/0x14345B47C"
+   ],
+   "address": "0x14345B370",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] 液体扩散入口（8 处调 @liquid_flow_level）；material==6 时读 BlockSource→[vtable+0x138]→+0x1A6 维度字节：drop-off = 2-flag（0x14345B40F/41B），tick delay = flag?10:30（0x14345B46A/47C）",
+    "[实测] 80 tick 后下界前沿 +7、主世界 +3，与 drop-off 1/2（液位 7 起算）一致"
+   ]
+  },
+  "@bounce_handler": {
+   "strategy": [
+    "component_id:0x7DF54114 immediate (mov edx)",
+    "apply_restitution caller"
+   ],
+   "address": "0x148B5DB00",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 读 vy 0x148B5DB39、0.080000117f@0x14EA350B0、call 0x141E144A0、vtable+0x3E8、写 ApplyRestitution[1]；见 docs/notes/bounce-12651.md §1"
+   ]
+  },
+  "@block_pos_resolver": {
+   "strategy": [
+    "float -0.2 addss + minY/maxY 同写 + 24B 形状迭代"
+   ],
+   "address": "0x141E144A0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 探针 = minY-0.2；取 centerY<=probe 的最高形状；floor(shape.min)；方块指针 [container+0x18]；见 docs/notes/bounce-12651.md §1"
+   ]
+  },
+  "@bounce_threshold_f32": {
+   "strategy": [
+    "float 0x3DA3D70B in .rdata, movss xref from @bounce_handler"
+   ],
+   "address": "0x14EA350B0",
+   "status": "resolved",
+   "confidence": "constant",
+   "evidence": [
+    "[常量] 0.080000117f，|vy| 门槛（与 45.01 同值）"
+   ]
+  },
+  "@collision_shape_gather": {
+   "strategy": [
+    "write_watch MoveRequest+0x60 -> rip -> decompile host function",
+    "24 B push_back: add [r13+0x60], 0x18 at 0x1431C35FA"
+   ],
+   "address": "0x1431C2F50",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] 收集盒下界 = min(preAABB.minY - 0.5625*1.01, preAABB.minY - 0.2 - |delta.y|)，上界 = maxY + 0.5625；盒缓存在 MoveRequest+0x18，被旧盒包含则直接返回；重建走 a10->vfn[+0xB0](out,&box,1,..) 再写回 +0x58",
+    "[实测] 75 个按 tick 对齐样本：盒下界逐位复现（<1e-4），候选表长度与弹否 0 反例"
+   ]
+  },
+  "@collision_gather_system": {
+   "strategy": [
+    "xrefs_to:@collision_shape_gather -> per-entity system body",
+    "view components {0xAF9E0C56, AABBShapeComponent, 0x9AB0D3FF, MoveRequestComponent}"
+   ],
+   "address": "0x1431DD080",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 系统体把 MoveRequest(第 6 个视图组件) 与收集盒参数传给 0x1431C2F50；两个组件 id 未解析出名字"
+   ]
+  },
+  "@collision_gather_runner": {
+   "strategy": [
+    "xrefs_to:@collision_shape_gather -> entity iterator"
+   ],
+   "address": "0x1431DC500",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 构造视图 {0xAF9E0C56, AABBShapeComponent(3133256655), 0x9AB0D3FF, MoveRequestComponent(1284469384)} 并按实体回调"
+   ]
+  },
+  "@step_box_helper": {
+   "strategy": [
+    "callee of @collision_shape_gather; literal *a3 * 1.01 with autoStep"
+   ],
+   "address": "0x14B177650",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 台阶盒：下扩 autoStep*1.01、上扩 autoStep；调用点 0x1431C314A"
+   ]
+  },
+  "@sweep_box_helper": {
+   "strategy": [
+    "callee of @collision_shape_gather at 0x1431C3193"
+   ],
+   "address": "0x149026EB0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 由 (位移, autoStep, preAABB) 生成第二个候选盒并进并集"
+   ]
+  },
+  "@client_handle_packet_violation": {
+   "strategy": [
+    "unique pair: mov r8d,5 (onClientLevelExit 2nd arg = 5) within 0x140 of mov r8d,5Ah (closeConnection reason = BadPacket)",
+    "sole closeConnection(..., 90, ...) call site in the image"
+   ],
+   "address": "0x1412FA0F0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] a4(PacketViolationResponse)!=3 时提前返回；==3(TerminateConnection) 才在 0x1412FA1C3 传 5 调 onClientLevelExit，再判 isPrimaryClient：真→0x1412FA243 closeConnection(netId, 90, \"\")，假→0x1412FA315 onDisconnect(..., 90, ..., \"DisconnectPacket\")。全库只有这一处用 90 调 closeConnection。",
+    "[常量] 90 = Connection::DisconnectFailReason::BadPacket（mc/network/connection/DisconnectFailReason.h）；与 data/definitions/disconnection_errors/disconnection_error_messaging.json 中 ThemeName=Packet / Codeword=Block 的覆盖集 {105, 48, 49, 50, 90} 一致。",
+    "[实测] 2026-10-31 10:07:19Z（北京时间 18:07:19）现场错误页为 ClientDisconnection-90、主题码字 Block，与设置点一致；具体触发包/错误码 unresolved。"
+   ]
+  },
+  "@client_disconnect_text": {
+   "strategy": [
+    "string:ClientDisconnection xref"
+   ],
+   "address": "0x14049AE20",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 连接种类 -> 文案：case 3 \"ClientDisconnection\"、case 4 \"ServerDisconnection\"、case 1 \"Prerequisites\"、case 2 \"InitialConnection\"；错误页 \"ClientDisconnection-<reason>\" 由它拼出，只表示连接侧，不区分谁发起断开。"
+   ]
+  },
+  "@client_packet_string_assign": {
+   "strategy": [
+    "dr_watch:net_ctx+0x138",
+    "writer of the per-packet string in the parse loop chain"
+   ],
+   "address": "0x140D7D470",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[实测] 在 net_ctx+0x138 上装硬件写断点，命中 tid 恒为下行解析线程；陷阱前一条为 0x140d7d707 `mov [rdi+10h], rbx`，紧跟 memmove(dst, r9, rbx) 与补 NUL，位于本函数内。",
+    "[代码] 栈上返回地址链：0x1416ab781（解析循环 call sub_140D935E0 之后）→ 0x140d937ea → 0x1416c608d → 本函数，rdi 即逐包 string 对象（net_ctx+0x128）。",
+    "[代码] 2026-11-01：该函数其实是 0x28 元素环的出队（读索引 [node]、写索引 [node+0x40]、掩码 [node+0x90]），把元素 std::string 搬进解析缓冲，长度 = 元素自己的 _Mysize；入队方见 @client_packet_enqueue。"
+   ]
+  },
+  "@client_packet_parse_loop": {
+   "strategy": [
+    "callers:@client_read_no_header -> sub_1416AB0E0",
+    "per-packet loop: one Packet::readNoHeader call per iteration"
+   ],
+   "address": "0x1416AB0E0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 本函数 0x1416ab0e0..0x1416acf7f 内只调用一次 Packet::readNoHeader（0x1416abe4f），由 runEvents 任务 sub_1416AA7F0 在 LABEL_36 处以 `sub_1416AB0E0(&v49,&v43)` 进入；调用点参数为 rcx=[rbp+var_88]、rdx=&var_160、r8=&var_318（ReadOnlyBinaryStream 栈对象）、r9=[rsi+208h]、栈=[&var_64]。",
+    "[代码] 0x1416aa7f0 本身不是逐包入口：它是 `NetworkSystem::runEvents task`（字符串 `NetworkSystem::runEvents task`、NonOwnerPointer<NetworkSessionOwner> 的 mControlBlock 断言、任务提交 sub_1400A2400）；sub_1419D7D90 是网络运行循环（perf 计时 + profiler + 每次迭代一次 runEvents），不是批循环。2026-11-01 依此更正了旧条目。",
+    "[实测] 在 Packet::readNoHeader 入口测得的切片 = 发送侧 payload+2（187 33→35、188 5→7），即逐包切片；短切片（188 只有 2 字节）在同一入口可见。"
+   ]
+  },
+  "@client_packet_enqueue": {
+   "strategy": [
+    "vtable 0x14e78d0a0 slot +0x08",
+    "writer of the 0x28-byte string ring element size"
+   ],
+   "address": "0x140D7CFC0",
+   "status": "resolved",
+   "confidence": "code+live",
+   "evidence": [
+    "[代码] 环形队列入队：元素 0x28 = std::string(0x20) + 时间戳(+0x20)；节点布局 [node]=读索引、[node+0x40]=写索引、[node+0x80]=next、[node+0x88]=元素数组、[node+0x90]=掩码。快路径 0x140d7d2da..0x140d7d2fd 把源 string 的 _Mysize（[rdx+0x10]）写进 elem+0x10，并推进写索引。",
+    "[代码] 入队是深拷贝：堆字符串走 operator new(容量+1) + memcpy(size+1)（0x140d7d0c1..0x140d7d0dd），SSO 直接搬 16 字节内联缓冲 —— 环元素与发送缓冲不共享。",
+    "[实测] hook_install 该 VA 后 6 秒 972 次命中，payload 首字节为 6f…/90 01…/27…；与解析边界切片逐字节一致（id 39 帧 1:1 配对）。"
+   ]
+  },
+  "@client_packet_enqueue_dispatch": {
+   "strategy": [
+    "caller of @client_packet_enqueue; iterates connection list, tail-calls vtable+0x08 with the serialization string"
+   ],
+   "address": "0x1416B08C0",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] 0x1416b0a15..0x1416b0a3c：取 [rax+0x118] 连接对象 → vtbl[8]，rdx = rsi = [rbx+0x1B0]（该连接的序列化缓冲），尾调用 guard_dispatch_icall。",
+    "[实测] 入队命中的返回地址链（RtlCaptureStackBackTrace）落在 0x1416b080a（= sub_1416B0490 调 sub_1416B08C0 之后），确认这条链。"
+   ]
+  },
+  "@client_packet_send_serialize": {
+   "strategy": [
+    "caller of @client_packet_enqueue_dispatch; clones the packet, clears conn+0x1B0, writes Header Data then peer payload"
+   ],
+   "address": "0x1416B0490",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] memcpy(pkt,0xB0)+alloc(0xB8) 克隆包对象交给 55..58 四个观察者槽（vtbl+0x50）；随后清空 a1[54]=*(conn+0x1B0)：[str+0x10]=0、[str+0x18]>=0x10 时 *str=0；置流视图 a1[50..52]；(*a1[45]->vtbl[0x60])(..., \"Header Data\", 0)；(*peer->vtbl[0x28])(peer, a1+45, ...)；最后 sub_1416B08C0(a1, pkt, peer, *(a1+0x1B0))。",
+    "[代码] 帧 = varint 包 id（Header Data）+ payload，没有长度字段 —— 长度就是该 std::string 的 _Mysize。"
+   ]
+  },
+  "@client_set_actor_data_name": {
+   "strategy": [
+    "string:SetActorDataPacket xref -> getter writing {ptr,18}"
+   ],
+   "address": "0x143DF6E30",
+   "status": "resolved",
+   "confidence": "code",
+   "evidence": [
+    "[代码] *a2 = \"SetActorDataPacket\"; a2[1] = 18; 该 getter 落在 vtable 槽 0x14E7CFD90 上。",
+    "[代码] 同类 vtable 里 0x143DF6E50 是旧格式读写（mode = vtbl[0x60]()，==5 走 cereal），0x143DF7630 建读上下文后调 vtbl+0x38，0x143DF7CC0 是 cereal 实现（断言串 \"Packet defined using SerializationMode::CerealOnly tried to serialize (read) using a different mode\"）。"
+   ]
   }
+ }
 }

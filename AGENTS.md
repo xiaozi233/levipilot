@@ -260,27 +260,30 @@ profiles/roles（up to date / 50/57）通过。完整两轮 **1053/1055**（水�
 自然事件同 tick 861/tid 30828：callback `response=3/packet_id=39/packet_size=34/
 error_value=104`，随后 screen `disconnect_reason=90/context=Block`；SDK 枚举确认 39 是
 SetActorData（非 UpdateAbilitiesPacket）。
-2026-11-01 已把外层查清（证据册 §36–§43）：解析缓冲是 0x28 元素环出队的**深拷贝**，
-元素 size 由入队 `sub_140D7CFC0` 从源 string 的 `_Mysize` 原样写入；这条路上**没有帧
-长度前缀**，切片也不是更大缓冲的子区间（`parent_view` 0/4444）；id 39 是
-`SetActorDataPacket` 且 **CerealOnly**，104 发生在它自己的 cereal 归档里。
-⇒ `size 参数边界 / 104 含义 / 方向` 已闭合，「声明长度被切短」「切片含邻居 payload」
-两种旧说法撤回；**只剩“具体哪个字段让归档提前读空” unresolved**，需要出事那一帧的
-原始字节（带 hook 采集 20 个进世界窗口、无 hook 对照 7 个窗口均未复现）。
-复现后一条命令即可取证：`py -3.11 out/live_inbound_capture.py` 自动落 `.mark`，
-再 `py -3.11 out/analyze_mark.py <mark>` 逐字段比对；探针一律 `client.close()`，
-否则管道会卡死到必须重启游戏。
+2026-11-01 已把这条链闭合（证据册 §36–§49）：
+解析缓冲是 0x28 元素环出队的**深拷贝**，元素 size 由入队 `sub_140D7CFC0` 从源
+string 的 `_Mysize` 原样写入；这条路上**没有帧长度前缀**，切片也不是更大缓冲的
+子区间（`parent_view` 0/4444）。
+**根因已确认**：`NetworkSystem` 只有一份序列化缓冲（`+0x1B0` 字符串 + `+0x190`
+流视图），`sub_1416B0490`「清空 → 写 Header Data → peer 写 body → 入队」整段没有
+串行化，**两个线程会同时走这条路径**（实测 tid 42212/12404 在同一 tick 交替，
+`before/after` 链条自相矛盾）。清空与写入交错 ⇒ 一帧里塞进两个包的字节
+（实测 `1d 01… + 187 帧`、`188 帧 + 187 尾巴`、`6f 0e 01…` 54 字节），解析器按
+第一个 id 读，剩余字节触发 104 / 或把下个 id 读成垃圾 → BadPacket(90)。
+「声明长度被切短」「切片含邻居 payload」两种旧说法撤回。这是游戏侧共享缓冲缺少
+串行化，**不由 harness 打补丁**；能做的只有规避（避免在 tick 外并发触发发包）。
+取证工具：`send_probe` 命令（只读，异常帧连栈写 `<modDir>/suspect-<pid>.jsonl`）。
 不可由 packet_capture=false/chat_sent=0 排除原生状态同步的间接影响。
 真实错误页 recover exit 0；原配置逐字节恢复并重启加载，最终姿态/能力/背包/输入等
 回读 **16/16**，113 个 crash 无新增/修改。证据见 `docs/reliability-repairs.md`。
 本批未执行新增逆向；后续诊断提示词为
 `docs/notes/prompts/badpacket-setactordata-20261031.md`。不自行推送，不把当前失败提交为全绿。
 
-2026-11-01 BadPacket 当前以证据册 §36–§43 为准：入队/出队深拷贝、长度取源 string
-size，这条路径**没有帧长度前缀**。早期「声明 23」「邻居 payload 混入」定论已撤回，
-不可再按旧 §12–§15 作为已闭合根因。id39 = SetActorData、CerealOnly，仍缺失败的
-34 字节原帧来定位具体 cereal 字段。带 hook 20 窗口、无 hook 7 窗口未复现，不能排除
-mod 间接影响。后续完整现场 1065/1066（0 fail、1 required skip），不是完整覆盖全绿。
+2026-11-01 BadPacket 已按证据册 §36–§49 闭合：入队/出队都是深拷贝、长度取源 string
+size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序列化缓冲被两个线程并发
+使用**（同 tick 两个 tid 交替、before/after 链条自相矛盾，产出粘连帧 → 104 → BadPacket）。
+早期「声明 23」「邻居 payload 混入」定论已撤回。harness 不打补丁，只做规避；
+完整现场 1065/1066（0 fail、1 required skip），不是完整覆盖全绿。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage

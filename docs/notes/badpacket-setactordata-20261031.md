@@ -1754,3 +1754,24 @@ py -3.11 out/live_inbound_capture.py      # 2 秒一轮，落盘 out/live-inboun
 
 ⇒ 写进这个环的代码路径**只有 `sub_140D7CFC0` 一处**；
 出队只有 `sub_140D7D470`；其余是销毁。
+
+### §40 附：捕获口径与复现条件（2026-11-01 19:3x）
+
+**记录口径**：`copySlice` 原来把入边上下文硬截到 24 字节（`limit < 24 ? limit : 24`），
+34 字节的失败帧只能看到 2/3。已改为按 `kViolationContext - 1 = 191` 上限复制
+（提交 `37274d0`，需重编 `probe.dll`），现在帧 ≤191 字节都是整帧落盘。
+验证：`packet_size 95 / context_size 95`。
+
+**复现条件（`[实测]`）**：空闲世界里 id 39 只有 17–19 字节；**重新进世界**那一瞬间
+出现 **336 字节**的 id 39 帧（`19:33:40`）。也就是说失败样本的 34 字节属于
+「属性集较满」的时刻，最可能出现在进世界/实体初次同步附近，而不是挂机时。
+
+**正在跑的采集**：`out/live_inbound_capture.py`
+- 2 秒一轮 `inbound_drain`，整帧落盘到 `out/live-inbound-<stamp>.jsonl`；
+- 每个 id 出现新的最大长度就记一行 `out/live-novel-<stamp>.jsonl` 并打印；
+- `response != 0` 或 `error_value ∉ {0,1,2}` 立刻写 `.mark`；
+- 每 30 秒一轮正常玩法（走/跳/转身/命名生物/装备替换/效果），
+- 每 7 分钟 `leave_world → enter_world` 一次，专门覆盖「进世界」这个高产窗口。
+
+拿到 `.mark` 后用 `out/analyze_mark.py <mark>`：打印 id varint、列出所有像包 id 的偏移，
+并按同 id 的已知长度分布检查「是不是某个常见长度的整数倍」（= 一帧两包）。

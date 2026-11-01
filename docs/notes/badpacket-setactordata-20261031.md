@@ -633,3 +633,53 @@ MCP 的 `decompile` 对 >64KB 输出截断到 1KB，而该函数内既无 `shl` 
 说明 SetActorData 的下发不走 `LoopbackPacketSender::sendToClient` 那条被 tap 的路径。
 若模型 A 成立（188 帧里并入了 39 的 payload），两者必然共享了某段序列化缓冲，
 而它们走的又不是同一条发送路径，这一点值得后续验证。
+
+## 19. 找到切片流的构造点：`[代码]` 逐条读到（2026-11-01 14:4x）
+
+之前一直缺的“流从哪来”，在解析循环 `sub_1416AB0E0` 里找到了（`0x1416ab789`–`0x1416ab808`）：
+
+```
+1416ab789  cmp qword ptr [rsi+140h], 10h     ; capacity == SSO?
+1416ab791  mov rax, [rbp+450h+var_2A0]
+1416ab798  jb  short loc_1416AB7A1
+1416ab79a  mov rax, [rsi+128h]               ; heap data pointer
+1416ab7a1  mov rdx, [rsi+138h]               ; size
+1416ab7a8  lea rcx, off_14E75BD20            ; ReadOnlyBinaryStream vtable
+1416ab7af  mov [rbp+450h+var_318], rcx
+1416ab7b6  lea rcx, [rbp+450h+var_310]
+1416ab7bd  movups xmmword ptr [rcx], xmm6    ; SSO buffer 清零
+1416ab7c0  mov qword ptr [rcx+10h], 0
+1416ab7c8  mov [rbp+450h+var_2F8], 0Fh       ; capacity = 15
+1416ab7d3  mov [rbp+450h+var_2F0], rax       ; +0x28 = data pointer
+1416ab7da  mov [rbp+450h+var_D8], rdx
+1416ab7e1  mov [rbp+450h+var_2E8], rdx       ; +0x30 = size
+1416ab7e8  mov [rbp+450h+var_2E0], 0         ; +0x38 = readPtr
+1416ab7f3  mov [rbp+450h+var_2D8], 0         ; +0x40 = overflow
+1416ab7fa  lea rcx, [rbp+450h+var_318]
+1416ab801  lea rdx, [rbp+450h+SRWLock]
+1416ab808  call sub_140670C40
+```
+
+读出来的结论：
+
+1. `[代码]` 流对象布局被这条构造逐字段确认：`+0x28` 数据指针、`+0x30` **size**、`+0x38` readPtr、
+   `+0x40` overflow —— 与我们一直探的位置一致。
+2. `[代码]` **size 不是本函数从字节里解出来的 varint**，而是直接取自
+   `rsi+0x138`（`rsi = *a1`，即 NetworkSystem 侧对象的成员 `std::string`：
+   buffer `+0x128`、size `+0x138`、capacity `+0x140`，capacity==0x10 时用 SSO 内联缓冲）。
+3. `[代码]` readPtr 构造时为 0；到 `readNoHeader` 入口变成 2，说明**包 id 是在这两点之间从同一流里读掉的**。
+4. `[实测]` 因此失败样本的 23，就是那个成员 `std::string` **当时的 size**。
+5. `[代码]` 这个流是**只读视图**（`+0x28` 直接指向那个 string 的缓冲，没有二次拷贝），
+   所以切片起点＝该 string 的起点：string 里存的就是 `[id][payload]`，
+   **长度前缀在更上游就被剥掉了**（若存在）。这也解释了为什么切片前的 16 字节是堆数据
+   —— 那是这段 string 缓冲的邻居，不是帧头。
+
+### 这一步把问题推进到哪
+
+- 可以确定：解析层没有“先读长度前缀再切包”的动作，它只是把 NetworkSystem 里某个 `std::string`
+  的 `{ptr,size}` 包成流。**所以 §18 的模型 B（无前缀、长度即缓冲长度）在解析层成立。**
+- 仍未定：那个 `std::string` 是谁写的、写的时候 size 为何是 23。
+  上游若按 `[len][payload]` 从批里拷贝，则前缀确实存在（模型 A），只是不在这层读；
+  若它是复用缓冲且只写了 7 字节却把 size 设成 23，则是模型 B 的“长度按缓冲算”。
+- 下一个可执行步骤：找 `NetworkSystem + 0x128` 这个 `std::string` 的写入点（`sub_140670C40`
+  之后到解析之间的调用链，或网络接收线程里的 `assign/append`）。

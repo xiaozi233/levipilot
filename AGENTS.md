@@ -23,12 +23,17 @@ py -3.11 driver/dev.py run --world "超平坦测试"
 # 报告写到 out/disconnect-<时间>.json；不加 --world 只回到菜单
 py -3.11 driver/dev.py recover --world "超平坦测试"
 
+# 违规守望（只读）：所有 live 入口统一观察/增量落盘；设施自测与 panic 空窗明确记入报告
+LEVIPILOT_VIOLATION_DUMP=out/violation.json py -3.11 driver/selftest.py
+py -3.11 driver/selftest.py --violation-only   # 合成记录验证设施，不是真实违规
+py -3.11 driver/selftest.py --require-complete # 必需覆盖 skip 也返回失败；仍需完整权限/空槽前提
+
 # 无游戏单测 / 静态检查
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
 # 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 跳过项会减少执行数；2026-10-31 完整自检是 992/992，含两类封包能力，边界见 reliability-repairs
+# 显式 SKIP 保留在分母；992/992 是历史全绿基线，最新完整退档中止，见 reliability-repairs
 py -3.11 driver/selftest.py
 
 # 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
@@ -189,10 +194,16 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
   旧线程遗留的 DR 曾导致服务端线程被误记为写 tick 变量。
 - 主菜单/世界列表/暂停菜单/对话框仍需桌面 UI 操作（见 `docs/ui-automation.md`），
   但日常开发循环不需要。
+- **role 地址是静态 VA，运行时要重定位**：`docs/roles/*.json` 的 `image_base`（0x140000000）
+  只是记法；本机 exe 被 PeEditor 改写首选基址并 ASLR，内存里的 PE `ImageBase` 等于加载地址，
+  按头部换算会 `not_mapped`。运行期地址 = `diag.module_base + (role_va - image_base)`。
+  这套 exe 上安装任意 VA hook 前都要先这样换算。
 - **断开错误页不是菜单**：它同样是 `ui://./hbui/index.html`，但 `worlds.ready=false`。
-  `world_state()` 的 `disconnect_error` 只是 HBUI + 服务端对象全释放的候选错误页，不能证明
-  保存已完成；未知/仍有服务端对象归 `exiting`。`dev.py recover` 先落盘诊断再走保存门禁，
-  失败保留进程；明确放弃未保存会话才用 `recover --force`。禁止由 URL 放宽准入或自动强停。
+  `world_state()` 的 `disconnect_error` = 关卡已卸载 + 世界列表不可用 + HBUI（未知/仍有服务端
+  对象一律归 `exiting`）。`dev.py recover` 先落盘诊断：`disconnect_error` 自停并重启
+  （两次现场 `diag` 全 false，没有服务端可刷盘；世界在断开时已保存），`world/menu/exiting`
+  仍走保存门禁、失败保留进程，只有显式 `--force` 才放弃会话。**不得**由 URL 放宽
+  `enter_world` 的准入，也不得对 `exiting` 自动强停。
 - tick 记录会同时写入 `<modDir>/spool-<pid>.jsonl`（100 ms / 64 KB 刷盘）；连接时不再清空队列，
   而是先刷 spool 再补发。崩溃取证走 VEH 写 `crash-<pid>-<tick>.dmp` + `crash-<pid>.txt`。
 - 请求级 AV 由 `dispatchWithSeh` 转成 `internal_error`；不要把会崩的代码放到 tick 线程，
@@ -221,8 +232,8 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 
 主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
 2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
-全部完成；使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。当前基线：live selftest **992/992**
+已有验收记录；当前审阅剩余项仍按下文推进。使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
+执行记录在 git 历史与 `docs/refactoring.md`。历史全绿基线：live selftest **992/992**
 （`harness.json` 开 `allow_input_inject`/`allow_selftest_stress` 和
 `allow_packet_capture`/`allow_packet_inject`；2026-10-31 全套，无跳过）、
 离线单测 **346/346**、ruff/mypy（driver+tests）全绿。tick 内部错误恢复专项 51/51、
@@ -233,11 +244,32 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 2026-10-31 封包路径后续已验收：来源/独占注入真实生命周期 55/55，传送专项 45/45、
 真实生命周期 50/50，完整 992/992、离线 346/346。传送检查先回读首条朝向连续三 tick 匹配，
 再验证无角度传送；Python panic 保留先于自身回执的领域取消。意外退档停止自检并保存诊断，
-菜单等待使用 ready 门禁，recover 仅在显式 --force 时强停。临时配置已逐字节恢复并重启加载，
+菜单等待使用 ready 门禁，recover 仅在确认 `disconnect_error` 或显式 `--force` 时强停。临时配置已逐字节恢复并重启加载，
 最终姿态/能力/背包/站稳、释放/解锁均回读通过，113 个 crash 无新增/修改。
-此前 Block / ClientDisconnection-90 的触发包仍 unresolved；转交报告已提供客户端设置点角色，
-有限重放未复现不能排除低频回归，本轮未做新增逆向或诊断钩子。真实错误页恢复仍缺现场样本；
-详情与后续范围见 `docs/reliability-repairs.md`。
+后续只读 ViolationWatch 已补静态 origin 槽生命周期、合成标记与观察会话；首错保护与
+PASS/FAIL/SKIP 门禁已接入。最新离线 **362/362**，ruff/format/mypy、完整 C++ 构建及
+profiles/roles（up to date / 50/57）通过。完整两轮 **1053/1055**（水流夹具污染）和
+**465/466**（23:38:53 自然退档）均失败，不能用旧 992/992 宣称当前全绿。
+水池修复专项 **11/11**，新完整在 flight 收尾中止，尚未覆盖到修复后的水池。
+自然事件同 tick 861/tid 30828：callback `response=3/packet_id=39/packet_size=34/
+error_value=104`，随后 screen `disconnect_reason=90/context=Block`；SDK 枚举确认 39 是
+SetActorData（非 UpdateAbilitiesPacket）。mod 自读错误页与回调关联已有真实样本，
+但 size 参数边界、104 含义、方向、具体字段及成因仍 unresolved；上下文/详情均截断。
+不可由 packet_capture=false/chat_sent=0 排除原生状态同步的间接影响。
+真实错误页 recover exit 0；原配置逐字节恢复并重启加载，最终姿态/能力/背包/输入等
+回读 **16/16**，113 个 crash 无新增/修改。证据见 `docs/reliability-repairs.md`。
+本批未执行新增逆向；后续诊断提示词为
+`docs/notes/prompts/badpacket-setactordata-20261031.md`。不自行推送，不把当前失败提交为全绿。
+
+2026-11-01 封包调查已闭合到帧层：三次自然复现（tick 454 / 1389 / 1881）都发生在**进世界后
+400–2000 tick**、飞行能力切换之后，约 1/6 概率。第三次同时拿到失败切片字节：188 的帧
+（23 B）= 自己的 id+body（7 B）+ **16 B 邻居 SetActorData payload**，而同 run 正常 188 全为 7 B、
+发送侧 body 全为 5 B ⇒ **帧写出侧把邻居 payload 并进了本帧，不是传输截断**；解析器读完 body 剩
+16 B，`ensureReadCompleted` 判 104 → `BadPacket(90)` / `ClientDisconnection-90` / `Block`。
+帧声明值判定为 **23**（多包 tick 首包尺寸恒等于自身长度 ⇒ 切分按声明长度；23 = 7 + 16，
+即写出侧把邻居 payload 计入了帧长度）。mod 侧无写入点、无补丁。仪器：`violation_text`（整段原文，4 KB×8 槽）、`inbound_drain`
+（解析入口切片 + 前置字节）、`inbound_sample`（复现轮用 1）。证据册
+`docs/notes/badpacket-setactordata-20261031.md` §12–§15。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
 参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage

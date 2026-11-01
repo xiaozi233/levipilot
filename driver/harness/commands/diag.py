@@ -38,6 +38,85 @@ class DiagnosticsCommands(PipeConnection):
     def symbol_resolve(self, name: str) -> dict[str, Any]:
         return self.request({"cmd": "symbol_resolve", "name": name}, "symbol_resolve")
 
+    def violation_watch(
+        self,
+        on: bool = True,
+        *,
+        addr: int | str | None = None,
+        mode: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Read-only watch on the client's protocol-violation boundary.
+
+        ``addr`` is the relocated runtime address of the role from
+        ``docs/roles/<version>.json`` (``@client_handle_packet_violation``),
+        computed as module_base + (role_va - image_base).
+        Needs ``allow_hook_va`` and an active world. ``mode="synthetic"``
+        publishes one self-test row so the record/drain path can be exercised
+        without a real violation.
+        """
+        message: dict[str, Any] = {"cmd": "violation_watch", "on": bool(on)}
+        if addr is not None:
+            message["addr"] = hex(addr) if isinstance(addr, int) else addr
+        if mode:
+            message["mode"] = mode
+        expected = "violation_synthetic" if mode == "synthetic" else "violation_watch"
+        return self.request(message, (expected, "error"), timeout=timeout)
+
+    def disconnect_route(self, reason: int = 90, timeout: float | None = None) -> dict[str, Any]:
+        """Render the error page route for ``reason`` through the real symbol.
+
+        Verifies the screen-side record without waiting for a real disconnect;
+        the route embeds the reason and codeword the UI would show.
+        """
+        return self.request(
+            {"cmd": "disconnect_route", "reason": int(reason)}, "disconnect_route", timeout=timeout
+        )
+
+    def inbound_drain(self, since: int = 0, limit: int = 512) -> dict[str, Any]:
+        """Inbound parse-boundary sizes: ``{packet_id, packet_size, error_value}``.
+
+        ``packet_size`` is the slice length the caller handed to
+        ``Packet::readNoHeader`` and ``error_value`` the stream read pointer at
+        entry; comparing a packet's size here with its sender-side serialized
+        length tells a short frame apart from a schema mismatch.
+        """
+        return self.request(
+            {"cmd": "inbound_drain", "since": int(since), "limit": int(limit)},
+            "inbound_drain",
+        )
+
+    def violation_text(self, since: int = 0, limit: int = 8) -> dict[str, Any]:
+        """Full-length violation / disconnect-page strings, unbounded by the row.
+
+        The record rows keep a bounded prefix so they stay fixed size; this ring
+        copies the whole game string into a preallocated 4 KB slot, so a long
+        error-details block arrives intact instead of truncated.
+        """
+        return self.request(
+            {"cmd": "violation_text", "since": int(since), "limit": int(limit)},
+            "violation_text",
+        )
+
+    def inbound_sample(self, sample: int = 4, timeout: float | None = None) -> dict[str, Any]:
+        """Set the parse-boundary sampling stride (1 = keep every packet).
+
+        Use 1 for a reproduction run: the packet that breaks is the last one
+        before the disconnect, and a 1:4 stride can skip exactly that packet.
+        """
+        return self.request(
+            {"cmd": "inbound_sample", "sample": int(sample)}, "inbound_sample", timeout=timeout
+        )
+
+    def violation_stats(self) -> dict[str, Any]:
+        return self.request({"cmd": "violation_stats"}, "violation_stats")
+
+    def violation_drain(self, since: int = 0, limit: int = 512) -> dict[str, Any]:
+        return self.request(
+            {"cmd": "violation_drain", "since": int(since), "limit": int(limit)},
+            "violation_drain",
+        )
+
     def selftest_busy(self, us: int = 1000, ticks: int = 20) -> dict[str, Any]:
         """Burn ``us`` microseconds in the tick for ``ticks`` ticks (metric proof)."""
         return self.request(

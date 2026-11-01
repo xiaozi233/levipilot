@@ -544,14 +544,9 @@ private:
     std::atomic<int>                    mClickRequest{-1};
     std::atomic<float>          mClickReach{5.5f};
     std::atomic<int>            mSlotRequest{-1};
-    // 0 = real physical input (default). Legacy diagnostics:
-    // bit 1 direct flags, bit 2 queue, bit 4 handler callbacks, bit 8 toggle fallback.
-    // Non-zero is accepted by input_cfg only with force=true.
-    std::atomic<int> mButtonMode{0};
-    // 0 = real Space key (default). Legacy diagnostics:
-    // bit 1 = LocalPlayer::jumpFromGround, bit 2 = MobJump::setJumpPendingScale.
-    // Non-zero is accepted by input_cfg only with force=true.
-    std::atomic<int> mJumpImpulseMode{0};
+    // Non-default paths are accepted by input_cfg only with force=true.
+    std::atomic<detail::ControlInputMode> mInputMode{detail::ControlInputMode::Hardware};
+    std::atomic<detail::JumpImpulse> mJumpImpulseMode{detail::JumpImpulse::None};
 
 
     std::mutex                        mCheckpointMutex;

@@ -5,6 +5,27 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_packet_tap") {
+        if (!mAllowSelftestStress.load() || !mAllowPacketCapture.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        auto const mode = j.value("mode", std::string{});
+        PacketTap::TestFault fault;
+        if (mode == "off") fault = PacketTap::TestFault::None;
+        else if (mode == "id_seh") fault = PacketTap::TestFault::IdSeh;
+        else if (mode == "id_cpp") fault = PacketTap::TestFault::IdCpp;
+        else if (mode == "bytes_seh") fault = PacketTap::TestFault::BytesSeh;
+        else if (mode == "bytes_cpp") fault = PacketTap::TestFault::BytesCpp;
+        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        if (!mPackets.armTest(fault)) {
+            enqueue(R"({"event":"error","reason":"packet_capture_inactive"})");
+            return true;
+        }
+        bootLog("selftest: packet_tap mode=" + mode);
+        enqueue(R"({"event":"packet_tap_test_armed"})");
+        return true;
+    }
     if (cmd == "symbol_resolve") {
         enqueue(symbolResolve(j.value("name", std::string{})).dump());
         return true;

@@ -21,6 +21,7 @@ namespace probe {
 // the drains run on the pipe thread.
 class PacketTap {
 public:
+    enum class TestFault { None, IdSeh, IdCpp, BytesSeh, BytesCpp };
     static constexpr std::uint8_t kSend = 0;
     static constexpr std::uint8_t kRecv = 1;
 
@@ -49,6 +50,8 @@ public:
     void onSent(Packet& packet, std::uint64_t tick);
     void onReceived(Packet const& packet, std::size_t anchor, std::uint64_t tick);
     void peerTick();
+    // Cold-side, explicitly gated by allow_selftest_stress + packet capture.
+    bool armTest(TestFault fault);
 
     [[nodiscard]] bool capturing() const {
         return mCapture.load(std::memory_order_relaxed);
@@ -70,6 +73,7 @@ public:
     }
 
 private:
+    enum class ByteError : std::uint8_t { None, Seh, Cpp, Reentrant };
     struct PacketRecord {
         std::uint64_t              order    = 0;
         std::uint64_t              tick     = 0;
@@ -85,10 +89,14 @@ private:
         std::uint32_t              size  = 0;
         std::uint32_t              tid   = 0;
         std::uint8_t               dir   = kSend;
+        ByteError                  error = ByteError::None;
         std::uint8_t               data[128]{};
     };
 
-    void recordPacket(Packet const& packet, std::uint8_t dir, std::uint64_t tick);
+    bool readPacketId(Packet const& packet, std::int32_t& id) noexcept;
+    void recordPacket(Packet const& packet, std::int32_t id, std::uint8_t dir, std::uint64_t tick);
+    void serializePacket(Packet const& packet, PacketRecord const& record) noexcept;
+    void injectTestFault(bool bytes);
 
     static constexpr std::size_t kRing     = 1u << 14;
     static constexpr std::size_t kByteRing = 1u << 12;
@@ -100,6 +108,8 @@ private:
     std::atomic<std::uint64_t>      mPeerCount{0};
     std::atomic<std::uint64_t>      mDenied{0};
     std::atomic<std::uint64_t>      mRecvRecords{0};
+    std::atomic<std::uint64_t>      mIdFaults{0}, mByteFaults{0};
+    std::atomic<TestFault>          mTestFault{TestFault::None};
     // Stop closes callback entry before waiting, so it cannot miss a callback
     // paused between entry and an ordinary in-flight counter increment.
     detail::CallbackGate            mWriters;

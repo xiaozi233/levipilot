@@ -70,6 +70,9 @@ class ModModelTests(unittest.TestCase):
     def test_atomic_ring_publication_and_overwrite(self) -> None:
         self.run_native("atomic_ring_model")
 
+    def test_violation_watch_record_and_ring(self) -> None:
+        self.run_native("violation_watch_model")
+
     def test_request_transactions_and_concurrent_snapshots(self) -> None:
         self.run_native("request_model")
 

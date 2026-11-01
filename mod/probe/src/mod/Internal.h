@@ -3,6 +3,7 @@
 #include "mod/AtomicRing.h"
 #include "mod/ProbeMod.h"
 #include "mod/RecordModel.h"
+#include "mod/ViolationWatchModel.h"
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientCancelJoinLevelEvent.h"
@@ -455,6 +456,29 @@ void hookTick(LocalPlayer& player);
 std::optional<nlohmann::json> hookTakeCallResult();
 void                          hookCancelCalls(char const* reason);
 void                          hookResetCalls();
+
+// ---------------------------------------------------------------------------
+// Read-only protocol-violation watch.
+//
+// ClientNetworkHandler::handlePacketViolation takes ten parameters (six of them
+// after `this`), so the generic four-register VA detour cannot wrap it. This is
+// a typed wrapper with the exact signature: it records one fixed-size row, then
+// calls the original with untouched arguments. It never changes the response,
+// the error code, the packet, or the disconnect decision. The address comes from
+// docs/roles (never a constant in the .cpp); the watch is off by default and
+// gated on allow_hook_va.
+// ---------------------------------------------------------------------------
+nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld);
+// Base the running game image is mapped at (ASLR / rewritten preferred base).
+std::uint64_t gameModuleBase();
+nlohmann::json violationWatchStop();
+nlohmann::json violationWatchStats();
+nlohmann::json violationDrainJson(std::uint64_t since, std::size_t limit);
+nlohmann::json inboundDrainJson(std::uint64_t since, std::size_t limit);
+nlohmann::json inboundSampleJson(int sample);
+nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit);
+nlohmann::json violationWatchSynthetic();
+nlohmann::json disconnectRouteProbe(int reason, std::string const& codeword, std::string const& details);
 
 // ---------------------------------------------------------------------------
 // T9: tick-path overhead measurement.

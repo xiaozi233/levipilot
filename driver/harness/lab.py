@@ -359,11 +359,25 @@ def capture_disconnect_report(
         "worlds": probe("worlds", client.worlds),
         "status": probe("status", client.status),
         "diag": probe("diag", client.diag),
+        "packet_stats": probe("packet_stats", client.packet_stats),
         "packet_tap": probe("packet_tap", lambda: client.packet_drain(0, tap_limit)),
     }
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{tag}-{captured}.json"
+    # The parse-boundary ring is the only place the offending frame was seen, and
+    # the violation is over by now. Ask the mod to write it itself: with more than
+    # one client attached a pipe reply can be delivered to another connection.
+    inbound_path = path.with_suffix(".inbound.json")
+    try:
+        reply = client.request(
+            {"cmd": "inbound_dump", "path": str(inbound_path)}, "inbound_dump", timeout=15.0
+        )
+        report["inbound_dump"] = {"path": str(inbound_path), "ok": reply.get("ok") is True}
+    except (ModPipeError, OSError) as exc:
+        report["inbound_dump"] = {"path": str(inbound_path), "error": str(exc)}
+    rows = probe("inbound_slices", lambda: inbound_slices(client, since=0, limit=256))
+    report["inbound_summary"] = summarize_inbound_slices(rows) if isinstance(rows, list) else rows
     path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return path
 
@@ -572,3 +586,172 @@ def settle(
         "ticks": streak,
         "state": last,
     }
+
+
+# --- inbound slice decoding -------------------------------------------------
+#
+# The parse boundary (``Packet::readNoHeader`` entry) receives one stream per
+# packet, and that stream starts at the packet id: the frame's length varint was
+# already consumed by the splitter (measured 2026-11-01: id 39 arrives as
+# ``27 0d 01 ...``, id 111 as ``6f ..``, id 188 as a two-byte varint ``bc 01``,
+# which is why 187/188 slices measure payload+2). The declared length therefore
+# lives in the bytes just *before* the slice, which the probe now also copies.
+
+
+def read_varint(data: bytes, offset: int = 0) -> tuple[int | None, int]:
+    """Decode an unsigned LEB128 varint; return ``(value, bytes_used)``."""
+    value = 0
+    shift = 0
+    index = offset
+    while index < len(data) and shift < 35:
+        byte = data[index]
+        value |= (byte & 0x7F) << shift
+        index += 1
+        if not byte & 0x80:
+            return value, index - offset
+        shift += 7
+    return None, 0
+
+
+def declared_length(before_hex: str) -> dict[str, Any] | None:
+    """Recover the frame length varint that ended where the slice began.
+
+    The varint is the last thing before the id, so every candidate must *end*
+    exactly at the end of the captured prefix. Several byte counts can satisfy
+    that; all are returned so the caller can compare them with the delivered
+    size instead of trusting one guess.
+    """
+    try:
+        data = bytes.fromhex(before_hex or "")
+    except ValueError:
+        return None
+    if not data:
+        return None
+    candidates = []
+    for used in (1, 2, 3, 4):
+        if used > len(data):
+            break
+        value, consumed = read_varint(data, len(data) - used)
+        if value is None or consumed != used:
+            continue
+        candidates.append({"bytes": used, "value": value})
+    return {"candidates": candidates} if candidates else None
+
+
+def decode_inbound_slice(hex_text: str, before_hex: str = "") -> dict[str, Any] | None:
+    """Split one captured slice into ``(packet id, payload)`` plus its frame.
+
+    ``declared`` comes from the bytes preceding the slice and is ``None`` when
+    the probe could not read them or no varint ends exactly at the boundary.
+    Two conventions are possible for what the length counts, so both are
+    compared against the delivered bytes: ``declared_with_id`` (length covers
+    id + payload) and ``declared_as_body`` (payload only). Whichever holds for
+    ordinary traffic is this build's framing.
+    """
+    try:
+        data = bytes.fromhex(hex_text or "")
+    except ValueError:
+        return None
+    if len(data) < 1:
+        return None
+    packet_id, id_bytes = read_varint(data, 0)
+    if packet_id is None or id_bytes == 0:
+        return None
+    payload = len(data) - id_bytes
+    frame = declared_length(before_hex)
+    declared = frame["candidates"][0]["value"] if frame and frame["candidates"] else None
+    return {
+        "packet_id": packet_id,
+        "id_bytes": id_bytes,
+        "slice_bytes": len(data),
+        "payload_bytes": payload,
+        "declared": declared,
+        "declared_candidates": frame["candidates"] if frame else [],
+        "declared_with_id": declared == len(data) if declared is not None else False,
+        "declared_as_body": declared == payload if declared is not None else False,
+    }
+
+
+def slice_verdict(decoded: dict[str, Any] | None) -> str:
+    """Classify a slice as ``framed``, ``clipped``, ``over`` or ``unknown``.
+
+    ``framed`` means the length declared in the frame equals what arrived, i.e.
+    the short slice is exactly what was framed. ``clipped`` means the frame
+    declared more bytes than were delivered. ``over`` is the reverse and
+    normally means the length candidate was misread.
+    """
+    # A frame length of 0 is dominated by unrelated bytes that happen to precede
+    # the slice (the copy's neighbours), so it is not a declaration at all.
+    if not decoded or decoded["declared"] in (None, 0):
+        return "unknown"
+    if decoded["declared_with_id"] or decoded["declared_as_body"]:
+        return "framed"
+    if decoded["declared"] > decoded["payload_bytes"]:
+        return "clipped"
+    return "over"
+
+
+def summarize_inbound_slices(rows: Sequence[dict[str, Any]], limit: int = 12) -> dict[str, Any]:
+    """Compact view of decoded slices: what ids/sizes arrived, and the last few.
+
+    The full ring stays on disk; this is what belongs in a disconnect report,
+    where the failing packet is the *last* thing that arrived.
+    """
+    decoded = [row for row in rows if row.get("decoded")]
+    counts: dict[str, int] = {}
+    for row in decoded:
+        item = row["decoded"]
+        key = f"{item['packet_id']}:{item['slice_bytes']}"
+        counts[key] = counts.get(key, 0) + 1
+    tail = [
+        {
+            "tick": row.get("tick"),
+            "packet_id": row["decoded"]["packet_id"],
+            "slice_bytes": row["decoded"]["slice_bytes"],
+            "payload_bytes": row["decoded"]["payload_bytes"],
+            "verdict": row.get("verdict"),
+            "slice_hex": row["slice_hex"][:48],
+        }
+        for row in decoded[-limit:]
+    ]
+    return {
+        "rows": len(rows),
+        "decoded": len(decoded),
+        "by_id_size": dict(sorted(counts.items(), key=lambda kv: -kv[1])[:8]),
+        "tail": tail,
+    }
+
+
+def inbound_slices(client: ModClient, *, since: int = 0, limit: int = 512) -> list[dict[str, Any]]:
+    """Drain the parse-boundary ring and decode each inbound slice.
+
+    Rows come from the read-only hook installed by ``violation_watch``; a row
+    with no decodable header (truncated below two bytes) keeps ``decoded=None``
+    and is still returned, because an unreadable header is itself evidence.
+    """
+    reply = client.inbound_drain(since, limit)
+    hits = reply.get("hits")
+    if not isinstance(hits, list):  # a stub or an error reply has no rows
+        return []
+    rows: list[dict[str, Any]] = []
+    for row in hits:
+        if row.get("source") != "inbound":
+            continue
+        decoded = decode_inbound_slice(
+            str(row.get("context_hex") or ""), str(row.get("before_hex") or "")
+        )
+        rows.append(
+            {
+                "tick": row.get("tick"),
+                "size": row.get("packet_size"),
+                "slot": row.get("packet_id"),
+                "overflow": row.get("response"),
+                "read_ptr": row.get("error_value"),
+                "slice_hex": row.get("context_hex") or "",
+                "before_hex": row.get("before_hex") or "",
+                "after_hex": row.get("detail_hex") or "",
+                "decoded": decoded,
+                "verdict": slice_verdict(decoded),
+            }
+        )
+    return rows

@@ -4,9 +4,12 @@
 
 2026-10-30 审阅修复：请求发布改用私有事务 + 原子载荷 mailbox，tick 读端竞争时保留已验证
 快照；按钮数组重置投递到 tick。Python 场景录制使用连接代次内的通知订阅，在请求消费时
-同步收集 tick，停止失败会传递错误。当前离线全量 **346/346**，现场 **992/992**（未跳过）；
+同步收集 tick，停止失败会传递错误。该批历史离线 **346/346**、现场 **992/992**（未跳过）；
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
+
+最新完整现场为 **465/466**，在 flight 清理中自然退档，不能视为当前全绿；
+SetActorData/104/90 的现场链及未解决范围见文末「自然断开诊断链与恢复」。
 
 ## 注入时机
 
@@ -950,6 +953,21 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 （输入、自检压力及两类封包能力开启）、离线单测 **346/346**。
 本批最终姿态/能力/站稳与释放/解锁已回读恢复；此前退出异常根因仍待复核，未宣称已修复。
 
+### 封包采集异常边界（2026-10-31）
+
+- 采集只读取一次 Packet id；getId 与 write/字节复制各有局部 SEH/C++ 边界，
+  CallbackGate guard 和 SDK 流的所有权留在 raw SEH frame 外。采集故障不跳过正常封包投递。
+- id 读取失败只累加 id_faults；序列化失败保留身份行、累加 byte_faults，并发布相同
+  seq/id/dir 的失败字节行：serialized=false、size=0、空 hex 和 reason。只有后台生成 JSON；
+  字节复制也在读取边界内，失败不发布部分载荷。重入写入不会清除外层的 TLS 缓冲。
+- 自检通过 selftest_packet_tap 在真实 send/recv 观察侧模拟 id/bytes 的 SEH/C++，
+  后续正常采集及关闭用于验证错误和回调门已释放。命令需要 allow_selftest_stress 和
+  allow_packet_capture；停止清除一次性故障，新采集清零统计。完整自检和
+  `driver/selftest.py --packet-tap-only` 都会执行这些检查，不发送违规封包。
+- Python decode_row 对失败记录保留 capture_error；断开现场报告同时保存 packet_stats，
+  不因 state 探测失败而丢失采集计数。SDK BinaryStream 的可增长字符串分配仍未迁出钩子，
+  本批不声称零分配或性能收益；其内部构造/写入中途故障也不能保证可回滚。
+
 ### 命令包来源/独占注入与自检同步（2026-10-31）
 
 - 封包真实重连/退出/重进 **55/55**，传送 **45/45**、真实生命周期 **50/50**；完整现场
@@ -1196,7 +1214,11 @@ mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 W
 - 实体链路：查找/快照/攻击全部在服务端线程执行（攻击用服务端玩家的 GameMode），
   客户端 tick 线程不遍历 `getRuntimeActorList()`。
 
-### 移动、跳跃与输入
+### 移动、跳跃与输入（历史 legacy 输入实测）
+
+本节保留早期输入路径的原始数字，不是当前默认契约。默认现为 Hardware HID 按键沿；
+直接冲量/标志路径仅在 input_cfg force=true 下可作旧结果对照。下述前 3 tick 不动与
+补调 jumpFromGround 的结论不适用于现行 HID 路径，禁止据此恢复默认直接冲量。
 - 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）；`example.json` 60 tick 位移
   12.04 格、接地 100%
 - 跳跃：起跳沿调 `LocalPlayer::jumpFromGround`，逐 tick 位移 0.4200、0.3332、0.2481、
@@ -1337,3 +1359,120 @@ mypy（80 文件）通过。此处的 native 测试使用生产模型和真实 W
   77 的布局用真实抓包验证，36/19 用合成样例单测。
   `driver/packet_dump.py --seconds 5 --walk [--directions send,recv]` 导出
   `out/packets-<ts>.jsonl`（实测 105 行 send、54 行 recv）。
+
+### 违规守望（`ViolationWatch`，2026-10-31 后续）
+
+- 位置：`ClientNetworkHandler::handlePacketViolation`（角色 `@client_handle_packet_violation`）。
+  这是客户端里**唯一**以 `DisconnectFailReason::BadPacket(90)` 关闭连接的地方，且只在
+  `response == PacketViolationResponse::TerminateConnection(3)` 时发生。
+- **ABI 前提**：该函数 `this` + 9 参（4 个寄存器、6 个栈参数），所以不能用仓库的通用
+  四寄存器 VA detour；`ViolationWatch.cpp` 用同签名 typed wrapper，
+  记录后以原参数调用原实现，返回语义与异常传播保持不变。
+- **地址重定位**：roles 里是 `image_base=0x140000000` 下的静态 VA；本机 exe 被 PeEditor
+  改写首选基址并 ASLR，`OptionalHeader.ImageBase` 在内存里等于加载地址，按头部换算会
+  `not_mapped`。运行期地址 = `diag.module_base + (role_va - image_base)`；
+  实测 RVA `0x12FA0F0` 处为 `55 41 57 41 56 41 55 41 54 56 57 53 48 81 ec 38`（标准序言）。
+- 记录：`seq/tick/tid/response/packet_id/packet_size/error_value/category/context`，
+  256 行预分配环；`context` ≤47 B + `context_truncated`，输出时非可打印字符转 `.`；
+  回调内零分配 / 零 JSON / 零新增 mutex。
+- 后续新增屏幕路由观察：同一开关通过导出符号观察
+  `OreUI::EntryPoints::DisconnectScreen::composeRoute`，统计增加 `screen_hooked`，记录
+  增加 `source/detail/detail_truncated`。`source=callback` 的 `response` 是违规处理等级；
+  `source=screen` 的 `response` 是路由原因码，`context` 是码字，不能混用两种语义。
+  `detail` 同样最多 **47 字节**，非 ASCII 被替换为 `.`，不能视为完整的错误详情文本。
+  历史 `disconnect_route` 专项 **16/16** 的人工 screen 行曾误标 `synthetic=false`；
+  本批改为可嵌套的线程局部合成标记（局部 SEH 外持有），不影响其他线程的真实屏幕事件。
+  人工路由与合成回调均计入 synthetic；`verdict` 按 source 区分，屏幕行另带 `disconnect_reason`。
+- 生命周期：默认关闭，`allow_hook_va` + 世界内准入。SDK 会保留并动态更新 origin 输出槽
+  （`pl/Hook.h`），本批将原先错误的栈临时槽改为静态存储，使用 LL typed hook 的相同契约，
+  移除发布后有界自旋及跳过原调用/返回空路由的分支。不清空 origin 槽，卸载失败保留实际
+  `callback_hooked/screen_hooked/active`，`panic_done.ok` 纳入守望卸载结果；disable 同样卸下。
+  SDK 引用采样有局部 SEH/C++，失败只增加 `observation_faults`，仍调用原实现。
+  环冷侧一次初始化并原子发布，进程内保持存续。未证明 SDK trampoline 的在途卸载安全，
+  未做现场热卸载；不能把设施回归当成自然违规链或任意启停并发的证明。
+- 既有现场记录：`--violation-only` **13/13**；默认自检 **934/934**，导出两行均为
+  `synthetic`。这一计数不能替代开启两类封包能力时的 **992/992** 历史基线。
+  该批守望只在默认入口最初武装，设施自测和 panic 后漏记，专项入口也未读取诊断变量。
+  本批 `ViolationObservation` 统一所有 live 入口：先记起始 head，导出本会话增量及合成/
+  真实行数、lost、最终状态和观察事件；关闭管道前导出，原本已武装的会话保留。
+  设施自测恢复原有武装状态；panic 保持真实卸载语义，检查卸载结果后才重新武装，
+  `gap_begin/gap_end/gap_uncovered` 明确覆盖空窗。落盘/采集失败独立报告，不遮蔽首错。
+- 既有独立 `check_flight` **44/44**：该函数包含客户端/服务端 SEH、C++、超时及断言
+  故障注入，不能记为“无故障注入的最小能力序列”。环中的三条历史 `synthetic` 也不能
+  算成本轮新增记录；每组应保存起始 `next`，从该游标 drain，并检查 `lost`。
+- 2026-10-31 22:32 新对照：同一进程计划先关闭、再开启守望，只执行正常
+  gamemode/fly/togglefly/teleport/reset 操作，不发送 `selftest_flight` 或合成记录。
+  第一组（守望关闭）在 reset 的服务端 `teleported(ok=true, teleport_id=103)` 后退档：
+  等待起点 tick **73123**，最后 tick **73127**。**25 项通过后由 WorldLost 中止**，
+  第二组尚未开始，不能记为 25/25 验收通过或已完成两组对照。本次错误页详情码待确认，
+  不能只凭 `disconnect_error` 分类认定又是 90。
+  原始 spool、提取的时间线、首错和解锁回执均已保存：
+  `out/ability-watch-contrast-20261031-223225{,-timeline}.json`、
+  `out/ability-watch-contrast-20261031-223225-spool.jsonl`、
+  `out/ability-watch-disconnect-20261031-223232.json`。
+- 本次 profile 一致性为 **up to date**，roles 校验 **50/57**。配置与 DLL 未作变更，
+  没有执行新增逆向或安装新的观察边界。**设施验证与根因定位分开记账**：真实触发包、
+  error code 和方向仍 unresolved；未武装期间没有记录不能用于排除 mod 的间接影响。
+- 22:53–22:54 后续验证：在带屏幕路由观察的已安装 DLL 上，按**先开启、后关闭**守望
+  执行相同正常能力序列，各 **33/33**。同一进程 **pid 14664**，相同配置、起始脚部位置
+  与能力；DLL SHA-256 为 `6afc3aa41930e2bc4da8f58c715205bf33092223a8bb54f28cc796952c3ed6e8`。
+  武装组 tick **9108–9218**，关闭组 **10796–10911**；各有 **11** 个采样点核对
+  `active/screen_hooked` 与本组状态一致。两组起止游标均为 **3**、`lost=0`、新增记录 **0**；
+  没有调用故障注入、合成记录或 `disconnect_route`，封包采集保持关闭。
+  每组均回读恢复姿态、能力和站稳，最终解锁、held_mask=0、守望关闭；配置和 DLL 未改动，
+  **113** 个 crash 文件无新增或修改。证据：
+  `out/ability-watch-pair-20261031-225320.json`，两份原始报告为
+  `out/ability-watch-contrast-20261031-225320.json`、
+  `out/ability-watch-contrast-20261031-225445.json`；复现脚本
+  `out/ability-watch-contrast.py --watch on|off` 使用现有 API 显式武装并回读。
+  这只是一个固定顺序的同进程样本，未清除历史状态，也未出现自然断开，不能证明启停并发
+  或真实违规回调链已通过验收。22:32 的失败使用另一 DLL/进程，不能归因于武装开关。
+
+### 自检结果与首错保护（2026-10-31 后续）
+
+`driver/selftest_support.py` 集中维护 pass/fail/skip 三态结果、清理首错保护与诊断会话。
+`NOTE` 仅供信息，`SKIP` 含原因并进入总分母；`--require-complete` 遇必需 skip 返回 1，
+普通模式保留可降级运行，均列出 fail/skip/required skip 数。实体 ECS 的 skipped 数据
+仍是查询字段，不能混成测试 skip。无故障的空槽/权限前提缺失、外部鼠标干扰等不再算 PASS。
+飞行、移动、传送、task_operations 清理统一用 preserve_failure：已有异常保持原对象和
+类型，清理错误附到异常 notes 并输出；无主体错误时清理错误照常失败。直接回归覆盖
+WorldLost、ModTimeout 及四组实际检查的 finally 路径。
+
+本批设施专项 **21/21**（含统一观察会话），人工屏幕两行及合成回调一行均正确标记；
+`real_count=0/synthetic_count=3/lost=0/observation_faults=0`，不是真实断开样本。
+关闭封包注入后的 `--packet-injection-only --require-complete` 为 **2/3**：1 个必需 skip，
+按预期 exit 1，并正常导出/关闭守望。完整套件验收另行记录，不能用这两项替代。
+
+水流夹具后续：首轮完整 1053/1055（checkpoint_load/teleport 失败，0 skip），控制复现
+确认开放水源泄漏并回灌；两类水源测试已迁共用固定封闭池。`--record-medium-only
+--require-complete` 为 11/11，回读恢复干燥和站稳；存档点比较实际保存坐标，容差未放宽。
+首轮失败及逐 tick 复现保留在 reliability-repairs 指向的证据中，完整重跑单独记录。
+
+### 自然断开诊断链与恢复（2026-10-31 23:38 后续）
+
+最新 DLL `9262737e…b6e0cbe` 的第二次完整自检 **465/466，1 fail、0 skip**，
+最后通过 `flight_spectator_recovers`，finally 的恢复等待从 tick 859 开始，861 自然退档。
+这不是全套通过；水流修复的新夹具尚未在完整套件中走到，专项 11/11 的范围不变。
+
+同 tick 861、同 tid 30828 的两条非合成记录首次给出完整关联：
+callback 的 `response=3/packet_id=39/packet_size=34/error_value=104`，
+随后 screen 的 `response=90/disconnect_reason=90/context=Block`。
+SDK 公开枚举确认 39 是 **SetActorData**，不是 UpdateAbilitiesPacket（187）。
+回调 context=`BinaryStream read() incomplete.readNoHeader fai`，
+屏幕 detail=`Minecraft Bedrock.Win,D,,GC-10.0.26100.4351 Err`；两者都截断到 47 字节。
+`category` 仍是未解释的本进程值；size 参数边界、104 含义、方向、失败字段及生产链仍
+unresolved，不能仅凭发生在能力恢复附近断定因果，也不能由 capture/chat 计数排除间接影响。
+
+观察从入口武装到退档前无设施/panic 空窗，新增 real=2、synthetic=0、lost=0、
+observation_faults=0。这验证 mod 自己读取自然错误页原因及其与违规回调的关联；
+不证明 SDK 任意在途卸载安全。证据：`out/diagnostic-full-final-violation.json`、
+`out/diagnostic-full-final-live.log`、`out/disconnect-20261031-233853.json`；原始 spool
+等已归档到 `out/diagnostic-validation-20261031-231752/natural-disconnect-233853/`。
+
+真实错误页 recover exit 0，原配置逐字节恢复并重启加载，最终回读 **16/16**：姿态、
+能力、效果、背包/装备/选中槽、干燥站稳、输入释放/解锁、守望关闭、封包能力关闭、
+配置与 DLL 哈希及 113 个 crash 文件无新增/修改。证据为 `out/diagnostic-natural-recover.log`
+及 `out/diagnostic-validation-20261031-231752/final-restoration.json`。
+最新离线 **362/362**、ruff/format/mypy、完整 C++ 构建通过；profiles up to date、roles 50/57。
+完整现场失败保留，不覆盖历史全绿基线。后续仅转交
+[`诊断提示词`](notes/prompts/badpacket-setactordata-20261031.md)，本批未执行新增逆向。

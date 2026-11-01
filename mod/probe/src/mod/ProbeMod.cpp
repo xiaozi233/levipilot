@@ -133,7 +133,9 @@ bool ProbeMod::enable() {
 
 bool ProbeMod::disable() {
     if (!mRunning.exchange(false)) {
-        return true;
+        // A prior disable may have failed to remove a diagnostic hook. Do not
+        // turn a second disable into permission to unload its live callback.
+        return !violationWatchStats().value("active", true);
     }
 
     stopLegacy(StreamEnd::Disabled, false);
@@ -178,6 +180,7 @@ bool ProbeMod::disable() {
     if (mServerThread.joinable()) {
         mServerThread.join();
     }
+    bool const violationStopped = !violationWatchStop().value("active", true);
     recordStop();
     if (mSpoolThread.joinable()) {
         mSpoolThread.join();
@@ -201,7 +204,7 @@ bool ProbeMod::disable() {
         mQueue.clear();
     }
     getSelf().getLogger().info("harness: disabled");
-    return true;
+    return violationStopped;
 }
 
 void ProbeMod::loadAutoConfig() {

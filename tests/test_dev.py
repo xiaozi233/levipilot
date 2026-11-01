@@ -239,11 +239,25 @@ class RecoveryTests(unittest.TestCase):
         restart.assert_not_called()
 
     def test_unconfirmed_exit_never_falls_back_to_force(self):
-        for kind in ("exiting", "disconnect_error"):
-            result, stop, restart = self.run_recovery(kind, stop_error=SystemExit("not saved"))
-            self.assertEqual(result, 2)
-            stop.assert_called_once_with(Path("D:/custom/Minecraft.Windows.exe"))
-            restart.assert_not_called()
+        result, stop, restart = self.run_recovery("exiting", stop_error=SystemExit("not saved"))
+        self.assertEqual(result, 2)
+        stop.assert_called_once_with(Path("D:/custom/Minecraft.Windows.exe"))
+        restart.assert_not_called()
+
+    def test_error_page_stops_without_the_save_gate(self):
+        # No level is loaded on the error page and the world list never becomes
+        # ready, so waiting for that gate can only time out: recover stops it.
+        result, stop, restart = self.run_recovery("disconnect_error")
+        self.assertEqual(result, 0)
+        stop.assert_called_once_with(Path("D:/custom/Minecraft.Windows.exe"), force=True)
+        self.assertEqual(restart.call_count, 1)
+
+    def test_error_page_stop_failure_is_reported(self):
+        result, _stop, restart = self.run_recovery(
+            "disconnect_error", stop_error=SystemExit("not stopped")
+        )
+        self.assertEqual(result, 2)
+        restart.assert_not_called()
 
     def test_explicit_force_preserves_custom_executable_on_restart(self):
         result, stop, restart = self.run_recovery("disconnect_error", force=True)

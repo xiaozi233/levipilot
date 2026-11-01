@@ -7,6 +7,26 @@
 
 namespace probe::detail {
 
+// Values belong to the existing input_cfg protocol. Convert integers only at
+// that boundary; non-zero combinations remain gated legacy diagnostics.
+enum class ControlInputMode : int {
+    Hardware       = 0,
+    DirectFlags    = 1,
+    Queue          = 2,
+    Handler        = 4,
+    ToggleFallback = 8,
+};
+
+enum class JumpImpulse : int { None = 0, FromGround = 1, PendingScale = 2 };
+
+constexpr bool hasInputMode(ControlInputMode mode, ControlInputMode path) {
+    return (static_cast<int>(mode) & static_cast<int>(path)) != 0;
+}
+
+constexpr bool hasJumpImpulse(JumpImpulse mode, JumpImpulse path) {
+    return (static_cast<int>(mode) & static_cast<int>(path)) != 0;
+}
+
 enum class ControlOp : unsigned {
     Bindings,
     KeyDown,

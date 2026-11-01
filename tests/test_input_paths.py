@@ -11,8 +11,10 @@ class PhysicalInputContractTests(unittest.TestCase):
 
     def test_mod_defaults_are_physical(self) -> None:
         header = (ROOT / "mod/probe/src/mod/ProbeMod.h").read_text(encoding="utf-8")
-        self.assertIn("mButtonMode{0}", header)
-        self.assertIn("mJumpImpulseMode{0}", header)
+        # Defaults are the physical path: hardware key edges, no legacy mode and
+        # no direct impulse. The fields were made type-safe in the input refactor.
+        self.assertIn("mInputMode{detail::ControlInputMode::Hardware}", header)
+        self.assertIn("mJumpImpulseMode{detail::JumpImpulse::None}", header)
         self.assertIn("mSprintTapPhase", header)
         self.assertIn("applyRealInput", header)
 

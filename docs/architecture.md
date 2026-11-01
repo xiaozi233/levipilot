@@ -72,9 +72,10 @@ scenario DSL / LLM / shell
 | `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
 | `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
 | `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
+| `ViolationWatch.cpp` / `ViolationWatchModel.h` | 默认关闭的只读违规/断线页观察、定长环、静态 origin 槽与合成来源标记 |
 | `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环、独享 hook_call 请求及后台回执 |
 | `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
-| `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 9 个 send/recv 钩子、逐锚点统计、身份/字节环与 drain |
+| `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 send/recv 钩子、逐锚点统计、局部读取/序列化边界、定长身份/字节及失败记录与后台 drain |
 | `Packets.cpp` / `PacketInjectionModel.h` | 定长来源模板、带编号的独占命令包请求、客户端队列发送及后台唯一回执；对 tap 钩子的薄转发 |
 | `Overhead.cpp` | tick/hook 开销采样与分位数、自检忙等 |
 | `OverheadModel.h` | 原子载荷的定长统计窗口、有界一致快照及路径计数；不依赖游戏 SDK |
@@ -276,6 +277,7 @@ driver/harness/
   cli_parser.py # argparse 定义；保留参数默认值、命令和帮助顺序
   cli_commands/ # diagnostics/input/... 八个模块；每个导出 COMMANDS frozenset 供注册表分发
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
+driver/selftest_support.py # 三态统计、首错保护、统一 live 观察会话与空窗/增量导出
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 ```
@@ -402,7 +404,8 @@ py -3.11 driver/selftest.py
 ```
 
 C++ 风格由仓库根目录的 `.clang-format` 约束；Python 由 `pyproject.toml` 里的 ruff/mypy 配置约束。
-CI 的 unittest 也编译并运行独立 C++ 任务模型；完整 mod 构建仍在本机完成。
+CI 的 unittest 编译并运行独立 C++ 模型；Windows 的 mod-build 作业也构建完整 mod。
+现场自检仍需本机游戏与测试世界，离线 CI 不替代现场验收。
 
 ## 另见
 

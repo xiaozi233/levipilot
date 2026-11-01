@@ -21,11 +21,114 @@
 | 12 | 游戏线程采样异常边界、JSON、分配与锁 | 进行中 | 查询/JSON 录制/跑酷/宏录制已迁快照或定长队列；hook_call 已迁独占请求与后台回执，姿态已加局部 SEH/一致快照/世界代次；二进制录制已补唯一失败与部分数据传播；宏播放已迁无锁准入/后台终结、点击已迁固定队列；ECS 已移出 tick 并迁独占分阶段快照；事件输入已有局部边界、固定结果和文本屏障，文本/UI 迁客户端队列；飞行已迁分阶段请求、唯一终结和有界重断言；玩家名缓存已改 UUID/epoch 原子快照；移动/视角已加局部边界/失败传播/释放重试，传送已迁独占请求/后台调度；内部错误已迁定长队列/后台清理与两阶段准入；命令包模板/注入已迁定长采样与独占请求，通用 PacketTap 序列化及其余 SDK 边界仍待治理 |
 | 13 | ProbeMod 跨领域状态耦合 | 未完成，播放模型已局部封装 | 宏录制/输入整体会话与其余字段所有权仍待推进 |
 | 14 | 服务端玩家解析重复 | 部分接入；未完成 | 背包四组写入/命令/权限/物品使用/传送共用 ServerPlayerContext；实体/飞行仍待统一 |
-| 15 | 交互覆盖、自检跳过统计 | 集成覆盖已补一部分；统计待做 | 新增异常/并发/真实请求交错回归 |
+| 15 | 交互覆盖、自检跳过统计 | 三态/必需门禁已实现；夹具与观察生命周期已补，验收见下 | 显式 SKIP、完整模式拒绝缺测、四组首错保护直接回归与固定水池专项 |
 | 16 | 类型码命名、失效文档 | 输入旧结论文档已澄清；类型枚举待做 | README 与默认 HID 契约一致 |
 
 原清单完成 11/16；第 12 项进行中，13–16 未完成。补充审阅的宏硬上限、世界进入
 看门狗与 Overhead 统计环并发已修复；第 12 项其余范围不能因局部验收通过而自动算完成。
+
+## 诊断可靠性与自检结果收尾（2026-10-31 深夜）
+
+### 最新现场：自然违规与错误页已关联，成因仍待定位
+
+2026-10-31 北京时间 **23:38:53**，最新 DLL
+`9262737efdf5a658e0aa51a6b6c1e85f36bd0e93419823104ebad21aab6e0cbe`
+的第二次完整自检发生自然退档，结果 **465/466，1 fail、0 skip**：
+最后通过 `flight_spectator_recovers`，`check_flight` finally 恢复期间的
+`wait_ticks` 从 tick 859 开始，tick **861** 退档，首错为 `aborted_world_left`。
+这不是完整通过；第一次完整的 1053/1055 水流夹具失败也保留在下文。
+
+两条新增记录都为 `synthetic=false`，同 tick **861**、同 tid **30828**：
+
+| 来源 | 现场字段 | 能支持的结论 |
+| --- | --- | --- |
+| callback | `response=3`、`packet_id=39`、`packet_size=34`、`error_value=104` | 违规回调要求终止连接；包编号、size 参数值和错误值已取得 |
+| screen | `response=90`、`disconnect_reason=90`、`context=Block` | mod 在进程内读到最终 BadPacket 断开原因与码字，无需点界面 |
+
+回调 context 为 `BinaryStream read() incomplete.readNoHeader fai`，
+`context_truncated=true`；屏幕 detail 为
+`Minecraft Bedrock.Win,D,,GC-10.0.26100.4351 Err`，`detail_truncated=true`。
+两者上限已从 47 字节放宽到 191 字节（2026-11-01：截断正好切掉了 `mReadPointer`/`buffer Length`）。`category=140697646054272` 是本进程观测值，
+尚未解释其语义，不能当作可跨进程比较的错误编号。
+
+SDK 公开头文件 `refs/levilamina-26.51.7/src/mc/network/MinecraftPacketIds.h`
+声明 **SetActorData=39**、UpdateAbilitiesPacket=187。此处只能按枚举命名为 SetActorData，
+不能称为能力包。`packet_size=34` 究竟计入哪些边界、104 的具体含义、实际传输方向、
+哪个字段或生产链导致不完整读取仍 **unresolved**；能力操作附近发生并不证明因果。
+`packet_capture=false`、`chat_sent=0` 也不能排除 mod 通过原生状态同步间接影响封包。
+
+观察从入口成功武装到退档前未经过设施自测/panic 空窗，
+`real_count=2/synthetic_count=0/lost=0/observation_faults=0`。这次补齐了自然事件经过
+callback 与 screen 两类观察点的现场样本，不证明任意启停并发/在途卸载安全。
+原始证据：`out/diagnostic-full-final-live.log`、
+`out/diagnostic-full-final-violation.json`、`out/disconnect-20261031-233853.json`；
+日志、dump、原始 spool、事发配置与 integrity 已归档到
+`out/diagnostic-validation-20261031-231752/natural-disconnect-233853/`。
+
+先归档再逐字节恢复原配置，执行 `recover --world "超平坦测试"` **exit 0**，
+确认错误页自停并重进世界。构建/安装 DLL 哈希相同；最终恢复 **16/16**：原姿态、
+gamemode/mayfly/flying、效果、背包/装备/选中槽、干燥站稳、输入释放/解锁、守望关闭、
+封包能力关闭、原配置哈希及 **113** 个 crash 文件无新增/修改均回读通过。
+恢复证据为 `out/diagnostic-natural-recover.log` 与
+`out/diagnostic-validation-20261031-231752/final-restoration.json`。
+
+离线全量 **362/362**、ruff check/format、mypy（93 source files）、完整 C++ 构建通过；
+profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专项 **11/11**，
+第二次完整在此前的 flight 检查中止，尚未走到新的水池检查。**不更新历史完整全绿基线**。
+后续只提供诊断提示词，不执行新增逆向，也不反复跑完整套件碰运气：
+[`badpacket-setactordata-20261031.md`](notes/prompts/badpacket-setactordata-20261031.md)。
+
+### 本批已实施的加固
+
+- SDK 文档明确会保留并动态更新 hook 的 origin 输出槽；改为静态存储，去掉栈临时槽及
+  安装后有界自旋/跳过原调用。卸载结果与回读状态一致，panic 的 ok 纳入守望卸载，
+  disable 同样卸下。环冷侧一次初始化后原子发布；SDK 参数读取局部隔离，失败计数后仍转发。
+- 人工 disconnect_route 改为线程局部、可嵌套、异常恢复的 synthetic 标记；屏幕原因码
+  不再套用 PacketViolationResponse 等级，增量字段 disconnect_reason 明确语义。
+- 默认/专项共用观察生命周期，导出起始游标之后的记录；设施自测恢复外层观察，panic
+  卸载断言完成后再武装，保留显式空窗事件。记录采集/写盘错误不覆盖主体故障。
+- flight/controls/teleport/task_operations 的 finally 保留首个异常对象、类型及其栈，
+  清理错误追加 notes；没有主体异常时仍让清理失败。对应四组直接回归已通过。
+- Checks 改三态，必需 skip 在 --require-complete 下 exit 1。设施现场 **21/21**；
+  关闭封包能力的门禁对照 **2/3**（1 required skip，预期 exit 1）。完整验收待下文更新。
+  不声称零观察空窗或 SDK 在途热卸载已证明；自然事件的最新范围见上文，成因仍未定位。
+
+### 现场暴露的水流夹具污染
+
+首轮完整 `--require-complete` 为 **1053/1055，2 fail、0 skip**，失败为 checkpoint_load
+（0.817 格）与 teleport（0.892 格）；没有退档，观察增量为 3 条 synthetic、0 real，lost=0。
+保留 `out/diagnostic-full-live.log` 和 `out/diagnostic-full-violation.json`，不把首轮改记为通过。
+
+控制复现中，reset 的首个采样恰为请求坐标；无输入、无附近实体时，随后水平速度升到
+约 0.0493 格/tick，24 tick 后两轴各偏约 0.991 格。blocks 回读显示脚部周围仍有水流。
+根因在自检夹具：H0 的开放单水源只删除原点，介质录制的两层开放水源只清 7×7 范围，
+外侧水流继续回灌。它污染后续站立/存档点/传送前提，不能当作传送路径故障。
+证据：`out/diagnostic-position-repro.json`，首个 reset 坐标与每次输入状态/方块均保留。
+
+两类检查改共用固定封闭游泳池，在远处加载/建场并回读水与两侧石壁；采样结束恢复姿态。
+`--record-medium-only --require-complete` 同时覆盖 H0 方块身份和介质录制，现场 **11/11**，
+恢复点干燥且站稳。另修正 checkpoint_load 比较对象：比较 checkpoint_saved 的实际保存坐标，
+不拿更早的 feet 变量充当存档点；保留原 0.3 格容差，普通传送仍为 0.2 格并补目标/实测详情。
+清理此前夹具产生的已知区域水流时只替换 water，不清除其他方块；未做游戏机制逆向。
+
+## 第 12 项：封包采集异常边界（2026-10-31）
+
+- `PacketTap` 对 `getId()` 和 `packet.write()` 增加局部 SEH/C++ 边界；接收路径只读取一次
+  id，再复用于去重和定长身份记录。失败只终止该次观察，不改变原封包或正常投递。
+  回调门的 guard、已构造的流和缓冲所有权均在 raw SEH frame 外，故障后可以停止采集。
+- `packet_stats` 增加 `id_faults/byte_faults/fault_pending`；新采集清零计数，停止清除模拟故障。
+  id 读取失败不伪造身份；序列化失败保留身份记录，并发布同 seq/id/dir 的失败字节记录：
+  `serialized=false`、`size=0`、空 hex 与明确 reason。部分字节不作为成功数据发布，后台
+  格式化诊断；线程重入时拒绝复用正在写入的 TLS 缓冲。成功记录字段不变。
+- Python 解码器显式保留 `capture_error`，不把采集失败解码为空包或使用残留 hex。
+  断开现场报告新增 packet_stats，即使 state 探测失败也保留采集故障计数与身份环。
+- `selftest_packet_tap` 受自检压力/采集开关门禁保护，只在采集侧模拟一次异常。
+  `driver/selftest.py --packet-tap-only` 使用真实发送的 PlayerAuthInput 和接收的 Text，
+  分别验证 id/序列化的 SEH/C++、故障计数、按 seq 关联的失败记录、正常后续采集、
+  关闭/重启和无新增 crash；没有构造违规封包或新增钩子，也接入默认完整自检。
+- SDK 的 `BinaryStream` 仍向可增长字符串写入；同步序列化的分配和执行时间仍属第 12 项
+  未完成范围。本批没有重写线格式、跨线程保留 Packet 指针、修改 SDK 布局或做新增逆向，
+  不能把局部边界验收推广为零分配、整个游戏 tick 安全或性能提高。
 
 ## 第 12 项：封包来源模板与独占注入（2026-10-31）
 
@@ -112,10 +215,192 @@
   “记录 → 强停 → 重启 → 回菜单 → 重进世界”并 exit 0；`recover` 连续两次端到端通过。
   错误页分类最初由 `WorldStateTests` 4 项离线覆盖，后续补至 6 项；真实断开页样本仍缺（`/kick @s` 与
   `/stop` 在本地世界都被拒），所以“错误页上跑 recover”这一步只有代码路径、无现场样本。
-- 仍缺的一步：把 `@client_handle_packet_violation` 做成只读诊断（定长环记录
+- 真实错误页验收（2026-10-31 北京时间 20:41，pid 31300，12:27:44Z / 北京时间 20:27:44 那次断开的进程）：当时 `state=
+  disconnect_error`、`screen=ui://./hbui/index.html`、`worlds.ready=false`、`diag` 全 false。
+  `recover` 记录到 `out/disconnect-20261031-204157.json` 后**自行退出错误页**：
+  “记录 → 强停（pid 31300）→ 重启 → 回菜单 → 重进世界”，exit 0，回读 `feet=(0.50,-49.00,4.60)`；
+  世界 `last_saved` 正好是断开时刻，重进成功；未做完整存档前后比较，不宣称无损。
+  至此“错误页上跑 recover”有了现场样本。
+- 强停边界据此细化（与上一条“只有显式 --force 才强停”并列，不覆盖它）：
+  `world_state() == disconnect_error` 本身要求 `in_world=false`（关卡已卸载）+ 世界列表不可用 +
+  HBUI，且两次现场 `diag.server_instance=false`（没有服务端可刷盘），所以**只有这一种状态**
+  允许 `recover` 自停；`world / menu / exiting` 仍然保留进程、必须显式 `--force`。
+  `kill_game` 的保存门禁在 45 s 超时后也先复核该状态，避免 `stop`/`run` 在错误页上干等。
+- `check_flight` finally 的清理不再掩盖原始故障：清理第一条是 `client.command(...)`，世界里已没了时
+  会先抛 `command_player_unknown`，把正在展开的 `WorldLost`/`ModTimeout` 顶掉。现在整段清理
+  包在 `try` 里，展开中失败一律转成 `WorldLost("flight cleanup: level gone (<原异常>)")`
+  并链上原异常；没有原异常时照常抛出清理自身的错误。
+- 第二次现场（2026-10-31 12:27:44Z / 北京时间 20:27:44）：last tick 763，`flight_toggle_server` 通过后
+  `wait_ticks(12)` 期间 world_left；`packet_records=0`、`send_hooked/recv_hooked=false`、
+  `chat_sent=0`、模板尝试 0；这些只约束采集与显式注入，不能排除 mod 的能力修改通过
+  游戏原生同步路径影响封包。两次现场（tick 842 reset 之后、
+  tick 763 togglefly 之后）都落在 `check_flight` 内的能力变更附近，但触发包仍未定位。
+- 该阶段的下一步（后续实现见下节）：把 `@client_handle_packet_violation` 做成只读诊断（定长环记录
   response / packetId / error_code / 线程 / tick；`PacketViolationHandler::checkForViolation`
   是 4 寄存器参数的更安全入口），下次复发即可直接给出触发包与错误码，再决定是否修
   包构造 / 状态同步 / 顺序。
+
+### 违规守望诊断设施（2026-10-31 后续）
+
+- **只读诊断已实现并现场验收**：新模块 `ViolationWatch.cpp` / `ViolationWatchModel.h`
+  在 `@client_handle_packet_violation` 上装 **typed wrapper**（同签名 10 参数），记录
+  `seq/tick/tid/response/packet_id/packet_size/error_value/category/context`
+  到预分配 256 环。回调内零分配、零 JSON、零锁；始终以原参数调用原实现，
+  不改 response、error_code、包内容或断开决策。`violation_watch / violation_stats /
+  violation_drain` 三条管道命令，默认关闭、需 `allow_hook_va`、需在世界内，`panic`
+  会一并卸下。
+- **角色地址的重定位前提**（新发现，写进 `docs/roles/1.26.51.01.json` 的 `image_base` 与 notes）：
+  roles 里的地址是 `image_base=0x140000000` 下的静态 VA；本机 exe 被 PeEditor 改写首选基址并
+  ASLR，内存里的 `OptionalHeader.ImageBase` 已经是加载地址，**按头部换算会得到 not_mapped**。
+  正确换算：`runtime = diag.module_base + (role_va - image_base)`；
+  在 RVA `0x12FA0F0` 处 `mem_read` 到 `5541574156415541545657534881ec38`（标准函数序言）核对通过。
+- 离线模型：`tests/native/violation_watch_model.cpp` 覆盖上下文截断/内嵌 NUL、环环绕、
+  4 线程并发发布、发布路径零分配。
+- 现场：`selftest.py --violation-only` **13/13**（装钩、`violation_stats`、合成记录 drain、
+  游标、ping/命令不受影响、卸载、无 crash）；默认自检 **934/934**，
+  导出 **0 条真实违规记录**（dump 里 2 行都是 `synthetic`）。源码核对发现设施自测的
+  finally 与后续 `panic` 会卸下守望，因此撤回“整轮持续武装”的表述；934 项也不能
+  替代开启两类封包能力时的 992 项历史基线。所以：
+  设施已验证 ≠ 根因已查明；两次断开的触发包仍然 unresolved。
+- 另一次对照（最小能力序列）：同一进程、只跑 `check_flight`（fly/togglefly/reset 与
+  两者事发时相同的收尾链），显式武装、不开包采集 → **44/44**。
+  该函数包含受控故障注入，撤回此前“不做故障注入”的表述；
+  仍然 **0 条真实违规**（环里 3 行全是历史 synthetic，说明环跨运行保留）。
+  与"完整自检 934/934、0 条"一起，两次都只说明"这两次没触发"，不构成未复现的证明。
+- 下次观察：`LEVIPILOT_VIOLATION_DUMP=out/violation-<时间>.json py -3.11 driver/selftest.py`
+  在默认入口初始武装并在退出时导出，设施自测和 `panic` 之后存在观察空窗。
+  专项入口不读取该变量。只有在已确认武装、处理器实际经过观察点且记录未丢失的情况下，
+  才能从新增记录中定位第一次违规；目前没有真实违规样本验证这条完整链。
+- 2026-10-31 北京时间 **22:32** 补做关闭/开启两组正常能力操作对照。
+  第一组关闭守望，在 `reset` 服务端完成（teleport_id=103）后的等待期间退档，
+  tick **73123 → 73127**；**25 项通过后中止，第二组未执行**。
+  本轮没有调用 `selftest_flight` 或合成记录；环新增 0，原三行均为历史 synthetic。
+  这次只能确认退档发生于未武装组，错误页详情码待确认，不将它直接归为 BadPacket。
+  首错保留为 `WorldLost`，真实输入已解锁，held_mask=0。证据：
+  `out/ability-watch-contrast-20261031-223225.json`、同名前缀的 `-timeline.json` 与
+  `-spool.jsonl`，以及 `out/ability-watch-disconnect-20261031-223232.json`。
+  profile `--check` up to date、roles `--check` 50/57；本次不更新完整现场全绿基线。
+
+- **错误页原因改为进程内可读（2026-10-31 深夜）**：`violation_watch` 同一个开关还会钩住
+  `OreUI::EntryPoints::DisconnectScreen::composeRoute`（`MCAPI` 导出符号，不需要 VA/角色）。
+  断线页每构建一次就记一行 `source=screen`：`response` = 原因码（界面上的
+  `ClientDisconnection-<n>`）、`context` = 码字、`detail` = 详情文本。
+  现场验证：`violation_watch on` 返回 `screen_hooked=true`；`disconnect_route reason=90`
+  渲染出 `/disconnected?reason=90&…&codeword=Block&errorDetails=`，并立刻产生一条
+  `{source:"screen",response:90,context:"Block"}` 记录 —— 这条链路不需要桌面点击。
+  专项扩到 **16/16**。局限：安装只对之后的事件生效，本次之前已发生的断开无法补录；
+  `detail` 依赖游戏传入的详情串，可能为空，且只保留前 191 字节并替换非 ASCII 字符。
+  `source=screen` 的 `response` 是路由原因码，`source=callback` 的同名字段是违规处理等级。
+  当前 `disconnect_route` 的人工路由记录也带 `synthetic=false`；必须根据命令来源和新增
+  游标区间区分，不能当作自然违规样本。自然断开经过两类观察点的完整链仍未验证。
+- **22:53–22:54 最小能力序列对照补验**：在当前 DLL、同一进程 pid 14664、相同配置、
+  起始位置/能力下，先武装后关闭，各 **33/33**，没有使用故障注入、合成记录或人工路由。
+  每组 11 个采样点核对 `active/screen_hooked`，起止游标都是 3、lost=0、新增记录 0。
+  武装组 tick 9108–9218，关闭组 10796–10911；两组均无退档、无新增或修改 crash（113 个），
+  配置/DLL 保持一致，结束恢复姿态/能力/站稳，释放输入、解锁并关闭守望。
+  原始报告与对照摘要：`out/ability-watch-contrast-20261031-225320.json`、
+  `out/ability-watch-contrast-20261031-225445.json`、
+  `out/ability-watch-pair-20261031-225320.json`。profile up to date，roles 50/57。
+  当前 DLL 为 `6afc3aa4…52c3ed6e8`，不同于 22:32 失败时的 `a84985f9…b464b788`；
+  后者不能用作仅改变武装状态的对照。单次固定顺序样本未重现断开，根因仍 unresolved，
+  不更新完整套件全绿基线，也不宣称自然错误页采集已验收。
+
+### 入站 SetActorData 反序列化失败：首个真实违规样本（2026-10-31 23:38）
+
+- **守望第一次抓到真实违规**（非合成），同 tick 861、同 tid 30828 两条：
+  `{source:callback, response:3, packet_id:39, packet_size:34, error_value:104,
+  context:"BinaryStream read() incomplete.readNoHeader fai"}` 与
+  `{source:screen, response:90, context:"Block"}`。证据
+  `out/diagnostic-full-final-violation.json`、`out/diagnostic-full-final-live.log`。
+- `[常量]` 39 = **SetActorData**（`MinecraftPacketIds.h`），不是能力包。
+  结合 `handlePacketViolation` 只在 `TerminateConnection` 才用 90，链条是：
+  **入站 SetActorData 读到 EOF → 违规判定终止 → 客户端以 BadPacket(90) 关闭 → 错误页 codeword Block**。
+  方向由此确定：客户端**接收**侧（单机即集成服务端发来）。
+- **自有代码核对结论：未发现直接缺陷。** `mod/probe/src/mod/Flight.cpp` 的服务端分支在
+  `queueServerTask` 内、客户端分支在 `queueClientTask` 内写 `Player::setAbility(MayFly/Flying)`；
+  `ProbeMod.cpp` 的断言路径在 tick 线程写 LocalPlayer。写入前都核对世界代数/`inWorld`，
+  玩家对象每次按 UUID 重新解析。**我们从不写** `SynchedActorData` / `DataItem` /
+  `PropertyComponent` / `SetActorDataPacket`；事发时 `packet_capture=false`，tap 也没有调用
+  `packet.write`。所以“自有 mod 直接写坏载荷”没有静态依据。
+- **仍未闭合**（不猜）：34 字节载荷在读侧哪一步缺字节、`error_value=104` 的语义、
+  写侧是谁在什么时机广播（`packAll` 取值、是否由 `Player::setAbility` 间接触发
+  `SynchedActorData` 变更）、`PropertySyncData` 计数是否可能不一致。
+  `context`/`detail` 上限 191 字节，超出部分仍不能补写。
+- **`error_value=104` 已闭合**：用记录里的 `category` 指针 + 当轮 `module_base` 换算成
+  RVA（`0xE6ABB80`），取类别对象的 vtable：`name()` 返回 `"generic"`、`message()`
+  走 `std::_Syserror_map` ⇒ 是 `std::generic_category()`；Windows SDK `ucrt/errno.h`
+  里 `EBADMSG = 104` ⇒ **`std::errc::bad_message`（数据无效）**，不是 Win32 错误码。
+  该指针是进程内的，必须和当轮 `module_base` 一起记录才有意义。
+- **读侧已闭合到函数级**：`SetActorDataPacketPayload` 的虚表（`getId`=39 /
+  `getName` / `getMaxSize`=10 MiB / `checkSize` / `writeWithSerializationMode` /
+  `read`=`0x143DF7060` → `_read`=`0x143DF7CC0`）与 104 的生产点
+  `0x143DF7362` 都已定位；该分支等价于 SDK 的
+  `ReadOnlyBinaryStream::ensureReadCompleted()`（`mHasOverflowed || size != readPointer`
+  ⇒ `std::errc::bad_message`）。构造函数把序列化模式钉成 **5 = CerealOnly**
+  （`0x1416B4320` 的 `mov dword [rdi+98h], 5`），所以读写默认都走 cereal。
+- **判别已完成（2026-11-01 00:5x）**：`check_flight` 在 `LEVIPILOT_VIOLATION_DUMP` 下
+  武装 `packet_capture(serialize_ids=[39,111,187,188])` 并导出 `<dump>.bytes.json`
+  + `.drain.json`（接线已落地，5 次运行各 200–256 行）。成功基线：187 恒 33、188 恒 5、111 13–22。
+  新样本 **188 UpdateAdventureSettings：发送侧恒定 5 字节，到达读侧 `packet_size=2`，
+  读侧要 3 字节即溢出（error 29）**；加上三次失败横跨 39/111/188 三个不同包，
+  **排除“SetActorData schema 问题”与“序列化模式 override”**（后者会让固定包稳定失败）。
+  机制收敛为**入站分帧/长度与实收字节不一致**（发送侧长度前缀、压缩路径或传输层），读侧只是受害者。
+- `packet_size` 语义**不必再赌**：样本 C 中 188 的发送侧序列化恒为 5 字节而回调给 `packet_size=2`；
+  无论该字段是包体长度还是含包头整包长度，包头只会增加长度，**5 → 2 只能意味着到达读侧的帧更短**。
+- 接收侧钩子尝试**失败并已回退**：`Packet::readNoHeader`（`sub_1416C2310`，反编译签名带 sret 隐藏返回）——
+  按 `(Packet*, stream, ctx, subid)` 写的 typed wrapper 与真实 ABI 不符，两次现场均 `0xC0000005`
+  （新增 `crash-36456`、`crash-21624`）。已删除安装路径，`inbound_drain` 明确回
+  `supported:false / read_no_header_hook_retired`；回退后守望安装/停止恢复正常、无新崩溃。
+- **截短层已定位（2026-11-01 02:0x）**：`violation_watch` 同一开关再装一只只读钩子，
+  钩 `Packet::readNoHeader` 的**原始机器形态**（5 个指针参数、无寄存器返回；早期按
+  `(Packet*, stream, ctx, subid)` 写的 typed wrapper 崩过两次，改成五个 `void*` 透传才稳）。
+  不假设流在哪个参数，用 `readMemory` 逐个探测（`+0x28/+0x30/+0x38/+0x40`），
+  实测**流恒在 r8**；`inbound_dump` 由 mod 直接落盘（多客户端时管道回复会被另一连接截走）。
+  同一 `--flight-only` 运行四份 dump 对齐后：**发送侧 187=33、188=5，入站切片恒为 +2
+  （187→35、188→7）**；而失败样本 C 的 188 切片只有 **2**（应为 7）。
+  ⇒ **截短发生在解析器上游的帧切分/解压/传输层**，不在 payload schema、不在 cereal、也不在解析之后。
+  再往下的子问题（**声明长度 vs 实收字节**）现为 `[推断]`：读侧是逐包解析失败而非批级长度校验失败，
+  且失败前的同批包都解析正常 ⇒ 更可能是**发送侧分帧**（头声明 2）而非传输剪尾；
+  定案需要在解压输出/逐包切分前记录 `(批总长, 首个声明长度, 剩余)`。
+- **收束（不阻塞行动）**：解析链是网络运行循环 `sub_1419D7D90` → runEvents 任务
+  `sub_1416AA7F0` → 逐包解析循环 `sub_1416AB0E0` → `Packet::readNoHeader`，属于 Bedrock
+  网络层，**不是本仓库代码**；无论子情形是发送侧分帧还是传输剪尾，
+  mod 都没有可修的写入点（我们不写这些包、不碰批缓冲）。因此本项按
+  “根因层=游戏网络栈入站分帧/解压/传输，早于包解析；mod 无缺陷无补丁” 收束，
+  子情形的判定仪器见下一条；三次钩子尝试已产生 3 个 crash（`crash-36456/21624/11356`）。
+- **批入口角色更正 + 切片字节落地（2026-11-01 03:0x）**：静态复核发现上一轮登记的
+  `@client_packet_batch_entry = 0x1416AA7F0` 实为 `NetworkSystem::runEvents task`
+  （字符串、`NonOwnerPointer<NetworkSessionOwner>` 断言、`sub_1400A2400` 任务提交），
+  `sub_1419D7D90` 是网络运行循环而非批循环；角色已更正为
+  `@client_packet_parse_loop = 0x1416AB0E0`，错误的 batch 钩子与 `batch_addr` 已移除。
+  实测 1024 条入站切片：**切片以包 id 开头**（`27`=39 SetActorData、`6f`=111 MoveDeltaActor、
+  `90 01`=144 PlayerAuthInput），长度前缀已被切分器消费；187/188 的 `+2` 是它们 id varint
+  的宽度，不是固定包头；失败样本 188 的 2 字节切片即“只剩 id、payload 为 0”。
+  探针同时复制切片前 16 字节（`before_hex`），但实测那里是无关堆数据（指针/零），
+  帧的 length 前缀既不在切片里也不在切片前 —— `slice_verdict()` 对 `declared==0` 判 `unknown`，
+  自检遇不可读声明即 skip，不制造假判定；要拿声明长度必须钩写帧/切分层（未做，见证据册 §13）；
+  顺带修掉 `inbound_drain` 一直超时的真实原因——`drainRing` 把事件名硬编码成
+  `violation_drain`，客户端等不到 `inbound_drain`（此前的“两客户端抢管道”解释不成立）。
+  自检新增 `check_inbound_slices`（行数/id 范围/已知 id/声明==实收占比，读不到声明即 skip）。
+- **字符串上限不再是问题（2026-11-01 13:0x）**：游戏给的是 `std::string`，没有固定上限；
+  记录行只保留有界前缀（context 191 B / detail 639 B）是为了定长环。新增 `violation_text`：
+  回调里 `memcpy` 进 8 个预分配 4 KB 槽（零分配、零 JSON、零锁），drain 时整段取回。
+  现场验证：605 字符的 details 原样返回（`len=605, truncated=false`），
+  合成的违规 context 也完整；错误页整页约 570 字符，行内 detail 也已能装下。
+- **闭合（2026-11-01 13:06，tick 1881）**：第三次自然复现同时拿到「失败切片字节 + 同 tick 发送侧 body
+  + 完整错误文本」。失败切片 `bc01 0000000001 0e010007078080c08480838003000000`（23 字节）
+  = 188 的 id(2) + 自己的 body(5) + **16 字节的邻居 SetActorData payload**（与同 run 的 39 切片
+  逐字节同构，只差演员 runtime id）。正常 188 切片 61 条全为 7 字节，发送侧 188 body 63 条全为 5 字节。
+  ⇒ **不是传输/解压剪尾，而是帧写出侧把邻居 payload 并进了本帧**；解析器读完 5 字节后剩 16 字节，
+  `ensureReadCompleted` 判 `mView.size() != mReadPointer` → `bad_message(104)`（与“短切片”同一个
+  error code 和文本）→ `BadPacket(90)` / `ClientDisconnection-90` / `Block`。
+  帧声明值已判定为 **23**（证据册 §17）：1662 条切片按 tick 分组后，多包 tick 的首包尺寸与单包
+  tick 完全一致（187 恒 35、188 恒 7、111 恒 21/22/23），说明切分用的是每包声明长度；
+  失败切片 23 = 7 + 16，即写出侧把邻居 payload 计入了帧长度。父流探测为负结果（四参数与调用者栈
+  均无命中），已记录以免重复。复现配方与三次样本见证据册 §15。
+- 证据册：[`docs/notes/badpacket-setactordata-20261031.md`](notes/badpacket-setactordata-20261031.md)。
+- 边界：本节的“设施已验证”与“根因未查明”不能互相替代；完整现场当前仍有失败
+  （`aborted_world_left`），不更新全绿基线。
 
 ### 传送检查同步前提与恢复保护（2026-10-31）
 

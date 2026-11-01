@@ -134,6 +134,12 @@ def kill_game(exe: Path | None = None, *, force: bool = False) -> None:
                     if ready:
                         break
                     if time.monotonic() >= deadline:
+                        # The disconnect error page is HBUI too but never
+                        # reports a ready world list; with no level loaded there
+                        # is nothing left to save, so stop instead of refusing.
+                        if world_state(client) == "disconnect_error":
+                            log("disconnect error page: no level loaded, skipping the save gate")
+                            break
                         raise ModTimeout("等待世界保存退出完成超时")
                     time.sleep(0.1)
         except ModPipeError as exc:
@@ -499,8 +505,17 @@ def recover(args: argparse.Namespace) -> int:
         except (ModPipeError, ModTimeout, OSError) as exc:
             log(f"pipe unavailable ({exc}); no live state to record")
     if game_pids(exe):
-        if args.force:
-            kill_game(exe, force=True)
+        if args.force or kind == "disconnect_error":
+            # A confirmed error page has no loaded level: the save gate below can
+            # only spin for 45 s and then refuse. Leaving it is the whole point
+            # of `recover`, so this is the one case that may stop itself.
+            if kind == "disconnect_error":
+                log("disconnect error page: no level loaded, stopping without the save gate")
+            try:
+                kill_game(exe, force=True)
+            except SystemExit as exc:
+                log(f"stop failed ({exc}); process preserved")
+                return 2
         else:
             try:
                 kill_game(exe)

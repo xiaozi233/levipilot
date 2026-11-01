@@ -350,7 +350,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 }.dump());
                 return true;
             }
-            mButtonMode.store(mode);
+            mInputMode.store(static_cast<ControlInputMode>(mode));
             mResetInputButtons.store(true, std::memory_order_release);
         }
         if (j.contains("jump_impulse")) {
@@ -363,7 +363,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 }.dump());
                 return true;
             }
-            mJumpImpulseMode.store(impulse);
+            mJumpImpulseMode.store(static_cast<JumpImpulse>(impulse));
         }
         enqueue(R"({"event":"input_cfg_ok"})");
         return true;

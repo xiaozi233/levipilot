@@ -449,4 +449,12 @@ def decode_packet(packet_id: int, data: bytes) -> dict[str, Any]:
 
 def decode_row(row: dict[str, Any]) -> dict[str, Any]:
     """Decode a row returned by ``packet_bytes`` (``id`` + ``hex``)."""
+    if row.get("serialized") is False:
+        packet_id = int(row["id"])
+        return {
+            "id": packet_id,
+            "name": PACKET_NAMES.get(packet_id, f"id_{packet_id}"),
+            "serialized": False,
+            "capture_error": row.get("reason", "packet_serialize_failed"),
+        }
     return decode_packet(int(row["id"]), bytes.fromhex(str(row["hex"])))

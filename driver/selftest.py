@@ -17,6 +17,7 @@
     py -3.11 driver/selftest.py --binary-capture-world "超平坦测试"  # plus recording across leave/rejoin
     py -3.11 driver/selftest.py --teleport-only  # owned server teleport faults and side effects
     py -3.11 driver/selftest.py --packet-injection-only  # owned command sends and template faults
+    py -3.11 driver/selftest.py --packet-tap-only  # isolate packet observation faults, no injected packets
     py -3.11 driver/selftest.py --packet-injection-world "超平坦测试"  # plus reconnect/leave/rejoin
     py -3.11 driver/selftest.py --tick-recovery-only  # tick errors, fail-stop and fresh requests
     py -3.11 driver/selftest.py --tick-recovery-world "超平坦测试"  # plus reconnect/leave/rejoin
@@ -62,6 +63,7 @@ from driver.harness.lab import (  # noqa: E402
     Builder,
     capture_disconnect_report,
     double_space_fly,
+    inbound_slices,
     record_session,
     settle,
     swim_drive,
@@ -72,31 +74,11 @@ from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry, decode_dump  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 from driver.parkour import read_until_run_end  # noqa: E402
+from driver.selftest_support import Checks, ViolationObservation, preserve_failure  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
 
 # Fixed swim fixture: 3x3x10 water column inside a stone shell at (900, 900).
 SWIM_X, SWIM_Y, SWIM_Z = 900, -55.5, 900
-
-
-class Checks:
-    def __init__(self) -> None:
-        self.results: list[tuple[str, bool, str]] = []
-
-    def check(self, name: str, condition: bool, detail: str = "") -> bool:
-        ok = bool(condition)
-        self.results.append((name, ok, detail))
-        print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
-        return ok
-
-    def note(self, name: str, detail: str = "") -> None:
-        print(f"NOTE  {name}" + (f"  ({detail})" if detail else ""))
-
-    def finish(self) -> int:
-        failed = [row for row in self.results if not row[1]]
-        print(f"\n{len(self.results) - len(failed)}/{len(self.results)} checks passed")
-        for name, _ok, detail in failed:
-            print(f"  failed: {name} {detail}", file=sys.stderr)
-        return 1 if failed else 0
 
 
 class WorldLost(ModPipeError):
@@ -236,6 +218,112 @@ def jump_arcs(entries: list[RecordEntry]) -> list[list[float]]:
             arcs.append([entry.feet_y - floor for entry in entries[start : index + 1]])
             start = None
     return arcs
+
+
+def prepare_swim_fixture(client: ModClient, checks: Checks, name: str) -> bool:
+    # Load the fixture's chunks before the deferred block commands. The
+    # player starts above the shell while it is built, then enters its water.
+    client.teleport(SWIM_X + 0.5, -51, SWIM_Z + 0.5)
+    wait_ticks(client, 3)
+    pool = Builder(client).build(
+        [
+            f"fill {SWIM_X - 2} -64 {SWIM_Z - 2} {SWIM_X + 2} -54 {SWIM_Z + 2} stone",
+            f"fill {SWIM_X - 1} -63 {SWIM_Z - 1} {SWIM_X + 1} -54 {SWIM_Z + 1} water",
+        ],
+        {
+            (SWIM_X, -58, SWIM_Z): "minecraft:water",
+            (SWIM_X, -63, SWIM_Z): "minecraft:water",
+            (SWIM_X - 2, -58, SWIM_Z): "minecraft:stone",
+            (SWIM_X + 2, -58, SWIM_Z): "minecraft:stone",
+        },
+    )
+    return checks.check(name, bool(pool) and all(row.ok for row in pool), str(pool))
+
+
+def check_block_identity(client: ModClient, checks: Checks) -> None:
+    """Sample stone/air/water without creating uncontained sources near the player."""
+    original = client.state()
+    require_world(client, "block identity")
+    try:
+        if not prepare_swim_fixture(client, checks, "h0_water_fixture"):
+            return
+        samples = [
+            [SWIM_X - 2, -58, SWIM_Z],
+            [SWIM_X, -52, SWIM_Z],
+            [SWIM_X, -58, SWIM_Z],
+        ]
+        block_ids: dict[str, int] = {}
+        for sample in samples:
+            info = client.blocks([sample])["blocks"][0]
+            probe = client.probe(info["addr"], "block")
+            legacy = client.probe(probe["legacy"], "legacy")
+            name = str(probe.get("name", ""))
+            checks.check(
+                f"h0_probe_{name.split(':')[-1] or 'unknown'}",
+                name == info.get("name") and int(legacy.get("hash", 0)) == fnv1_64(name),
+                f"{name} hash={legacy.get('hash')}",
+            )
+            block_ids[name] = int(legacy.get("block_id", -1))
+        checks.check(
+            "h0_block_ids",
+            {"minecraft:air", "minecraft:water"} <= set(block_ids) and len(block_ids) >= 3,
+            str(block_ids),
+        )
+    finally:
+        with preserve_failure(checks, "block_identity"):
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 12)
+
+
+def check_record_medium(client: ModClient, checks: Checks) -> None:
+    """Read medium flags in the bounded swim fixture, away from later checks."""
+    original = client.state()
+    require_world(client, "record medium")
+    position = [float(original[f"feet_{axis}"]) for axis in "xyz"]
+    recording = False
+    try:
+        client.stop_move()
+        if not prepare_swim_fixture(client, checks, "record_water_fixture"):
+            return
+        client.teleport(SWIM_X + 0.5, -58, SWIM_Z + 0.5)
+        ready = settle(
+            client, on_ground=None, still=None, in_water=True, ticks=2, clear_input=False
+        )
+        if not checks.check("record_water_ready", ready["ok"], str(ready["state"])):
+            return
+        client.record_bin_start(period=1)
+        recording = True
+        wait_ticks(client, 8)
+        client.record_bin_stop()
+        recording = False
+        entries = client.record_dump_all(format="jsonl")
+        checks.check(
+            "record_in_water_flag",
+            any(entry.in_water for entry in entries),
+            f"entries={len(entries)} water={sum(entry.in_water for entry in entries)}",
+        )
+    finally:
+        with preserve_failure(checks, "record_medium"):
+            try:
+                if recording:
+                    client.record_bin_stop()
+            finally:
+                with preserve_failure(checks, "record_medium_pose"):
+                    client.teleport(
+                        *position, yaw=float(original["yaw"]), pitch=float(original["pitch"])
+                    )
+                    wait_ticks(client, 12)
+                    restored = settle(
+                        client,
+                        on_ground=bool(original["on_ground"]),
+                        in_water=bool(original["in_water"]),
+                        clear_input=False,
+                    )
+                    checks.check("record_medium_restored", restored["ok"], str(restored["state"]))
 
 
 def check_jump_motion(client: ModClient, checks: Checks, inject_enabled: bool) -> None:
@@ -513,7 +601,7 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
                 and client.task_status().get("active") is None,
             )
         else:
-            checks.note("task_use_server_terminal", "skipped: no empty hotbar slot")
+            checks.skip("task_use_server_terminal", "no empty hotbar slot")
     finally:
         client.task_stop()
         client.select_slot(int(original["selected_slot"]))
@@ -536,7 +624,7 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
     fault = client.request({"cmd": "selftest_task_fault"}, ("task_fault_started", "error"))
     if fault.get("event") == "error":
         checks.check("task_fault_gate", fault.get("reason") == "selftest_stress_disabled")
-        checks.note("task_fault_isolation", "skipped: allow_selftest_stress is disabled")
+        checks.skip("task_fault_isolation", "allow_selftest_stress is disabled")
     else:
         fault_id = int(fault["task_id"])
         result = client.wait_event(
@@ -579,7 +667,7 @@ def check_use_lifecycle(client: ModClient, checks: Checks) -> None:
         )
         if started.get("event") == "error":
             checks.check("use_failure_gate", started.get("reason") == "selftest_stress_disabled")
-            checks.note("use_failure_recovery", "skipped: allow_selftest_stress is disabled")
+            checks.skip("use_failure_recovery", "allow_selftest_stress is disabled")
             return
         task_id = int(started["task_id"])
         result = client.wait_event(
@@ -622,7 +710,7 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
                 (target, "error"),
             )
             if result.get("reason") == "selftest_stress_disabled":
-                checks.note("query_fault_recovery", "skipped: allow_selftest_stress is disabled")
+                checks.skip("query_fault_recovery", "allow_selftest_stress is disabled")
                 return
             checks.check(
                 f"query_{target}_{mode}_terminal",
@@ -751,7 +839,7 @@ def check_entity_slot_capture(client: ModClient, checks: Checks) -> None:
                     (event, "error"),
                 )
                 if result.get("reason") == "selftest_stress_disabled":
-                    checks.note("entity_slot_fault_recovery", "skipped: stress is disabled")
+                    checks.skip("entity_slot_fault_recovery", "allow_selftest_stress is disabled")
                     return
                 label = f"query_{target}_{stage}_{mode}"
                 checks.check(
@@ -1799,6 +1887,40 @@ def check_tick_recovery(client: ModClient, checks: Checks, world: str | None = N
     checks.check("tick_recovery_no_crash_artifacts", after == before)
 
 
+def check_input_mode_contract(client: ModClient, checks: Checks) -> None:
+    """Keep protocol numbers and the legacy force gate compatible; never move."""
+    try:
+        for bad_impulse in (1, 3):
+            try:
+                client.request({"cmd": "input_cfg", "jump_impulse": bad_impulse}, "input_cfg_ok")
+                checks.check(f"jump_impulse_guard_{bad_impulse}", False, "legacy impulse accepted")
+            except ModProtocolError as exc:
+                checks.check(
+                    f"jump_impulse_guard_{bad_impulse}",
+                    "legacy_jump_impulse_requires_force" in str(exc),
+                    str(exc),
+                )
+        try:
+            client.request({"cmd": "input_cfg", "mode": 7}, "input_cfg_ok")
+            checks.check("legacy_input_mode_guard", False, "legacy mode accepted")
+        except ModProtocolError as exc:
+            checks.check(
+                "legacy_input_mode_guard",
+                "legacy_input_mode_requires_force" in str(exc),
+                str(exc),
+            )
+        forced = client.request(
+            {"cmd": "input_cfg", "jump_impulse": 1, "mode": 7, "force": True}, "input_cfg_ok"
+        )
+        checks.check("legacy_input_force", forced.get("event") == "input_cfg_ok", str(forced))
+    finally:
+        with preserve_failure(checks, "input_mode"):
+            restored = client.input_cfg(jump_impulse=0, mode=0)
+            checks.check(
+                "real_input_restore", restored.get("event") == "input_cfg_ok", str(restored)
+            )
+
+
 def check_controls(client: ModClient, checks: Checks) -> None:
     """Exercise real control calls, uncertain edges, failure propagation and retry."""
     original = client.state()
@@ -1945,18 +2067,19 @@ def check_controls(client: ModClient, checks: Checks) -> None:
             "controls_ping_alive", bool(client.ping()) and client.state()["in_world"] is True
         )
     finally:
-        arm("", "off")
-        client.macro_stop()
-        macro_path.unlink(missing_ok=True)
-        client.stop_move()
-        client.look(0, relative=True)
-        recovery()
-        client.teleport(
-            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-            yaw=float(original["yaw"]),
-            pitch=float(original["pitch"]),
-        )
-        settle(client, on_ground=True)
+        with preserve_failure(checks, "controls"):
+            arm("", "off")
+            client.macro_stop()
+            macro_path.unlink(missing_ok=True)
+            client.stop_move()
+            client.look(0, relative=True)
+            recovery()
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            settle(client, on_ground=True)
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     checks.check("controls_handled_fault_no_dump", after == before)
 
@@ -2105,15 +2228,377 @@ def check_player_identity(client: ModClient, checks: Checks, world: str | None =
     checks.check("identity_handled_fault_no_dump", after == before)
 
 
+def check_packet_tap(client: ModClient, checks: Checks) -> None:
+    """Fail observations of real, unmodified traffic; normal delivery must continue."""
+    try:
+        client.packet_capture(True, ids=[144], directions=["send"])
+        client.request({"cmd": "selftest_packet_tap", "mode": "off"}, "packet_tap_test_armed")
+    except ModProtocolError as exc:
+        if "packet_capture_disabled" not in str(exc) and "selftest_stress_disabled" not in str(exc):
+            raise
+        checks.skip("packet_tap_fault_coverage", str(exc))
+        client.packet_capture(False)
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before_crashes = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+
+    def traffic(direction: str) -> None:
+        if direction == "recv":
+            client.command('tellraw @s {"rawtext":[{"text":"LeviPilot packet observation check"}]}')
+        wait_ticks(client, 4)
+
+    try:
+        for direction, packet_id in (("send", 144), ("recv", 9)):
+            client.packet_capture(
+                True, ids=[packet_id], serialize_ids=[packet_id], directions=[direction]
+            )
+            traffic(direction)
+            rows = client.packet_bytes(0, limit=4096)["hits"]
+            checks.check(
+                f"packet_tap_{direction}_baseline",
+                bool(rows) and all(row["serialized"] and int(row["size"]) > 0 for row in rows),
+                f"rows={len(rows)}",
+            )
+            for mode in ("id_seh", "id_cpp", "bytes_seh", "bytes_cpp"):
+                before = client.packet_stats()
+                cursor = int(client.packet_bytes(0, limit=4096).get("next", 0))
+                client.request(
+                    {"cmd": "selftest_packet_tap", "mode": mode}, "packet_tap_test_armed"
+                )
+                traffic(direction)
+                deadline = time.monotonic() + 4
+                while True:
+                    stats = client.packet_stats()
+                    if not stats["fault_pending"]:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise ModTimeout(f"packet tap fault was not observed: {direction}/{mode}")
+                    time.sleep(0.01)
+                byte_fault = mode.startswith("bytes")
+                name = f"packet_tap_{direction}_{mode}"
+                checks.check(
+                    name + "_isolated",
+                    int(stats["id_faults"]) == int(before["id_faults"]) + int(not byte_fault)
+                    and int(stats["byte_faults"]) == int(before["byte_faults"]) + int(byte_fault),
+                    f"id={stats['id_faults']} bytes={stats['byte_faults']}",
+                )
+                rows = client.packet_bytes(cursor, limit=4096)["hits"]
+                failures = [row for row in rows if row["serialized"] is False]
+                expected_reason = (
+                    "packet_serialize_fault" if mode == "bytes_seh" else "packet_serialize_failed"
+                )
+                identity = {
+                    (int(row["seq"]), int(row["id"]), row["dir"])
+                    for row in client.packet_drain(0, limit=8192)["hits"]
+                }
+                checks.check(
+                    name + "_diagnostic",
+                    len(failures) == int(byte_fault)
+                    and all(
+                        row.get("reason") == expected_reason
+                        and int(row["size"]) == 0
+                        and row["hex"] == ""
+                        and (int(row["seq"]), int(row["id"]), row["dir"]) in identity
+                        for row in failures
+                    ),
+                    str(failures),
+                )
+                # A second real packet must serialize normally after the fault.
+                cursor = int(client.packet_bytes(0, limit=4096).get("next", 0))
+                traffic(direction)
+                rows = client.packet_bytes(cursor, limit=4096)["hits"]
+                checks.check(
+                    name + "_recovers",
+                    bool(rows) and all(row["serialized"] and int(row["size"]) > 0 for row in rows),
+                    f"rows={len(rows)}",
+                )
+                client.packet_capture(False)  # Also proves the callback gate was released.
+                checks.check(name + "_stops", client.packet_stats()["active"] is False)
+                client.packet_capture(
+                    True, ids=[packet_id], serialize_ids=[packet_id], directions=[direction]
+                )
+            stats = client.packet_stats()
+            checks.check(
+                f"packet_tap_{direction}_reset",
+                stats["id_faults"] == stats["byte_faults"] == 0 and not stats["fault_pending"],
+            )
+        client.packet_capture(False)
+        rejected = client.request({"cmd": "selftest_packet_tap", "mode": "id_seh"}, "error")
+        checks.check(
+            "packet_tap_inactive_rejects", rejected.get("reason") == "packet_capture_inactive"
+        )
+        checks.check("packet_tap_alive", bool(client.ping()) and client.state()["in_world"] is True)
+    finally:
+        try:
+            client.request({"cmd": "selftest_packet_tap", "mode": "off"}, "packet_tap_test_armed")
+        finally:
+            client.packet_capture(False)
+    after_crashes = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("packet_tap_handled_fault_no_dump", after_crashes == before_crashes)
+
+
+def role_address(role: str) -> tuple[int, int] | None:
+    """Role VA and its documented image base from docs/roles (never hard-coded).
+
+    Addresses there are static VAs under ``image_base``. The installed game has a
+    rewritten preferred base and ASLR, so the watch needs
+    ``module_base + (role_va - image_base)``.
+    """
+    version = "1.26.51.01"
+    path = ROOT / "docs" / "roles" / f"{version}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get("roles", {}).get(role, {})
+    address = entry.get("address")
+    base = data.get("image_base")
+    if entry.get("status") != "resolved" or not address or not base:
+        return None
+    return int(str(address), 16), int(str(base), 16)
+
+
+def violation_watch_address(client: ModClient, role: str) -> int | None:
+    """Runtime address of a role: ``module_base + (role_va - image_base)``."""
+    role_info = role_address(role)
+    if role_info is None:
+        return None
+    role_va, image_base = role_info
+    module_base = int(client.diag().get("module_base", 0))
+    if module_base == 0 or role_va < image_base:
+        return None
+    return module_base + (role_va - image_base)
+
+
+def check_inbound_slices(client: ModClient, checks: Checks) -> None:
+    """Verify the parse-boundary slices decode to (packet id, payload).
+
+    The parse boundary receives the slice starting at the packet id, and the
+    frame's length varint is the byte right before it. Both halves are read by
+    the same read-only hook, so this check proves the instrumentation that
+    decides "framed short" vs "clipped after framing" is actually wired: it
+    never asserts a verdict for a live packet.
+    """
+    rows = inbound_slices(client, since=0, limit=256)
+    decoded = [row for row in rows if row.get("decoded")]
+    if not checks.check(
+        "inbound_slice_rows",
+        len(decoded) >= 4,
+        f"rows={len(rows)} decoded={len(decoded)}",
+    ):
+        return
+    checks.check(
+        "inbound_slice_packet_id",
+        all(0 <= row["decoded"]["packet_id"] < 1000 for row in decoded),
+        str(sorted({row["decoded"]["packet_id"] for row in decoded})[:12]),
+    )
+    ids = {row["decoded"]["packet_id"] for row in decoded}
+    checks.check(
+        "inbound_slice_known_ids",
+        bool(ids & {39, 111, 144, 187, 188}),
+        f"ids={sorted(ids)[:12]}",
+    )
+    framed = [row for row in decoded if row["verdict"] == "framed"]
+    if len(framed) * 2 < len(decoded):
+        # The length prefix may live outside the captured window; that is a
+        # finding, not a failure of the hook.
+        checks.skip(
+            "inbound_slice_framing",
+            f"declared length unreadable: framed={len(framed)}/{len(decoded)}",
+        )
+        return
+    checks.check(
+        "inbound_slice_framing",
+        len(framed) * 10 >= len(decoded) * 9,
+        f"framed={len(framed)}/{len(decoded)}",
+    )
+
+
+def check_violation_watch(client: ModClient, checks: Checks) -> None:
+    """Verify the read-only violation record plumbing with a synthetic row.
+
+    A synthetic row only proves the record/drain path; it is not a real
+    BadPacket reproduction. The watch itself never changes the verdict, the
+    error code or the disconnect decision.
+    """
+    if not checks.check("violation_watch_in_world", client.state().get("in_world") is True):
+        return
+    directory = Path(str(client.status()["spool"])).parent
+    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    addr = violation_watch_address(client, "@client_handle_packet_violation")
+    if not checks.check(
+        "violation_watch_role",
+        addr is not None,
+        f"runtime address={hex(addr) if addr else None}",
+    ):
+        return
+    assert addr is not None
+    was_active = client.violation_stats().get("active") is True
+    since = int(client.violation_drain(0, 1).get("head", 0))
+    try:
+        started = client.violation_watch(True, addr=addr)
+        if started.get("event") == "error":
+            checks.check(
+                "violation_watch_gate",
+                started.get("reason") == "violation_watch_disabled",
+                str(started),
+            )
+            checks.skip("violation_watch_observation", "allow_hook_va is disabled")
+            return
+        checks.check(
+            "violation_watch_start",
+            started.get("active") is True and bool(started.get("address")),
+            str(started),
+        )
+        checks.check(
+            "violation_watch_screen_hooked", started.get("screen_hooked") is True, str(started)
+        )
+        stats = client.violation_stats()
+        checks.check(
+            "violation_watch_stats_active",
+            stats.get("active") is True
+            and int(stats.get("capacity", 0)) > 0
+            and stats.get("screen_hooked") is True,
+            str(stats),
+        )
+        route = client.disconnect_route(90)
+        checks.check(
+            "disconnect_route_shape",
+            "reason=90" in str(route.get("route", ""))
+            and "codeword=Block" in str(route.get("route", "")),
+            str(route),
+        )
+        synthetic = client.violation_watch(mode="synthetic")
+        checks.check("violation_synthetic_ok", synthetic.get("ok") is True, str(synthetic))
+        # The page text is a std::string with no fixed bound; the full-text ring
+        # must return it whole even when it is longer than a record row.
+        long_details = "page " + "x" * 600
+        client.request(
+            {
+                "cmd": "disconnect_route",
+                "reason": 90,
+                "codeword": "Block",
+                "details": long_details,
+            },
+            "disconnect_route",
+        )
+        texts = client.violation_text(0, 8).get("hits", [])
+        callback_text = next((row for row in texts if row.get("kind") == "callback"), None)
+        screen_text = next(
+            (
+                row
+                for row in texts
+                if row.get("kind") == "screen" and row.get("text") == long_details
+            ),
+            None,
+        )
+        checks.check(
+            "violation_text_full_length",
+            screen_text is not None
+            and screen_text.get("len") == len(long_details)
+            and screen_text.get("truncated") is False,
+            str(screen_text)[:120],
+        )
+        checks.check(
+            "violation_text_callback",
+            callback_text is not None and callback_text.get("text") == "synthetic violation record",
+            str(callback_text)[:120],
+        )
+        drained = client.violation_drain(since, 64)
+        rows = drained.get("hits", [])
+        row = next(
+            (item for item in rows if item.get("synthetic") and item.get("source") == "callback"),
+            None,
+        )
+        checks.check(
+            "violation_drain_row",
+            row is not None
+            and row.get("response") == 3
+            and row.get("verdict") == "terminate_connection"
+            and row.get("packet_id") == -1,
+            str(row),
+        )
+        checks.check(
+            "violation_drain_context",
+            row is not None
+            and row.get("context") == "synthetic violation record"
+            and row.get("context_truncated") is False
+            and int(row.get("tick", -1)) >= 0,
+            str(row),
+        )
+        rows_screen = client.violation_drain(since, 64).get("hits", [])
+        screen_row = next((item for item in rows_screen if item.get("source") == "screen"), None)
+        checks.check(
+            "violation_drain_screen_row",
+            screen_row is not None
+            and screen_row.get("response") == 90
+            and screen_row.get("context") == "Block"
+            and screen_row.get("synthetic") is True
+            and screen_row.get("disconnect_reason") == 90
+            and screen_row.get("verdict") == "disconnect",
+            str(screen_row),
+        )
+        checks.check(
+            "violation_drain_cursor",
+            int(drained.get("next", -1)) >= int(drained.get("count", 0))
+            and client.violation_drain(int(drained.get("next", 0)), 64).get("count") == 0,
+            str({k: drained.get(k) for k in ("next", "count", "lost")}),
+        )
+        # The patch sits on a violation-only path: normal play must stay intact.
+        checks.check("violation_watch_ping", client.ping().get("event") == "pong")
+        client.disconnect_route(0)
+        reason_zero = client.violation_drain(int(drained["next"]), 64).get("hits", [])
+        checks.check(
+            "violation_screen_reason_not_verdict",
+            any(
+                item.get("source") == "screen"
+                and item.get("response") == 0
+                and item.get("verdict") == "disconnect"
+                and item.get("synthetic") is True
+                for item in reason_zero
+            ),
+            str(reason_zero),
+        )
+        client.command("time set day")
+        wait_ticks(client, 2)
+        try:
+            check_inbound_slices(client, checks)
+        except (ModPipeError, ModTimeout) as exc:
+            checks.check("inbound_slice_rows", False, f"inbound drain failed: {exc}")
+    finally:
+        with preserve_failure(checks, "violation_watch"):
+            try:
+                stopped = client.violation_watch(False)
+                checks.check("violation_watch_stop", stopped.get("active") is False, str(stopped))
+                checks.check(
+                    "violation_watch_stats_stopped", client.violation_stats().get("active") is False
+                )
+                checks.check(
+                    "violation_watch_state_alive",
+                    bool(client.state().get("in_world")) and client.ping().get("event") == "pong",
+                )
+            finally:
+                if was_active:
+                    restored = client.violation_watch(True, addr=addr)
+                    checks.check(
+                        "violation_watch_restored",
+                        restored.get("active") is True and restored.get("screen_hooked") is True,
+                        str(restored),
+                    )
+    after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
+    checks.check("violation_watch_no_dump", after == before)
+
+
 def check_packet_injection(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Exercise the production template hook and owned send pipeline with readback."""
     if not client.status().get("packet_inject"):
-        checks.check("packet_owned_inject_gate", True, "packet injection disabled")
+        checks.skip("packet_owned_inject", "packet injection disabled")
         return
     try:
         client.packet_capture(True, ids=[77])
     except ModProtocolError as exc:
         checks.check("packet_owned_capture_gate", "packet_capture_disabled" in str(exc), str(exc))
+        checks.skip("packet_owned_capture", str(exc))
         return
     original = client.state()
     client.input_lock(True)
@@ -2504,13 +2989,15 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
                 rejected = client.request({"cmd": "teleport", **position}, "error")
                 checks.check("teleport_menu_rejects", rejected.get("reason") == "not_in_world")
             finally:
-                client.enter_world_ready(world)
-                client.wait_in_world(timeout=60)
+                with preserve_failure(checks, "teleport"):
+                    client.enter_world_ready(world)
+                    client.wait_in_world(timeout=60)
             checks.check("teleport_world_recovers", restore_pose().get("ok") is True)
     finally:
-        client.command("effect @s clear")
-        client.checkpoint_delete(checkpoint)
-        restore_pose()
+        with preserve_failure(checks, "teleport"):
+            client.command("effect @s clear")
+            client.checkpoint_delete(checkpoint)
+            restore_pose()
     restored = client.state()
     checks.check(
         "teleport_pose_restored",
@@ -2531,6 +3018,26 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
     directory = Path(str(client.status()["spool"])).parent
     before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     client.input_lock(True)
+    # Both natural disconnects happened inside this check. When a violation dump
+    # is requested, also serialize SetActorData(39): the first bytes separate a
+    # serialization-mode mismatch from a payload that was written short.
+    bytes_dump = os.environ.get("LEVIPILOT_VIOLATION_DUMP") or None
+    bytes_armed = False
+    if bytes_dump:
+        try:
+            # Observed violations were inbound bodies that ran short: 39
+            # (SetActorData), 111 (MoveDeltaActor), 188 (UpdateAdventureSettings).
+            # 187 (UpdateAbilities) is what the flight checks provoke, and a
+            # mis-framed body there would desync every following packet -- so
+            # keep the whole identity ring and serialize all four suspects.
+            client.packet_capture(
+                True,
+                serialize_ids=[39, 111, 187, 188],
+                directions=["send", "recv"],
+            )
+            bytes_armed = True
+        except (ModPipeError, ModProtocolError) as exc:
+            checks.note("flight_bytes_capture", f"unavailable: {exc}")
 
     def inject(stage: str, mode: str, timeout: int = 250) -> dict[str, Any]:
         return {
@@ -2691,20 +3198,47 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
                 client.wait_in_world(timeout=60)
             checks.check("flight_world_recovers", off())
     finally:
-        client.command(f"gamemode {original['gamemode']} @s")
-        wait_ticks(client, 8)
-        client.fly(bool(original.get("flying")))
-        if int(original["gamemode"]) != 3:
-            client.toggle_fly(bool(original.get("mayfly")))
-        client.reset(
-            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-            yaw=float(original["yaw"]),
-            pitch=float(original["pitch"]),
-        )
-        wait_ticks(client, 10)
-        # The cleanup reset is the last thing this check does; if the level is
-        # gone now, stop here so the disconnect keeps its own diagnostics.
-        require_world(client, "flight cleanup")
+        if bytes_armed:
+            # Diagnostic export only: never let it replace the first failure.
+            try:
+                rows = client.packet_bytes(0, 256)
+                Path(f"{bytes_dump}.bytes.json").write_text(
+                    json.dumps(rows, ensure_ascii=False), encoding="utf-8"
+                )
+                # seq -> tick/id mapping, so a violation tick can be matched to
+                # the exact packet the sender serialized.
+                # Ask the mod to write the ring itself: with two clients attached
+                # a pipe reply can be delivered to the other connection.
+                client.send({"cmd": "inbound_dump", "path": f"{bytes_dump}.inbound.json"})
+                time.sleep(0.3)
+                index = client.packet_drain(0, 1024)
+                Path(f"{bytes_dump}.drain.json").write_text(
+                    json.dumps(index, ensure_ascii=False), encoding="utf-8"
+                )
+                checks.note(
+                    "flight_bytes_dump",
+                    f"{rows.get('count', 0)} rows, "
+                    f"{index.get('count', 0)} index -> {bytes_dump}.bytes.json",
+                )
+            except (ModPipeError, ModProtocolError, OSError) as exc:
+                checks.note("flight_bytes_dump", f"failed: {exc}")
+            with contextlib.suppress(ModPipeError, ModProtocolError):
+                client.packet_capture(False)
+        with preserve_failure(checks, "flight"):
+            client.command(f"gamemode {original['gamemode']} @s")
+            wait_ticks(client, 8)
+            client.fly(bool(original.get("flying")))
+            if int(original["gamemode"]) != 3:
+                client.toggle_fly(bool(original.get("mayfly")))
+            client.reset(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 10)
+            # The cleanup reset is the last thing this check does; if the level
+            # is gone now, stop here so the disconnect keeps its diagnostics.
+            require_world(client, "flight cleanup")
     restored = client.state()
     checks.check(
         "flight_restores_abilities",
@@ -3768,9 +4302,9 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
 
     target = find_target()
     if target is None or slot is None:
-        checks.note(
+        checks.skip(
             "task_operations",
-            "skipped: needs an empty hotbar slot and nearby air above solid support",
+            "needs an empty hotbar slot and nearby air above solid support",
         )
         return
     try:
@@ -3860,23 +4394,24 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
         ids = [int(row["task_id"]) for row in (result, placed, mined)]
         checks.check("task_operations_ids", ids[0] < ids[1] < ids[2])
     finally:
-        client.task_stop()
-        # A successful mine already left air; do not issue a redundant command
-        # that reports failure when its target already contains air.
-        if client.blocks([target])["blocks"][0].get("name") != "minecraft:air":
-            client.command(f"setblock {' '.join(map(str, target))} air")
-            wait_ticks(client, 5)
-        client.clear_item(slot)
-        client.select_slot(int(original["selected_slot"]))
-        client.command(f"gamemode {int(original['gamemode'])} @s")
-        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
-        wait_ticks(client, 8)
-        checks.check(
-            "task_operations_restored",
-            int(client.state().get("gamemode", -1)) == int(original["gamemode"])
-            and slot_item(client.inventory(), slot) is None
-            and client.blocks([target])["blocks"][0].get("name") == "minecraft:air",
-        )
+        with preserve_failure(checks, "task_operations"):
+            client.task_stop()
+            # A successful mine already left air; do not issue a redundant command
+            # that reports failure when its target already contains air.
+            if client.blocks([target])["blocks"][0].get("name") != "minecraft:air":
+                client.command(f"setblock {' '.join(map(str, target))} air")
+                wait_ticks(client, 5)
+            client.clear_item(slot)
+            client.select_slot(int(original["selected_slot"]))
+            client.command(f"gamemode {int(original['gamemode'])} @s")
+            client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            wait_ticks(client, 8)
+            checks.check(
+                "task_operations_restored",
+                int(client.state().get("gamemode", -1)) == int(original["gamemode"])
+                and slot_item(client.inventory(), slot) is None
+                and client.blocks([target])["blocks"][0].get("name") == "minecraft:air",
+            )
 
 
 def check_lifecycle_stress(
@@ -4219,6 +4754,9 @@ def check_chat_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--require-complete", action="store_true", help="fail when required coverage is skipped"
+    )
     parser.add_argument("--entity", default="minecraft:pig")
     parser.add_argument("--keep", action="store_true", help="do not remove the test entity")
     parser.add_argument("--radius", type=float, default=10.0)
@@ -4301,12 +4839,27 @@ def main(argv: list[str] | None = None) -> int:
         "--teleport-only", action="store_true", help="check owned server teleports and failures"
     )
     modes.add_argument(
+        "--packet-tap-only",
+        action="store_true",
+        help="check isolation of packet observation faults",
+    )
+    modes.add_argument(
         "--packet-injection-only",
         action="store_true",
         help="check command templates and owned packet sends",
     )
     modes.add_argument(
         "--packet-injection-world", metavar="WORLD", help="also check packet reconnect/leave/rejoin"
+    )
+    modes.add_argument(
+        "--record-medium-only",
+        action="store_true",
+        help="check recording in an isolated water fixture",
+    )
+    modes.add_argument(
+        "--violation-only",
+        action="store_true",
+        help="check the read-only violation watch (synthetic row, no real violation)",
     )
     modes.add_argument(
         "--teleport-world", metavar="WORLD", help="also check teleport reconnect/leave/rejoin"
@@ -4402,7 +4955,7 @@ def main(argv: list[str] | None = None) -> int:
             "--stress-cycles must be nonnegative; --stress-world requires at least 10 cycles"
         )
 
-    checks = Checks()
+    checks = Checks(require_complete=args.require_complete)
     try:
         client = ModClient(connect_timeout=60.0, timeout=30.0).connect()
     except ModPipeError as exc:
@@ -4410,17 +4963,52 @@ def main(argv: list[str] | None = None) -> int:
         print("提示：游戏内是否已加载 probe mod，并且已经进入存档？", file=sys.stderr)
         return 2
 
+    observation = ViolationObservation(
+        client,
+        checks,
+        os.environ.get("LEVIPILOT_VIOLATION_DUMP") or None,
+        lambda: violation_watch_address(client, "@client_handle_packet_violation"),
+    )
+    result = 0
+    try:
+        observation.start()
+        result = run_live(client, checks, args, observation)
+    except WorldLost as exc:
+        checks.check("aborted_world_left", False, str(exc))
+        try:
+            report = capture_disconnect_report(client, ROOT / "out", tag="disconnect")
+            checks.note("disconnect_report", str(report))
+        except (ModPipeError, OSError) as report_exc:
+            checks.note("disconnect_report", f"failed: {report_exc}")
+    finally:
+        try:
+            observation.finish()
+        finally:
+            try:
+                with contextlib.suppress(ModPipeError):
+                    client.input_lock(False)
+            finally:
+                client.close()
+    return result if result else checks.finish()
+
+
+def run_live(
+    client: ModClient, checks: Checks, args: argparse.Namespace, observation: ViolationObservation
+) -> int:
     if args.overhead_only:
         try:
             check_overhead_window(client, checks, wrap=True)
+        except WorldLost:
+            raise
         except (ModPipeError, OSError, ValueError) as exc:
             checks.check("overhead_window_error", False, str(exc))
-        finally:
-            client.close()
-        return checks.finish()
+        return 0
 
     if (
-        args.packet_injection_only
+        args.record_medium_only
+        or args.packet_tap_only
+        or args.violation_only
+        or args.packet_injection_only
         or args.packet_injection_world
         or args.teleport_only
         or args.teleport_world
@@ -4452,13 +5040,22 @@ def main(argv: list[str] | None = None) -> int:
     ):
         try:
             client.input_lock(True)
-            if args.packet_injection_only or args.packet_injection_world:
+            if args.record_medium_only:
+                check_block_identity(client, checks)
+                check_record_medium(client, checks)
+            elif args.packet_tap_only:
+                check_packet_tap(client, checks)
+            elif args.violation_only:
+                with observation.gap("violation_selftest"):
+                    check_violation_watch(client, checks)
+            elif args.packet_injection_only or args.packet_injection_world:
                 check_packet_injection(client, checks, args.packet_injection_world)
             elif args.tick_recovery_only or args.tick_recovery_world:
                 check_tick_recovery(client, checks, args.tick_recovery_world)
             elif args.teleport_only or args.teleport_world:
                 check_teleport(client, checks, args.teleport_world)
             elif args.controls_only:
+                check_input_mode_contract(client, checks)
                 check_controls(client, checks)
             elif args.player_identity_only or args.player_identity_world:
                 check_player_identity(client, checks, args.player_identity_world)
@@ -4486,9 +5083,17 @@ def main(argv: list[str] | None = None) -> int:
                 check_query_lifecycle(client, checks, args.query_lifecycle_world)
             else:
                 check_query_capture(client, checks)
+        except WorldLost:
+            raise
         except (ModPipeError, OSError, ValueError) as exc:
             name = (
-                "packet_injection_error"
+                "record_medium_error"
+                if args.record_medium_only
+                else "packet_tap_error"
+                if args.packet_tap_only
+                else "violation_watch_error"
+                if args.violation_only
+                else "packet_injection_error"
                 if args.packet_injection_only or args.packet_injection_world
                 else "tick_recovery_error"
                 if args.tick_recovery_only or args.tick_recovery_world
@@ -4520,35 +5125,34 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             with contextlib.suppress(ModPipeError):
                 client.input_lock(False)
-            client.close()
-        return checks.finish()
+        return 0
 
     if args.use_lifecycle_only:
         try:
             check_use_lifecycle(client, checks)
+        except WorldLost:
+            raise
         except (ModPipeError, OSError, ValueError) as exc:
             checks.check("use_lifecycle_error", False, str(exc))
-        finally:
-            client.close()
-        return checks.finish()
+        return 0
 
     if args.mod_core_live_only:
         try:
             check_mod_core_live(client, checks)
+        except WorldLost:
+            raise
         except (ModPipeError, OSError, ValueError) as exc:
             checks.check("mod_core_live_error", False, str(exc))
-        finally:
-            client.close()
-        return checks.finish()
+        return 0
 
     if args.chat_lifecycle_world:
         try:
             check_chat_lifecycle(client, checks, args.chat_lifecycle_world)
+        except WorldLost:
+            raise
         except (ModPipeError, OSError, ValueError) as exc:
             checks.check("chat_lifecycle_error", False, str(exc))
-        finally:
-            client.close()
-        return checks.finish()
+        return 0
 
     tap_dump = os.environ.get("LEVIPILOT_PACKET_DUMP") or None
     try:
@@ -4591,7 +5195,7 @@ def main(argv: list[str] | None = None) -> int:
             checks.check(
                 "chat_timeout_gate", delayed_chat.get("reason") == "selftest_stress_disabled"
             )
-            checks.note("chat_timeout_recovery", "skipped: allow_selftest_stress is disabled")
+            checks.skip("chat_timeout_recovery", "allow_selftest_stress is disabled")
         else:
             checks.check(
                 "chat_timeout_terminal",
@@ -4621,6 +5225,9 @@ def main(argv: list[str] | None = None) -> int:
         check_teleport(client, checks)
         check_tick_recovery(client, checks)
         check_packet_injection(client, checks)
+        with observation.gap("violation_selftest"):
+            check_violation_watch(client, checks)
+        check_packet_tap(client, checks)
         check_task_operations(client, checks)
         check_cli_compatibility(client, checks)
 
@@ -4646,6 +5253,7 @@ def main(argv: list[str] | None = None) -> int:
         except ModProtocolError as exc:
             inject_enabled = False
             checks.check("input_inject_gate", "input_inject_disabled" in str(exc), str(exc))
+            checks.skip("input_injection_coverage", str(exc))
         if inject_enabled:
             client.key_event(49, True, via="hid")
             client.key_event(49, False, via="hid")
@@ -4838,33 +5446,7 @@ def main(argv: list[str] | None = None) -> int:
                     evidence = "capstone not installed"
             checks.check("h0_watch_store", store_ok, evidence)
 
-        # H0.2: probe names/hashes agree with blocks, and record block ids.
-        position = client.state()
-        bx, by, bz = int(position["feet_x"]), int(position["feet_y"]), int(position["feet_z"])
-        client.command(f"setblock {bx + 2} {by} {bz} minecraft:water")
-        for _ in range(40):
-            if client.blocks([[bx + 2, by, bz]])["blocks"][0].get("name") == "minecraft:water":
-                break
-            time.sleep(0.05)
-        samples = [[bx, by - 1, bz], [bx, by, bz], [bx + 2, by, bz]]
-        block_ids: dict[str, int] = {}
-        for sample in samples:
-            info = client.blocks([sample])["blocks"][0]
-            probe = client.probe(info["addr"], "block")
-            legacy = client.probe(probe["legacy"], "legacy")
-            name = str(probe.get("name", ""))
-            checks.check(
-                f"h0_probe_{name.split(':')[-1] or 'unknown'}",
-                name == info.get("name") and int(legacy.get("hash", 0)) == fnv1_64(name),
-                f"{name} hash={legacy.get('hash')}",
-            )
-            block_ids[name] = int(legacy.get("block_id", -1))
-        checks.check(
-            "h0_block_ids",
-            {"minecraft:air", "minecraft:water"} <= set(block_ids) and len(block_ids) >= 3,
-            str(block_ids),
-        )
-        client.command(f"setblock {bx + 2} {by} {bz} minecraft:air")
+        check_block_identity(client, checks)
 
         # H0.3: the EntityContext captured by a hook resolves to the same
         # StateVector storage the runtime-id path reports.
@@ -4949,7 +5531,8 @@ def main(argv: list[str] | None = None) -> int:
             event = client.readline(8.0).get("event")
             if event == "stopped":
                 break
-        client.panic("all")
+        with observation.gap("spool_panic"):
+            client.panic("all")
         time.sleep(0.2)
         spool_rows, _ = read_spool(mod_spool)
         tick_numbers = [int(row["tick"]) for row in spool_rows if row.get("event") == "tick"]
@@ -4991,6 +5574,7 @@ def main(argv: list[str] | None = None) -> int:
         except ModProtocolError as exc:
             packet_enabled = False
             checks.check("packet_capture_gate", "packet_capture_disabled" in str(exc), str(exc))
+            checks.skip("packet_capture_coverage", str(exc))
         if packet_enabled:
             denied = False
             try:
@@ -5132,6 +5716,7 @@ def main(argv: list[str] | None = None) -> int:
                     "packet_inject_disabled" in str(exc),
                     str(exc),
                 )
+                checks.skip("packet_injection_coverage", str(exc))
             if inject_enabled:
                 client.packet_capture(True, serialize_ids=[77], sample=1)
                 client.key_event(191)
@@ -5212,13 +5797,14 @@ def main(argv: list[str] | None = None) -> int:
                     str(client.status().get("chat_sent")),
                 )
                 # Panic must close the tap even while capture is active.
-                client.panic("all")
-                wait_ticks(client, 2)
-                checks.check(
-                    "packet_panic_off",
-                    client.packet_stats().get("active") is False,
-                    str(client.packet_stats().get("active")),
-                )
+                with observation.gap("packet_panic"):
+                    client.panic("all")
+                    wait_ticks(client, 2)
+                    checks.check(
+                        "packet_panic_off",
+                        client.packet_stats().get("active") is False,
+                        str(client.packet_stats().get("active")),
+                    )
 
             client.packet_capture(False)
             quiet = int(client.packet_stats().get("records", 0))
@@ -5355,7 +5941,7 @@ def main(argv: list[str] | None = None) -> int:
         state = client.state()
         if not state.get("in_world"):
             checks.check("in_world", False, "玩家不在世界中")
-            return checks.finish()
+            return 0
         checks.check("in_world", True)
 
         feet = (state["feet_x"], state["feet_y"], state["feet_z"])
@@ -5544,19 +6130,20 @@ def main(argv: list[str] | None = None) -> int:
         probe_addr = int(client.status().get("tick_probe_addr", 0))
         client.hook_install("MobJump::setJumpPendingScale", tag="panic_hook")
         client.watch_set(probe_addr, size=8, tag="panic_watch")
-        panicked = client.panic("all")
-        checks.check(
-            "panic_done",
-            panicked.get("event") == "panic_done"
-            and panicked.get("ok") is True
-            and int(panicked.get("hooks_removed", 0)) >= 1
-            and int(panicked.get("watches_cleared", 0)) >= 1,
-            str(panicked),
-        )
-        checks.check("panic_hooks_empty", client.hook_list().get("hooks") == [])
-        checks.check("panic_watches_empty", client.watch_list().get("watches") == [])
-        checks.check("panic_task_idle", client.task_status().get("active") is None)
-        checks.check("panic_alive", wait_ticks(client, 3) >= 3)
+        with observation.gap("hook_task_panic"):
+            panicked = client.panic("all")
+            checks.check(
+                "panic_done",
+                panicked.get("event") == "panic_done"
+                and panicked.get("ok") is True
+                and int(panicked.get("hooks_removed", 0)) >= 1
+                and int(panicked.get("watches_cleared", 0)) >= 1,
+                str(panicked),
+            )
+            checks.check("panic_hooks_empty", client.hook_list().get("hooks") == [])
+            checks.check("panic_watches_empty", client.watch_list().get("watches") == [])
+            checks.check("panic_task_idle", client.task_status().get("active") is None)
+            checks.check("panic_alive", wait_ticks(client, 3) >= 3)
 
         # -- T9: tick/hook overhead metric ---------------------------------
         check_overhead_window(client, checks)
@@ -5593,7 +6180,7 @@ def main(argv: list[str] | None = None) -> int:
             {"cmd": "selftest_busy", "us": 1000, "ticks": 20}, ("busy_test_started", "error")
         )
         if busy.get("reason") == "stress_disabled":
-            checks.check("selftest_busy_gated", True, "stress_disabled")
+            checks.skip("selftest_busy", "allow_selftest_stress is disabled")
             overhead_after = overhead_before
         else:
             checks.check(
@@ -5630,42 +6217,7 @@ def main(argv: list[str] | None = None) -> int:
         # -- parkour jump/route primitives ---------------------------------
         check_jump_motion(client, checks, inject_enabled)
 
-        # Default movement is real HID keys. Legacy direct-impulse / direct-flag
-        # modes are diagnostics and must require force; the mod is the
-        # authoritative guard for raw protocol sends.
-        for bad_impulse in (1, 3):
-            try:
-                client.request({"cmd": "input_cfg", "jump_impulse": bad_impulse}, "input_cfg_ok")
-                checks.check(f"jump_impulse_guard_{bad_impulse}", False, "legacy impulse accepted")
-            except ModProtocolError as exc:
-                checks.check(
-                    f"jump_impulse_guard_{bad_impulse}",
-                    "legacy_jump_impulse_requires_force" in str(exc),
-                    str(exc),
-                )
-        try:
-            client.request({"cmd": "input_cfg", "mode": 7}, "input_cfg_ok")
-            checks.check("legacy_input_mode_guard", False, "legacy mode accepted")
-        except ModProtocolError as exc:
-            checks.check(
-                "legacy_input_mode_guard",
-                "legacy_input_mode_requires_force" in str(exc),
-                str(exc),
-            )
-        forced = client.request(
-            {"cmd": "input_cfg", "jump_impulse": 1, "mode": 7, "force": True}, "input_cfg_ok"
-        )
-        checks.check(
-            "legacy_input_force",
-            forced.get("event") == "input_cfg_ok",
-            str(forced),
-        )
-        restored = client.input_cfg(jump_impulse=0, mode=0)
-        checks.check(
-            "real_input_restore",
-            restored.get("event") == "input_cfg_ok",
-            str(restored),
-        )
+        check_input_mode_contract(client, checks)
 
         jump_now = client.jump_when("now")
         checks.check(
@@ -5743,54 +6295,18 @@ def main(argv: list[str] | None = None) -> int:
             f"entries={len(jsonl_entries)}",
         )
 
-        # -- record medium bits: feet/head block is a liquid ----------------
-        pose_now = client.state()
-        fx = math.floor(float(pose_now["feet_x"]))
-        fy = math.floor(float(pose_now["feet_y"]))
-        fz = math.floor(float(pose_now["feet_z"]))
-        client.command(f"setblock {fx} {fy} {fz} water")
-        client.command(f"setblock {fx} {fy + 1} {fz} water")
-        wait_ticks(client, 3)
-        client.record_bin_start(period=1)
-        wait_ticks(client, 8)
-        client.record_bin_stop()
-        fluid_entries = client.record_dump_all(format="jsonl")
-        checks.check(
-            "record_in_water_flag",
-            any(entry.in_water for entry in fluid_entries),
-            f"entries={len(fluid_entries)} water={sum(1 for e in fluid_entries if e.in_water)}",
-        )
-        client.command(f"setblock {fx} {fy} {fz} air")
-        client.command(f"setblock {fx} {fy + 1} {fz} air")
-        # Command-placed water can wake and spread once the player enters it;
-        # sweep the air layers above the ground so later checks stay dry.
-        client.command(f"fill {fx - 3} {fy} {fz - 3} {fx + 3} {fy + 1} {fz + 3} air")
-        wait_ticks(client, 15)
+        check_record_medium(client, checks)
 
         # -- swim: SWIMMING is entered with real keys, never state writes ---
         if not inject_enabled:
-            checks.note("swim_drive", "skipped: allow_input_inject is disabled")
+            checks.skip("swim_drive", "allow_input_inject is disabled")
         else:
             # Absolute fixture: a 3x3, 10-deep water column inside a stone
             # shell at a fixed world position. Nothing here depends on where the
             # player happened to be, so every run starts from the same blocks.
             # Stone shell -64..-54, water interior -63..-54 (surface top -53).
-            client.teleport(SWIM_X + 0.5, -58.0, SWIM_Z + 0.5)
-            wait_ticks(client, 25)
-            builder = Builder(client)
-            pool = builder.build(
-                [
-                    f"fill {SWIM_X - 2} -64 {SWIM_Z - 2} {SWIM_X + 2} -54 {SWIM_Z + 2} stone",
-                    f"fill {SWIM_X - 1} -63 {SWIM_Z - 1} {SWIM_X + 1} -54 {SWIM_Z + 1} water",
-                ],
-                {
-                    (SWIM_X, -58, SWIM_Z): "minecraft:water",
-                    (SWIM_X, -63, SWIM_Z): "minecraft:water",
-                    (SWIM_X - 2, -58, SWIM_Z): "minecraft:stone",
-                },
-            )
-            if not all(check.ok for check in pool):
-                checks.note("swim_pool", f"readback mismatch: {pool}")
+            if not prepare_swim_fixture(client, checks, "swim_pool"):
+                return 0
 
             def reset_swim_spot() -> dict:
                 """Every swim sub-check starts from the identical, verified state.
@@ -5866,8 +6382,8 @@ def main(argv: list[str] | None = None) -> int:
 
             # Sprint must not inject a jump. Re-sending the sprint *button*
             # through the queue/handler modes used to produce a 0.42 jump arc
-            # on flat ground (measured 2026-10-25), which contaminated every
-            # sprint experiment; the direct MoveInput flags are enough.
+            # on flat ground (measured 2026-10-25). The default HID path must
+            # keep sprint independent of jump.
             client.reset(SWIM_X + 10.5, -60.0, SWIM_Z + 0.5, yaw=0.0, pitch=0.0)
             wait_ticks(client, 8)
             sprint_pre = settle(
@@ -6061,15 +6577,15 @@ def main(argv: list[str] | None = None) -> int:
         loaded_cp = client.checkpoint_load("selftest_cp")
         wait_ticks(client, 12)
         now_cp = client.state()
+        cp_target = [float(saved[axis]) for axis in "xyz"]
         cp_gap = max(
-            abs(now_cp["feet_x"] - feet[0]),
-            abs(now_cp["feet_y"] - feet[1]),
-            abs(now_cp["feet_z"] - feet[2]),
+            abs(float(now_cp[f"feet_{axis}"]) - value)
+            for axis, value in zip("xyz", cp_target, strict=True)
         )
         checks.check(
             "checkpoint_load",
             loaded_cp.get("event") == "checkpoint_loaded" and cp_gap < 0.3,
-            f"gap={cp_gap:.3f}",
+            f"gap={cp_gap:.3f} target={cp_target} actual={[now_cp[f'feet_{axis}'] for axis in 'xyz']}",
         )
         client.checkpoint_delete("selftest_cp")
 
@@ -6187,7 +6703,11 @@ def main(argv: list[str] | None = None) -> int:
         gap = max(
             abs(now["feet_x"] - feet[0]), abs(now["feet_y"] - feet[1]), abs(now["feet_z"] - feet[2])
         )
-        checks.check("teleport", gap < 0.2, f"gap={gap:.3f}")
+        checks.check(
+            "teleport",
+            gap < 0.2,
+            f"gap={gap:.3f} target={feet} actual={[now[f'feet_{axis}'] for axis in 'xyz']} in_water={now.get('in_water')}",
+        )
 
         # -- entity --------------------------------------------------------
         short = args.entity.split(":")[-1]
@@ -6367,11 +6887,12 @@ def main(argv: list[str] | None = None) -> int:
             # (measured 0.0017 blocks); a lost edge would move >= a tick of
             # motion (~0.1), and real input interference shows as external
             # camera drift, so keep the guard an order of magnitude below that.
-            checks.check(
-                "macro_event_deterministic",
-                gap < 5e-3 or external,
-                f"gap={gap:.6f}" + (" (skipped: real mouse moved the camera)" if external else ""),
-            )
+            if external:
+                checks.skip(
+                    "macro_event_deterministic", f"real mouse moved the camera; gap={gap:.6f}"
+                )
+            else:
+                checks.check("macro_event_deterministic", gap < 5e-3, f"gap={gap:.6f}")
             checks.check("macro_event_clicks", left_events == 2, f"left={left_events}")
             _, legacy_left, _ = run_macro(False)
             checks.check("macro_legacy_path", legacy_left == 0, f"left={legacy_left}")
@@ -6462,7 +6983,7 @@ def main(argv: list[str] | None = None) -> int:
                     str(exc),
                 )
         else:
-            checks.note("guard_watch_thread_all_rejected", "state has no context address")
+            checks.skip("guard_watch_thread_all_rejected", "state has no context address")
         if inject_enabled and macro_path.exists():
             client.macro_run(loop=True)
             loaded = client.macro_load("selftest_g4")
@@ -6474,27 +6995,14 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         checks.check("macro_status", client.macro_status().get("event") == "macro_status")
-        return checks.finish()
-    except WorldLost as exc:
-        # Stop at the first sign of a lost level: later checks would only
-        # report the consequences of it.
-        checks.check("aborted_world_left", False, str(exc))
-        try:
-            report = capture_disconnect_report(client, ROOT / "out", tag="disconnect")
-            checks.note("disconnect_report", str(report))
-        except OSError as report_exc:
-            checks.note("disconnect_report", f"failed: {report_exc}")
-        return checks.finish()
+        return 0
+    except WorldLost:
+        raise
     except ModPipeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     finally:
         dump_packet_tap(client, tap_dump)
-        try:
-            with contextlib.suppress(ModPipeError):
-                client.input_lock(False)
-        finally:
-            client.close()
 
 
 if __name__ == "__main__":

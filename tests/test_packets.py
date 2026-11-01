@@ -6,6 +6,24 @@ import unittest
 from driver.harness.packets import PacketDecodeError, Reader, decode_packet, decode_row
 
 
+class CaptureFailureTests(unittest.TestCase):
+    def test_failed_capture_is_not_decoded_as_an_empty_or_valid_packet(self):
+        for payload in ("", "invalid hex", "00"):
+            result = decode_row(
+                {"id": 77, "hex": payload, "serialized": False, "reason": "packet_serialize_fault"}
+            )
+            self.assertEqual(result["capture_error"], "packet_serialize_fault")
+            self.assertIs(result["serialized"], False)
+            self.assertNotIn("fields", result)
+            self.assertNotIn("decode_error", result)
+
+    def test_failed_unknown_packet_preserves_identity(self):
+        result = decode_row({"id": 999, "serialized": False})
+        self.assertEqual(result["id"], 999)
+        self.assertEqual(result["name"], "id_999")
+        self.assertEqual(result["capture_error"], "packet_serialize_failed")
+
+
 def varint(value: int) -> bytes:
     out = bytearray()
     while True:

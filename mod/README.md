@@ -75,6 +75,13 @@ xmake -j4 -y
 | `packet_drain` | `since,limit`；身份记录（无字节），`seq` 单调、`injected` 预留 |
 | `packet_bytes` | `since,limit`；B3 白名单序列化的 `{seq,id,size,hex}`（最多前 128 B） |
 | `symbol_resolve` | `name`；编译期锚点 + E9/FF25 跟随，返回 `{anchor,real,module,rva}` |
+| `violation_watch` | `on`（默认 true）、`addr`（**运行期**地址）、`mode=synthetic`；只读记录协议违规通知，需 `allow_hook_va` 且在世界内；`synthetic` 只验证记录设施 |
+| `violation_stats` | 无参；`{active,address,callback_hooked,screen_hooked,inbound_hooked,inbound_hits,inbound_sampled,inbound_bytes,inbound_head,hits,synthetic,capacity}` |
+| `disconnect_route` | `reason`（默认 90）；通过真实 `composeRoute` 渲染断线页路由，返回 `{route,length}`，用于验证 screen 侧记录 |
+| `violation_drain` | `since,limit`；`{index,seq,tick,tid,source,response,verdict,packet_id,packet_size,error_value,category,context,detail,before_hex,context_hex,detail_hex,context_truncated,detail_truncated,synthetic}` |
+| `violation_text` | `since,limit`；**整段原文**：违规 context 与错误页 details 复制进预分配 4 KB 槽（每类 8 槽），不受记录行上限约束；`{index,tick,kind,len,truncated,text}` |
+| `inbound_drain` | `since,limit`；同一记录结构，`source:"inbound"` 的**解析入口切片**行；`context_hex` 从包 id 开始，`before_hex` 是切片前 16 字节（实测为无关堆数据，长度前缀不在其中） |
+| `inbound_dump` | `path`；把入站环直接写成 JSON 文件（多客户端时管道回复可能被别的连接截走，取证用这条） |
 | `packet_stats` | 记录数/丢失/denied/peer_sends/hook 状态 |
 | `screen` | 当前界面名（`hud_screen` / `inventory_screen` / `chat_screen` / `pause_screen`） |
 | `set` | `forward,strafe,sprint,sneak,jump,ticks`；默认读当前键位并合成真实 Hardware HID 按键（`state.bindings` 可见），`ticks=-1` 持续 |
@@ -206,14 +213,21 @@ Python `panic()` 保留先于 `panic_done` 到达的领域取消事件，供原�
 队列最多 256 条，消费者落后至队列满时明确终结，不静默覆盖。跑酷 landed/hurt/died
 同样移到后台格式化，采样故障/事件丢失由 `parkour_diagnostic` 报告。
 
-当前基线：live selftest **992/992**（跑之前先 `clear @s` 清空快捷栏，否则
+封包采集：身份读取和可选序列化有局部 SEH/C++ 边界；`packet_stats` 的
+`id_faults/byte_faults` 统计观察失败，采集重新开始时清零。字节采集失败保留对应身份，
+`packet_bytes` 返回同 seq 的 `serialized=false/size=0/hex=""/reason`，不发布部分数据；
+Python `decode_row` 返回 capture_error。正常封包投递继续，断开报告会保留采集统计。
+SDK 序列化仍使用可增长字符串，本批没有证明零分配或性能收益。
+
+历史全绿基线：live selftest **992/992**（跑之前先 `clear @s` 清空快捷栏，否则
 `task_use_server_terminal` / `task_operations` 会 skip；`harness.json` 开 `allow_input_inject`/
 `allow_selftest_stress` 和 `allow_packet_capture`/`allow_packet_inject`；2026-10-31 全套，无跳过）、
 离线单测 **346/346**。最终坐标/朝向/能力/背包/站稳、释放与解锁已回读恢复；113 个既有
 crash 文件无新增/修改，安装/构建/打包哈希一致。此前身份批次的收尾退出异常在用户
-正常退出重启后恢复；BadPacket 具体触发包仍 unresolved，有限重放未复现不能排除低频回归。
-临时配置已恢复并重新加载。真实错误页上的 recover 尚无现场验收，候选分类不证明保存已完成，
-只有显式 --force 才可强停。封包真实生命周期 **55/55**、传送 **45/45** / 生命周期 **50/50**。
+正常退出重启后恢复。后续真实错误页 recover 已验收；仅确认 disconnect_error 或显式
+--force 才强停，未知/退出中仍保留保存门禁。23:38 新现场已捕获 SetActorData（39）/
+error_value=104/最终原因90，成因仍 unresolved；最新完整 465/466 中止，详见下文。
+封包真实生命周期 **55/55**、传送 **45/45** / 生命周期 **50/50** 为此前验收记录。
 常用实测数字：
 
 内部 tick 错误：后台发送原有 error/internal_error（增加 recovery_id/tick/truncated），
@@ -470,6 +484,35 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 - H4 的 36/19 解码是标准 Bedrock 布局：36 是客户端→服务端，19 在单机里没有对端玩家，
   两者都仍然只有单测；接收侧已实测到 `Text(9)`、`AddActor(13)`、`MoveDeltaActor(111)`，
   但没有对应的解码器（保持原始 hex）。
+- 入站切片测量（2026-11-01）：`violation_watch` 同一开关还装一只 `Packet::readNoHeader`
+  入口的只读钩子（五个 `void*` 原样透传，绝不虚调用，只 `readMemory`），采样 1/4 进 1024 环。
+  实测切片**以包 id 开头**（39 SetActorData、111 MoveDeltaActor、144 PlayerAuthInput），
+  长度前缀已被切分器消费；187/188 的 `payload+2` 是两个 id 的 varint 宽度，不是固定包头。
+  `before_hex` 保留切片前 16 字节；实测那里是无关堆数据（切片是拷贝，帧的 length 前缀不在附近），
+  所以 `slice_verdict()` 只在能读出合理声明时才判 `framed`/`clipped`，否则 `unknown`。本地世界是 loopback，
+  该钩子看到的是**本进程解析的所有包**（含客户端上行），不是只有下行。
+- 违规守望 `violation_watch` 是**只读**诊断：装在被包裹函数的**运行期**地址上，需要
+  `allow_hook_va`、在世界内、默认关闭，`panic` 会一并卸下。角色地址在 `docs/roles` 里是
+  `image_base=0x140000000` 下的静态 VA；本机 exe 被 PeEditor 改写首选基址并 ASLR，
+  所以运行期地址 = `diag.module_base + (role_va - image_base)`（已用 mem_read 在 RVA
+  `0x12FA0F0` 处核对到标准函数序言）。该函数有 10 个参数（6 个在栈上），**不能**用通用
+  四寄存器 VA hook，必须用同签名 typed wrapper。
+  记录字段：`seq/tick/tid/response/packet_id/packet_size/error_value/category/context`
+  （记录行内 context ≤191 B、detail ≤639 B 便于对齐；**完整原文**走 `violation_text`，单槽 4 KB，超出才置 `truncated`），环容量 256、回调内零分配/零 JSON/零锁，
+  永远以原参数调用原实现，不改校验结果与断开行为。`mode=synthetic` 只验证记录设施，
+  **不算**真实违规复现；自然样本另见下文 23:38 的验收记录。
+  同一开关还会钩住 `OreUI::EntryPoints::DisconnectScreen::composeRoute`（普通导出符号，
+  不需要 VA）：经过该函数时记一行 `source=screen`，`response` 为路由原因码，
+  `context` 为码字，`detail` 为最多 639 字节的页面详情（整页约 570 字符，含 Date/Transport/各会话 GUID），可能为空或丢失非 ASCII 字符。
+  这与 `source=callback` 的 `response`（违规处理等级）语义不同。
+  手动路由验证只证明设施可用；当前人工 screen 行正确标 synthetic，旧版曾误标 false。
+  `LEVIPILOT_VIOLATION_DUMP` 由所有 live 入口统一读取，导出起始游标后的增量；
+  设施自测会恢复外层武装，`panic` 卸载断言后再武装，报告明确记录观察空窗。
+  2026-10-31 22:32 的正常能力对照在未武装组 reset 后退档，
+  第二组未执行，不算通过；证据与完整边界见 `docs/mod-internals.md` 的违规守望小节。
+  后续在当前 DLL、同一进程完成先开启后关闭的正常能力对照，各 **33/33**；两组均未退档，
+  环新增 0、lost=0，姿态/能力/站稳恢复并解锁，113 个 crash 无新增或修改。
+  该对照没有自然断开，不能用来验证真实 screen/callback 链或根因，也不替代全套。
 - H2 只能注入 `CommandRequestPacket(77)`，而且必须先有一条真实的 77 包做模板；
   `op_self` 会修改世界里的玩家权限（测试世界用，别在日常存档里开）。
   `chat_send_queued` 只表示接受；同域忙时回 `packet_inject_busy`，不会覆盖旧文本。
@@ -554,6 +597,35 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   stride、count，profile 已知组件附带 name/size。stride 由同一 storage 的两个元素地址差
   推断，只有一个元素时为 0；组件默认读取长度依次取 profile 尺寸、stride、64 字节。
   `ecs_registries` 列出客户端 registry；runtime-id 请求读取服务端，context 会核对所属侧。
+
+### 诊断与完整覆盖门禁（2026-10-31 后续）
+
+所有 live 自检入口均读取 `LEVIPILOT_VIOLATION_DUMP`，结束前导出增量、合成/真实行数、
+丢失数、状态及观察空窗。设施自测和 panic 会实际卸下，恢复武装也不意味着没有空窗。
+人工 `disconnect_route` 现在正确标 synthetic；屏幕的 `disconnect_reason/response` 为
+路由原因码，`verdict=disconnect`，回调 response 仍是违规处理等级。已有屏幕无法补录，
+详情限 639 字节并替换非 ASCII；自然断开完整采集链已有下述现场样本，根因仍未定位。
+
+自检显式输出 PASS/FAIL/SKIP；`--require-complete` 将必需 skip 判为失败，普通模式仍可
+在权限关闭时降级，但数字会保留 skip。本批设施专项 21/21；关闭注入权限的门禁对照
+2/3（1 required skip，预期 exit 1）。原函数槽生命周期已按 SDK 契约修复，未做热卸载
+或任意并发启停证明，详见 mod-internals 的对应小节。
+
+水中录制与 H0 方块身份检查现共用固定封闭水池；旧开放水源会留下流动水并污染后续
+位置验证。专项复现 `py -3.11 driver/selftest.py --record-medium-only --require-complete`，
+本批 11/11；首轮完整 1053/1055 的失败记录保留，完整重跑结果见 mod-internals。
+
+2026-10-31 **23:38:53** 最新完整自检在 flight finally 恢复期间自然退档，
+结果 **465/466，1 fail、0 skip**。观察无事前空窗，新增两行非合成记录：
+callback=`response=3/packet_id=39/packet_size=34/error_value=104`；
+同 tick 861、同线程的 screen=`disconnect_reason=90/context=Block`。
+SDK 公开枚举中 39 是 **SetActorData**；size 参数边界、104 含义、方向及具体成因仍未知。
+这次已验证 mod 自己读到自然错误页原因，不需要桌面点击；上下文/详情均截断，不能当完整文本。
+原配置恢复并重启加载，真实错误页 recover exit 0，最终状态回读 16/16，113 个 crash 无变化。
+离线 **362/362**、ruff/format/mypy、C++ 构建与 profile 检查通过；**完整现场尚未全绿**，
+水池修复仅专项验收，不据此提交为全套通过。证据与边界见
+[`mod-internals`](../docs/mod-internals.md)，后续可转交
+[`诊断提示词`](../docs/notes/prompts/badpacket-setactordata-20261031.md)。
 
 ## License
 

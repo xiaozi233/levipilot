@@ -55,7 +55,101 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["level"]           = level.has_value();
         out["server_level"]    = mc.has_value() && mc->getLevel() != nullptr;
         out["commands"]        = mc.has_value() && static_cast<bool>(mc->mCommands);
+        // Roles are static VAs under docs/roles' documented image base; this is
+        // where the running image actually sits (ASLR / packed preferred base).
+        out["module_base"]     = gameModuleBase();
         enqueue(out.dump());
+        return true;
+    }
+    if (cmd == "violation_watch") {
+        // Off by default; the address comes from docs/roles, never from a
+        // constant here. Synthetic mode publishes one self-test row so the
+        // record/drain plumbing can be checked without a real violation.
+        auto const mode = j.value("mode", std::string{});
+        if (mode == "synthetic") {
+            enqueue(violationWatchSynthetic().dump());
+            return true;
+        }
+        if (!j.value("on", true)) {
+            enqueue(violationWatchStop().dump());
+            return true;
+        }
+        std::uint64_t address = 0;
+        if (j.contains("addr")) {
+            auto const& value = j["addr"];
+            if (value.is_string()) {
+                try {
+                    address = std::stoull(value.get<std::string>(), nullptr, 16);
+                } catch (...) {
+                    enqueue(R"({"event":"error","reason":"bad_addr"})");
+                    return true;
+                }
+            } else if (value.is_number_unsigned()) {
+                address = value.get<std::uint64_t>();
+            } else {
+                enqueue(R"({"event":"error","reason":"bad_addr"})");
+                return true;
+            }
+        }
+        if (address == 0) {
+            enqueue(R"({"event":"error","reason":"bad_addr"})");
+            return true;
+        }
+        enqueue(violationWatchStart(
+                    address,
+                    mAllowHookVa.load(std::memory_order_relaxed),
+                    mWorld.inWorld()
+        ).dump());
+        return true;
+    }
+    if (cmd == "disconnect_route") {
+        enqueue(disconnectRouteProbe(
+                    j.value("reason", 90),
+                    j.value("codeword", std::string{"Block"}),
+                    j.value("details", std::string{})
+        ).dump());
+        return true;
+    }
+    if (cmd == "inbound_dump") {
+        // Write the ring to disk instead of the pipe: with more than one client
+        // attached the reply can be delivered to another connection, so the
+        // evidence must not depend on who is listening.
+        std::string const path = j.value("path", std::string{"inbound-dump.json"});
+        std::ofstream     file(path, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            enqueue(nlohmann::json{{"event", "error"}, {"reason", "open_failed"},
+                                   {"path", path}}.dump());
+            return true;
+        }
+        file << inboundDrainJson(0, 1024).dump();
+        file.flush();
+        enqueue(nlohmann::json{{"event", "inbound_dump"}, {"ok", true}, {"path", path}}.dump());
+        return true;
+    }
+    if (cmd == "inbound_drain") {
+        std::uint64_t const since = j.value("since", std::uint64_t{0});
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 512), 1, 1024);
+        enqueue(inboundDrainJson(since, limit).dump());
+        return true;
+    }
+    if (cmd == "violation_text") {
+        std::uint64_t const since = j.value("since", std::uint64_t{0});
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 8), 1, 8);
+        enqueue(violationTextJson(since, limit).dump());
+        return true;
+    }
+    if (cmd == "inbound_sample") {
+        enqueue(inboundSampleJson(j.value("sample", 4)).dump());
+        return true;
+    }
+    if (cmd == "violation_stats") {
+        enqueue(violationWatchStats().dump());
+        return true;
+    }
+    if (cmd == "violation_drain") {
+        std::uint64_t const since = j.value("since", std::uint64_t{0});
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 512), 1, 256);
+        enqueue(violationDrainJson(since, limit).dump());
         return true;
     }
     if (cmd == "diagnose") {
@@ -93,8 +187,10 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         int const         hooksRemoved  = hooksLevel ? hookRemoveAll() : 0;
         std::size_t       watchesRemoved = 0;
         bool              watchesOk      = true;
+        bool              violationStopped = true;
         if (hooksLevel) {
             packetCaptureStop();
+            violationStopped = !violationWatchStop().value("active", true);
             watchesOk      = watchRemoveAll();
             watchesRemoved = watchesOk ? watchesBefore : 0;
         }
@@ -113,7 +209,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             nlohmann::json{
                 {"event",            "panic_done"       },
                 {"level",            level              },
-                {"ok",               watchesOk          },
+                {"ok",               watchesOk && violationStopped},
+                {"violation_watch_stopped", violationStopped},
                 {"hooks_removed",    hooksRemoved       },
                 {"watches_cleared",  watchesRemoved     },
                 {"tasks_cancelled",  tasksLevel         },

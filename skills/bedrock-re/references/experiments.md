@@ -161,7 +161,8 @@ with ModClient() as client:
 - 每轮用 `driver/landing.py` 落盘：`begin` → `probe` → `claim` → `end`；
   结案跑 `close`（lint + profile 检查）。
 - 改了 mod 命令/行为：按 `AGENTS.md` 流程补 `tests/` 单测 + `driver/selftest.py` 检查 +
-  `mod/README.md` 的「实测/限制」与基线数字（当前 **222/222** live、**208** 离线）。
+  `mod/README.md` 的「实测/限制」；最新通过/失败、缺测与基线数字以该处及
+  `docs/mod-internals.md` 为准，不在本参考页重复维护历史计数。
 - 跨版本复核静态结论用 `tools/ida.py` + [docs/notes/](../../../docs/notes/)；不要复制/重开 `.i64`。
 
 ## 6. 收尾检查清单

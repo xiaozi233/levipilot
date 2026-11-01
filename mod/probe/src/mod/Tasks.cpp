@@ -512,7 +512,7 @@ bool ProbeMod::tickPlace(LocalPlayer& player, PlaceTask& task, TaskStep& step) {
         return finish("no_gamemode", false, "");
     }
 
-    if (task.phase == 0) {
+    if (task.phase == PlacePhase::Prepare) {
         if (source.getBlock(target).getTypeName() != "minecraft:air") {
             return finish("occupied", false, source.getBlock(target).getTypeName());
         }
@@ -589,11 +589,11 @@ bool ProbeMod::tickPlace(LocalPlayer& player, PlaceTask& task, TaskStep& step) {
             mSlotRequest.store(task.slot);
         }
         task.face  = face;
-        task.phase = 1;
+        task.phase = PlacePhase::UseItem;
         return false;
     }
 
-    if (task.phase == 1) {
+    if (task.phase == PlacePhase::UseItem) {
         if (task.elapsed >= task.maxTicks) {
             return finish("timeout", false, source.getBlock(target).getTypeName());
         }
@@ -624,7 +624,7 @@ bool ProbeMod::tickPlace(LocalPlayer& player, PlaceTask& task, TaskStep& step) {
         if (!used.mSuccess) {
             return finish("use_failed", false, before);
         }
-        task.phase    = 2;
+        task.phase    = PlacePhase::Verify;
         task.verifyAt = task.elapsed + 2;
         return false;
     }

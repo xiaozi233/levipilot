@@ -22,7 +22,7 @@
 | 5 | P2 / 本批完成 | `State.cpp::captureScan`、`QueryModel.h::advanceScan` | 原实现缺少每 tick 预算，过滤 air 时小 limit 也读完整区域。现每 tick 最多 512 格，带取消/超时、tick 跨度和截断原因；native 验证顺序/边界/零分配，现场 32768 格为 64 批，重连和退出取消通过。扫描跨 tick，不能当成同 tick 的原子世界快照。 |
 | 6 | P2 / 部分重构 | `ProbeMod.h` 宏/输入字段、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | ProbeMod 仍负责多领域状态。播放已迁 MacroPlayback，移除旧宏帧锁与松散播放字段；录制/输入跨 TU 的整体会话、按键与锁存所有权仍需统一，避免 reset/stop 遗漏。按 MacroSession/InputSession 继续封装，明确线程所有权与锁顺序；保留 Internal.h 作为统一共享入口的仓库约定。 |
 | 7 | P2 / 部分重构 | `Server.cpp::serverPlayerContext/captureTeleport`、`Flight.cpp`、`Entities.cpp::captureEntityStage` | 背包四组写入、命令、权限与物品使用已共用 ServerPlayerContext，按 UUID/世界代次解析，显式命令玩家名仍支持。未知玩家不再静默使用控制台 origin。传送已接入共享解析器并通过现场验收；实体/飞行仍有独立解析与名字兜底；继续统一身份策略及领域错误，不跨线程保存 Actor 指针。 |
-| 8 | P2 / 验证完善 | `driver/selftest.py::Checks.note/finish`、`check_task_operations` 等 | skip 只打印 NOTE，不进入结果分母；权限关闭或无空槽时，“全部通过”的数字会下降而看不出缺测。改为 pass/fail/skip 三态，输出原因和预期覆盖；完整验收模式遇必需检查 skip 应失败。拆分接近 3000 行的现场套件，以 fixture 明确前置状态与恢复。 |
+| 8 | P2 / 验证完善 | `driver/selftest_support.py::Checks`、`driver/selftest.py` | 已实现 pass/fail/skip 三态，缺少权限/空槽或相机干扰的缺测进入分母，--require-complete 遇必需 skip 返回失败；四组 finally 保留首错，默认/专项共用观察导出。设施及必需 skip 现场对照已通过，完整验收在跟踪文档记录；领域检查仍需继续按 fixture 拆分，不能由统计改造推断交互效果均已覆盖。 |
 | 9 | P2 / 本批完成 | `State.cpp::captureState/stateJson` | 原方块读取失败被静默吞掉，响应缺字段却像完整成功。现局部 SEH 返回 partial/warnings，正常查询可恢复；专项验证失败字段缺省、其他字段存在及后续恢复。整条采样 C++ 异常走明确的 capture_failed，不再静默成功。 |
 | 10 | P3 / 重构 | `TaskModel.h::PlaceTask::phase`、`Tasks.cpp::tickPlace`、`Input.cpp::applyControls` | phase=0/1/2 和 mode 的位数语义分散在分支中，读代码时依赖记忆，新增阶段/模式容易漏分支。引入 PlacePhase 和具名输入模式位；只在协议边界保留兼容数字。顺带移除构建已报告的未用 Key 常量。 |
 | 11 | P3 / 文档完善 | `docs/mod-internals.md` 的历史“移动、跳跃与输入”与实验辅助小节、`docs/architecture.md` 的 CI 说明、`skills/bedrock-re/SKILL.md` 的旧基线 | 局部仍把 jumpFromGround 写成默认路径，或称完整 mod 仅本机构建；与当前 HID 默认实现、GitHub mod-build 作业不符。把历史实测明确标为 legacy，把现行契约与验收基线集中维护；不要删除原始历史证据。 |
@@ -31,13 +31,24 @@
 ## 已修复问题与验收界限
 
 2026-10-31 后续：命令包来源模板已改定长值载荷，注入移出 tick 并复用独占分阶段生命周期，
-详情见 reliability-repairs.md；通用 PacketTap 的 `packet.write(BinaryStream)` 仍在高频钩子里，
-存在 SDK 字符串分配及缺少局部异常边界的问题，是第 12 项后续范围。有限重放未复现 BadPacket，
-不能排除低频回归；触发包仍 unresolved。完整自检的朝向检查已补同步前提，panic 已区分领域取消
+详情见 reliability-repairs.md；通用 PacketTap 的 getId/序列化已补局部 SEH/C++、故障计数和
+按 seq 关联的失败字节记录。`packet.write(BinaryStream)` 仍在高频钩子里，SDK 字符串分配
+与执行预算继续保留在第 12 项。此前有限重放未复现不能排除低频 BadPacket；
+最新自然事件证据及未解决范围见下段。完整自检的朝向检查已补同步前提，panic 已区分领域取消
 与自身回执；菜单等待使用 ready 门禁，保存未确认时 recover 保留进程。最终离线 **346/346**、
 完整现场 **992/992（无跳过）**，封包真实生命周期 **55/55**、传送专项 **45/45**、
 真实生命周期 **50/50**；配置逐字节恢复并重启加载，最终恢复检查 **17/17**。
-真实断开错误页恢复仍缺现场样本；不将局部通过推广为第 12 项完成。
+上述是历史验收；真实错误页恢复后续已有现场样本，不将局部通过推广为第 12 项完成。
+
+23:38:53 最新完整自检 **465/466**，flight finally 恢复期间自然退档，不能宣称当前全绿。
+观察取得同 tick/tid 的 callback（`packet_id=39/packet_size=34/error_value=104/response=3`）
+及 screen（`disconnect_reason=90/context=Block`），real=2、synthetic=0、lost=0、faults=0。
+SDK 枚举中 39 为 SetActorData；具体字段、size 参数边界、104 含义、方向及生产链仍未知。
+能力附近的时序不是因果证据，capture/chat 计数也不能排除间接影响。优先转交
+[`诊断提示词`](notes/prompts/badpacket-setactordata-20261031.md)；本批不执行新增逆向。
+最新离线 **362/362**，静态检查、构建/profile/roles 通过；真实错误页 recover exit 0，
+原配置/姿态/背包/能力/输入等恢复回读 **16/16**。水流夹具修复专项 11/11，
+其后完整尚未走到该夹具。完整失败及原始证据保留在 reliability-repairs 中。
 
 补充待复核（P2，根因未确认）：玩家身份批次的完整自检 **698/698** 后，清理阶段出现
 world_left；HBUI 主菜单和服务端已释放，但 worlds.ready 持续 false，安全门重进返回

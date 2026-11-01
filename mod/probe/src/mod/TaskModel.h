@@ -89,11 +89,14 @@ struct MineTask {
     detail::FixedText<> block;
 };
 
+enum class PlacePhase : int { Prepare = 0, UseItem = 1, Verify = 2 };
+
 struct PlaceTask {
     int                 x = 0, y = 0, z = 0, againstX = 0, againstY = 0, againstZ = 0;
     int                 face = -1, slot = -1;
     detail::FixedText<> expected;
-    int                 maxTicks = 30, elapsed = 0, phase = 0, verifyAt = 0;
+    int                 maxTicks = 30, elapsed = 0, verifyAt = 0;
+    PlacePhase          phase = PlacePhase::Prepare;
     bool                autoAgainst = true;
 };
 

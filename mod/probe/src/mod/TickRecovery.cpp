@@ -24,7 +24,7 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
 
     bool released = releaseRealInput();
     if (!releaseInputEvents()) released = false;
-    if (mButtonMode.load() || mJumpImpulseMode.load()) {
+    if (mInputMode.load() != ControlInputMode::Hardware || mJumpImpulseMode.load() != JumpImpulse::None) {
         if (!guardedControl(ControlOp::Legacy, [&] {
                 auto client = ll::service::getClientInstance();
                 return client && client->getLocalPlayer() == &player

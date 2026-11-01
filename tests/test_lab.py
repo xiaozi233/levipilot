@@ -15,14 +15,19 @@ from driver.harness.lab import (
     KEY_W,
     Builder,
     RecordSession,
+    declared_length,
+    decode_inbound_slice,
     double_space_fly,
     fit_recursion,
     fnv1a,
     liquid_kind,
     move_and_wait,
+    read_varint,
     recursion,
     segments,
+    slice_verdict,
     steady,
+    summarize_inbound_slices,
     swim_drive,
     swim_stop,
     swimming_state,
@@ -322,6 +327,29 @@ class DoubleSpaceTests(unittest.TestCase):
         self.assertEqual(len([c for c in client.calls if c[0] == "key"]), 8)
 
 
+class DisconnectReportTests(unittest.TestCase):
+    def test_failed_state_probe_preserves_packet_fault_evidence(self):
+        import json
+        import tempfile
+        from unittest.mock import Mock
+
+        from driver.harness import ModClient, ModPipeError
+        from driver.harness.lab import capture_disconnect_report
+
+        client = Mock(spec=ModClient)
+        client.state.side_effect = ModPipeError("level gone")
+        for name in ("screen", "worlds", "status", "diag"):
+            getattr(client, name).return_value = {}
+        client.packet_stats.return_value = {"id_faults": 2, "byte_faults": 3}
+        client.packet_drain.return_value = {"hits": [{"seq": 4, "id": 144}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = capture_disconnect_report(client, directory)
+            report = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(report["state"]["event"], "probe_failed")
+        self.assertEqual(report["packet_stats"], {"id_faults": 2, "byte_faults": 3})
+        self.assertEqual(report["packet_tap"]["hits"][0]["seq"], 4)
+
+
 class WorldStateTests(unittest.TestCase):
     """The disconnect error page is HBUI too, so it must not read as a menu."""
 
@@ -401,3 +429,75 @@ class WorldStateTests(unittest.TestCase):
             ),
             "exiting",
         )
+
+
+class InboundSliceTests(unittest.TestCase):
+    """The parse boundary gives [id][payload]; the length prefix is not in it."""
+
+    def test_varint_roundtrip(self) -> None:
+        self.assertEqual(read_varint(bytes([0x05])), (5, 1))
+        self.assertEqual(read_varint(bytes([0xBC, 0x01])), (188, 2))
+        self.assertEqual(read_varint(bytes([0x80])), (None, 0))
+
+    def test_slice_starts_with_packet_id(self) -> None:
+        decoded = decode_inbound_slice("2706010007078080c08480838003000000")
+        assert decoded is not None
+        self.assertEqual(decoded["packet_id"], 39)  # SetActorData
+        self.assertEqual(decoded["id_bytes"], 1)
+        self.assertEqual(decoded["payload_bytes"], 16)
+
+    def test_two_byte_id_is_why_188_slices_are_payload_plus_two(self) -> None:
+        decoded = decode_inbound_slice("bc01" + "00" * 5)
+        assert decoded is not None
+        self.assertEqual(decoded["packet_id"], 188)
+        self.assertEqual(decoded["id_bytes"], 2)
+        self.assertEqual(decoded["payload_bytes"], 5)
+        self.assertEqual(decoded["slice_bytes"], 7)
+
+    def test_declared_length_must_end_at_the_boundary(self) -> None:
+        self.assertEqual(declared_length("0010"), {"candidates": [{"bytes": 1, "value": 16}]})
+        self.assertIsNone(declared_length(""))
+
+    def test_framed_when_declared_matches(self) -> None:
+        decoded = decode_inbound_slice("bc01" + "00" * 5, "05")
+        self.assertEqual(slice_verdict(decoded), "framed")
+
+    def test_clipped_when_declared_exceeds_delivery(self) -> None:
+        decoded = decode_inbound_slice("bc01", "05")
+        self.assertEqual(slice_verdict(decoded), "clipped")
+
+    def test_zero_declaration_is_unknown_not_a_verdict(self) -> None:
+        # Bytes before a copied slice are unrelated heap data.
+        decoded = decode_inbound_slice("bc01" + "00" * 5, "0000000000")
+        self.assertEqual(slice_verdict(decoded), "unknown")
+
+    def test_garbage_slice_is_none(self) -> None:
+        self.assertIsNone(decode_inbound_slice(""))
+        self.assertIsNone(decode_inbound_slice("zz"))
+
+    def test_summary_counts_and_tail(self) -> None:
+        rows = [
+            {
+                "tick": 1,
+                "decoded": {"packet_id": 187, "slice_bytes": 35, "payload_bytes": 33},
+                "verdict": "unknown",
+                "slice_hex": "bb01aa",
+            },
+            {
+                "tick": 2,
+                "decoded": None,
+                "verdict": "unknown",
+                "slice_hex": "",
+            },
+            {
+                "tick": 3,
+                "decoded": {"packet_id": 187, "slice_bytes": 36, "payload_bytes": 34},
+                "verdict": "unknown",
+                "slice_hex": "bb01bb",
+            },
+        ]
+        summary = summarize_inbound_slices(rows, limit=1)
+        self.assertEqual(summary["rows"], 3)
+        self.assertEqual(summary["decoded"], 2)
+        self.assertEqual(summary["by_id_size"], {"187:35": 1, "187:36": 1})
+        self.assertEqual([row["slice_bytes"] for row in summary["tail"]], [36])

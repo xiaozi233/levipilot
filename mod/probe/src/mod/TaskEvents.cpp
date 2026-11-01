@@ -79,7 +79,7 @@ nlohmann::json ProbeMod::taskStatusJson() {
                     } else {
                         out["target"] = {task.x, task.y, task.z};
                         if constexpr (std::is_same_v<T, MineTask>) out["block"] = task.block.c_str();
-                        else out["phase"] = task.phase;
+                        else out["phase"] = static_cast<int>(task.phase);
                     }
                 }
             }

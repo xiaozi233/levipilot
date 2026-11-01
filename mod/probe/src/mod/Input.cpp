@@ -284,8 +284,8 @@ bool ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
     // Default path: physical key edges only. Legacy flag/queue/handler/impulse
     // modes exist only for reproducing old measurements and require an explicit
     // input_cfg force.
-    if (mButtonMode.load(std::memory_order_relaxed) == 0
-        && mJumpImpulseMode.load(std::memory_order_relaxed) == 0) {
+    if (mInputMode.load(std::memory_order_relaxed) == ControlInputMode::Hardware
+        && mJumpImpulseMode.load(std::memory_order_relaxed) == JumpImpulse::None) {
         return applyRealInput(player, state);
     }
     if (!releaseRealInput()) return false;
@@ -308,9 +308,9 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
     if (jumpEdge) {
         mJumpEdgeThisTick = true;
     }
-    int const mode = mButtonMode.load();
+    auto const mode = mInputMode.load();
 
-    if ((mode & 1) && (engaged || mInputActive)) {
+    if (hasInputMode(mode, ControlInputMode::DirectFlags) && (engaged || mInputActive)) {
         if (engaged) mInputActive = true; // Retain cleanup intent across a partial SDK call.
         // Directly maintain the local MoveInputComponent flags. Only touch them
         // while our own control is active; otherwise we would overwrite real
@@ -336,7 +336,7 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
         mInputActive = engaged;
     }
 
-    if (mode & 2) {
+    if (hasInputMode(mode, ControlInputMode::Queue)) {
         if (auto* queue = inputQueue(client)) {
             bool const buttons[9] =
                 {false, false, false, false, state.sprint, state.sneak, state.jump, state.rmb, state.lmb};
@@ -345,7 +345,7 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
                 // Re-sending it as the sprint *button* made the game jump on flat
                 // ground (measured 2026-10-25: modes 2/4 + sprint=true + forward=0
                 // produced a 0.42 arc), which contaminated sprint experiments.
-                if (i == 4 && (mode & 1)) {
+                if (i == 4 && hasInputMode(mode, ControlInputMode::DirectFlags)) {
                     mButtonStates[i] = false;
                     continue;
                 }
@@ -367,12 +367,12 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
         }
     }
 
-    if (mode & 4) {
+    if (hasInputMode(mode, ControlInputMode::Handler)) {
         if (auto* handler = inputHandler(client)) {
             bool const buttons[9] =
                 {false, false, false, false, state.sprint, state.sneak, state.jump, state.rmb, state.lmb};
             for (size_t i = 4; i < 9; ++i) {
-                if (i == 4 && (mode & 1)) {
+                if (i == 4 && hasInputMode(mode, ControlInputMode::DirectFlags)) {
                     mHandlerStates[i] = false;
                     continue;
                 }
@@ -389,16 +389,16 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
     // could delay the first three position samples. This historical result
     // does not apply to default Hardware HID, which never enters this branch.
     if (jumpNow && player.isOnGround()) {
-        int const impulse = mJumpImpulseMode.load(std::memory_order_relaxed);
-        if (impulse & 1) {
+        auto const impulse = mJumpImpulseMode.load(std::memory_order_relaxed);
+        if (hasJumpImpulse(impulse, JumpImpulse::FromGround)) {
             player.jumpFromGround();
         }
-        if (impulse & 2) {
+        if (hasJumpImpulse(impulse, JumpImpulse::PendingScale)) {
             MobJump::setJumpPendingScale(player.getEntityContext(), 1.0f);
         }
     }
 
-    if (mode & 8) {
+    if (hasInputMode(mode, ControlInputMode::ToggleFallback)) {
         if (state.sprint != mPrevSprint) {
             mPrevSprint = state.sprint;
             if (player.isSprinting() != state.sprint) {
@@ -471,7 +471,7 @@ bool ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, Macro
     state.active     = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak || tick.jump;
     state.yawDelta   = tick.yaw;
     state.pitchDelta = tick.pitch;
-    if (mButtonMode.load() == 0 && mJumpImpulseMode.load() == 0) {
+    if (mInputMode.load() == ControlInputMode::Hardware && mJumpImpulseMode.load() == JumpImpulse::None) {
         bool const applied = applyRealInput(player, state);
         return applied && ((tick.yaw == 0.0f && tick.pitch == 0.0f)
                            || applyTurnDelta(player, Vec2{tick.pitch, tick.yaw}));

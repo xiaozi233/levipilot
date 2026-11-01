@@ -205,7 +205,8 @@ void PacketTap::onSent(Packet& packet, std::uint64_t tick) {
         !mSendEnabled.load(std::memory_order_relaxed)) {
         return;
     }
-    recordPacket(packet, kSend, tick);
+    std::int32_t id = 0;
+    if (readPacketId(packet, id)) recordPacket(packet, id, kSend, tick);
 }
 
 void PacketTap::onReceived(Packet const& packet, std::size_t anchor, std::uint64_t tick) {
@@ -224,7 +225,8 @@ void PacketTap::onReceived(Packet const& packet, std::size_t anchor, std::uint64
     // sender). Collapse repeats of the same object inside one tick; broadcasts
     // to several clients then read as one packet, which is what the identity
     // tap is for. Per-anchor counters still see every raw call.
-    std::int32_t const                id         = static_cast<std::int32_t>(packet.getId());
+    std::int32_t id = 0;
+    if (!readPacketId(packet, id)) return;
     static thread_local Packet const* lastPacket = nullptr;
     static thread_local std::uint64_t lastTick   = 0;
     static thread_local std::int32_t  lastId     = -1;
@@ -234,12 +236,38 @@ void PacketTap::onReceived(Packet const& packet, std::size_t anchor, std::uint64
     lastPacket = &packet;
     lastTick   = tick;
     lastId     = id;
-    recordPacket(packet, kRecv, tick);
+    recordPacket(packet, id, kRecv, tick);
     mRecvRecords.fetch_add(1, std::memory_order_relaxed);
 }
 
-void PacketTap::recordPacket(Packet const& packet, std::uint8_t dir, std::uint64_t tick) {
-    std::int32_t const id = static_cast<std::int32_t>(packet.getId());
+bool PacketTap::armTest(TestFault fault) {
+    if (fault != TestFault::None && !capturing()) return false;
+    if ((fault == TestFault::BytesSeh || fault == TestFault::BytesCpp) && !mSerializeCount) return false;
+    mTestFault.store(fault);
+    return true;
+}
+
+void PacketTap::injectTestFault(bool bytes) {
+    auto fault = mTestFault.load(std::memory_order_relaxed);
+    bool const matches = bytes ? (fault == TestFault::BytesSeh || fault == TestFault::BytesCpp)
+                               : (fault == TestFault::IdSeh || fault == TestFault::IdCpp);
+    if (!matches || !mTestFault.compare_exchange_strong(fault, TestFault::None)) return;
+    if (fault == TestFault::IdCpp || fault == TestFault::BytesCpp) throw 42;
+    RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+}
+
+bool PacketTap::readPacketId(Packet const& packet, std::int32_t& id) noexcept {
+    try {
+        if (guardedGameRead([&] {
+            injectTestFault(false);
+            id = static_cast<std::int32_t>(packet.getId());
+        })) return true;
+    } catch (...) {}
+    mIdFaults.fetch_add(1, std::memory_order_relaxed);
+    return false;
+}
+
+void PacketTap::recordPacket(Packet const& packet, std::int32_t id, std::uint8_t dir, std::uint64_t tick) {
     if (isDeniedPacketId(id)) {
         mDenied.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -275,9 +303,9 @@ void PacketTap::recordPacket(Packet const& packet, std::uint8_t dir, std::uint64
     record.injected = 0;
     reservation.publish(record);
 
-    // B3: serialize only the explicitly whitelisted ids. This is the one place
-    // the hook allocates (the first call grows a thread-local buffer), which is
-    // why the whitelist is tiny and capture is opt-in.
+    // B3: serialize only the explicitly whitelisted ids. The existing SDK path
+    // uses growable buffers; allocation remains a separate hot-path debt even
+    // though observation failures are isolated below.
     bool serialize = false;
     for (std::size_t slot = 0; slot < mSerializeCount; ++slot) {
         if (mSerializeIds[slot] == id) {
@@ -288,22 +316,46 @@ void PacketTap::recordPacket(Packet const& packet, std::uint8_t dir, std::uint64
     if (!serialize || !mByteRing) {
         return;
     }
-    static thread_local std::string buffer;
-    buffer.clear();
-    BinaryStream stream{buffer};
-    packet.write(stream);
-    auto byteReservation = mByteRing->reserve();
+    serializePacket(packet, record);
+}
+
+void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record) noexcept {
     PacketBytes bytes{};
-    bytes.order = order;
-    bytes.id    = static_cast<std::uint32_t>(id);
-    bytes.size  = static_cast<std::uint32_t>(buffer.size());
+    bytes.order = record.order;
+    bytes.id    = static_cast<std::uint32_t>(record.id);
     bytes.tid   = record.tid;
-    bytes.dir   = dir;
-    std::size_t const copy = std::min<std::size_t>(buffer.size(), sizeof(bytes.data));
-    if (copy > 0) {
-        std::memcpy(bytes.data, buffer.data(), copy);
+    bytes.dir   = record.dir;
+    // A nested packet observation must never clear the current thread's stream.
+    static thread_local bool busy = false;
+    if (busy) bytes.error = ByteError::Reentrant;
+    else {
+        struct SerializationScope {
+            bool& active;
+            explicit SerializationScope(bool& flag) : active(flag) { active = true; }
+            ~SerializationScope() { active = false; }
+        } scope{busy};
+        try {
+            // Existing opt-in SDK serialization can still grow this buffer.
+            // Keep the owning buffer/stream outside the raw SEH frame. A failed
+            // SDK write publishes no partial bytes, and the next write clears it.
+            static thread_local std::string buffer;
+            buffer.clear();
+            BinaryStream stream{buffer};
+            if (!guardedGameRead([&] {
+                packet.write(stream);
+                injectTestFault(true); // Also exercise discarding a completed payload.
+                bytes.size = static_cast<std::uint32_t>(buffer.size());
+                auto const copy = std::min<std::size_t>(buffer.size(), sizeof(bytes.data));
+                if (copy) std::memcpy(bytes.data, buffer.data(), copy);
+            })) bytes.error = ByteError::Seh;
+        } catch (...) { bytes.error = ByteError::Cpp; }
     }
-    byteReservation.publish(bytes);
+    if (bytes.error != ByteError::None) {
+        bytes.size = 0;
+        std::memset(bytes.data, 0, sizeof(bytes.data));
+        mByteFaults.fetch_add(1, std::memory_order_relaxed);
+    }
+    mByteRing->reserve().publish(bytes);
 }
 
 nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
@@ -443,6 +495,8 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     }
     mSample.store(sample, std::memory_order_relaxed);
     mRecvRecords.store(0, std::memory_order_relaxed);
+    mIdFaults.store(0, std::memory_order_relaxed);
+    mByteFaults.store(0, std::memory_order_relaxed);
     for (auto& hits : mRecvHits) {
         hits.store(0, std::memory_order_relaxed);
     }
@@ -539,6 +593,7 @@ void PacketTap::stop() {
     mSendEnabled.store(false, std::memory_order_release);
     mRecvEnabled.store(false, std::memory_order_release);
     mWriters.closeAndWait();
+    mTestFault.store(TestFault::None);
     if (mSendHooked.exchange(false, std::memory_order_acq_rel)) {
         ProbePacketSendHook::unhook();
     }
@@ -591,6 +646,9 @@ nlohmann::json PacketTap::status() {
         {"recv_hooked",  recvHooks > 0                                     },
         {"recv_hooks",   recvHooks                                         },
         {"recv_records", mRecvRecords.load(std::memory_order_relaxed)},
+        {"id_faults", mIdFaults.load(std::memory_order_relaxed)},
+        {"byte_faults", mByteFaults.load(std::memory_order_relaxed)},
+        {"fault_pending", mTestFault.load(std::memory_order_relaxed) != TestFault::None},
         {"recv_anchors", std::move(anchors)                                },
         {"peer_hooked",  mPeerHooked.load(std::memory_order_relaxed)     },
         {"ids",          std::move(ids)                                        },
@@ -705,8 +763,12 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
             {"tid",        record.tid    },
             {"dir", record.dir == kRecv ? "recv" : "send"},
             {"hex",        hexEncode(record.data, shown)},
-            {"serialized", true          },
+            {"serialized", record.error == ByteError::None},
         });
+        if (record.error != ByteError::None) {
+            rows.back()["reason"] = record.error == ByteError::Seh ? "packet_serialize_fault"
+                : record.error == ByteError::Cpp ? "packet_serialize_failed" : "packet_serialize_reentrant";
+        }
         ++count;
         cursor = index + 1;
     }

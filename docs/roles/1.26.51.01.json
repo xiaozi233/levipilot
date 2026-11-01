@@ -4,8 +4,9 @@
   "resolved_at": "2026-10-28T00:00:00Z",
   "resolver": "skills/bedrock-re/roles/resolve.py",
   "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
+  "image_base": "0x140000000",
   "offsets_ref": "docs/offsets/1.26.51.01.json",
-  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。",
+  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。",
   "roles": {
     "@tick_entity_systems": {
       "strategy": [
@@ -686,6 +687,20 @@
       "confidence": "code",
       "evidence": [
         "[代码] 连接种类 -> 文案：case 3 \"ClientDisconnection\"、case 4 \"ServerDisconnection\"、case 1 \"Prerequisites\"、case 2 \"InitialConnection\"；错误页 \"ClientDisconnection-<reason>\" 由它拼出，只表示连接侧，不区分谁发起断开。"
+      ]
+    },
+    "@client_packet_parse_loop": {
+      "strategy": [
+        "callers:@client_read_no_header -> sub_1416AB0E0",
+        "per-packet loop: one Packet::readNoHeader call per iteration"
+      ],
+      "address": "0x1416AB0E0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 本函数 0x1416ab0e0..0x1416acf7f 内只调用一次 Packet::readNoHeader（0x1416abe4f），由 runEvents 任务 sub_1416AA7F0 在 LABEL_36 处以 `sub_1416AB0E0(&v49,&v43)` 进入；调用点参数为 rcx=[rbp+var_88]、rdx=&var_160、r8=&var_318（ReadOnlyBinaryStream 栈对象）、r9=[rsi+208h]、栈=[&var_64]。",
+        "[代码] 0x1416aa7f0 本身不是逐包入口：它是 `NetworkSystem::runEvents task`（字符串 `NetworkSystem::runEvents task`、NonOwnerPointer<NetworkSessionOwner> 的 mControlBlock 断言、任务提交 sub_1400A2400）；sub_1419D7D90 是网络运行循环（perf 计时 + profiler + 每次迭代一次 runEvents），不是批循环。2026-11-01 依此更正了旧条目。",
+        "[实测] 在 Packet::readNoHeader 入口测得的切片 = 发送侧 payload+2（187 33→35、188 5→7），即逐包切片；短切片（188 只有 2 字节）在同一入口可见。"
       ]
     }
   }

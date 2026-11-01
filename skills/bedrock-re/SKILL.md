@@ -18,6 +18,7 @@ description: 静态优先的 Minecraft Bedrock 逆向与 LeviPilot 实验入口�
 | tick 管线/ECS 调度心智模型 | [`references/pipeline.md`](references/pipeline.md) |
 | 建场、录制、输入注入、拟合 | [`references/experiments.md`](references/experiments.md) |
 | 非 MCBE 的逆向/安全任务 | [`references/security-router.md`](references/security-router.md) |
+| 动态调试（x64dbg / 硬件断点 / 反调试） | [`references/x64dbg.md`](references/x64dbg.md) |
 | 版本角色 → 地址 | `docs/roles/<version>.json` + [`roles/resolve.py`](roles/resolve.py) |
 | 旧账/本轮结论 | `findings/<version>/cases/<case>/`（`journal.jsonl` / `facts.md` / `resume.md`） |
 

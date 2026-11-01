@@ -273,9 +273,10 @@ bool probeStream(std::uint64_t candidate, StreamProbe& out) {
 // Copy the first bytes of the packet slice verbatim. Its first byte is the
 // length varint the framer used and the next is the packet id, so a dump shows
 // whether a short slice was *declared* short or was clipped after framing.
-std::uint8_t copySlice(std::uint64_t address, std::uint64_t limit, char* into) {
+std::uint8_t copySlice(std::uint64_t address, std::uint64_t limit, char* into,
+                       std::size_t cap = 24) {
     if (!plausiblePointer(address) || limit == 0) return 0;
-    std::size_t const want = limit < 24 ? static_cast<std::size_t>(limit) : 24;
+    std::size_t const want = limit < cap ? static_cast<std::size_t>(limit) : cap;
     return readMemory(address, into, want) ? static_cast<std::uint8_t>(want) : 0;
 }
 
@@ -327,7 +328,8 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.pad0       = takeCopies(probe.begin);
     record.assignSize = takeAssignSize(probe.begin);
     gPacketBegin.store(probe.begin, std::memory_order_relaxed);
-    record.contextSize = copySlice(probe.begin, probe.size, record.context);
+    record.contextSize = copySlice(probe.begin, probe.size, record.context,
+                                   kViolationContext - 1);
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
     // that is the batch buffer or a container over it, these bytes show it.
     record.detailSize = copySlice(auxPointer, 24, record.detail);

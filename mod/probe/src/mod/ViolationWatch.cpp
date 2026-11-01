@@ -108,12 +108,52 @@ std::atomic<std::uint64_t> gInboundSampled{0};
 std::atomic<std::uint32_t> gInboundMask{3};
 constexpr std::uint8_t kMemmoveKind = 9;
 using MemmoveFn = void* (*)(void*, void const*, std::size_t);
+ll::memory::FuncPtr        gMemcpyOrigin = nullptr;
+std::atomic_bool           gMemcpyInstalled{false};
 ll::memory::FuncPtr        gMemmoveOrigin = nullptr;
 std::atomic_bool           gMemmoveInstalled{false};
 std::atomic_bool           gMemmoveEnabled{false};
 std::atomic<std::uint64_t> gPacketBegin{0};
 std::atomic<std::uint32_t> gMemmoveFilter{0}; // 0 = record every copy
-std::atomic<std::uint32_t> gCopiesSinceParse{0};
+// Write counter keyed by buffer address: the downlink and uplink buffers
+// interleave, so a single counter would be cleared by the other direction.
+struct CopySlot {
+    std::atomic<std::uint64_t> addr{0};
+    std::atomic<std::uint32_t> count{0};
+};
+constexpr std::size_t kCopySlots = 4;
+CopySlot gCopySlots[kCopySlots];
+
+void noteCopy(std::uint64_t dst) {
+    for (std::size_t index = 0; index < kCopySlots; ++index) {
+        std::uint64_t expected = gCopySlots[index].addr.load(std::memory_order_relaxed);
+        if (expected == dst) {
+            gCopySlots[index].count.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (expected == 0) {
+            std::uint64_t empty = 0;
+            if (gCopySlots[index].addr.compare_exchange_strong(empty, dst,
+                                                               std::memory_order_relaxed)) {
+                gCopySlots[index].count.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            if (gCopySlots[index].addr.load(std::memory_order_relaxed) == dst) {
+                gCopySlots[index].count.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }
+}
+
+std::uint32_t takeCopies(std::uint64_t buffer) {
+    for (std::size_t index = 0; index < kCopySlots; ++index) {
+        if (gCopySlots[index].addr.load(std::memory_order_relaxed) == buffer) {
+            return gCopySlots[index].count.exchange(0, std::memory_order_relaxed);
+        }
+    }
+    return 0;
+}
 std::atomic<std::uint64_t> gInboundBytes{0};
 
 bool initializeInboundRing() {
@@ -217,7 +257,7 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     record.packetSize = static_cast<std::uint32_t>(probe.size);
     record.errorValue = static_cast<std::int32_t>(probe.readPtr);
     record.category   = probe.begin;
-    record.pad0       = gCopiesSinceParse.exchange(0, std::memory_order_relaxed);
+    record.pad0       = takeCopies(probe.begin);
     gPacketBegin.store(probe.begin, std::memory_order_relaxed);
     record.contextSize = copySlice(probe.begin, probe.size, record.context);
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
@@ -346,37 +386,41 @@ bool bufferStartsWithId(std::uint64_t address, std::uint32_t wanted) {
     return id == wanted;
 }
 
-void* detourMemmove(void* dst, void const* src, std::size_t length) {
-    // readMemory and the ring publish may themselves reach memmove; a nested
-    // call must go straight through or the hook recurses on the pipe thread.
+void recordCopy(void* dst, void const* src, std::size_t length) {
     static thread_local bool busy = false;
-    if (busy) {
-        if (gMemmoveOrigin == nullptr) return dst;
-        return reinterpret_cast<MemmoveFn>(gMemmoveOrigin)(dst, src, length);
-    }
+    if (busy) return;
     busy = true;
     auto const begin = gPacketBegin.load(std::memory_order_relaxed);
-    if (begin != 0 && reinterpret_cast<std::uint64_t>(dst) == begin) {
-        gCopiesSinceParse.fetch_add(1, std::memory_order_relaxed);
-    }
-    auto const filter = gMemmoveFilter.load(std::memory_order_relaxed);
     if (gMemmoveEnabled.load(std::memory_order_relaxed) && begin != 0
-        && reinterpret_cast<std::uint64_t>(dst) == begin && length < 4096
-        && (filter == 0
-            || bufferStartsWithId(reinterpret_cast<std::uint64_t>(src), filter))) {
-        MemmoveBlob blob{};
-        blob.src = reinterpret_cast<std::uint64_t>(src);
-        blob.len = length;
-        if (blob.src > sizeof(blob.before)) {
-            readMemory(blob.src - sizeof(blob.before), blob.before, sizeof(blob.before));
+        && reinterpret_cast<std::uint64_t>(dst) == begin && length != 0 && length < 4096) {
+        noteCopy(begin);
+        auto const filter = gMemmoveFilter.load(std::memory_order_relaxed);
+        if (filter == 0
+            || bufferStartsWithId(reinterpret_cast<std::uint64_t>(src), filter)) {
+            MemmoveBlob blob{};
+            blob.src = reinterpret_cast<std::uint64_t>(src);
+            blob.len = length;
+            if (blob.src > sizeof(blob.before)) {
+                readMemory(blob.src - sizeof(blob.before), blob.before, sizeof(blob.before));
+            }
+            readMemory(blob.src, blob.after, sizeof(blob.after));
+            publishText(kMemmoveKind, std::string_view(reinterpret_cast<char const*>(&blob),
+                                                       sizeof(blob)));
         }
-        readMemory(blob.src, blob.after, sizeof(blob.after));
-        publishText(kMemmoveKind, std::string_view(reinterpret_cast<char const*>(&blob),
-                                                   sizeof(blob)));
     }
     busy = false;
+}
+
+void* detourMemmove(void* dst, void const* src, std::size_t length) {
+    recordCopy(dst, src, length);
     if (gMemmoveOrigin == nullptr) return dst;
     return reinterpret_cast<MemmoveFn>(gMemmoveOrigin)(dst, src, length);
+}
+
+void* detourMemcpy(void* dst, void const* src, std::size_t length) {
+    recordCopy(dst, src, length);
+    if (gMemcpyOrigin == nullptr) return dst;
+    return reinterpret_cast<MemmoveFn>(gMemcpyOrigin)(dst, src, length);
 }
 
 bool initializeRing() {
@@ -766,6 +810,23 @@ nlohmann::json memmoveProbeJson(bool on, int packetId) {
                 true
             ) == 0) {
             gMemmoveInstalled.store(true, std::memory_order_release);
+        }
+    }
+    if (on && !gMemcpyInstalled.load(std::memory_order_acquire)) {
+        if (ll::memory::hook(
+                reinterpret_cast<ll::memory::FuncPtr>(&memcpy),
+                ll::memory::toFuncPtr(&detourMemcpy),
+                &gMemcpyOrigin,
+                ll::memory::HookPriority::Normal,
+                true
+            ) == 0) {
+            gMemcpyInstalled.store(true, std::memory_order_release);
+        }
+    }
+    if (!on && gMemcpyInstalled.load(std::memory_order_acquire)) {
+        if (ll::memory::unhook(reinterpret_cast<ll::memory::FuncPtr>(&memcpy),
+                               ll::memory::toFuncPtr(&detourMemcpy), true)) {
+            gMemcpyInstalled.store(false, std::memory_order_release);
         }
     }
     if (!on && gMemmoveInstalled.load(std::memory_order_acquire)) {

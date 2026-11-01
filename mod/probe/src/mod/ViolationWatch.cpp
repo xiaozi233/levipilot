@@ -90,16 +90,33 @@ void detourLoopEntry(void* a1, void* a2) {
         if (gLoopOrigin != nullptr) break;
         YieldProcessor();
     }
-    if (a1 != nullptr && gNetContext.load(std::memory_order_relaxed) == 0) {
-        std::uint64_t owner = 0;
-        if (readMemory(reinterpret_cast<std::uint64_t>(a1), &owner, sizeof(owner))) {
-            gNetContext.store(owner, std::memory_order_relaxed);
-            gPacketString.store(owner + 0x128, std::memory_order_relaxed);
+    // *a1 is the object for whichever direction reached the loop first, and the
+    // directions do not share it. Classify by the bytes already buffered: an
+    // id-144 head (`90 01`) is uplink, everything else is downlink, and only
+    // the downlink object is what the packet-violation investigation needs.
+    std::uint64_t owner = 0;
+    if (a1 != nullptr && readMemory(reinterpret_cast<std::uint64_t>(a1), &owner, sizeof(owner))
+        && owner != 0) {
+        std::uint64_t const stringAddr = owner + 0x128;
+        std::uint64_t       dataPtr    = stringAddr;
+        std::uint64_t       field      = 0;
+        if (readMemory(stringAddr, &field, sizeof(field)) && field >= 0x10000
+            && field < 0x00007FFFFFFFFFFFull) {
+            dataPtr = field;
+        }
+        std::uint8_t head[2]{};
+        if (readMemory(dataPtr, head, sizeof(head))) {
+            bool const uplink = head[0] == 0x90 && head[1] == 0x01;
+            if (!uplink) {
+                gNetContext.store(owner, std::memory_order_relaxed);
+                gPacketString.store(stringAddr, std::memory_order_relaxed);
+            }
         }
     }
     if (gLoopOrigin == nullptr) return;
     reinterpret_cast<LoopEntryFn>(gLoopOrigin)(a1, a2);
 }
+
 // Inbound parse boundary. The machine-level shape of Packet::readNoHeader in
 // this build is five pointer-sized arguments with no register return
 // (rcx = packet, rdx = stream, r8/r9, stack = subid); the typed wrapper that

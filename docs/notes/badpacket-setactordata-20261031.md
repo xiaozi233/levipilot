@@ -1256,11 +1256,13 @@ net_ctx+0x10 -> 静态 0x14e75e360
 
 ### 可用
 
-- 插件已装：`D:ddbgeleased\pluginsddbg-MCP-Server.dp64`；
+- 插件已装：`D:ddbg
+eleased\pluginsddbg-MCP-Server.dp64`；
 - 服务需手动 `StartMCPServer`（在 x64dbg 命令栏执行；已用 GUI 自动化执行成功），
   监听 `127.0.0.1:9094`；
 - 认证：`Authorization: Bearer <token>`，token 在
-  `D:ddbgeleased\mcp_config.json`（`AuthToken`）里；
+  `D:ddbg
+eleased\mcp_config.json`（`AuthToken`）里；
 - 传输是 **Streamable HTTP**（`POST /`），不是 `/mcp`（那会 401）；
 - 自写客户端 `out/x64mcp.py` 可用，工具集含 `AttachProcess / LoadBinary /
   ExecuteDebuggerCommand / SetBreakpoint / GetCallStack / ReadMemory / ListModules` 等。
@@ -1279,3 +1281,38 @@ net_ctx+0x10 -> 静态 0x14e75e360
 1. **LoadBinary 路线**：让 x64dbg 直接启动 `Minecraft.Windows.exe`（dev.py 也是直接起这个 exe），
    再在运行中的进程上设 `bphws <net_ctx+0x138>, w, 8`；需要重启游戏，且要确认 GDK 游戏能在调试器下正常进世界；
 2. 回到 mod 内观测，但换成**不碰 CRT、不碰上层调用链**的落点——目前没有找到更安全的钩点。
+
+## 33. x64dbg 通道：attach 被操作系统拒绝（2026-11-01 17:1x）
+
+换用 `SetsunaYukiOvO/x64dbg-mcp`（v1.0.12）后的结论。
+
+### 环境
+
+- 本机 x64dbg 已是 2026.05.27 快照（标题栏 `May 27 2026`），即最新；
+- 新插件 `x64dbg_mcp.dp64` 已装到 `D:ddbgeleased\plugins\`，旧插件改名 `.disabled`；
+- 配置 `plugins/x64dbg-mcp/config.json`：`auto_start_mcp_on_plugin_load` 置 true 后
+  **自动监听 `127.0.0.1:3000`**（不需要再手敲命令），端点 `POST /mcp`，默认无鉴权；
+- 客户端 `out/x64mcp.py` 已改指 3000；工具 79 个，含 `debug_attach_pid / breakpoint_set* /
+  stack_get_trace / memory_read / script_execute` 等。
+
+### 关键对照（`[实测]`）
+
+| 目标 | x64dbg attach | 直接 `DebugActiveProcess`（ctypes，已设 argtypes） |
+| --- | --- | --- |
+| notepad（对照） | **成功**（`debugging: true`） | **成功**（1），可 `DebugActiveProcessStop` |
+| 游戏 24116 | 失败（`AttachProcessCore: direct command failed`） | **失败，错误码 87 (ERROR_INVALID_PARAMETER)** |
+
+其它排除项：游戏与 Python 同为 **Medium 完整性**（0x2000），不是提权问题；
+`IsWow64Process2` 显示 `processMachine=0 / nativeMachine=0x8664`，是原生 64 位，
+不是“64 位调试器附 32 位进程”。
+
+⇒ **不是插件、不是权限等级、不是位数**：这个进程在当前环境下被操作系统层面拒绝调试附加。
+
+### 结论与下一步
+
+- 进程内钩子（mod）走到“赋值函数”为止是安全的；再往上游会破坏进程（§30）。
+- 外部调试器 attach 这条路被 OS 拒绝（错误 87），只能改**LoadBinary**：
+  让 x64dbg 自己启动 `Minecraft.Windows.exe`（我们的 `dev.py` 本来就是直接起这个 exe），
+  再在运行中的调试目标上设 `bphws <net_ctx+0x138>, w, 8`。
+- 需要确认 GDK 版能否在调试器下正常进世界；若不能，这条路也关闭，
+  则“谁决定这个错误长度”将只能靠静态逆向继续逼近。

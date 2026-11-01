@@ -2071,3 +2071,33 @@ screen    ClientDisconnection-90 / Block，Date 2026-11-01T14:20:40Z
 
 DLL SHA256、游戏 pid、`crash-*` 清单有无新增、失败时刻 tick/tid、以及原帧是否取到。
 失败后按仓库规矩恢复配置、回读姿态/能力/背包/输入，再重启。
+
+### §45 已实现：首错冻结（2026-11-01 22:52）
+
+`mod/probe/src/mod/ViolationWatch.cpp`：
+
+```cpp
+std::atomic_bool gInboundFrozen{false};
+
+void detourReadBoundary(...) {
+    ...
+    if (gInboundFrozen.load(std::memory_order_acquire)) {   // 冻结后只转发，不再 publish
+        if (gInboundOrigin == nullptr) return;
+        reinterpret_cast<ReadBoundary>(gInboundOrigin)(a, b, c, d, e);
+        return;
+    }
+    ...
+}
+
+void detourHandleViolation(...) {
+    if (response != 0) gInboundFrozen.store(true, std::memory_order_release);
+    publishViolation(...);
+}
+```
+
+- `violationWatchStart` 安装前清零，`violationWatchStop` 停止时清零；
+- `violation_stats` 新增 `inbound_frozen`；
+- 语义：失败切片的记录发生在 `readNoHeader` **入口**（早于回调），冻结之后 teardown
+  的 `DisconnectPacket`/错误串再也不会把它挤出环。
+
+实测确认字段已上线：`'inbound_frozen' in stats → True, False`（未触发时）。

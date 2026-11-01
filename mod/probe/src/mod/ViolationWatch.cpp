@@ -143,6 +143,11 @@ std::atomic<std::uint64_t> gInboundSampled{0};
 // normal play; 1:1 is for a reproduction run, where the packet before the
 // disconnect matters more than the history behind it.
 std::atomic<std::uint32_t> gInboundMask{3};
+// First-error freeze: once the violation callback fires, stop publishing to the
+// inbound ring. The failing slice was published at readNoHeader entry, i.e.
+// before the callback; without the freeze the teardown traffic (DisconnectPacket
+// and the error strings) keeps writing and pushes that row out of the ring.
+std::atomic_bool gInboundFrozen{false};
 constexpr std::uint8_t kMemmoveKind = 9;
 using MemmoveFn = void* (*)(void*, void const*, std::size_t);
 ll::memory::FuncPtr        gMemcpyOrigin = nullptr;
@@ -372,6 +377,13 @@ void detourReadBoundary(void* a, void* b, void* c, void* d, void* e) {
     for (int spin = 0; spin < 200000; ++spin) {
         if (gInboundOrigin != nullptr) break;
         YieldProcessor();
+    }
+    // Frozen after the first violation: keep the ring exactly as it was when the
+    // callback fired, so the failing slice cannot be overwritten by teardown.
+    if (gInboundFrozen.load(std::memory_order_acquire)) {
+        if (gInboundOrigin == nullptr) return;
+        reinterpret_cast<ReadBoundary>(gInboundOrigin)(a, b, c, d, e);
+        return;
     }
     auto const hit = gInboundHits.fetch_add(1, std::memory_order_relaxed) + 1;
     if ((hit & gInboundMask.load(std::memory_order_relaxed)) == 0) {
@@ -645,6 +657,9 @@ void detourHandleViolation(void* self, void* controller, std::error_code const* 
                            int response, int packetId, std::string* context, void* netId,
                            unsigned char clientSubId, unsigned char senderSubId,
                            unsigned int packetSize) {
+    if (response != 0) {
+        gInboundFrozen.store(true, std::memory_order_release);
+    }
     publishViolation(response, packetId, errorCode, context, packetSize, false);
     reinterpret_cast<HandleViolationFn>(gOrigin)(
         self, controller, errorCode, response, packetId, context, netId, clientSubId,
@@ -772,6 +787,7 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
     // so only `module_base + (role_va - documented_base)` maps correctly.
     if (!hookAddressExecutable(address)) return errorJson("not_executable");
     if (!initializeRing()) return errorJson("allocation_failed");
+    gInboundFrozen.store(false, std::memory_order_release);
     bool const already = gInstalled.load(std::memory_order_acquire);
     if (already && gTarget.load() != address) return errorJson("violation_watch_busy");
     if (!already) {
@@ -879,6 +895,7 @@ nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inW
 
 nlohmann::json violationWatchStop() {
     std::lock_guard lock(gInstallMutex);
+    gInboundFrozen.store(false, std::memory_order_release);
     bool const callbackBefore = gInstalled.load(std::memory_order_acquire);
     bool const screenBefore = gScreenInstalled.load(std::memory_order_acquire);
     bool const inboundBefore = gInboundInstalled.load(std::memory_order_acquire);
@@ -932,6 +949,7 @@ nlohmann::json violationWatchStats() {
         {"inbound_sample", gInboundMask.load(std::memory_order_relaxed) + 1},
         {"inbound_bytes", gInboundBytes.load(std::memory_order_relaxed)},
         {"inbound_ready", gInboundReady.load(std::memory_order_acquire)},
+        {"inbound_frozen", gInboundFrozen.load(std::memory_order_acquire)},
         {"loop_hooked", gLoopInstalled.load(std::memory_order_acquire)},
         {"net_ctx", gNetContext.load(std::memory_order_relaxed)},
         {"assign_hooked", gAssignInstalled.load(std::memory_order_acquire)},

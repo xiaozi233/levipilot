@@ -25,6 +25,7 @@ from driver.selftest import (
     dump_packet_tap,
     jump_arcs,
     main,
+    required_effect_ids,
     wait_rotation,
     wait_ticks,
 )
@@ -127,6 +128,26 @@ class RotationGateTests(unittest.TestCase):
         with self.assertRaisesRegex(WorldLost, "842"), patch("driver.selftest.time.sleep") as sleep:
             wait_ticks(client, 10)
         sleep.assert_not_called()
+
+
+class EffectExpiryTests(unittest.TestCase):
+    def test_short_effect_may_expire_naturally(self):
+        durations = {16: 3, 1: 100}
+        self.assertEqual(required_effect_ids(durations, 2), {16, 1})
+        self.assertEqual(required_effect_ids(durations, 3), {1})
+        self.assertEqual(required_effect_ids(durations, 1000), set())
+
+    def test_long_effect_remains_required(self):
+        self.assertEqual(required_effect_ids({16: 3598}, 272), {16})
+        self.assertEqual(required_effect_ids({16: 3600}, 3599), {16})
+
+    def test_unexpected_early_clear_is_not_accepted(self):
+        required = required_effect_ids({16: 3}, 1)
+        self.assertEqual(required, {16})
+        self.assertFalse(required.issubset(set()))
+
+    def test_infinite_effect_never_expires(self):
+        self.assertEqual(required_effect_ids({16: -1}, 1000000), {16})
 
 
 class InterruptedSelftestTests(unittest.TestCase):

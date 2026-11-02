@@ -2729,6 +2729,15 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
     checks.check("teleport_handled_fault_no_dump", after == before)
 
 
+def required_effect_ids(durations: dict[int, int], elapsed_ticks: int) -> set[int]:
+    """Effects that must still exist after elapsed ticks; expired ids are exempt."""
+    return {
+        effect_id
+        for effect_id, duration in durations.items()
+        if duration < 0 or duration - elapsed_ticks > 0
+    }
+
+
 def check_flight(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Verify staged abilities, bounded tick assertion, failures and retirement."""
     original = client.state()
@@ -2742,9 +2751,26 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
     # serialization-mode mismatch from a payload that was written short.
     bytes_dump = os.environ.get("LEVIPILOT_VIOLATION_DUMP") or None
     bytes_armed = False
-    original_effect_ids = {int(row["id"]) for row in original.get("effects", [])}
-    expected_effect_ids = set(original_effect_ids)
-    added_effect = not original_effect_ids
+    original_effect_durations = {
+        int(row["id"]): int(row.get("duration", 0)) for row in original.get("effects", [])
+    }
+    original_effect_tick = int(original.get("tick", 0))
+    sentinel_effect = next(
+        (
+            (name, effect_id)
+            for name, effect_id in (
+                ("night_vision", 16),
+                ("water_breathing", 13),
+                ("fire_resistance", 12),
+                ("invisibility", 14),
+                ("glowing", 24),
+                ("luck", 26),
+            )
+            if effect_id not in original_effect_durations
+        ),
+        None,
+    )
+    added_effect = sentinel_effect is not None
     if bytes_dump:
         try:
             # Observed violations were inbound bodies that ran short: 39
@@ -2793,15 +2819,18 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
 
     try:
         if added_effect:
-            client.command("effect @s night_vision 180 0 true")
+            assert sentinel_effect is not None
+            sentinel_name, sentinel_id = sentinel_effect
+            client.command(f"effect @s {sentinel_name} 3600 0 true")
             wait_ticks(client, 2)
-            expected_effect_ids = {
-                int(row["id"])
-                for row in client.state().get("effects", [])
-                if int(row.get("duration", 0)) > 0
-            }
+            fixture_effects = client.state().get("effects", [])
             checks.check(
-                "flight_effect_fixture", bool(expected_effect_ids), str(expected_effect_ids)
+                "flight_effect_fixture",
+                any(
+                    int(row["id"]) == sentinel_id and int(row.get("duration", 0)) > 0
+                    for row in fixture_effects
+                ),
+                str(fixture_effects),
             )
         client.command("gamemode survival @s")
         wait_ticks(client, 8)
@@ -2977,14 +3006,22 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
             )
             wait_ticks(client, 10)
             require_world(client, "flight cleanup")
-            restored_effect_ids = {int(row["id"]) for row in client.state().get("effects", [])}
+            before_sentinel_removal = client.state()
+            restored_effect_ids = {
+                int(row["id"]) for row in before_sentinel_removal.get("effects", [])
+            }
+            elapsed = int(before_sentinel_removal["tick"]) - original_effect_tick
+            required = required_effect_ids(original_effect_durations, elapsed)
+            if added_effect:
+                assert sentinel_effect is not None
+                required.add(sentinel_effect[1])
             checks.check(
                 "flight_preserves_effects",
-                restored_effect_ids == expected_effect_ids,
-                f"expected={sorted(expected_effect_ids)} actual={sorted(restored_effect_ids)}",
+                required.issubset(restored_effect_ids),
+                f"required={sorted(required)} actual={sorted(restored_effect_ids)} elapsed={elapsed}",
             )
             if added_effect:
-                client.command("effect @s clear")
+                client.command(f"effect @s clear {sentinel_effect[0]}")
                 wait_ticks(client, 2)
     restored = client.state()
     checks.check(
@@ -2992,10 +3029,14 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
         restored.get("mayfly") == original.get("mayfly")
         and restored.get("flying") == original.get("flying"),
     )
+    restored_effect_ids = {int(row["id"]) for row in restored.get("effects", [])}
+    required = required_effect_ids(
+        original_effect_durations, int(restored["tick"]) - original_effect_tick
+    )
     checks.check(
         "flight_restores_original_effects",
-        {int(row["id"]) for row in restored.get("effects", [])} == original_effect_ids,
-        str(restored.get("effects")),
+        required.issubset(restored_effect_ids),
+        f"required={sorted(required)} actual={sorted(restored_effect_ids)}",
     )
     checks.check("flight_tick_alive", bool(client.ping()) and restored.get("in_world") is True)
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}

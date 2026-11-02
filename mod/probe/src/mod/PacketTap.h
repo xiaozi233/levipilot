@@ -10,6 +10,7 @@
 
 #include "mod/AtomicRing.h"
 #include "mod/CallbackGate.h"
+#include "mod/PacketTapModel.h"
 
 class Packet;
 
@@ -73,7 +74,8 @@ public:
     }
 
 private:
-    enum class ByteError : std::uint8_t { None, Seh, Cpp, Reentrant };
+    using ByteError = detail::PacketByteError;
+    using PacketBytes = detail::PacketByteRecord;
     struct PacketRecord {
         std::uint64_t              order    = 0;
         std::uint64_t              tick     = 0;
@@ -82,15 +84,6 @@ private:
         std::uint8_t               dir      = kSend;
         std::uint8_t               injected = 0;
         std::uint8_t               pad[2]{};
-    };
-    struct PacketBytes {
-        std::uint64_t              order = 0;
-        std::uint32_t              id    = 0;
-        std::uint32_t              size  = 0;
-        std::uint32_t              tid   = 0;
-        std::uint8_t               dir   = kSend;
-        ByteError                  error = ByteError::None;
-        std::uint8_t               data[128]{};
     };
 
     bool readPacketId(Packet const& packet, std::int32_t& id) noexcept;

@@ -112,6 +112,9 @@ class ModModelTests(unittest.TestCase):
     def test_packet_template_ownership_and_injection_lifecycle(self) -> None:
         self.run_native("packet_injection_model")
 
+    def test_packet_byte_storage_boundaries_and_reentrant_guard(self) -> None:
+        self.run_native("packet_tap_model")
+
     def test_macro_playback_ownership_failures_and_restart(self) -> None:
         self.run_native("macro_playback_model")
 

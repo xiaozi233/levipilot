@@ -783,8 +783,25 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   原始投递次数看 `recv_anchors`。
 - 记录与字节环都新增 `dir` 字段（`"send"`/`"recv"`），`packet_drain` / `packet_bytes`
   原样返回；`selftest` 有 5 条 recv 检查（开启、记录、统计、字节、dir 字段）。
-- 字节层：`serialize_ids` 对接收方向同样生效；`Packet::write` 是 const，在投递钩子里
-  调用是安全的，白名单与 denylist 规则和发送方向一致。
+- 字节层：`serialize_ids` 对接收方向同样生效，白名单与 denylist 规则和发送方向一致。
+  这是显式 `sdk_hot_path_diagnostic`：在原投递上下文同步调用 `Packet::write`，可能分配且没有
+  执行时间预算；常规身份采集不进入该路径。`Packet*` 不跨线程保留，结果是 SDK 重序列化字节，
+  不是线上原帧。`packet_bytes` 增量返回 `source/captured_size/truncated`，旧 `size/hex/serialized`
+  保持；定长记录、128 B 边界、重入与环读取由 `packet_tap_model` native 覆盖。
+
+2026-11-02 同 DLL/配置、同世界四组各 1100 tick 对照（每组统计窗口 1024 样本）：
+
+| 组 | hook p50/p99/max µs | tick interval p50/p99/max µs | tick_hz |
+| --- | --- | --- | --- |
+| capture off | 40 / 348 / 1001 | 49934 / 59643 / 62347 | 19.9990 |
+| identity only | 41 / 303 / 528 | 49921 / 61824 / 69747 | 19.9988 |
+| 显式重序列化 | 40 / 320 / 641 | 49886 / 59795 / 62099 | 20.0004 |
+| off repeat | 41 / 277 / 496 | 49940 / 59108 / 61418 | 19.9983 |
+
+原始数据 `out/remaining-refactor-packet-overhead.json`。重序列化组 p99 落在两次基线之间，
+不能据此宣称提速或开销更低；只说明本次窗口 tick_hz 均约 20，未看到可重复的性能差异。
+高成本诊断仍可能分配且没有执行预算，结论不外推到其他流量/机器。PacketTap 专项 **41/41**，
+日志 `out/remaining-refactor-packet-live.log`。
 
 ## 封包身份 tap（H1 阶段 A）
 
@@ -1015,6 +1032,17 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 
 - `--player-identity-world "超平坦测试"` **41/41**，完整现场 **698/698**（无跳过），
   离线 **315/315**；native 模型专项 **18/18**。设计、故障范围和退出收尾限制见“物品栏”。
+
+### 飞行时序规避（2026-11-02）
+
+2026-11-02 时序规避：客户端只采集身份与目标，服务端唯一写能力，客户端队列在 2 秒截止内
+回读原生同步；8 tick 重断言改为只读观察。旧 `client_applied/server_applied` 保留，新增
+`client_observed/application/assertion`；`client_applied` 只有同步回读一致才为 true。最小 5 步
+能力序列的 tick_tid=15196、server_tid=6756，61 条身份记录无丢失、0 违规回调，姿态与能力恢复。
+`send_probe` 另落 2 条未知长度候选：111/size26 与 19/size40，无粘连长度链或违规，不能称为异常。
+证据 `out/remaining-refactor-flight-timing.json` 与 `suspect-35156.jsonl`。飞行专项 **53/53**
+（0 fail、0 skip），含真实退档/重进、故障与唯一终结；日志 `out/remaining-refactor-flight-live.log`。
+本批未复现 BadPacket，不宣称游戏竞态已根治；安装/构建 DLL SHA-256 同为 `7e231d51…934c23d3`。
 
 ### 飞行请求与重断言（2026-10-31）
 

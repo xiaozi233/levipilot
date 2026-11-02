@@ -408,15 +408,6 @@ struct MemmoveBlob {
     char          after[16]  = {};
 };
 
-// First varint of a packet buffer: one byte below 0x80, two bytes otherwise.
-bool bufferStartsWithId(std::uint64_t address, std::uint32_t wanted) {
-    std::uint8_t bytes[2]{};
-    if (!readMemory(address, bytes, sizeof(bytes))) return false;
-    std::uint32_t id = bytes[0] & 0x7Fu;
-    if ((bytes[0] & 0x80u) != 0) id |= static_cast<std::uint32_t>(bytes[1] & 0x7Fu) << 7;
-    return id == wanted;
-}
-
 std::int64_t detourAssign(void* target, void* a2, void* a3, void* a4) {
     std::int64_t result = 0;
     if (gAssignOrigin != nullptr) {

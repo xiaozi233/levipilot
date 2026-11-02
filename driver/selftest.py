@@ -2251,14 +2251,28 @@ def check_packet_tap(client: ModClient, checks: Checks) -> None:
 
     try:
         for direction, packet_id in (("send", 144), ("recv", 9)):
-            client.packet_capture(
+            started = client.packet_capture(
                 True, ids=[packet_id], serialize_ids=[packet_id], directions=[direction]
+            )
+            checks.check(
+                f"packet_tap_{direction}_diagnostic_contract",
+                started.get("serialization") == "sdk_hot_path_diagnostic"
+                and started.get("diagnostic") is True,
+                str(started),
             )
             traffic(direction)
             rows = client.packet_bytes(0, limit=4096)["hits"]
             checks.check(
                 f"packet_tap_{direction}_baseline",
-                bool(rows) and all(row["serialized"] and int(row["size"]) > 0 for row in rows),
+                bool(rows)
+                and all(
+                    row["serialized"]
+                    and int(row["size"]) > 0
+                    and row.get("source") == "sdk_reserialized"
+                    and int(row["captured_size"]) * 2 == len(row["hex"])
+                    and bool(row["truncated"]) == (int(row["size"]) > int(row["captured_size"]))
+                    for row in rows
+                ),
                 f"rows={len(rows)}",
             )
             for mode in ("id_seh", "id_cpp", "bytes_seh", "bytes_cpp"):

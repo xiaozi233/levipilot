@@ -325,28 +325,22 @@ void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record
     bytes.id    = static_cast<std::uint32_t>(record.id);
     bytes.tid   = record.tid;
     bytes.dir   = record.dir;
-    // A nested packet observation must never clear the current thread's stream.
     static thread_local bool busy = false;
-    if (busy) bytes.error = ByteError::Reentrant;
+    if (!PacketSerializationGuard::enter(busy)) bytes.error = ByteError::Reentrant;
     else {
-        struct SerializationScope {
-            bool& active;
-            explicit SerializationScope(bool& flag) : active(flag) { active = true; }
-            ~SerializationScope() { active = false; }
-        } scope{busy};
+        PacketSerializationGuard scope{busy};
         try {
-            // Existing opt-in SDK serialization can still grow this buffer.
-            // Keep the owning buffer/stream outside the raw SEH frame. A failed
-            // SDK write publishes no partial bytes, and the next write clears it.
+            // Explicit high-cost diagnostic: SDK serialization can allocate and
+            // has no execution-time budget. It reserializes the live packet in
+            // this callback; these are not original wire bytes and no Packet
+            // pointer escapes. Ordinary identity capture never enters here.
             static thread_local std::string buffer;
             buffer.clear();
             BinaryStream stream{buffer};
             if (!guardedGameRead([&] {
                 packet.write(stream);
                 injectTestFault(true); // Also exercise discarding a completed payload.
-                bytes.size = static_cast<std::uint32_t>(buffer.size());
-                auto const copy = std::min<std::size_t>(buffer.size(), sizeof(bytes.data));
-                if (copy) std::memcpy(bytes.data, buffer.data(), copy);
+                copyPacketBytes(bytes, buffer);
             })) bytes.error = ByteError::Seh;
         } catch (...) { bytes.error = ByteError::Cpp; }
     }
@@ -585,6 +579,8 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
             }
             return serializeCount == 0 ? nlohmann::json(nullptr) : list;
         }()},
+        {"serialization", serializeCount ? "sdk_hot_path_diagnostic" : "disabled"},
+        {"diagnostic", serializeCount != 0},
     };
 }
 
@@ -620,6 +616,10 @@ nlohmann::json PacketTap::status() {
     for (std::size_t index = 0; index < mIdCount; ++index) {
         ids.push_back(mIds[index]);
     }
+    nlohmann::json serializeIds = nlohmann::json::array();
+    for (std::size_t index = 0; index < mSerializeCount; ++index) {
+        serializeIds.push_back(mSerializeIds[index]);
+    }
     nlohmann::json anchors   = nlohmann::json::object();
     std::size_t    recvHooks = 0;
     for (std::size_t anchor = 0; anchor < kRecvAnchorCount; ++anchor) {
@@ -652,6 +652,8 @@ nlohmann::json PacketTap::status() {
         {"recv_anchors", std::move(anchors)                                },
         {"peer_hooked",  mPeerHooked.load(std::memory_order_relaxed)     },
         {"ids",          std::move(ids)                                        },
+        {"serialize_ids", std::move(serializeIds)},
+        {"serialization", mSerializeCount ? "sdk_hot_path_diagnostic" : "disabled"},
     };
 }
 
@@ -763,6 +765,9 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
             {"tid",        record.tid    },
             {"dir", record.dir == kRecv ? "recv" : "send"},
             {"hex",        hexEncode(record.data, shown)},
+            {"captured_size", shown},
+            {"truncated", record.size > sizeof(record.data)},
+            {"source", "sdk_reserialized"},
             {"serialized", record.error == ByteError::None},
         });
         if (record.error != ByteError::None) {

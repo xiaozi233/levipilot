@@ -73,7 +73,7 @@ xmake -j4 -y
 | `commands_enabled` | 读/写世界的 `mCommandsEnabled`（`value` 可选） |
 | `packet_capture` | `on,ids?,sample?`；只记录 `(tick,seq,id,tid)`，需 `allow_packet_capture=true`；denylist 硬挡 |
 | `packet_drain` | `since,limit`；身份记录（无字节），`seq` 单调、`injected` 预留 |
-| `packet_bytes` | `since,limit`；B3 白名单序列化的 `{seq,id,size,hex}`（最多前 128 B） |
+| `packet_bytes` | `since,limit`；显式高成本重序列化诊断的 `{seq,id,size,hex}`（最多前 128 B），附 `source/captured_size/truncated` |
 | `symbol_resolve` | `name`；编译期锚点 + E9/FF25 跟随，返回 `{anchor,real,module,rva}` |
 | `violation_watch` | `on`（默认 true）、`addr`（**运行期**地址）、`mode=synthetic`；只读记录协议违规通知，需 `allow_hook_va` 且在世界内；`synthetic` 只验证记录设施 |
 | `violation_stats` | 无参；`{active,address,callback_hooked,screen_hooked,inbound_hooked,inbound_hits,inbound_sampled,inbound_bytes,inbound_head,hits,synthetic,capacity}` |
@@ -127,7 +127,7 @@ xmake -j4 -y
 | `clear_item` | `slot,container` |
 | `clear_inventory` | 清空背包、盔甲和副手 |
 | `fly` | `enabled`；客户端与服务端分阶段设置，两侧完成后回 `fly_ok`；接受时另发 `flight_queued{flight_id}` |
-| `togglefly` | `on`（可选，缺省=切换）；开关"双击空格切换飞行"的 `MayFly`，两侧应用后回 `togglefly_ok{mayfly,gamemode,flying,flight_id}`，客户端保留 8 tick 重断言；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
+| `togglefly` | `on`（可选，缺省=切换）；服务端唯一写 `MayFly`，客户端回读原生同步后回 `togglefly_ok{mayfly,gamemode,flying,flight_id}`，随后只读观察 8 tick；旁观回 `spectator_not_supported`。游戏内等价命令 `/togglefly` |
 | `input_lock` | `on`；锁住真实硬件键鼠与相机转向（注入照常），见「限制」 |
 | `teleport` | `x,y,z,yaw?,pitch?`；**脚部**坐标，服务端权威；**不动药水效果**；`teleport_id` 关联接受/唯一结果，忙时拒绝，2 秒截止 |
 | `reset` | `x,y,z,yaw?,pitch?`；清空任务/输入/macro/药水效果后传送到脚部坐标，用于跑酷重试（只有它会清效果） |
@@ -453,11 +453,14 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   注册必须挂在 `ServerCommandRegisterEvent` 上——直接写在 `enable()` 里会启动即崩（已实测）。
   命令表按世界重建（退出/重进世界后再输入仍然可用），注册用 `CommandRegistry*` 身份判重，
   不会重复挂 execute。管道侧等价命令 `togglefly`（`{"cmd":"togglefly","on":bool}`，回
-  `togglefly_ok{mayfly,gamemode,flying}`；CLI `togglefly [--on|--off]`）走客户端/服务端队列，
-  带 8 tick 重断言抵消迟到的能力同步。两种管道飞行请求共用独占槽，忙时回 `flight_busy`，
+  `togglefly_ok{mayfly,gamemode,flying}`；CLI `togglefly [--on|--off]`）只在服务端队列写能力，
+  客户端队列有界回读同步结果，随后 8 tick 只读观察。两种飞行请求共用独占槽，忙时回 `flight_busy`，
   2 秒超时或退出世界明确失败，重连丢弃未入传输队列的旧回执；接受回执带 `flight_id`。
-  成功只表示两侧应用完成，后续重断言异常另发 `flight_assertion_failed`；失败的
-  `partial=true` 表示能力可能已部分生效，已开始的调用不能被超时抢占或自动回滚。
+  `client_applied` 与 `client_observed` 只有回读一致才为 true；`application=server_with_client_readback`
+  和 `assertion=readback` 明确新路径，旧字段保留。成功表示服务端调用与客户端回读均完成，
+  不等待 8 tick 观察结束；后续观察失败另发 `flight_assertion_failed`。失败的 `partial=true`
+  表示能力可能已部分生效，已开始的调用不能被超时抢占或自动回滚。专项 **53/53**；本批未复现
+  BadPacket，不宣称游戏共享缓冲竞态已根治。
 - `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），
@@ -487,9 +490,12 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   用 G1/G2 注入，已经覆盖按键/鼠标边沿；录制端仍然依赖真实 raw input。
 - `mouse_event` 的按键只到 `MouseInputEvent` 层：计数会涨，但在 1.26.51.01 上不会触发世界攻击；
   攻击仍用 `click`/`attack_entity`。`action=move` 的 dx 能转向。
-- H1 的身份 tap 始终可用；字节只对 `serialize_ids` 白名单生效（默认无），且只在 capture
-  开启时调用 `Packet::write`（首次会分配一次线程局部缓冲）。`peer_sends` 恒为 0 是实测结果：
-  单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。
+- H1 常规身份 tap 只写定长记录，不调用 `Packet::write`。`serialize_ids` 是显式
+  `sdk_hot_path_diagnostic`：在原投递上下文同步重序列化，可能分配且没有执行时间预算；
+  不跨线程保留 `Packet*`，字节不是线上原帧。`packet_capture` 回执标明 `serialization/diagnostic`，
+  `packet_stats` 同样可见；`packet_bytes` 保留旧字段并标记来源和截断。`peer_sends` 恒为 0
+  是实测结果：单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。
+  专项 **41/41**，四组 1100 tick 开销对照见 `docs/mod-internals.md`，没有可重复的提速结论。
 - H1-C 的 recv tap 是 opt-in（`directions` 默认只有 `send`）。`Packet::sendTo*` 辅助层的
   7 个钩子会装上但实测 0 调用；真正投递走 `LoopbackPacketSender::$sendToClient` 两个重载。
   重叠层可能对同一包各触发一次，记录按“同 tick + 同对象 + 同 id”去重，所以广播只看得到

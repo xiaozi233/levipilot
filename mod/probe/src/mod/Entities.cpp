@@ -77,9 +77,8 @@ nlohmann::json entityJson(EntityQuery const& query, EntitySnapshot const& out) {
 } // namespace
 
 EntityStage ProbeMod::captureEntityStage(EntityStage stage, EntityQuery const& query, EntitySnapshot& out) {
-    // SDK owning strings live outside the raw SEH frame; no actor pointer or
+    // SDK owning values live outside the raw SEH frame; no actor pointer or
     // SDK reference escapes this callback. These callbacks never run in tick.
-    std::string selfName;
     std::vector<Actor*> actors;
     EntityStage next = EntityStage::Complete;
     if (!guardedGameRead([&] {
@@ -91,20 +90,19 @@ EntityStage ProbeMod::captureEntityStage(EntityStage stage, EntityQuery const& q
                 out.origin = snapshotVec(player->getPosition());
                 out.eye = snapshotVec(player->getHeadPos());
                 out.selfId = static_cast<std::uint64_t>(player->getRuntimeID());
-                auto const& uuid = player->getUuid();
-                out.uuidA = uuid.a;
-                out.uuidB = uuid.b;
-                if (query.operation == EntityOperation::Attack) {
-                    selfName = player->getRealName();
-                    out.selfName.assign(selfName);
-                    // Never resolve another player using a truncated identity.
-                    if (out.selfName.view().size() != selfName.size()) out.selfName.assign({});
+                out.identity = localPlayerIdentity();
+                if (query.operation == EntityOperation::Attack && !out.identity.valid) {
+                    out.error = "player_not_found"; return;
                 }
                 next = EntityStage::Server;
                 return;
             }
             if (stage == EntityStage::Server) {
+                ServerPlayerContext playerContext;
+                if (query.operation == EntityOperation::Attack)
+                    playerContext = serverPlayerContext(out.identity, mPoseEpoch.load(), mWorld.inWorld());
                 auto level = ll::service::bedrock::getLevel();
+                if (query.operation == EntityOperation::Attack) level = playerContext.level;
                 if (!level) { out.error = "level_unavailable"; return; }
                 actors = level->getRuntimeActorList();
                 for (auto* actor : actors) {
@@ -126,13 +124,8 @@ EntityStage ProbeMod::captureEntityStage(EntityStage stage, EntityQuery const& q
                     auto const aim = actor->getHeadPos();
                     out.aim = snapshotVec(aim);
                     if (query.operation != EntityOperation::Attack) { next = EntityStage::Aim; return; }
-                    auto* player = level->getPlayer(mce::UUID{out.uuidA, out.uuidB});
-                    if (!player && !out.selfName.empty()) {
-                        selfName = out.selfName.c_str();
-                        player = level->getPlayer(selfName);
-                    }
-                    if (!player) { out.error = "player_not_found"; return; }
-                    out.ok = player->mGameMode && player->mGameMode->attack(*actor, aim);
+                    if (!playerContext.player) { out.error = "player_not_found"; return; }
+                    out.ok = playerContext.player->mGameMode && playerContext.player->mGameMode->attack(*actor, aim);
                     return;
                 }
                 if (query.operation != EntityOperation::List) out.error = "entity_not_found";

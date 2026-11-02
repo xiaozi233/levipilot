@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mod/PlayerIdentityModel.h"
 #include "mod/QueryModel.h"
 #include "mod/StagedCapture.h"
 
@@ -29,8 +30,8 @@ struct EntitySnapshot {
     };
     std::array<Row, 512> rows{};
     std::size_t count = 0;
-    std::uint64_t selfId = 0, uuidA = 0, uuidB = 0;
-    FixedText<1024> selfName;
+    std::uint64_t selfId = 0;
+    PlayerIdentity identity;
     float yaw = 0, pitch = 0;
     bool ok = false, truncated = false;
     char const* error = nullptr;

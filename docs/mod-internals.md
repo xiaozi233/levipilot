@@ -238,11 +238,11 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   未做性能提升对照，不能推广为整个 tick 零分配或第 12/13 项全部完成。
 - 录制：WASD/Sprint/Sneak/Jump 来自输入状态，Yaw/Pitch 由 `ActorRotation` 差分；
   RMB/LMB 由 `MouseInputEvent` 记录。
-- 录制和播放的冷侧命令共享 `mMacroSessionMutex` 管理准入。录制采样由
-  `MacroRecordSession` 独享，tick 不取会话锁；停止先禁止新采样并等待已准入采样退出，再
-  在冷侧复制完整快照、锁外保存。保存完成后按录制代次清理，避免并发新会话的数据被旧保存操作清除。
-  达到 `max_ticks` 后也保留缓冲供 `macro_rec_stop` 保存。重复录制、
-  播放时录制、录制时播放都会返回明确错误，避免两个会话同时改写按键状态。
+- 2026-11-02 `MacroSession` 唯一持有播放、录制和冷侧互斥锁；既有名字只是非 owning 别名，
+  不再在 disable/world_left/tick recovery 分别维护重置清单。世界退出用原子标记延迟录制终结，
+  tick 只做无锁播放取消。录制采样仍由 `MacroRecordSession` 独享，停止先禁止新采样并等待
+  已准入采样退出，再在冷侧复制完整快照、锁外保存；保存完成后按录制代次清理。
+  达到 `max_ticks` 后保留缓冲供 `macro_rec_stop`，录制/播放互斥拒绝保持不变。
 - `MacroRecordSession` 统一限长策略：省略/0/超大 `max_ticks` 均归一到 200000，较小正数
   使用原值；启动时创建全部已初始化帧槽，tick 不增长 vector、不格式化、不等待消费者。
   到顶只报告一次 limit，保留完整帧。开始回执带实际 max_ticks/hard_limit/record_id，
@@ -254,8 +254,12 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   点击锁存无论按钮是否按住都消费，避免松开后补录旧点击。
 - 故障后有帧时 `macro_rec_stop` 仍可保存部分数据，`macro_rec_saved` 带
   ok=false/partial=true/reason；Python 抛出含原因和部分文件路径的错误。
-  保存先序列化再打开目标，检查 write/flush/close，失败保留帧供重试。
-  此处未实现原子文件替换，也不宣称宏播放或整个游戏 tick 已无分配/无锁。
+  保存先序列化，再写同目录唯一临时文件，检查 write/flush/close 后用
+  `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` 替换；失败删除临时文件、保留旧目标与录制缓冲，
+  可重试。未模拟磁盘写满，不宣称宏播放或整个游戏 tick 已无分配/无锁。
+- 同期 `InputSession` 唯一持有事件队列、held/latch、输入锁、鼠标/按钮状态和 tick 倒计时；
+  重连取消、故障停控、按钮/鼠标清理统一走会话方法。冷侧 `eventMutex` 仅用于准入/取消/回执，
+  tick 不取该锁；既有 Hardware HID、释放重试、播放/任务接管和协议字段不变。
 - 宏硬上限验收：`driver/selftest.py --macro-limit-only` **17/17**，完整现场 **322/322**
   （无跳过），离线 **284/284**。原生模型实际追加 200000 条，覆盖省略/0/上限/超上限/
   uint64 最大值、达到上限后不再追加、唯一终结、保留完整数据及预留后零分配；现场验证
@@ -1027,6 +1031,15 @@ Python 每次连接创建 `_PipeSession`，旧读取线程不能访问新队列�
 - 完整构建、ruff check/format、mypy（90 files）、profile、三份 DLL 哈希一致；113 个既有
   crash 文件无新增/修改。最终恢复通过，未做性能对照/现场热卸载；封包注入/内部错误
   上报及其余 SDK 边界仍属第 12 项。验收日志与哈希见 `reliability-repairs.md`。
+
+### 服务端身份统一（2026-11-02）
+
+实体攻击与飞行不再捕获 `getRealName()` 或按名字兜底，与背包、命令、权限、物品使用、传送
+共用 `ServerPlayerContext`。客户端只发布 UUID+epoch，服务端回调内重新校验并短暂解析，
+旧请求/世界不能落到另一玩家或控制台。身份专项 **44/44（0 fail、0 skip）**，新增
+SEH/C++/空 UUID 时飞行明确拒绝；日志 `out/remaining-refactor-identity-live.log`。后续飞行在
+首次 packet_capture 出现 30 秒管道超时，能力检查未执行；进程保留且保存门禁拒绝重启，
+不能称该项完整现场已复验。
 
 ### 玩家身份快照（2026-10-31）
 

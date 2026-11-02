@@ -28,6 +28,7 @@ scenario DSL / LLM / shell
 | `Input.cpp` | 移动/视角注入、按键事件、左右键动作、macro 的单 tick 应用 |
 | `InputEvents.cpp` | HID/键鼠事件注入、文本顺序屏障、客户端 UI 查询与后台回执 |
 | `InputEventModel.h` | 有界事件及结果槽、文本屏障、代次取消与请求独享的文本/UI 快照；不依赖游戏 SDK |
+| `InputSessionModel.h` | 输入整体会话：事件、held/latch、输入锁、tick 消费与统一重置；冷锁和 tick 无锁边界分离 |
 | `Flight.cpp` / `FlightModel.h` | 飞行能力的客户端/服务端分阶段请求、截止与取消、按请求编号准入的 8 tick 重断言及后台回执 |
 | `TaskModel.h` | 独立于游戏 SDK 的任务类型、单活动任务控制器、固定事件队列 |
 | `Tasks.cpp` | 六种任务的逐 tick 计算，只写定长结果，不格式化 JSON |
@@ -55,6 +56,7 @@ scenario DSL / LLM / shell
 | `Macro.cpp` | macro 文件加载/保存/回放记录 |
 | `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
 | `MacroPlaybackModel.h` | 宏播放帧所有权、无锁 tick 准入、范围/循环、运行编号与停止/失败/释放重试；不依赖游戏 SDK |
+| `MacroSessionModel.h` | 播放/录制互斥、统一停止/世界退出、冷侧锁与无锁 tick 取消的唯一所有者 |
 | `Commands.cpp` | 单次 JSON 解析、领域分发、未知命令、请求级 SEH/异常隔离 |
 | `CommandDiagnostics.cpp` | 心跳、状态、版本诊断、panic、spool 与故障/开销自检命令 |
 | `CommandInspection.cpp` | 内存、watch、hook 命令的校验与分发 |
@@ -151,8 +153,9 @@ spool 负责调度和格式化。2 秒截止、忙时拒绝、退出取消和重
 背包四组写入、管道命令、权限与服务端物品使用捕获值身份，在服务端回调内用共用
 `serverPlayerContext` 再验证 epoch 并解析 UUID；不在请求中保留 Player/Level 指针。
 命令可显式指定完整玩家名；默认使用本地 UUID。玩家未知/找不到时明确拒绝，不再
-自动改为控制台 origin，避免改变 `@s`/`~` 语义或改用 Owner 权限。传送/实体/飞行
-现有独立解析仍是后续范围；这里不宣称已开始的服务端调用能被退出或截止抢占。
+自动改为控制台 origin、名字前缀或另一玩家，避免改变 `@s`/`~` 语义或改用 Owner 权限。
+传送、实体攻击与飞行均在服务端所属队列共用同一 `ServerPlayerContext`，不再保留名字兜底；
+指针只在回调内短暂使用。这里不宣称已开始的服务端调用能被退出或截止抢占。
 
 任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
 安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
@@ -280,6 +283,8 @@ driver/harness/
   cli_commands/ # diagnostics/input/... 八个模块；每个导出 COMMANDS frozenset 供注册表分发
 driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/selftest_support.py # 三态统计、首错保护、统一 live 观察会话与空窗/增量导出
+driver/selftest_diagnostics.py # 入站切片、违规守望、send_probe 与 PacketTap 领域检查
+driver/selftest_fixtures.py # 可复用 live fixture（crash 文件快照）；主入口保留原检查名和专项参数
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 ```

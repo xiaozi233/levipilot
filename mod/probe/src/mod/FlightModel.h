@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mod/PlayerIdentityModel.h"
 #include "mod/QueryModel.h"
 #include "mod/StagedCapture.h"
 #include "mod/TickStreamModel.h"
@@ -17,8 +18,7 @@ struct FlightQuery {
     FlightStage testStage = FlightStage::Client;
 };
 struct FlightSnapshot {
-    std::uint64_t uuidA = 0, uuidB = 0;
-    FixedText<1024> name;
+    PlayerIdentity identity;
     bool target = false, flying = false, clientApplied = false, serverApplied = false;
     int gamemode = 0;
     char const* error = nullptr;

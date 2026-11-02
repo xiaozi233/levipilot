@@ -34,7 +34,6 @@ void ProbeMod::cancelFlight(char const* reason, bool discard) {
 
 FlightStage ProbeMod::captureFlightStage(FlightStage stage, FlightQuery const& query, FlightSnapshot& out) {
     FlightStage next = FlightStage::Complete;
-    std::string name; // SDK owning values remain outside the raw SEH frame.
     if (!guardedGameRead([&] {
         if (query.generation != mFlightGeneration.load() || !mWorld.inWorld()) { out.error = "world_left"; return; }
         if (stage == query.testStage) injectCaptureFault(query.test);
@@ -42,27 +41,21 @@ FlightStage ProbeMod::captureFlightStage(FlightStage stage, FlightQuery const& q
             auto client = ll::service::getClientInstance();
             auto* player = client ? client->getLocalPlayer() : nullptr;
             if (!player) { out.error = "no_player"; return; }
+            out.identity = localPlayerIdentity();
+            if (!out.identity.valid) { out.error = "flight_player_unknown"; return; }
             out.gamemode = static_cast<int>(player->getPlayerGameType());
             if (query.operation == FlightOperation::Toggle && player->getPlayerGameType() == GameType::Spectator) {
                 out.error = "spectator_not_supported"; return;
             }
-            auto const uuid = player->getUuid();
-            out.uuidA = uuid.a;
-            out.uuidB = uuid.b;
-            name = player->getRealName();
-            out.name.assign(name);
-            if (out.name.view().size() != name.size()) out.name.assign({});
             auto const current = player->getAbilities().getBool(AbilitiesIndex::MayFly);
             out.target = query.target == FlightTarget::Invert ? !current : query.target == FlightTarget::On;
             next = FlightStage::Server;
             return;
         }
         if (stage == FlightStage::Server) {
-            auto minecraft = ll::service::bedrock::getMinecraft();
-            auto* level = minecraft ? minecraft->getLevel() : nullptr;
-            if (!level) { out.error = "flight_no_server_level"; return; }
-            auto* player = level->getPlayer(mce::UUID{out.uuidA, out.uuidB});
-            if (!player && !out.name.empty()) { name = out.name.c_str(); player = level->getPlayer(name); }
+            auto context = serverPlayerContext(out.identity, mPoseEpoch.load(), mWorld.inWorld());
+            if (!context.level) { out.error = "flight_no_server_level"; return; }
+            auto* player = context.player;
             if (!player) { out.error = "flight_player_not_found"; return; }
             if (query.operation == FlightOperation::Toggle && player->getPlayerGameType() == GameType::Spectator) {
                 out.error = "spectator_not_supported"; return;

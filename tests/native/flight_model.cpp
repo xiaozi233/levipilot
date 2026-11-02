@@ -83,7 +83,7 @@ void stages() {
     assert(first && !capture.begin(query, 1));
     assert(first->dispatch() == FlightStage::Client);
     first->run(FlightStage::Client, 1, [](auto& out) {
-        out.uuidA = 42;
+        out.identity.uuidA = 42;
         out.clientApplied = true;
         return FlightStage::Server;
     });

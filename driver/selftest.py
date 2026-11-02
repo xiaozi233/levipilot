@@ -2151,6 +2151,15 @@ def check_player_identity(client: ModClient, checks: Checks, world: str | None =
                 f"identity_{mode}_command_rejected",
                 refused.get("reason") == "command_player_unknown",
             )
+            try:
+                client.fly(False)
+                checks.check(f"identity_{mode}_flight_rejected", False, "no error raised")
+            except ModProtocolError as exc:
+                checks.check(
+                    f"identity_{mode}_flight_rejected",
+                    "flight_player_unknown" in str(exc),
+                    str(exc),
+                )
             for command in (
                 {"cmd": "give", "item": "minecraft:stick"},
                 {"cmd": "set_item", "slot": 8, "item": "minecraft:stone"},

@@ -134,13 +134,15 @@ tick 的 C++ 异常发布定长错误并立即停止控制，spool 清理会话�
 `screen/key_state` 由独立 `UiCapture` 在客户端平台队列读取，后台格式化，文本在途不占用
 UI 查询槽。两类请求均有截止、取消与重连隔离，旧成功字段和 queued 回执保留。
 
-管道 `fly/togglefly` 使用独占 `FlightCapture`，在客户端平台队列读取身份并应用能力，
-再在服务端队列按 UUID（完整玩家名兜底）应用；spool 负责调度和格式化。2 秒截止、
-忙时拒绝、退出取消和重连丢弃，成功事件保留原名与字段，增加 `flight_id` 和两侧应用结果。
-`fly_ok` 现在表示两侧调用完成；`togglefly_ok` 不等待后续 8 tick 重断言。重断言仅在 tick
-执行能力写入和固定队列发布，不取冷侧锁、不读玩家名、不投递任务或格式化。请求编号的
-原子准入阻止已取消回调重新启动重断言，后续失败发独立 `flight_assertion_failed`。
-失败保守标记 `partial=true`；已开始的游戏调用不能抢占，也不会回滚已生效的能力。
+管道 `fly/togglefly` 使用独占 `FlightCapture`：客户端平台队列只读取身份与目标，服务端队列
+按 UUID（当前仍有完整玩家名兜底）唯一写入能力，再由客户端队列有界回读原生同步结果；
+spool 负责调度和格式化。2 秒截止、忙时拒绝、退出取消和重连丢弃。`client_applied` 与新增
+`client_observed` 只有回读一致才为 true，避免把客户端重复写入当作同步证明。成功事件保留原名
+与字段，新增 `application=server_with_client_readback`、`assertion=readback`。`togglefly_ok`
+不等待后续 8 tick 观察；观察仅读能力状态并发布固定结果，不写能力、不取冷侧锁、不读玩家名、
+不投递任务或格式化。请求编号阻止已取消回调重新启动观察，后续失败发独立
+`flight_assertion_failed`。失败保守标记 `partial=true`；已开始的游戏调用不能抢占或回滚。
+这减少自有双侧重复写入，但不证明已消除游戏共享序列化缓冲的跨线程竞态。
 
 客户端 tick 用 `PlayerIdentityStore` 发布 UUID、tick 和世界 epoch；不调用返回 owning
 字符串的 `getRealName()`，也不取得玩家名锁。采样受局部 SEH/C++ 保护，失败/空 UUID

@@ -38,7 +38,7 @@ void assertions() {
     assert(!assertion.active() && assertion.pop(failure));
     assert(failure.id == 3 && std::string_view(failure.error) == "flight_assert_failed");
     assert(!assertion.pop(failure));
-    // Replacing an assertion during a failing write must retain the new one.
+    // Replacing an assertion during a failing observation must retain the new one.
     assertion.prepare(4);
     assertion.start(4, false);
     assertion.tick([&](bool target, CaptureTest) -> char const* {

@@ -8,7 +8,7 @@ namespace probe::detail {
 
 enum class FlightOperation { Fly, Toggle };
 enum class FlightTarget { Off, On, Invert };
-enum class FlightStage { Client, Server, Assert, Complete };
+enum class FlightStage { Client, Server, Verify, Assert, Complete };
 struct FlightQuery {
     FlightOperation operation = FlightOperation::Toggle;
     FlightTarget target = FlightTarget::Invert;
@@ -27,7 +27,8 @@ using FlightCapture = StagedCapture<FlightQuery, FlightSnapshot, FlightStage>;
 
 // Cold publication, one tick reader, one cold result consumer. The command
 // packs identity and target into one atomic word; stale failures cannot clear
-// a replacement assertion. Tick retains no player pointer or owning string.
+// a replacement observation. Tick only reads the native ability state and
+// retains no player pointer or owning string.
 class FlightAssertion {
 public:
     static constexpr unsigned Ticks = 8;

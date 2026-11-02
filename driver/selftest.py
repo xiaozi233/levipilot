@@ -3196,6 +3196,13 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
             and flying.get("on_ground") is False,
             str(enabled),
         )
+        checks.check(
+            "flight_server_single_writer",
+            enabled.get("application") == "server_with_client_readback"
+            and enabled.get("client_observed") is True
+            and enabled.get("assertion") == "readback",
+            str(enabled),
+        )
         checks.check("flight_enable_off_recovers", off())
         client.teleport(*(float(original[f"feet_{axis}"]) for axis in "xyz"))
         landed = settle(client, on_ground=True)

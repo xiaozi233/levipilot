@@ -401,7 +401,9 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   先于替换录制数据，失败时保留原缓冲；启动时初始化全部帧槽，tick 不取录制会话锁。
   采样故障或退出世界会以 `macro_rec_stopped` 明确失败，已有帧仍可保存；
   `macro_rec_saved` 的 `ok=false/partial=true` 表示部分文件，Python 会报告错误并给出路径。
-  写盘失败保留缓冲供重试；保存尚未实现原子文件替换。主菜单不能开始录制。
+  写盘失败保留缓冲供重试。保存先写同目录唯一临时文件，检查 write/flush/close 后用
+  `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` 替换；失败清理临时文件并保留旧目标。
+  主菜单不能开始录制。
 
 - `state/buttons/inventory/blocks/scan` 各有一个独占快照槽；重复在途请求返回对应 `*_busy`。
   除扫描外采样截止为 2 秒，扫描为 10 秒，超时回 `error/capture_timeout`；退出世界取消请求

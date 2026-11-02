@@ -325,12 +325,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             drainMacroRecordingLocked();
             mMacroRecording.begin(limit, [&] {
                 mMacroRecordTest = CaptureTest::None;
-                mMouseLeftLatch  = false;
-                mMouseRightLatch = false;
-                mMouseLeft       = false;
-                mMouseRight      = false;
-                mPrevActionLmb   = false;
-                mPrevActionRmb   = false;
+                mInputSession.clearMouse(false);
             });
             enqueue(
                 nlohmann::json{

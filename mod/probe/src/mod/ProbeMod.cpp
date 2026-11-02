@@ -145,10 +145,9 @@ bool ProbeMod::disable() {
     hookCancelCalls("disabled");
     recordCancel(RecordEnd::Disabled);
     mPoseEpoch.fetch_add(1);
+    mMacroSession.stopAll(MacroEnd::Disabled, MacroRecordEnd::Disabled);
     {
         std::lock_guard lock(mMacroSessionMutex);
-        mMacroPlayback.stop(MacroEnd::Disabled);
-        mMacroRecording.stop(MacroRecordEnd::Disabled);
         drainMacroRecordingLocked();
     }
     // Input release must happen on the game tick. If a final tick is still
@@ -291,9 +290,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     RequestBlock const requests = readRequests();
 
     if (mResetInputButtons.exchange(false, std::memory_order_acq_rel)) {
-        mButtonStates.fill(false);
-        mHandlerStates.fill(false);
-        mPrevJump = false;
+        mInputSession.resetButtons();
     }
 
     tickFlightAssertion(player);

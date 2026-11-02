@@ -167,19 +167,8 @@ bool ProbeMod::queueUiQuery(UiQuery query) {
     return false;
 }
 
-void ProbeMod::resetInputEvents() {
-    std::lock_guard lock(mInputEventMutex);
-    mInputEvents.cancel();
-    mInputReplyGeneration = mInputEvents.generation();
-    mTextCapture.reset();
-    mUiCapture.reset();
-}
-void ProbeMod::cancelInputEvents(char const* reason) {
-    std::lock_guard lock(mInputEventMutex);
-    mInputEvents.cancel();
-    mTextCapture.cancel(reason);
-    mUiCapture.cancel(reason);
-}
+void ProbeMod::resetInputEvents() { mInputSession.resetEvents(); }
+void ProbeMod::cancelInputEvents(char const* reason) { mInputSession.cancelEvents(reason); }
 
 void ProbeMod::drainInputEvents() {
     std::lock_guard lock(mInputEventMutex);

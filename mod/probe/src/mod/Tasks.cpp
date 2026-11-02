@@ -187,7 +187,7 @@ void ProbeMod::beginTask() {
         request.lookTicks = 0;
         ++request.lookSeq;
     });
-    mMacroPlayback.cancel(MacroEnd::Task);
+    mMacroSession.cancelPlayback(MacroEnd::Task);
 }
 
 bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {

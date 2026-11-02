@@ -6,12 +6,10 @@ namespace probe {
 
 void ProbeMod::reportInternalError(TickPhase phase, char const* message) noexcept {
     mTickRecovery.fail(phase, message, mTick.load(std::memory_order_relaxed));
-    mActiveInput = ControlState{};
-    mActiveInputTicks = mActiveLookTicks = 0;
-    mJumpRequestPending = false;
+    mInputSession.failStop();
     mClickRequest = -1;
     mSlotRequest = -1;
-    mMacroPlayback.cancel(MacroEnd::InternalError);
+    mMacroSession.cancelPlayback(MacroEnd::InternalError);
     // These helpers have their own per-call SEH/C++ boundaries. A failed
     // release retains its held edge for the recovery ticks to retry.
     releaseRealInput();
@@ -44,9 +42,7 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
     mSeenInputSeq = requests.inputSeq;
     mSeenJumpSeq = requests.jumpSeq;
     mSeenLookSeq = requests.lookSeq;
-    mButtonStates.fill(false);
-    mHandlerStates.fill(false);
-    mPrevJump = false;
+    mInputSession.resetButtons();
     mTickRecovery.finish(state.id, released, true);
     return true; // Resume on the following tick, with a new command only.
 }
@@ -66,7 +62,7 @@ void ProbeMod::drainInternalErrors() {
                 ++request.lookSeq;
             });
             cancelTasks("internal_error");
-            mMacroPlayback.cancel(MacroEnd::InternalError);
+            mMacroSession.cancelPlayback(MacroEnd::InternalError);
             cancelInputEvents("internal_error");
             cancelFlight("internal_error");
             cancelTeleport("internal_error");

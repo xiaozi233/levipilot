@@ -245,23 +245,28 @@ bool ProbeMod::saveMacroFile(std::filesystem::path const& path, Macro const& mac
     if (!macroToJson(macro, value, error)) {
         return false;
     }
-    // Serialize before opening the target. A serialization/allocation failure
-    // must not truncate a previously saved macro.
-    auto const      data = value.dump(2);
+    auto const data = value.dump(2);
+    static std::atomic<std::uint64_t> tempSerial{0};
+    auto temp = path;
+    temp += ".tmp-" + std::to_string(GetCurrentProcessId()) + "-"
+        + std::to_string(tempSerial.fetch_add(1, std::memory_order_relaxed) + 1);
+    auto fail = [&](char const* action) {
+        error = "cannot " + std::string(action) + " " + path.string();
+        std::error_code cleanup;
+        std::filesystem::remove(temp, cleanup);
+        return false;
+    };
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file) {
-        error = "cannot write " + path.string();
-        return false;
-    }
+    if (ec) return fail("create directory for");
+    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+    if (!file) return fail("open");
     file.write(data.data(), static_cast<std::streamsize>(data.size()));
     file.flush();
     file.close();
-    if (!file) {
-        error = "cannot write " + path.string();
-        return false;
-    }
+    if (!file) return fail("write");
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return fail("replace");
     return true;
 }
 

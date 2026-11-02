@@ -97,6 +97,9 @@ class ModModelTests(unittest.TestCase):
     def test_input_order_barriers_failures_cancellation_and_concurrent_wrap(self) -> None:
         self.run_native("input_event_model")
 
+    def test_input_session_lifecycle_and_tick_reset_contract(self) -> None:
+        self.run_native("input_session_model")
+
     def test_control_edge_recovery_nested_flags_and_concurrent_diagnostics(self) -> None:
         self.run_native("movement_model")
 

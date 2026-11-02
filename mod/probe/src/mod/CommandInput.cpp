@@ -239,18 +239,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "mouse_clear") {
-        mMouseEventCount = 0;
-        mMouseLastAction = -1;
-        mMouseLastData   = -1;
-        for (auto& count : mMouseActionCounts) {
-            count = 0;
-        }
-        mMouseLeftLatch  = false;
-        mMouseRightLatch = false;
-        mMouseLeft       = false;
-        mMouseRight      = false;
-        mPrevActionLmb   = false;
-        mPrevActionRmb   = false;
+        mInputSession.clearMouse(true);
         enqueue(R"({"event":"mouse_cleared"})");
         return true;
     }

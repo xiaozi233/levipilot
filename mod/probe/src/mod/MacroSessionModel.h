@@ -2,6 +2,7 @@
 
 #include "mod/MacroPlaybackModel.h"
 #include "mod/MacroRecordModel.h"
+#include "mod/QueryModel.h"
 #include "mod/TickStreamModel.h"
 
 #include <atomic>

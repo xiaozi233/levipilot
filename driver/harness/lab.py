@@ -670,12 +670,27 @@ def decode_inbound_slice(hex_text: str, before_hex: str = "") -> dict[str, Any] 
 
 
 def decode_framed_slice(hex_text: str, before_hex: str) -> dict[str, Any] | None:
-    """Decode a slice only where a real frame-prefix capture is available."""
+    """Decode a slice with an exact capture starting at the real prefix byte.
+
+    ``before_hex`` must start at the frame varint, not merely contain one as a
+    suffix. Only a candidate spanning that whole capture is accepted; otherwise
+    the declaration stays unknown and suffix coincidences remain diagnostic
+    candidates rather than evidence.
+    """
     decoded = decode_inbound_slice(hex_text)
     if decoded is None:
         return None
     frame = declared_length(before_hex)
-    declared = frame["candidates"][0]["value"] if frame else None
+    try:
+        prefix_bytes = len(bytes.fromhex(before_hex or ""))
+    except ValueError:
+        prefix_bytes = 0
+    spanning = (
+        [candidate for candidate in frame["candidates"] if candidate["bytes"] == prefix_bytes]
+        if frame
+        else []
+    )
+    declared = spanning[0]["value"] if len(spanning) == 1 else None
     decoded.update(
         {
             "declared": declared,
@@ -687,7 +702,7 @@ def decode_framed_slice(hex_text: str, before_hex: str) -> dict[str, Any] | None
             if declared is not None
             else False,
             "framing_applicable": True,
-            "framing_source": "captured_prefix_varint",
+            "framing_source": "captured_prefix_varint_with_start",
         }
     )
     return decoded

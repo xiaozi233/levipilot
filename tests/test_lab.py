@@ -476,6 +476,23 @@ class InboundSliceTests(unittest.TestCase):
         decoded = decode_framed_slice("bc01", "05")
         self.assertEqual(slice_verdict(decoded), "clipped")
 
+    def test_multibyte_framing_uses_the_real_prefix_start(self) -> None:
+        decoded = decode_framed_slice("00" * 128, "8001")
+        assert decoded is not None
+        self.assertEqual(decoded["declared"], 128)
+        self.assertEqual(slice_verdict(decoded), "framed")
+        decoded = decode_framed_slice("00" * 16384, "808001")
+        assert decoded is not None
+        self.assertEqual(decoded["declared"], 16384)
+        self.assertEqual(slice_verdict(decoded), "framed")
+
+    def test_suffix_candidate_without_prefix_start_stays_unknown(self) -> None:
+        decoded = decode_framed_slice("00" * 16, "0010")
+        assert decoded is not None
+        self.assertEqual(decoded["declared_candidates"], [{"bytes": 1, "value": 16}])
+        self.assertIsNone(decoded["declared"])
+        self.assertEqual(slice_verdict(decoded), "unknown")
+
     def test_heap_neighbours_are_not_framing_evidence(self) -> None:
         decoded = decode_inbound_slice("bc01" + "00" * 5, "05")
         assert decoded is not None

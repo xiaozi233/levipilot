@@ -2742,6 +2742,9 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
     # serialization-mode mismatch from a payload that was written short.
     bytes_dump = os.environ.get("LEVIPILOT_VIOLATION_DUMP") or None
     bytes_armed = False
+    original_effect_ids = {int(row["id"]) for row in original.get("effects", [])}
+    expected_effect_ids = set(original_effect_ids)
+    added_effect = not original_effect_ids
     if bytes_dump:
         try:
             # Observed violations were inbound bodies that ran short: 39
@@ -2789,6 +2792,17 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
         )
 
     try:
+        if added_effect:
+            client.command("effect @s night_vision 180 0 true")
+            wait_ticks(client, 2)
+            expected_effect_ids = {
+                int(row["id"])
+                for row in client.state().get("effects", [])
+                if int(row.get("duration", 0)) > 0
+            }
+            checks.check(
+                "flight_effect_fixture", bool(expected_effect_ids), str(expected_effect_ids)
+            )
         client.command("gamemode survival @s")
         wait_ticks(client, 8)
         checks.check("flight_disable_applies_both", off())
@@ -2956,20 +2970,32 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
             client.fly(bool(original.get("flying")))
             if int(original["gamemode"]) != 3:
                 client.toggle_fly(bool(original.get("mayfly")))
-            client.reset(
+            client.teleport(
                 *(float(original[f"feet_{axis}"]) for axis in "xyz"),
                 yaw=float(original["yaw"]),
                 pitch=float(original["pitch"]),
             )
             wait_ticks(client, 10)
-            # The cleanup reset is the last thing this check does; if the level
-            # is gone now, stop here so the disconnect keeps its diagnostics.
             require_world(client, "flight cleanup")
+            restored_effect_ids = {int(row["id"]) for row in client.state().get("effects", [])}
+            checks.check(
+                "flight_preserves_effects",
+                restored_effect_ids == expected_effect_ids,
+                f"expected={sorted(expected_effect_ids)} actual={sorted(restored_effect_ids)}",
+            )
+            if added_effect:
+                client.command("effect @s clear")
+                wait_ticks(client, 2)
     restored = client.state()
     checks.check(
         "flight_restores_abilities",
         restored.get("mayfly") == original.get("mayfly")
         and restored.get("flying") == original.get("flying"),
+    )
+    checks.check(
+        "flight_restores_original_effects",
+        {int(row["id"]) for row in restored.get("effects", [])} == original_effect_ids,
+        str(restored.get("effects")),
     )
     checks.check("flight_tick_alive", bool(client.ping()) and restored.get("in_world") is True)
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}

@@ -158,6 +158,14 @@ class InterruptedSelftestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             dump_packet_tap(client, str(Path(directory)))
 
+    def test_flight_cleanup_uses_effect_preserving_teleport(self):
+        source = Path("driver/selftest.py").read_text(encoding="utf-8")
+        body = source.split("def check_flight", 1)[1].split("def check_input_events", 1)[0]
+        self.assertNotIn("client.reset(", body)
+        self.assertIn("client.teleport(", body)
+        self.assertIn("flight_preserves_effects", body)
+        self.assertIn("flight_restores_original_effects", body)
+
     def test_flight_cleanup_preserves_first_error_and_type(self):
         for cause in (WorldLost("level vanished at tick 763"), ModTimeout("first request timeout")):
             with (

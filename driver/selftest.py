@@ -1090,7 +1090,10 @@ def check_macro_capture(client: ModClient, checks: Checks, world: str | None = N
                 and bool(client.ping()),
             )
 
-        # An actual target-open failure must preserve the stopped session for retry.
+        # A real save failure must preserve the stopped session for retry. The
+        # fixture makes the target a directory, so the atomic write fails at the
+        # replace step ("cannot replace"); a read-only temp fails earlier
+        # ("cannot write"). Both stages must keep the recording for a retry.
         started = client.macro_record_start(3)
         client.wait_event(
             "macro_rec_limit", 3, predicate=lambda row: row.get("record_id") == started["record_id"]
@@ -1101,9 +1104,10 @@ def check_macro_capture(client: ModClient, checks: Checks, world: str | None = N
         try:
             failed = client.request({"cmd": "macro_rec_stop", "name": blocked_name}, "error")
             status = client.macro_status()
+            reason = str(failed.get("reason"))
             checks.check(
                 "macro_capture_save_failure_retains",
-                "cannot write" in str(failed.get("reason"))
+                ("cannot replace" in reason or "cannot write" in reason)
                 and status.get("recorded_ticks") == 3
                 and status.get("recording") is False,
                 str(failed),

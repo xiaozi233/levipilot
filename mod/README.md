@@ -205,9 +205,12 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 同日诊断导出后续：`py -3.11 driver/selftest.py --diagnostic-export-only --require-complete`
 **3/3**。修复游戏与 driver 工作目录不同导致的相对路径失败，并等待导出回执，
 避免旧错误串到下一条命令。只导出现有环，不安装 hook 或修改世界。
-最终离线 **377/377**，ruff/format/mypy和profiles/roles检查通过。
-实体/飞行身份解析候选现场28/29失败，已撤回源码和安装；第14项仍未完成。
-详见 [`现场与交接`](../docs/notes/badpacket-187-20261101.md)。
+当时离线 **377/377**。2026-11-02 当前候选离线 **379/379**，ruff check/format、mypy（95 files）
+和 profiles/roles/lint_public 检查通过；现场恢复范围另见修复跟踪。
+旧实体/飞行身份候选现场28/29失败，当时已撤回源码和安装。2026-11-02 已重新按 UUID+epoch
+统一实体攻击与飞行的服务端解析并删除名字兜底，身份专项 **44/44**；后续管道恢复范围见
+[`修复跟踪`](../docs/reliability-repairs.md)。旧候选记录保留在
+[`现场与交接`](../docs/notes/badpacket-187-20261101.md)。
 
 传送已移出 tick，复用 UUID/世界代次解析，后台调度及回执。
 reset/checkpoint 成功接受附 `teleport_id`，需等同编号 `teleported` 再回读到达；失败可能
@@ -630,7 +633,8 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 丢失数、状态及观察空窗。设施自测和 panic 会实际卸下，恢复武装也不意味着没有空窗。
 人工 `disconnect_route` 现在正确标 synthetic；屏幕的 `disconnect_reason/response` 为
 路由原因码，`verdict=disconnect`，回调 response 仍是违规处理等级。已有屏幕无法补录，
-详情限 639 字节并替换非 ASCII；自然断开完整采集链已有下述现场样本，根因仍未定位。
+详情限 639 字节并替换非 ASCII。自然断开完整采集链已有下述现场样本；当时根因未定位，
+后续已由证据册 §49 闭合为游戏共享序列化缓冲的跨线程竞态。
 
 自检显式输出 PASS/FAIL/SKIP；`--require-complete` 将必需 skip 判为失败，普通模式仍可
 在权限关闭时降级，但数字会保留 skip。本批设施专项 21/21；关闭注入权限的门禁对照

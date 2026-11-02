@@ -43,8 +43,11 @@ ruff check 通过；干净 HEAD 的 ruff format 已有 2 文件需要重排，�
 | 玩家解析 | `Entities.cpp`、`Flight.cpp` / P2 | 服务端队列内 UUID+epoch，去掉隐式名字兜底 | 无玩家/换世界/旧请求/取消/故障恢复 | 未结，依赖上项先单独验收 |
 | 会话所有权 | `ProbeMod.h`、Macro/Input / P2 | 封装录制与输入整体会话，保留 tick 无分配/无冷锁 | native 生命周期 + 宏/输入/控制专项 | **构建/native 完成**；现场待恢复复验 |
 | 自检真实性 | `selftest.py` 与领域 fixture / P2 | 拆分领域检查，补效果回读、首错和恢复 | 专项参数兼容、`--require-complete` | **诊断领域/fixture 完成**；真实效果沿用回读，现场待恢复复验 |
-| 补充债务 | Macro 保存、Overhead、提示词索引 / P2 | 原子替换、同条件性能对照、历史状态校准 | 故障保留旧文件、保存再加载、统计与限制完整 | 未结 |
+| 补充债务 | Macro 保存、Overhead、提示词索引 / P2 | 原子替换、同条件性能对照、历史状态校准 | 故障保留旧文件、保存再加载、统计与限制完整 | **实现/记录完成**；四组对照无提速结论，原子保存现场待恢复复验 |
 
+当前候选离线全量 **379/379**、ruff check/format、mypy（95 files）、profiles、roles（56/63）、
+lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` 因仍读旧字段位置失败，
+已改为检查 InputSession 的真实默认字段后重跑通过。日志 `out/remaining-refactor-final-offline.log`。
 本轮不新增逆向作为前提；BadPacket 根因以证据册 §49 为准。上文未结项只有完成对应验收后才改状态，
 旧「尚缺失败原帧」「声明长度 23」及 `inbound_slice_framing` skip 均为历史阶段记录，不是现行结论。
 

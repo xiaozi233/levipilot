@@ -304,15 +304,23 @@ size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序
 已将候选另存out补丁并撤回源码/安装，不能标完成。原DLL/配置恢复，状态回读11/11，
 121个原有crash无变化。后续需要新增逆向，当前停在
 `docs/notes/prompts/badpacket-187-followup-20261101.md`，不自行继续逆向。
-第16项具名类型在658d90a已落地，本轮文档已校准；原清单仍有12–15四项未结。
+第16项具名类型在658d90a已落地。2026-11-02 当前候选离线 **379/379**，ruff check/format、
+mypy（95 files）、profiles、roles（56/63）、lint_public 通过。原清单12–15的实现范围已推进完成，
+但后续现场曾出现 30 秒管道超时，保存门禁拒绝重启，不能宣称完整现场全绿；恢复与验收以
+`docs/reliability-repairs.md` 为准。
 
-- ProbeMod.h 其余字段组按 `ChatCapture`/`PacketTap` 的范式继续子系统化；宏播放已迁
-  `MacroPlayback`，宏录制/输入的整体会话所有权仍在第 13 项
-- 查询快照已覆盖 state/buttons/inventory/blocks/scan/select_slot；实体/ECS 已迁共用分阶段会话，JSON 录制/跑酷事件已迁固定队列与后台格式化；宏录制已迁预初始化帧与局部 SEH，hook_call 已迁独占请求/后台回执，姿态已迁一致快照；二进制录制已补唯一失败与部分导出；宏播放已迁无锁准入/后台终结、点击已迁固定队列；事件输入已加局部边界/固定结果/文本屏障，文本与 screen/key_state 已迁客户端队列；飞行已迁分阶段请求/唯一终结/有界重断言；身份缓存已迁 UUID/epoch 原子快照；移动/视角已加局部边界/失败传播/释放重试；传送已迁独占请求/后台调度；内部错误上报已迁定长队列/后台清理与两阶段准入；命令包模板/注入已迁定长采样与独占请求，通用 PacketTap 序列化及其余 SDK 边界仍待治理
-- Overhead 统计环已迁原子载荷并通过 1100 tick 现场环绕；性能比较仍需受控对照
+- 宏录制/播放由 `MacroSession` 唯一持有；输入事件、held/latch、输入锁和 tick 状态由
+  `InputSession` 唯一持有。既有名字是非 owning 别名；冷锁只管准入/取消/回执，tick 不取冷锁。
+- PacketTap 常规身份采集只写定长记录；`serialize_ids` 是显式高成本 SDK 重序列化诊断，
+  可能分配且无时间预算，不保留 Packet 指针，也不是线上原帧。
+- 飞行只在服务端写能力，客户端有界回读原生同步，8 tick 只读观察；实体攻击/飞行与
+  其他服务端领域统一 UUID+epoch 解析，删除隐式名字兜底。
+- 宏保存使用同目录唯一临时文件 + `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`，
+  失败清理并保留旧文件。Overhead 已做同 DLL 四组 1100 tick 对照，无可重复提速结论。
+- 诊断/入站/send_probe/PacketTap 检查已迁 `driver/selftest_diagnostics.py`，
+  可复用 fixture 在 `driver/selftest_fixtures.py`；入口、检查名与专项参数保持兼容。
 - 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成，专项 30/30；
-  UseTask 5 秒截止、chat_history 2 秒超时也已现场验收
-- `mButtonStates/mHandlerStates` 重置已归 tick；其余输入会话所有权继续在第 13 项治理
+  UseTask 5 秒截止、chat_history 2 秒超时也已现场验收。现场热卸载与 200000 tick 长录制仍未验收。
 
 > 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收标准与结论：
 > 使用限制与基线数字在 `mod/README.md`，实现细节与逐项实测数字在 `docs/mod-internals.md`

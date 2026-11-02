@@ -29,7 +29,7 @@ scenario DSL / LLM / shell
 | `InputEvents.cpp` | HID/键鼠事件注入、文本顺序屏障、客户端 UI 查询与后台回执 |
 | `InputEventModel.h` | 有界事件及结果槽、文本屏障、代次取消与请求独享的文本/UI 快照；不依赖游戏 SDK |
 | `InputSessionModel.h` | 输入整体会话：事件、held/latch、输入锁、tick 消费与统一重置；冷锁和 tick 无锁边界分离 |
-| `Flight.cpp` / `FlightModel.h` | 飞行能力的客户端/服务端分阶段请求、截止与取消、按请求编号准入的 8 tick 重断言及后台回执 |
+| `Flight.cpp` / `FlightModel.h` | 飞行能力的服务端单写、客户端有界同步回读、截止与取消、按请求编号准入的 8 tick 只读观察及后台回执 |
 | `TaskModel.h` | 独立于游戏 SDK 的任务类型、单活动任务控制器、固定事件队列 |
 | `Tasks.cpp` | 六种任务的逐 tick 计算，只写定长结果，不格式化 JSON |
 | `TaskEvents.cpp` | 任务状态/事件 JSON、服务端物品使用调度与 SEH 隔离 |
@@ -200,7 +200,7 @@ spool 生成 control_error，status.controls 提供 held 与清理标记。默�
 保留释放意图，释放成功后才清除；失败序列停止，后续先清理再接纳新输入。视角 scope
 使用计数支持平台队列/tick 交错。接受回执、后台诊断与实际完成是不同语义；专项
 126/126、传送生命周期 49/49、完整 868/868 通过，边界见 reliability-repairs.md；
-未覆盖的 SDK 路径仍待治理，未做性能对照或现场热卸载。
+这些数字是历史验收。显式高成本诊断限制见下文，现场热卸载仍未验收。
 
 二进制 `RecordBuffer` 在冷侧准备存储、tick 无锁准入与发布，停止等待已准入采样。
 采样故障、退出和卸载终结当前 record_id，冷侧发送一次 `record_failed`；停止/导出保留
@@ -218,8 +218,9 @@ ECS 已移出 tick，和实体共用 `StagedCapture`：客户端平台队列读�
 每请求冷侧独享约 37 KiB 快照；最多 1024 条结果/失败 id、4096 个 storage 探测、512 字节
 组件原始数据，超限标记 truncated；逐 storage 局部 SEH/C++ 故障记入 skipped/partial。
 后台处理 2 秒截止、busy、退出取消、重连丢弃与 JSON；运行中的游戏调用不支持超时抢占。
-游戏 SDK 的玩家/物品名称访问器仍可能分配，输入、其他钩子与游戏读取仍待治理，
-不能将当前整个 tick 宣称为零分配或已完成异常边界治理。
+按需 state/inventory 的 SDK owning 名称复制仍在所属线程执行，有固定容量和截断标记；
+`serialize_ids`、`mem_arg` 与守望/发送探针是默认关闭的显式高成本诊断。不能将整个 tick
+或所有 SDK 调用宣称为零分配，也不能把局部边界推广为所有异步调用可抢占。
 
 ## 任务生命周期
 

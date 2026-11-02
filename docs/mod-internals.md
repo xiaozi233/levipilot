@@ -13,7 +13,8 @@ BadPacket 最近既有完整现场为 **1076/1077**（0 failed、1 required skip
 游戏侧 `NetworkSystem` 的共享序列化缓冲被两个线程并发使用，产生粘连帧并触发 BadPacket(90)。
 harness 不修改游戏网络栈，只减少自有调用的不必要并发状态同步。2026-11-02 已把切片检查改为
 包头、实际边界、捕获完整性与序号验证，现场复验结果见 `reliability-repairs.md`；历史调查见
-`notes/badpacket-setactordata-20261031.md` §36–§49。下列新连接专项不替代完整现场验收。
+`notes/badpacket-setactordata-20261031.md` §36–§49。当前候选离线 **379/379**，ruff check/format、
+mypy（95 files）、profiles、roles（56/63）与 lint_public 通过；下列新连接专项不替代完整现场验收。
 
 ## 注入时机
 
@@ -277,7 +278,8 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   启停及退出/重进恢复。未模拟磁盘写满，未连续录制 200000 tick。
   构建/静态/profile 检查通过，无新增/修改 crash 文件；安装与构建 SHA-256 均为
   `D29E1160F03B5227D573316DE639113FF5C1F4476840374C01EC62FB7C9F1134`。
-  日志 `out/reliability-macro-capture-*`；宏播放/其他读取与 SDK 分配仍待治理。
+  日志 `out/reliability-macro-capture-*`。这是当时范围；后续 MacroSession/InputSession 与
+  显式高成本诊断边界见本节开头的 2026-11-02 记录。
 
 ## 鼠标录制
 

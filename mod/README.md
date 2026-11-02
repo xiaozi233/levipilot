@@ -205,7 +205,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 同日诊断导出后续：`py -3.11 driver/selftest.py --diagnostic-export-only --require-complete`
 **3/3**。修复游戏与 driver 工作目录不同导致的相对路径失败，并等待导出回执，
 避免旧错误串到下一条命令。只导出现有环，不安装 hook 或修改世界。
-当时离线 **377/377**。2026-11-03 当前候选离线 **383/383**，ruff check/format、mypy（95 files）
+当时离线 **377/377**。2026-11-03 当前候选离线 **387/387**，ruff check/format、mypy（95 files）
 和 profiles/roles/lint_public 检查通过；现场恢复范围另见修复跟踪。
 旧实体/飞行身份候选现场28/29失败，当时已撤回源码和安装。2026-11-02 已重新按 UUID+epoch
 统一实体攻击与飞行的服务端解析并删除名字兜底，身份专项 **44/44**；后续管道恢复范围见
@@ -466,8 +466,9 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   不等待 8 tick 观察结束；后续观察失败另发 `flight_assertion_failed`。失败的 `partial=true`
   表示能力可能已部分生效，已开始的调用不能被超时抢占或自动回滚。专项 **53/53**；本批未复现
   BadPacket，不宣称游戏共享缓冲竞态已根治。2026-11-03 自检收尾改用 `teleport`，避免 `reset`
-  清空调用前效果；空效果时添加夜视、非空保留原效果，按 ID 集合恢复，复验 **50/50**。
-  同批完整 `--require-complete` 为 **1093/1093**（0 fail、0 skip、0 required skip）。
+  清空调用前效果；原效果按 duration/tick 允许自然到期，独立长时哨兵验证未提前清空且只移除
+  哨兵，短/长复验均 **50/50**。同批完整 `--require-complete` 为 **1093/1093**
+  （0 fail、0 skip、0 required skip）。
 - `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），

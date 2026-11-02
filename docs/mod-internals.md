@@ -14,9 +14,10 @@ BadPacket 最近完整现场为 **1093/1093**（`--require-complete`，0 failed�
 游戏侧 `NetworkSystem` 的共享序列化缓冲被两个线程并发使用，产生粘连帧并触发 BadPacket(90)。
 harness 不修改游戏网络栈，只减少自有调用的不必要并发状态同步。2026-11-02 已把切片检查改为
 包头、实际边界、捕获完整性与序号验证，现场复验结果见 `reliability-repairs.md`；历史调查见
-`notes/badpacket-setactordata-20261031.md` §36–§49。当前候选离线 **383/383**，ruff check/format、
+`notes/badpacket-setactordata-20261031.md` §36–§49。当前候选离线 **387/387**，ruff check/format、
 mypy（95 files）、profiles、roles（56/63）与 lint_public 通过；下列新连接专项不替代完整现场验收。
-2026-11-03 审阅修复：飞行收尾改用不清效果的 `teleport`，添加/恢复效果 fixture 并现场 50/50；
+2026-11-03 审阅修复：飞行收尾改用不清效果的 `teleport`；原效果按 duration/tick 允许自然到期，
+独立长时哨兵验证未提前清空且只移除哨兵，短/长现场均 50/50。
 显式 framing 只接受真实起点覆盖完整捕获窗口的 varint，128/16384/歧义用例通过；
 `macro_session_model` 直接覆盖聚合取消、世界退出与停用。
 

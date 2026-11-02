@@ -45,7 +45,7 @@ ruff check 通过；干净 HEAD 的 ruff format 已有 2 文件需要重排，�
 | 自检真实性 | `selftest.py` 与领域 fixture / P2 | 拆分领域检查，补效果回读、首错和恢复 | 专项参数兼容、`--require-complete` | **完成**：诊断 3/3、连接 11/11、完整 `--require-complete` 1093/1093（0 skip） |
 | 补充债务 | Macro 保存、Overhead、提示词索引 / P2 | 原子替换、同条件性能对照、历史状态校准 | 故障保留旧文件、保存再加载、统计与限制完整 | **完成**：原子保存故障路径与重试现场通过；四组对照无提速结论；提示词索引已校准 |
 
-当前候选离线全量 **383/383**、ruff check/format、mypy（95 files）、profiles、roles（56/63）、
+当前候选离线全量 **387/387**、ruff check/format、mypy（95 files）、profiles、roles（56/63）、
 lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` 因仍读旧字段位置失败，
 已改为检查 InputSession 的真实默认字段后重跑通过。日志 `out/remaining-refactor-final-offline.log`。
 本轮不新增逆向作为前提；BadPacket 根因以证据册 §49 为准。上文未结项只有完成对应验收后才改状态，
@@ -1004,17 +1004,18 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
 
 ## 2026-11-03 独立审阅修复
 
-- 飞行清理不再调用清效果的 `reset`，改为 `teleport`；空效果时添加夜视、非空保留原效果，
-  按 ID 集合恢复。专项 **50/50（0 fail、0 skip）**，`flight_preserves_effects` 与
-  `flight_restores_original_effects` 均通过，日志 `out/review-20261103-flight.log`。
+- 飞行清理不再调用清效果的 `reset`，改为 `teleport`；原效果按 duration/tick 允许自然到期，
+  独立长时哨兵验证未提前清空且只移除哨兵。首轮专项 **50/50（0 fail、0 skip）**，后续短时
+  自然到期与长时保持复验也均 **50/50**，日志 `out/review-20261103-{short,long}-effect.log`。
+  `flight_preserves_effects` 与 `flight_restores_original_effects` 均通过。
 - 显式 framing 只接受真实起点覆盖完整捕获窗口的 varint；128、16384 和歧义前缀测试通过，
   不再按候选顺序猜长度。本地深拷贝入站路径仍不使用 framing 假设。
 - `macro_session_model` 直接验证聚合取消、世界退出、停用和零分配，头文件可独立包含。
-- 当前离线 **383/383**，ruff check/format、mypy（95 files）、profiles、roles（56/63）、
-  lint_public 与完整 C++ 构建通过。日志 `out/review-20261103-{offline,build,ruff,format,mypy}.log`。
+- 当前离线 **387/387**，ruff check/format、mypy（95 files）、profiles、roles（56/63）、
+  lint_public 与完整 C++ 构建通过。日志 `out/review-20261103-effect-expiry-{offline,ruff,format,mypy}.log`。
 - 完整现场复验 **1093/1093（0 fail、0 skip、0 required skip）**，日志
-  `out/review-20261103-full-permissions.log`。首轮权限不足为 977/982（2 fail、3 required skip），
-  已保留 `out/review-20261103-full.log`；随后按既有权限/空快捷栏前提重跑，未删改失败证据。
+  `out/review-20261103-effect-expiry-full.log`。前一轮同为 1093/1093，见
+  `out/review-20261103-full-permissions.log`；最早权限不足的 977/982 证据仍保留。
 - 玩家背包、姿态、能力、效果、选中槽、输入与宏状态已回读恢复，原 3 键配置按 CRLF 字节恢复并
   重启加载，管道 ping 通过。证据 `out/review-20261103-restored.json`、
   `out/review-20261103-final-restart.log`。

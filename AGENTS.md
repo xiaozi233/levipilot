@@ -303,7 +303,7 @@ size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序
 历史阻塞（已由后续实现与验收替代）：2026-11-01 22:20 第14项候选现场28/29失败
 （packet187/size48/error104→90），当时撤回候选且不能标完成；`c0c3398` 后来重新实现了
 UUID+epoch 统一解析，身份专项 44/44、飞行复验与完整现场已通过。早期逆向停止点不再是当前任务。
-第16项具名类型在658d90a已落地。当前离线 **383/383**，ruff check/format、mypy（95 files）、
+第16项具名类型在658d90a已落地。当前离线 **387/387**，ruff check/format、mypy（95 files）、
 profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。管道恢复后的
 完整 `--require-complete` 为 **1090/1090**（0 fail、0 skip、0 required skip），记录见
 `docs/reliability-repairs.md`；仅有 HBUI、现场热卸载和 200000 tick 长录制仍明确未验收。
@@ -318,8 +318,9 @@ profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实�
   失败清理并保留旧文件。Overhead 已做同 DLL 四组 1100 tick 对照，无可重复提速结论。
 - 诊断/入站/send_probe/PacketTap 检查已迁 `driver/selftest_diagnostics.py`，
   可复用 fixture 在 `driver/selftest_fixtures.py`；入口、检查名与专项参数保持兼容。
-- 飞行自检恢复姿态用 `teleport`，不再用会清效果的 `reset`；效果 fixture 按 ID 集合保存/恢复，
-  专项 50/50。显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。
+- 飞行自检恢复姿态用 `teleport`，不再用会清效果的 `reset`；原效果按 duration/tick 判定是否
+  应仍存在，允许自然到期；独立长时哨兵验证未提前清空且只移除哨兵。短/长现场均 50/50。
+  显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。
   `macro_session_model` 直接覆盖聚合生命周期。
 - 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成，专项 30/30；
   UseTask 5 秒截止、chat_history 2 秒超时也已现场验收。现场热卸载与 200000 tick 长录制仍未验收。

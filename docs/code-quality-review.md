@@ -31,8 +31,9 @@
 ## 2026-11-03 独立验收复核
 
 - 飞行自检的收尾由 `reset` 改为 `teleport`，保留 reset 清效果契约但不再让 fixture 调用它；
-  空效果时添加夜视、非空保留原效果，按 ID 集合验证并恢复。飞行专项 **50/50**，含
-  `flight_preserves_effects` 与 `flight_restores_original_effects`。
+  原效果按 duration/tick 判定是否应仍存在，允许自然到期；独立长时哨兵验证未提前清空且只
+  移除哨兵。短/长飞行专项均 **50/50**，含 `flight_preserves_effects` 与
+  `flight_restores_original_effects`；离线另覆盖长时、短时、提前清空和无限效果。
 - `decode_framed_slice` 只接受覆盖真实前缀捕获窗口的 varint，不再用候选列表顺序消歧；
   128、16384 与无法确认前缀起点的用例通过，歧义保持 unknown。本地深拷贝入站路径不受影响。
 - `macro_session_model` 直接覆盖聚合的取消、世界退出、停用和零分配生命周期；不再只有

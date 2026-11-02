@@ -591,12 +591,10 @@ def settle(
 
 # --- inbound slice decoding -------------------------------------------------
 #
-# The parse boundary (``Packet::readNoHeader`` entry) receives one stream per
-# packet, and that stream starts at the packet id: the frame's length varint was
-# already consumed by the splitter (measured 2026-11-01: id 39 arrives as
-# ``27 0d 01 ...``, id 111 as ``6f ..``, id 188 as a two-byte varint ``bc 01``,
-# which is why 187/188 slices measure payload+2). The declared length therefore
-# lives in the bytes just *before* the slice, which the probe now also copies.
+# The parse boundary (``Packet::readNoHeader`` entry) receives a deep-copy
+# stream per packet. It starts at the packet id and this local path has no frame
+# length prefix. Bytes before the allocation are unrelated heap neighbours:
+# retain them as raw evidence, never decode them as a declared length.
 
 
 def read_varint(data: bytes, offset: int = 0) -> tuple[int | None, int]:
@@ -615,12 +613,11 @@ def read_varint(data: bytes, offset: int = 0) -> tuple[int | None, int]:
 
 
 def declared_length(before_hex: str) -> dict[str, Any] | None:
-    """Recover the frame length varint that ended where the slice began.
+    """Decode prefix candidates only for a path proven to have frame varints.
 
-    The varint is the last thing before the id, so every candidate must *end*
-    exactly at the end of the captured prefix. Several byte counts can satisfy
-    that; all are returned so the caller can compare them with the delivered
-    size instead of trusting one guess.
+    Do not call this for the local deep-copy parse stream. Several candidates
+    may end at the supplied boundary, so callers must compare all of them with
+    the delivered size rather than trusting the first one blindly.
     """
     try:
         data = bytes.fromhex(before_hex or "")
@@ -640,14 +637,11 @@ def declared_length(before_hex: str) -> dict[str, Any] | None:
 
 
 def decode_inbound_slice(hex_text: str, before_hex: str = "") -> dict[str, Any] | None:
-    """Split one captured slice into ``(packet id, payload)`` plus its frame.
+    """Split the local parse-boundary copy into packet id and captured payload.
 
-    ``declared`` comes from the bytes preceding the slice and is ``None`` when
-    the probe could not read them or no varint ends exactly at the boundary.
-    Two conventions are possible for what the length counts, so both are
-    compared against the delivered bytes: ``declared_with_id`` (length covers
-    id + payload) and ``declared_as_body`` (payload only). Whichever holds for
-    ordinary traffic is this build's framing.
+    ``before_hex`` remains in the signature for caller compatibility, but is
+    deliberately not interpreted. The legacy ``declared*`` fields also remain,
+    with no declaration and ``framing_applicable=false`` on this path.
     """
     try:
         data = bytes.fromhex(hex_text or "")
@@ -658,31 +652,49 @@ def decode_inbound_slice(hex_text: str, before_hex: str = "") -> dict[str, Any] 
     packet_id, id_bytes = read_varint(data, 0)
     if packet_id is None or id_bytes == 0:
         return None
-    payload = len(data) - id_bytes
-    frame = declared_length(before_hex)
-    declared = frame["candidates"][0]["value"] if frame and frame["candidates"] else None
     return {
         "packet_id": packet_id,
         "id_bytes": id_bytes,
         "slice_bytes": len(data),
-        "payload_bytes": payload,
-        "declared": declared,
-        "declared_candidates": frame["candidates"] if frame else [],
-        "declared_with_id": declared == len(data) if declared is not None else False,
-        "declared_as_body": declared == payload if declared is not None else False,
+        "captured_bytes": len(data),
+        "payload_bytes": len(data) - id_bytes,
+        "sample_complete": None,
+        "truncated": None,
+        "declared": None,
+        "declared_candidates": [],
+        "declared_with_id": False,
+        "declared_as_body": False,
+        "framing_applicable": False,
+        "framing_source": "not_present_on_deep_copy_path",
     }
 
 
-def slice_verdict(decoded: dict[str, Any] | None) -> str:
-    """Classify a slice as ``framed``, ``clipped``, ``over`` or ``unknown``.
+def decode_framed_slice(hex_text: str, before_hex: str) -> dict[str, Any] | None:
+    """Decode a slice only where a real frame-prefix capture is available."""
+    decoded = decode_inbound_slice(hex_text)
+    if decoded is None:
+        return None
+    frame = declared_length(before_hex)
+    declared = frame["candidates"][0]["value"] if frame else None
+    decoded.update(
+        {
+            "declared": declared,
+            "declared_candidates": frame["candidates"] if frame else [],
+            "declared_with_id": declared == decoded["slice_bytes"]
+            if declared is not None
+            else False,
+            "declared_as_body": declared == decoded["payload_bytes"]
+            if declared is not None
+            else False,
+            "framing_applicable": True,
+            "framing_source": "captured_prefix_varint",
+        }
+    )
+    return decoded
 
-    ``framed`` means the length declared in the frame equals what arrived, i.e.
-    the short slice is exactly what was framed. ``clipped`` means the frame
-    declared more bytes than were delivered. ``over`` is the reverse and
-    normally means the length candidate was misread.
-    """
-    # A frame length of 0 is dominated by unrelated bytes that happen to precede
-    # the slice (the copy's neighbours), so it is not a declaration at all.
+
+def slice_verdict(decoded: dict[str, Any] | None) -> str:
+    """Classify real framing evidence; local deep copies stay ``unknown``."""
     if not decoded or decoded["declared"] in (None, 0):
         return "unknown"
     if decoded["declared_with_id"] or decoded["declared_as_body"]:
@@ -693,23 +705,25 @@ def slice_verdict(decoded: dict[str, Any] | None) -> str:
 
 
 def summarize_inbound_slices(rows: Sequence[dict[str, Any]], limit: int = 12) -> dict[str, Any]:
-    """Compact view of decoded slices: what ids/sizes arrived, and the last few.
-
-    The full ring stays on disk; this is what belongs in a disconnect report,
-    where the failing packet is the *last* thing that arrived.
-    """
+    """Compact decoded ids, actual boundaries, completeness and the tail."""
     decoded = [row for row in rows if row.get("decoded")]
     counts: dict[str, int] = {}
     for row in decoded:
         item = row["decoded"]
-        key = f"{item['packet_id']}:{item['slice_bytes']}"
+        key = f"{item['packet_id']}:{row.get('size', item['slice_bytes'])}"
         counts[key] = counts.get(key, 0) + 1
     tail = [
         {
+            "index": row.get("index"),
+            "seq": row.get("seq"),
             "tick": row.get("tick"),
+            "tid": row.get("tid"),
             "packet_id": row["decoded"]["packet_id"],
-            "slice_bytes": row["decoded"]["slice_bytes"],
+            "slice_bytes": row.get("size", row["decoded"]["slice_bytes"]),
+            "captured_bytes": row["decoded"]["captured_bytes"],
             "payload_bytes": row["decoded"]["payload_bytes"],
+            "sample_complete": row["decoded"]["sample_complete"],
+            "truncated": row["decoded"]["truncated"],
             "verdict": row.get("verdict"),
             "slice_hex": row["slice_hex"][:48],
         }
@@ -718,17 +732,20 @@ def summarize_inbound_slices(rows: Sequence[dict[str, Any]], limit: int = 12) ->
     return {
         "rows": len(rows),
         "decoded": len(decoded),
+        "complete": sum(row["decoded"]["sample_complete"] is True for row in decoded),
+        "truncated": sum(row["decoded"]["truncated"] is True for row in decoded),
+        "framing_applicable": sum(row["decoded"]["framing_applicable"] for row in decoded),
         "by_id_size": dict(sorted(counts.items(), key=lambda kv: -kv[1])[:8]),
         "tail": tail,
     }
 
 
 def inbound_slices(client: ModClient, *, since: int = 0, limit: int = 512) -> list[dict[str, Any]]:
-    """Drain the parse-boundary ring and decode each inbound slice.
+    """Drain parse copies with their actual extent, capture extent and sequence.
 
-    Rows come from the read-only hook installed by ``violation_watch``; a row
-    with no decodable header (truncated below two bytes) keeps ``decoded=None``
-    and is still returned, because an unreadable header is itself evidence.
+    A truncated header keeps ``decoded=None`` because it is evidence too. A
+    decoded payload describes only captured bytes; ``sample_complete`` says
+    whether those bytes cover the actual stream size.
     """
     reply = client.inbound_drain(since, limit)
     hits = reply.get("hits")
@@ -741,13 +758,29 @@ def inbound_slices(client: ModClient, *, since: int = 0, limit: int = 512) -> li
         decoded = decode_inbound_slice(
             str(row.get("context_hex") or ""), str(row.get("before_hex") or "")
         )
+        actual_size = int(row.get("packet_size") or 0)
+        if decoded is not None:
+            decoded["sample_complete"] = (
+                not row.get("context_truncated") and decoded["captured_bytes"] == actual_size
+            )
+            decoded["truncated"] = (
+                bool(row.get("context_truncated")) or decoded["captured_bytes"] < actual_size
+            )
         rows.append(
             {
+                "index": row.get("index"),
+                "seq": row.get("seq"),
                 "tick": row.get("tick"),
-                "size": row.get("packet_size"),
+                "tid": row.get("tid"),
+                "size": actual_size,
                 "slot": row.get("packet_id"),
                 "overflow": row.get("response"),
                 "read_ptr": row.get("error_value"),
+                "copies": row.get("copies"),
+                "assign_size": row.get("assign_size"),
+                "parent_view": row.get("parent_view"),
+                "parent_size": row.get("parent_size"),
+                "parent_read_ptr": row.get("parent_read_ptr"),
                 "slice_hex": row.get("context_hex") or "",
                 "before_hex": row.get("before_hex") or "",
                 "after_hex": row.get("detail_hex") or "",

@@ -2373,13 +2373,10 @@ def violation_watch_address(client: ModClient, role: str) -> int | None:
 
 
 def check_inbound_slices(client: ModClient, checks: Checks) -> None:
-    """Verify the parse-boundary slices decode to (packet id, payload).
+    """Verify packet ids, actual sample boundaries, completeness and sequence.
 
-    The parse boundary receives the slice starting at the packet id, and the
-    frame's length varint is the byte right before it. Both halves are read by
-    the same read-only hook, so this check proves the instrumentation that
-    decides "framed short" vs "clipped after framing" is actually wired: it
-    never asserts a verdict for a live packet.
+    This local parse path receives a deep copy beginning at the packet id. It
+    has no frame length prefix, and adjacent heap bytes are not framing evidence.
     """
     rows = inbound_slices(client, since=0, limit=256)
     decoded = [row for row in rows if row.get("decoded")]
@@ -2400,19 +2397,47 @@ def check_inbound_slices(client: ModClient, checks: Checks) -> None:
         bool(ids & {39, 111, 144, 187, 188}),
         f"ids={sorted(ids)[:12]}",
     )
-    framed = [row for row in decoded if row["verdict"] == "framed"]
-    if len(framed) * 2 < len(decoded):
-        # The length prefix may live outside the captured window; that is a
-        # finding, not a failure of the hook.
-        checks.skip(
-            "inbound_slice_framing",
-            f"declared length unreadable: framed={len(framed)}/{len(decoded)}",
-        )
-        return
     checks.check(
-        "inbound_slice_framing",
-        len(framed) * 10 >= len(decoded) * 9,
-        f"framed={len(framed)}/{len(decoded)}",
+        "inbound_slice_boundaries",
+        all(
+            row["decoded"]["captured_bytes"] * 2 == len(row["slice_hex"])
+            and row["decoded"]["captured_bytes"] <= row["size"]
+            and row["decoded"]["sample_complete"]
+            == (not row["decoded"]["truncated"] and row["decoded"]["captured_bytes"] == row["size"])
+            for row in decoded
+        ),
+        f"complete={sum(row['decoded']['sample_complete'] is True for row in decoded)}/{len(decoded)}",
+    )
+    checks.check(
+        "inbound_slice_complete_samples",
+        any(row["decoded"]["sample_complete"] is True for row in decoded),
+        "at least one ordinary packet must be captured in full",
+    )
+    checks.check(
+        "inbound_slice_sequence",
+        all(
+            isinstance(row["seq"], int)
+            and isinstance(row["index"], int)
+            and row["seq"] > 0
+            and row["index"] > 0
+            and int(row["tid"] or 0) > 0
+            for row in decoded
+        )
+        and all(
+            (right["seq"], right["index"]) > (left["seq"], left["index"])
+            for left, right in itertools.pairwise(decoded)
+        ),
+        f"first={decoded[0].get('seq')}/{decoded[0].get('index')} last={decoded[-1].get('seq')}/{decoded[-1].get('index')}",
+    )
+    checks.check(
+        "inbound_slice_no_framing_assumption",
+        all(
+            row["decoded"]["declared"] is None
+            and row["decoded"]["framing_applicable"] is False
+            and row["verdict"] == "unknown"
+            for row in decoded
+        ),
+        "deep-copy path has no length varint; adjacent heap bytes remain undecoded",
     )
 
 

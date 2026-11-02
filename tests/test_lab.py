@@ -17,10 +17,12 @@ from driver.harness.lab import (
     Builder,
     RecordSession,
     declared_length,
+    decode_framed_slice,
     decode_inbound_slice,
     double_space_fly,
     fit_recursion,
     fnv1a,
+    inbound_slices,
     liquid_kind,
     move_and_wait,
     read_varint,
@@ -440,7 +442,7 @@ class WorldStateTests(unittest.TestCase):
 
 
 class InboundSliceTests(unittest.TestCase):
-    """The parse boundary gives [id][payload]; the length prefix is not in it."""
+    """The local deep-copy boundary gives [id][payload] and no frame prefix."""
 
     def test_varint_roundtrip(self) -> None:
         self.assertEqual(read_varint(bytes([0x05])), (5, 1))
@@ -467,45 +469,69 @@ class InboundSliceTests(unittest.TestCase):
         self.assertIsNone(declared_length(""))
 
     def test_framed_when_declared_matches(self) -> None:
-        decoded = decode_inbound_slice("bc01" + "00" * 5, "05")
+        decoded = decode_framed_slice("bc01" + "00" * 5, "05")
         self.assertEqual(slice_verdict(decoded), "framed")
 
     def test_clipped_when_declared_exceeds_delivery(self) -> None:
-        decoded = decode_inbound_slice("bc01", "05")
+        decoded = decode_framed_slice("bc01", "05")
         self.assertEqual(slice_verdict(decoded), "clipped")
 
-    def test_zero_declaration_is_unknown_not_a_verdict(self) -> None:
-        # Bytes before a copied slice are unrelated heap data.
-        decoded = decode_inbound_slice("bc01" + "00" * 5, "0000000000")
+    def test_heap_neighbours_are_not_framing_evidence(self) -> None:
+        decoded = decode_inbound_slice("bc01" + "00" * 5, "05")
+        assert decoded is not None
+        self.assertIsNone(decoded["declared"])
+        self.assertFalse(decoded["framing_applicable"])
         self.assertEqual(slice_verdict(decoded), "unknown")
 
     def test_garbage_slice_is_none(self) -> None:
         self.assertIsNone(decode_inbound_slice(""))
         self.assertIsNone(decode_inbound_slice("zz"))
 
-    def test_summary_counts_and_tail(self) -> None:
-        rows = [
-            {
-                "tick": 1,
-                "decoded": {"packet_id": 187, "slice_bytes": 35, "payload_bytes": 33},
-                "verdict": "unknown",
-                "slice_hex": "bb01aa",
-            },
-            {
-                "tick": 2,
-                "decoded": None,
-                "verdict": "unknown",
-                "slice_hex": "",
-            },
-            {
-                "tick": 3,
-                "decoded": {"packet_id": 187, "slice_bytes": 36, "payload_bytes": 34},
-                "verdict": "unknown",
-                "slice_hex": "bb01bb",
-            },
-        ]
+    def test_actual_boundaries_sequence_and_summary(self) -> None:
+        class Client:
+            def inbound_drain(self, since: int, limit: int) -> dict:
+                return {
+                    "hits": [
+                        {
+                            "source": "inbound",
+                            "index": 8,
+                            "seq": 8,
+                            "tick": 10,
+                            "tid": 42,
+                            "packet_id": 2,
+                            "packet_size": 7,
+                            "error_value": 0,
+                            "context_hex": "bc010000000001",
+                            "context_truncated": False,
+                            "before_hex": "07",
+                        },
+                        {
+                            "source": "inbound",
+                            "index": 9,
+                            "seq": 9,
+                            "tick": 11,
+                            "tid": 42,
+                            "packet_id": 2,
+                            "packet_size": 7,
+                            "error_value": 0,
+                            "context_hex": "bc01",
+                            "context_truncated": True,
+                            "before_hex": "05",
+                        },
+                    ]
+                }
+
+        rows = inbound_slices(Client(), since=0, limit=2)  # type: ignore[arg-type]
+        self.assertEqual([row["seq"] for row in rows], [8, 9])
+        self.assertEqual([row["decoded"]["sample_complete"] for row in rows], [True, False])
+        self.assertEqual([row["decoded"]["truncated"] for row in rows], [False, True])
+        self.assertTrue(all(row["decoded"]["declared"] is None for row in rows))
         summary = summarize_inbound_slices(rows, limit=1)
-        self.assertEqual(summary["rows"], 3)
+        self.assertEqual(summary["rows"], 2)
         self.assertEqual(summary["decoded"], 2)
-        self.assertEqual(summary["by_id_size"], {"187:35": 1, "187:36": 1})
-        self.assertEqual([row["slice_bytes"] for row in summary["tail"]], [36])
+        self.assertEqual(summary["complete"], 1)
+        self.assertEqual(summary["truncated"], 1)
+        self.assertEqual(summary["framing_applicable"], 0)
+        self.assertEqual(summary["by_id_size"], {"188:7": 2})
+        self.assertEqual(summary["tail"][0]["seq"], 9)
+        self.assertEqual(summary["tail"][0]["captured_bytes"], 2)

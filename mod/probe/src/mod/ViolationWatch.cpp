@@ -275,45 +275,13 @@ bool probeStream(std::uint64_t candidate, StreamProbe& out) {
     return out.readPtr <= out.size;
 }
 
-// Copy the first bytes of the packet slice verbatim. Its first byte is the
-// length varint the framer used and the next is the packet id, so a dump shows
-// whether a short slice was *declared* short or was clipped after framing.
+// Copy a bounded prefix of the packet slice verbatim. The parse stream starts
+// at the packet id; this local deep-copy path has no frame length prefix.
 std::uint8_t copySlice(std::uint64_t address, std::uint64_t limit, char* into,
                        std::size_t cap = 24) {
     if (!plausiblePointer(address) || limit == 0) return 0;
     std::size_t const want = limit < cap ? static_cast<std::size_t>(limit) : cap;
     return readMemory(address, into, want) ? static_cast<std::uint8_t>(want) : 0;
-}
-
-
-
-// The parse boundary gets a copy, so the bytes before it are not the frame. The
-// copy was made from some buffer, and a stream object that keeps a pointer to
-// its source exposes it as a plain qword field. A field whose target starts with
-// the slice's first bytes is that source; the frame's length varint then ends
-// exactly where the copy begins.
-bool findCopySource(StreamProbe const& child, std::uint64_t& source, std::uint8_t* declared,
-                    std::size_t declaredBytes) {
-    std::uint8_t head[4]{};
-    if (!readMemory(child.begin, head, sizeof(head))) return false;
-    for (std::uint64_t offset = 0; offset < 0x60; offset += 8) {
-        if (offset == 0x28 || offset == 0x30 || offset == 0x38) continue;
-        std::uint64_t field = 0;
-        if (!readMemory(child.object + offset, &field, sizeof(field))) break;
-        if (!plausiblePointer(field) || field == child.begin) continue;
-        std::uint8_t probe[4]{};
-        if (!readMemory(field, probe, sizeof(probe))) continue;
-        if (std::memcmp(probe, head, sizeof(head)) != 0) continue;
-        if (field < declaredBytes) continue;
-        std::uint8_t window[8]{};
-        if (!readMemory(field - declaredBytes, window, sizeof(window))) continue;
-        for (std::size_t index = 0; index < declaredBytes; ++index) {
-            declared[index] = window[sizeof(window) - declaredBytes + index];
-        }
-        source = field;
-        return true;
-    }
-    return false;
 }
 
 void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* parent,
@@ -335,39 +303,20 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
     gPacketBegin.store(probe.begin, std::memory_order_relaxed);
     record.contextSize = copySlice(probe.begin, probe.size, record.context,
                                    kViolationContext - 1);
+    record.contextTruncated = probe.size > kViolationContext - 1 ? 1 : 0;
     // Bytes at the fourth boundary argument ([rsi+0x208] at the call site): if
     // that is the batch buffer or a container over it, these bytes show it.
     record.detailSize = copySlice(auxPointer, 24, record.detail);
-    // Bytes before the slice: the frame's length varint ends exactly where the
-    // slice starts, so these recover what the framer declared. A copied slice
-    // shows unrelated bytes here instead; the two look different enough to tell
-    // apart in the dump.
+    // Preserve allocation neighbours as raw diagnostic bytes only. Static
+    // analysis showed a deep copy here, so these bytes are not framing data.
     if (probe.begin >= sizeof(record.before)) {
         record.beforeSize = copySlice(probe.begin - sizeof(record.before),
                                       sizeof(record.before), record.before);
-    }
-    // The parent stream, when it is visible, says where this slice was cut from:
-    // P.view + P.readPtr == slice start means the frame's length varint ends
-    // exactly there, so the last bytes before the slice are the declaration.
-    if (parent == nullptr) {
-        std::uint64_t source = 0;
-        std::uint8_t  declared[4]{};
-        if (findCopySource(probe, source, declared, sizeof(declared))) {
-            record.parentView = source;
-            record.beforeSize = sizeof(declared);
-            for (std::size_t index = 0; index < sizeof(declared); ++index) {
-                record.before[index] = static_cast<char>(declared[index]);
-            }
-        }
     }
     if (parent != nullptr) {
         record.parentView    = parent->begin;
         record.parentSize    = parent->size;
         record.parentReadPtr = parent->readPtr;
-        std::uint64_t const start = probe.begin;
-        if (start > parent->begin && start - parent->begin <= parent->size) {
-            if (copySlice(start - 4, 4, record.before) == 4) record.beforeSize = 4;
-        }
     }
     gInboundBytes.fetch_add(record.contextSize, std::memory_order_relaxed);
     (void)reservation.publish(record);

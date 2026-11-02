@@ -47,13 +47,11 @@ struct ViolationRecord {
     std::uint8_t  pad2[7]         = {};
     char          context[kViolationContext] = {}; // violation context / codeword
     char          detail[kViolationDetail]   = {}; // disconnect-page details text
-    // Bytes that preceded the slice in its source buffer. The packet frame is
-    // [length varint][id varint][payload] and the parse boundary receives only
-    // [id][payload], so this is where a declared length can still be read.
+    // Raw bytes before the copied slice. On this local deep-copy path they are
+    // unrelated allocation neighbours, not a frame length prefix.
     char          before[16] = {};
-    // Parent stream (the batch this slice was cut from), when it is visible in
-    // one of the boundary's pointer arguments. `declared` holds the bytes that
-    // end exactly at the slice start: the frame's length varint.
+    // Parent stream candidates are diagnostic addresses only. Static analysis
+    // showed that this parse path uses an independent deep copy, not a subspan.
     std::uint64_t parentView    = 0;
     std::uint64_t parentSize    = 0;
     std::uint64_t parentReadPtr = 0;

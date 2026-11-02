@@ -497,13 +497,14 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 - H4 的 36/19 解码是标准 Bedrock 布局：36 是客户端→服务端，19 在单机里没有对端玩家，
   两者都仍然只有单测；接收侧已实测到 `Text(9)`、`AddActor(13)`、`MoveDeltaActor(111)`，
   但没有对应的解码器（保持原始 hex）。
-- 入站切片测量（2026-11-01）：`violation_watch` 同一开关还装一只 `Packet::readNoHeader`
-  入口的只读钩子（五个 `void*` 原样透传，绝不虚调用，只 `readMemory`），采样 1/4 进 1024 环。
-  实测切片**以包 id 开头**（39 SetActorData、111 MoveDeltaActor、144 PlayerAuthInput），
-  长度前缀已被切分器消费；187/188 的 `payload+2` 是两个 id 的 varint 宽度，不是固定包头。
-  `before_hex` 保留切片前 16 字节；实测那里是无关堆数据（切片是拷贝，帧的 length 前缀不在附近），
-  所以 `slice_verdict()` 只在能读出合理声明时才判 `framed`/`clipped`，否则 `unknown`。本地世界是 loopback，
-  该钩子看到的是**本进程解析的所有包**（含客户端上行），不是只有下行。
+- 入站切片测量：`violation_watch` 同一开关还装一只 `Packet::readNoHeader` 入口的只读钩子
+  （五个 `void*` 原样透传，绝不虚调用，只 `readMemory`），采样 1/4 进 1024 环。静态证据已确认
+  这条本地路径的元素是**深拷贝**，切片**以包 id 开头且没有帧长度前缀**；187/188 的 `payload+2`
+  只是 id varint 宽度。`packet_size` 是实际切片长度，`context_size`/`context_truncated` 标记捕获
+  边界；Python 摘要同时保留实际大小、捕获大小、完整性、seq/index/tick/tid。`before_hex` 只保留
+  切片前的原始邻接堆字节，**不得解释为声明长度**，所以该路径的 `slice_verdict()` 恒为 `unknown`；
+  `decode_framed_slice()` 只供另有真实前缀采集依据的路径使用。本地 loopback 钩子看到本进程
+  解析的所有包（含客户端上行），不是只有下行。
 - 违规守望 `violation_watch` 是**只读**诊断：装在被包裹函数的**运行期**地址上，需要
   `allow_hook_va`、在世界内、默认关闭，`panic` 会一并卸下。角色地址在 `docs/roles` 里是
   `image_base=0x140000000` 下的静态 VA；本机 exe 被 PeEditor 改写首选基址并 ASLR，
@@ -644,12 +645,14 @@ SDK 公开枚举中 39 是 **SetActorData**。当时尚未确认 size/104 的边
 [`mod-internals`](../docs/mod-internals.md)，后续可转交
 [`诊断提示词`](../docs/notes/prompts/badpacket-setactordata-20261031.md)。
 
-2026-11-01 BadPacket 后续：证据册 §36–§43 已确认入队/出队深拷贝、长度取 string size、
-此路径无帧长度前缀；旧「声明 23」和「邻居 payload 混入」定论撤回。
-id 39 为 CerealOnly 的 SetActorData，尚缺失败的 34 字节原帧来定位具体字段。
-后续调查记录完整现场 **1065/1066**（0 failed、1 required skip），仍不能称完整覆盖全绿。
-见 [`证据册`](../docs/notes/badpacket-setactordata-20261031.md) §43。
-有限 hook/无 hook 窗口未复现不排除 mod 的间接影响。
+2026-11-02 BadPacket 现行结论：证据册 §36–§49 已确认深拷贝路径无帧长度前缀，根因是游戏侧
+`NetworkSystem` 的共享序列化缓冲被两个线程并发使用，产生粘连帧并触发 BadPacket(90)。
+旧「声明 23」「邻居 payload 混入」「尚缺失败原帧」均为已撤回或历史阶段结论。harness 不补丁
+游戏网络栈，只规避自有请求的不必要并发状态同步；有限未复现不等于根治。既有完整现场
+**1076/1077** 的唯一必需 skip 是错误适用 framing 的 `inbound_slice_framing`；2026-11-02 已用
+包头、实际样本边界、完整性与序号检查替代。守望专项 **41/41（0 fail、0 skip、0 required skip）**，
+43 个真实切片全部通过；日志 `out/remaining-refactor-phase1-live.log`。
+见 [`证据册`](../docs/notes/badpacket-setactordata-20261031.md) §49。
 
 ## License
 

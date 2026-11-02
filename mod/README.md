@@ -205,7 +205,7 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 同日诊断导出后续：`py -3.11 driver/selftest.py --diagnostic-export-only --require-complete`
 **3/3**。修复游戏与 driver 工作目录不同导致的相对路径失败，并等待导出回执，
 避免旧错误串到下一条命令。只导出现有环，不安装 hook 或修改世界。
-当时离线 **377/377**。2026-11-02 当前候选离线 **379/379**，ruff check/format、mypy（95 files）
+当时离线 **377/377**。2026-11-03 当前候选离线 **383/383**，ruff check/format、mypy（95 files）
 和 profiles/roles/lint_public 检查通过；现场恢复范围另见修复跟踪。
 旧实体/飞行身份候选现场28/29失败，当时已撤回源码和安装。2026-11-02 已重新按 UUID+epoch
 统一实体攻击与飞行的服务端解析并删除名字兜底，身份专项 **44/44**；后续管道恢复范围见
@@ -465,7 +465,9 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   和 `assertion=readback` 明确新路径，旧字段保留。成功表示服务端调用与客户端回读均完成，
   不等待 8 tick 观察结束；后续观察失败另发 `flight_assertion_failed`。失败的 `partial=true`
   表示能力可能已部分生效，已开始的调用不能被超时抢占或自动回滚。专项 **53/53**；本批未复现
-  BadPacket，不宣称游戏共享缓冲竞态已根治。
+  BadPacket，不宣称游戏共享缓冲竞态已根治。2026-11-03 自检收尾改用 `teleport`，避免 `reset`
+  清空调用前效果；空效果时添加夜视、非空保留原效果，按 ID 集合恢复，复验 **50/50**。
+  同批完整 `--require-complete` 为 **1093/1093**（0 fail、0 skip、0 required skip）。
 - `set_item --container armor` 的槽号是 Legacy `ArmorSlot`（0 头 / 1 胸 / 2 腿 / 3 脚）；
   往头槽放靴子不会报错但也不会生效。`equip` 只搬玩家自己的库存槽，不碰世界容器。
 - 记录环的 `in_water`/`in_lava` 位是**脚/头方块名**判定（流动变体算液体），
@@ -514,7 +516,9 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   只是 id varint 宽度。`packet_size` 是实际切片长度，`context_size`/`context_truncated` 标记捕获
   边界；Python 摘要同时保留实际大小、捕获大小、完整性、seq/index/tick/tid。`before_hex` 只保留
   切片前的原始邻接堆字节，**不得解释为声明长度**，所以该路径的 `slice_verdict()` 恒为 `unknown`；
-  `decode_framed_slice()` 只供另有真实前缀采集依据的路径使用。本地 loopback 钩子看到本进程
+  `decode_framed_slice()` 只供另有真实前缀采集依据的路径使用，且 `before_hex` 必须从真实
+  varint 首字节开始；只接受覆盖整个捕获窗口的候选，后缀巧合或起点不明保持 `unknown`，不按
+  候选顺序猜长度。本地 loopback 钩子看到本进程
   解析的所有包（含客户端上行），不是只有下行。
 - 违规守望 `violation_watch` 是**只读**诊断：装在被包裹函数的**运行期**地址上，需要
   `allow_hook_va`、在世界内、默认关闭，`panic` 会一并卸下。角色地址在 `docs/roles` 里是

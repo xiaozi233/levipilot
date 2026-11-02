@@ -42,10 +42,10 @@ ruff check 通过；干净 HEAD 的 ruff format 已有 2 文件需要重排，�
 | 热路径 | `PacketTap.cpp` 及其余 hook / P1 | 常规身份保持定长；显式 SDK 序列化单列高成本诊断 | native 边界/并发、packet 专项、受控开销对照 | **完成**：native、现场 41/41、四组对照；无提速结论 |
 | 玩家解析 | `Entities.cpp`、`Flight.cpp` / P2 | 服务端队列内 UUID+epoch，去掉隐式名字兜底 | 无玩家/换世界/旧请求/取消/故障恢复 | **完成**：身份专项 44/44，飞行复验 51/51，完整现场 1090/1090 |
 | 会话所有权 | `ProbeMod.h`、Macro/Input / P2 | 封装录制与输入整体会话，保留 tick 无分配/无冷锁 | native 生命周期 + 宏/输入/控制专项 | **完成**：宏采集 28/28、播放 52/52、输入 44/44、控制 131/131 |
-| 自检真实性 | `selftest.py` 与领域 fixture / P2 | 拆分领域检查，补效果回读、首错和恢复 | 专项参数兼容、`--require-complete` | **完成**：诊断 3/3、连接 11/11、完整 `--require-complete` 1090/1090（0 skip） |
+| 自检真实性 | `selftest.py` 与领域 fixture / P2 | 拆分领域检查，补效果回读、首错和恢复 | 专项参数兼容、`--require-complete` | **完成**：诊断 3/3、连接 11/11、完整 `--require-complete` 1093/1093（0 skip） |
 | 补充债务 | Macro 保存、Overhead、提示词索引 / P2 | 原子替换、同条件性能对照、历史状态校准 | 故障保留旧文件、保存再加载、统计与限制完整 | **完成**：原子保存故障路径与重试现场通过；四组对照无提速结论；提示词索引已校准 |
 
-当前候选离线全量 **379/379**、ruff check/format、mypy（95 files）、profiles、roles（56/63）、
+当前候选离线全量 **383/383**、ruff check/format、mypy（95 files）、profiles、roles（56/63）、
 lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` 因仍读旧字段位置失败，
 已改为检查 InputSession 的真实默认字段后重跑通过。日志 `out/remaining-refactor-final-offline.log`。
 本轮不新增逆向作为前提；BadPacket 根因以证据册 §49 为准。上文未结项只有完成对应验收后才改状态，
@@ -57,17 +57,18 @@ lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` �
 随后管道为 Errno 22，`dev.py run --no-build` 因无法确认保存状态按门禁退出并保留进程。
 官方桌面工具在本会话不可用，未强停、未绕过保存门禁。日志
 `out/remaining-refactor-identity-flight-live.log`、`out/remaining-refactor-pipe-recovery-restart.log`。
-因此实体查询、宏录制/播放、输入事件/控制、诊断拆分及完整现场仍待复验；原子保存的真实
-锁定替换/再加载也尚未执行。原配置已按 CRLF 字节恢复，SHA-256 与交接一致；
+当时实体查询、宏录制/播放、输入事件/控制、诊断拆分及完整现场仍待复验，原子保存的真实
+锁定替换/再加载也尚未执行；这些项目已在文末补齐。原配置已按 CRLF 字节恢复，SHA-256 与交接一致；
 安装/构建 DLL 同为 `0f6b47e08d7a84563db507f03968e1a857e66ef24ec96b38a1229cce8914edff`，
 123 个 crash 无新增/删除/修改，完整性证据 `out/remaining-refactor-final-integrity.json`。
 
 解除方式与复验见文末「2026-11-03 收尾验收（管道恢复后）」；工作表里各项待复验内容均已补齐。
 
+当时要求的恢复路径是正常保存退出并重启到“超平坦测试”，再重跑上述专项及
+`py -3.11 driver/selftest.py --require-complete`。该要求已在 2026-11-03 完成，
+以文末 **1090/1090、0 fail、0 skip、0 required skip** 为准；此处不再作为当前下一步。
 本地提交：`0112e19`（切片）、`9d325f0`（飞行时序）、`857df26`（PacketTap）、
-`c0c3398`（身份）、`3b9c267`（宏/输入会话与诊断拆分）、`1315836`（文档）。
-未推送。先正常保存退出并重启到“超平坦测试”后，需重跑上述专项及
-`py -3.11 driver/selftest.py --require-complete`；未通过这些门禁前不称工程收尾完成。
+`c0c3398`（身份）、`3b9c267`（宏/输入会话与诊断拆分）、`1315836`（文档）。均未推送。
 
 ## 2026-11-01 22:20 后续与停止点
 
@@ -1000,3 +1001,22 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
 - 配置已按原 4 键基线恢复（`allow_input_inject/allow_selftest_stress/allow_hook_va`
   + `delay_ms`，SHA-256 `fc33faf2…`），重启后加载生效；姿态/能力/背包/输入/宏状态
   回读通过，123 个 crash 无新增。DLL SHA-256 `0f6b47e0…` 与交接基线一致。
+
+## 2026-11-03 独立审阅修复
+
+- 飞行清理不再调用清效果的 `reset`，改为 `teleport`；空效果时添加夜视、非空保留原效果，
+  按 ID 集合恢复。专项 **50/50（0 fail、0 skip）**，`flight_preserves_effects` 与
+  `flight_restores_original_effects` 均通过，日志 `out/review-20261103-flight.log`。
+- 显式 framing 只接受真实起点覆盖完整捕获窗口的 varint；128、16384 和歧义前缀测试通过，
+  不再按候选顺序猜长度。本地深拷贝入站路径仍不使用 framing 假设。
+- `macro_session_model` 直接验证聚合取消、世界退出、停用和零分配，头文件可独立包含。
+- 当前离线 **383/383**，ruff check/format、mypy（95 files）、profiles、roles（56/63）、
+  lint_public 与完整 C++ 构建通过。日志 `out/review-20261103-{offline,build,ruff,format,mypy}.log`。
+- 完整现场复验 **1093/1093（0 fail、0 skip、0 required skip）**，日志
+  `out/review-20261103-full-permissions.log`。首轮权限不足为 977/982（2 fail、3 required skip），
+  已保留 `out/review-20261103-full.log`；随后按既有权限/空快捷栏前提重跑，未删改失败证据。
+- 玩家背包、姿态、能力、效果、选中槽、输入与宏状态已回读恢复，原 3 键配置按 CRLF 字节恢复并
+  重启加载，管道 ping 通过。证据 `out/review-20261103-restored.json`、
+  `out/review-20261103-final-restart.log`。
+- 旧候选、管道阻塞与重跑要求已标为历史；当前未验收范围仍仅 HBUI、现场热卸载和
+  200000 tick 长录制。未新增逆向。

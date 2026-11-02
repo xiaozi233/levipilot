@@ -283,7 +283,7 @@ string 的 `_Mysize` 原样写入；这条路上**没有帧长度前缀**，切�
 size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序列化缓冲被两个线程并发
 使用**（同 tick 两个 tid 交替、before/after 链条自相矛盾，产出粘连帧 → 104 → BadPacket）。
 早期「声明 23」「邻居 payload 混入」定论已撤回。harness 不打补丁，只做规避；
-完整现场 **1090/1090**（`--require-complete`，0 fail、0 skip、0 required skip），
+完整现场 **1093/1093**（`--require-complete`，0 fail、0 skip、0 required skip），
 `send_probe` 与首错冻结均有 selftest 检查。
 
 2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
@@ -300,14 +300,13 @@ size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序
 
 后续修复与结构改善（优先级以 `docs/code-quality-review.md` 为准）：
 
-2026-11-01 22:20 第14项候选现场28/29失败（packet187/size48/error104→90），
-已将候选另存out补丁并撤回源码/安装，不能标完成。原DLL/配置恢复，状态回读11/11，
-121个原有crash无变化。后续需要新增逆向，当前停在
-`docs/notes/prompts/badpacket-187-followup-20261101.md`，不自行继续逆向。
-第16项具名类型在658d90a已落地。2026-11-02 当前候选离线 **379/379**，ruff check/format、
-mypy（95 files）、profiles、roles（56/63）、lint_public 通过。原清单12–15的实现范围已推进完成，
-但后续现场曾出现 30 秒管道超时，保存门禁拒绝重启，不能宣称完整现场全绿；恢复与验收以
-`docs/reliability-repairs.md` 为准。
+历史阻塞（已由后续实现与验收替代）：2026-11-01 22:20 第14项候选现场28/29失败
+（packet187/size48/error104→90），当时撤回候选且不能标完成；`c0c3398` 后来重新实现了
+UUID+epoch 统一解析，身份专项 44/44、飞行复验与完整现场已通过。早期逆向停止点不再是当前任务。
+第16项具名类型在658d90a已落地。当前离线 **383/383**，ruff check/format、mypy（95 files）、
+profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。管道恢复后的
+完整 `--require-complete` 为 **1090/1090**（0 fail、0 skip、0 required skip），记录见
+`docs/reliability-repairs.md`；仅有 HBUI、现场热卸载和 200000 tick 长录制仍明确未验收。
 
 - 宏录制/播放由 `MacroSession` 唯一持有；输入事件、held/latch、输入锁和 tick 状态由
   `InputSession` 唯一持有。既有名字是非 owning 别名；冷锁只管准入/取消/回执，tick 不取冷锁。
@@ -319,6 +318,9 @@ mypy（95 files）、profiles、roles（56/63）、lint_public 通过。原清�
   失败清理并保留旧文件。Overhead 已做同 DLL 四组 1100 tick 对照，无可重复提速结论。
 - 诊断/入站/send_probe/PacketTap 检查已迁 `driver/selftest_diagnostics.py`，
   可复用 fixture 在 `driver/selftest_fixtures.py`；入口、检查名与专项参数保持兼容。
+- 飞行自检恢复姿态用 `teleport`，不再用会清效果的 `reset`；效果 fixture 按 ID 集合保存/恢复，
+  专项 50/50。显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。
+  `macro_session_model` 直接覆盖聚合生命周期。
 - 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成，专项 30/30；
   UseTask 5 秒截止、chat_history 2 秒超时也已现场验收。现场热卸载与 200000 tick 长录制仍未验收。
 

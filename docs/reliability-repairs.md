@@ -968,3 +968,33 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
 复现入口：`driver/selftest.py --mod-core-only`（含请求 mailbox native 检查）、
 `--client-io-only`（含场景录制与配置回归）；默认现场自检增加 `request_reject_*` 与
 `request_recovers_after_bad_types`。
+
+## 2026-11-03 收尾验收（管道恢复后）
+
+上一轮身份专项结束后管道卡死（`Errno 22`），保存门禁正确拒绝重启。取证后确认可以
+安全重启：`IsHungAppWindow=True`、`spool-28308.jsonl` 自 23:17 起无 tick、
+屏幕为主菜单背景、末条 `world_entry.phase=idle` —— 关卡早已卸载，没有可保存的世界。
+证据：`out/remaining-refactor-pipe-blocks.md`。
+
+重启后补齐全部现场专项（均 `--require-complete`）：
+
+| 专项 | 结果 |
+| --- | --- |
+| `--flight-world "超平坦测试"` | **51/51** |
+| `--macro-capture-only` | **28/28**（修掉一条过期断言，见下） |
+| `--macro-playback-only` | **52/52** |
+| `--input-events-only` | **44/44** |
+| `--controls-only` | **131/131** |
+| `--diagnostic-export-only` | **3/3** |
+| `--connection-only` | **11/11** |
+| 完整 `--require-complete` | **1090/1090，0 failed，0 skipped，0 required skips** |
+
+- 宏采集唯一失败是断言过期：原子保存把失败点从「打开临时文件」移到「替换目标」，
+  错误串变成 `cannot replace …`，而检查只认 `cannot write …`。已改为两者都接受，
+  并保留「失败后录制数据仍可重试保存」的原契约（提交 `963b3f4`）。这不是放宽覆盖：
+  失败路径、`recorded_ticks==3`、`recording is False` 与随后的重试保存都仍然验证。
+- 完整现场这次 **0 skip**：`inbound_slice_framing` 不再跳过（`0112e19` 已把该检查改成
+  适配「本地解析路径无帧长度前缀」的适用性验证）。
+- 配置已按原 4 键基线恢复（`allow_input_inject/allow_selftest_stress/allow_hook_va`
+  + `delay_ms`，SHA-256 `fc33faf2…`），重启后加载生效；姿态/能力/背包/输入/宏状态
+  回读通过，123 个 crash 无新增。DLL SHA-256 `0f6b47e0…` 与交接基线一致。

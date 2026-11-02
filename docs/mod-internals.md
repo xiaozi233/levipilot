@@ -8,8 +8,9 @@
 真实场景适配器等待 12 tick 收集 13 条连续样本，pending=0。本轮逐项状态和现场证据见
 [`reliability-repairs.md`](reliability-repairs.md)。
 
-BadPacket 最近既有完整现场为 **1076/1077**（0 failed、1 required skip），唯一 skip 是
-适用范围错误的 `inbound_slice_framing`；此前 465/466 是自然退档那轮。证据册 §49 已闭合根因：
+BadPacket 最近完整现场为 **1090/1090**（`--require-complete`，0 failed、0 skip、
+0 required skip）；更早的 1076/1077 含一条适用范围错误的 `inbound_slice_framing` skip，
+465/466 是自然退档那轮。证据册 §49 已闭合根因：
 游戏侧 `NetworkSystem` 的共享序列化缓冲被两个线程并发使用，产生粘连帧并触发 BadPacket(90)。
 harness 不修改游戏网络栈，只减少自有调用的不必要并发状态同步。2026-11-02 已把切片检查改为
 包头、实际边界、捕获完整性与序号验证，现场复验结果见 `reliability-repairs.md`；历史调查见

@@ -19,7 +19,7 @@
 | 10 | Chat 请求超时、主菜单生命周期 | 完成 | 请求独享快照、2 秒超时、退出取消、主菜单平台队列；native 回归、专项现场 9/9、完整现场 237/237 |
 | 11 | UseTask 服务端等待没有截止条件 | 完成 | 5 秒截止、迟到副作用拒绝、拥有者失败回调；native 边界/竞争/零分配、专项现场 16/16、完整现场 253/253 |
 | 12 | 游戏线程采样异常边界、JSON、分配与锁 | 完成；显式高成本诊断保留限制 | 常规路径已迁定长快照/队列、局部 SEH、后台格式化与分阶段生命周期。PacketTap 身份不序列化；`serialize_ids` 明确为原上下文高成本重序列化诊断，可能分配且无时间预算，不保留 Packet 指针或冒充线上原帧。`mem_arg`、ViolationWatch/send_probe 同属默认关闭诊断；按需 state/inventory 的 SDK owning 名称复制有界且不属高频 hook。native/现场边界通过，四组开销对照无提速结论 |
-| 13 | ProbeMod 跨领域状态耦合 | 完成；构建/native 通过，现场待恢复复验 | MacroSession 统一播放/录制/冷锁/停止与世界退出；InputSession 统一事件、held/latch、输入锁、tick 状态及清理。旧名字为非 owning 别名，无跨 TU reset 清单；tick 无冷锁/分配/JSON，Hardware HID 与既有协议不变 |
+| 13 | ProbeMod 跨领域状态耦合 | 完成；构建/native 通过，2026-11-03 现场复验通过 | MacroSession 统一播放/录制/冷锁/停止与世界退出；InputSession 统一事件、held/latch、输入锁、tick 状态及清理。旧名字为非 owning 别名，无跨 TU reset 清单；tick 无冷锁/分配/JSON，Hardware HID 与既有协议不变 |
 | 14 | 服务端玩家解析重复 | 完成；身份专项 44/44 | 背包、命令、权限、物品使用、传送、实体攻击与飞行共用 ServerPlayerContext；UUID+epoch 为默认身份，显式命令名保留，实体/飞行名字兜底已删除。无玩家/换世界/旧请求/故障恢复通过；后续飞行与完整现场见恢复记录 |
 | 15 | 交互覆盖、自检跳过统计 | 完成；现场未验范围单列 | 三态/--require-complete、WorldLost 首错与 finally 保留；诊断/入站/send_probe/PacketTap 迁领域模块，CrashSnapshot 可复用，原检查名/专项参数不变。攻击/放置/使用以血量、方块、背包回读真实效果，interact_entity 仍 best effort。身份 44/44、离线 23/23；HBUI/热卸载/超长录制不冒充已验收 |
 | 16 | 类型码命名、失效文档 | 完成原定范围 | `658d90a` 已落地 PlacePhase/ControlInputMode/JumpImpulse；本轮核对实现，清理仍写待做的状态及默认起跳/当前基线的陈旧说明 |
@@ -38,12 +38,12 @@ ruff check 通过；干净 HEAD 的 ruff format 已有 2 文件需要重排，�
 | 工作 | 位置 / 优先级 | 方案与依赖 | 验收条件 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | 切片契约 | `lab.py`、`selftest.py`、`ViolationWatch.cpp` / P2 | 不再猜邻接堆字节；校验 id、实际大小、完整性、序号 | 离线 + 守望专项，无必需 skip | **完成**：定向 9/9、现场 41/41（0 skip） |
-| 自有能力时序 | `Flight.cpp` / P1 | 先消除无必要的双侧写与写重断言，再做身份统一 | 最小能力对照、飞行专项与完整现场 | **专项完成**：最小 5 步、飞行 53/53；完整现场待总门禁 |
+| 自有能力时序 | `Flight.cpp` / P1 | 先消除无必要的双侧写与写重断言，再做身份统一 | 最小能力对照、飞行专项与完整现场 | **完成**：最小 5 步、飞行 53/53，复验 51/51；完整现场 1090/1090 |
 | 热路径 | `PacketTap.cpp` 及其余 hook / P1 | 常规身份保持定长；显式 SDK 序列化单列高成本诊断 | native 边界/并发、packet 专项、受控开销对照 | **完成**：native、现场 41/41、四组对照；无提速结论 |
-| 玩家解析 | `Entities.cpp`、`Flight.cpp` / P2 | 服务端队列内 UUID+epoch，去掉隐式名字兜底 | 无玩家/换世界/旧请求/取消/故障恢复 | **身份专项 44/44**；飞行与完整现场待恢复复验 |
-| 会话所有权 | `ProbeMod.h`、Macro/Input / P2 | 封装录制与输入整体会话，保留 tick 无分配/无冷锁 | native 生命周期 + 宏/输入/控制专项 | **构建/native 完成**；现场待恢复复验 |
-| 自检真实性 | `selftest.py` 与领域 fixture / P2 | 拆分领域检查，补效果回读、首错和恢复 | 专项参数兼容、`--require-complete` | **诊断领域/fixture 完成**；真实效果沿用回读，现场待恢复复验 |
-| 补充债务 | Macro 保存、Overhead、提示词索引 / P2 | 原子替换、同条件性能对照、历史状态校准 | 故障保留旧文件、保存再加载、统计与限制完整 | **实现/记录完成**；四组对照无提速结论，原子保存现场待恢复复验 |
+| 玩家解析 | `Entities.cpp`、`Flight.cpp` / P2 | 服务端队列内 UUID+epoch，去掉隐式名字兜底 | 无玩家/换世界/旧请求/取消/故障恢复 | **完成**：身份专项 44/44，飞行复验 51/51，完整现场 1090/1090 |
+| 会话所有权 | `ProbeMod.h`、Macro/Input / P2 | 封装录制与输入整体会话，保留 tick 无分配/无冷锁 | native 生命周期 + 宏/输入/控制专项 | **完成**：宏采集 28/28、播放 52/52、输入 44/44、控制 131/131 |
+| 自检真实性 | `selftest.py` 与领域 fixture / P2 | 拆分领域检查，补效果回读、首错和恢复 | 专项参数兼容、`--require-complete` | **完成**：诊断 3/3、连接 11/11、完整 `--require-complete` 1090/1090（0 skip） |
+| 补充债务 | Macro 保存、Overhead、提示词索引 / P2 | 原子替换、同条件性能对照、历史状态校准 | 故障保留旧文件、保存再加载、统计与限制完整 | **完成**：原子保存故障路径与重试现场通过；四组对照无提速结论；提示词索引已校准 |
 
 当前候选离线全量 **379/379**、ruff check/format、mypy（95 files）、profiles、roles（56/63）、
 lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` 因仍读旧字段位置失败，
@@ -51,7 +51,7 @@ lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` �
 本轮不新增逆向作为前提；BadPacket 根因以证据册 §49 为准。上文未结项只有完成对应验收后才改状态，
 旧「尚缺失败原帧」「声明长度 23」及 `inbound_slice_framing` skip 均为历史阶段记录，不是现行结论。
 
-### 2026-11-02 现场恢复阻塞与提交边界
+### 2026-11-02 现场恢复阻塞与提交边界（2026-11-03 已解除）
 
 身份专项 **44/44** 后，飞行在首次 `packet_capture` 等待 30 秒超时，能力检查没有执行；
 随后管道为 Errno 22，`dev.py run --no-build` 因无法确认保存状态按门禁退出并保留进程。
@@ -61,6 +61,8 @@ lint_public 通过；此前一轮 379 项中 `test_mod_defaults_are_physical` �
 锁定替换/再加载也尚未执行。原配置已按 CRLF 字节恢复，SHA-256 与交接一致；
 安装/构建 DLL 同为 `0f6b47e08d7a84563db507f03968e1a857e66ef24ec96b38a1229cce8914edff`，
 123 个 crash 无新增/删除/修改，完整性证据 `out/remaining-refactor-final-integrity.json`。
+
+解除方式与复验见文末「2026-11-03 收尾验收（管道恢复后）」；工作表里各项待复验内容均已补齐。
 
 本地提交：`0112e19`（切片）、`9d325f0`（飞行时序）、`857df26`（PacketTap）、
 `c0c3398`（身份）、`3b9c267`（宏/输入会话与诊断拆分）、`1315836`（文档）。

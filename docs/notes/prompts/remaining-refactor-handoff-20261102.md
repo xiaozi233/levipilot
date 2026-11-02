@@ -144,13 +144,12 @@ docs/code-quality-review.md 的局部编号与原始 16 项不同，不要混用
   根因是**游戏侧 `NetworkSystem` 的序列化缓冲被两个线程并发使用**（同 tick 两个 tid
   交替、`before/after` 链条自相矛盾，产出粘连帧 → 104 → BadPacket）。
   harness 不打补丁，只做时序规避。取证设施：首错冻结、`send_probe`（异常帧连栈落盘）、
-  整帧上下文（191 字节）。已有 `1076/1077`（0 fail、1 required skip）覆盖这些新代码，
-  新增检查为 `inbound_freeze_*`、`send_probe_*`。
+  整帧上下文（191 字节）。已有 **1090/1090**（`--require-complete`，0 fail、0 skip）
+  覆盖这些新代码，新增检查为 `inbound_freeze_*`、`send_probe_*`。
 
-最近已有验收记录为离线 377/377、完整现场 1076/1077（0 fail、1 required skip），
-以及 ruff/mypy/lint_public 通过。这里的现场结果不是 --require-complete 全覆盖通过。
-唯一必需跳过为 inbound_slice_framing。roles 最近记录为 56/63；未解析角色不要求补齐。
-这些均是既有记录，不是本次复验。
+最近已有验收记录为离线 379/379、完整现场 **1090/1090**（`--require-complete`，0 fail、
+0 skip），以及 ruff check/format、mypy、profiles、lint_public 通过。roles 最近记录为
+56/63；未解析角色不要求补齐。这些均是既有记录，不是本次复验。
 
 ## 实施顺序与具体交付
 

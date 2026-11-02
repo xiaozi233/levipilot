@@ -20,9 +20,9 @@
 | 3 | P2 / 已修复 | `WorldEntryModel.h`、`World.cpp::enterOnClient/probeEntryOnClient`、`WorldSession.cpp::pollEntry` | 已增加独立进入编号、30 秒截止、唯一终结及主线程实际状态观察；超时保留隔离，无玩家/安全菜单/服务端消失连续确认 500 ms 才恢复准入，避免重叠启动。Python 按编号匹配结果；native 验证截止/旧编号/竞争，专项现场 30/30 验证模拟超时、启动/观察 SEH 与真实缺失 join 后恢复。 |
 | 4 | P2 / 本批完成，显式诊断保留成本 | `ProbeMod.cpp::safeTickPre/safeTickPost`、`InputEvents.cpp::tickInputInjection`、`Transport.cpp::enqueue` | 常规 tick/高频 hook 的自有 JSON、owning 状态与冷锁已迁到定长快照/队列及后台格式化，游戏读取有局部边界。PacketTap 身份路径不序列化；`serialize_ids` 明确为 `sdk_hot_path_diagnostic`，在原上下文同步重序列化、可能分配且无时间预算，不保留 Packet 指针，也不冒充线上原帧。`hook_install mem_arg`、ViolationWatch/send_probe 同样属于默认关闭的显式诊断。按需 state/inventory 查询仍在所属线程复制 SDK owning 名称，不在高频 hook 中运行，保留固定容量与截断标记。native/现场验证边界与生命周期；受控对照没有证明性能提升，详见 reliability-repairs.md。 |
 | 5 | P2 / 本批完成 | `State.cpp::captureScan`、`QueryModel.h::advanceScan` | 原实现缺少每 tick 预算，过滤 air 时小 limit 也读完整区域。现每 tick 最多 512 格，带取消/超时、tick 跨度和截断原因；native 验证顺序/边界/零分配，现场 32768 格为 64 批，重连和退出取消通过。扫描跨 tick，不能当成同 tick 的原子世界快照。 |
-| 6 | P2 / 本批完成 | `ProbeMod.h` 宏/输入字段、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | MacroSession 唯一持有播放/录制与冷锁，统一互斥、停止快照和世界退出；InputSession 唯一持有事件、held/latch、输入锁和 tick 倒计时，统一重连取消、故障停控与按钮/鼠标清理。旧名字仅是非 owning 别名，不再有第二份模型或跨 TU reset 清单。冷锁只用于准入/取消/回执，tick 不取锁、不分配、不 JSON；native 生命周期通过，现场复验受管道恢复阻塞。 |
+| 6 | P2 / 本批完成 | `ProbeMod.h` 宏/输入字段、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | MacroSession 唯一持有播放/录制与冷锁，统一互斥、停止快照和世界退出；InputSession 唯一持有事件、held/latch、输入锁和 tick 倒计时，统一重连取消、故障停控与按钮/鼠标清理。旧名字仅是非 owning 别名，不再有第二份模型或跨 TU reset 清单。冷锁只用于准入/取消/回执，tick 不取锁、不分配、不 JSON；native 生命周期通过，现场复验 2026-11-03 通过（宏采集 28/28、播放 52/52、输入 44/44、控制 131/131、完整 1090/1090）。 |
 | 7 | P2 / 本批完成 | `Server.cpp::serverPlayerContext/captureTeleport`、`Flight.cpp`、`Entities.cpp::captureEntityStage` | 背包、命令、权限、物品使用、传送、实体攻击与飞行均在服务端所属队列共用 ServerPlayerContext，默认 UUID+世界代次；显式命令玩家名仍支持。删除实体/飞行的隐式名字兜底，身份失效不换成另一玩家或控制台，指针不跨阶段保存。身份专项 44/44 覆盖无玩家、旧世界、重连、故障与恢复；后续飞行专项曾因管道超时未执行，保留恢复记录，不冒充完整现场。 |
-| 8 | P2 / 本批完成，现场边界保留 | `driver/selftest_support.py::Checks`、`driver/selftest.py`、`driver/selftest_diagnostics.py`、`driver/selftest_fixtures.py` | 三态/--require-complete、WorldLost 首错和四组 finally 保留。诊断/入站/send_probe/PacketTap 已迁领域模块，主入口仅转发且检查名/专项参数不变；CrashSnapshot 可复用。攻击/放置/使用继续以血量、方块、背包回读真实效果，interact_entity 明确 best effort。身份 44/44 与离线 23/23 通过；后续现场受管道恢复阻塞，HBUI/热卸载/超长录制仍单列未验收。 |
+| 8 | P2 / 本批完成，现场边界保留 | `driver/selftest_support.py::Checks`、`driver/selftest.py`、`driver/selftest_diagnostics.py`、`driver/selftest_fixtures.py` | 三态/--require-complete、WorldLost 首错和四组 finally 保留。诊断/入站/send_probe/PacketTap 已迁领域模块，主入口仅转发且检查名/专项参数不变；CrashSnapshot 可复用。攻击/放置/使用继续以血量、方块、背包回读真实效果，interact_entity 明确 best effort。身份 44/44 与离线 23/23 通过；2026-11-03 现场恢复后诊断 3/3、连接 11/11、完整 `--require-complete` 1090/1090 通过；HBUI/热卸载/超长录制仍单列未验收。 |
 | 9 | P2 / 本批完成 | `State.cpp::captureState/stateJson` | 原方块读取失败被静默吞掉，响应缺字段却像完整成功。现局部 SEH 返回 partial/warnings，正常查询可恢复；专项验证失败字段缺省、其他字段存在及后续恢复。整条采样 C++ 异常走明确的 capture_failed，不再静默成功。 |
 | 10 | P3 / 已实现，文档已校准 | `TaskModel.h::PlaceTask::phase`、`Tasks.cpp::tickPlace`、`Input.cpp::applyControls` | `658d90a` 已引入 PlacePhase、ControlInputMode、JumpImpulse；使用处均按具名阶段/标志判断，仅在协议边界转换兼容数字。本轮核对实际代码并清理仍把这些类型列为待做的记录，未重做既有实现。 |
 | 11 | P3 / 已校准原定范围 | `docs/mod-internals.md` 的历史“移动、跳跃与输入”与实验辅助小节、`docs/architecture.md` 的 CI 说明、`skills/bedrock-re/SKILL.md` 的旧基线 | jumpFromGround 数据已标为 legacy，现行默认 Hardware HID、完整 mod CI 与历史/当前验收分开表述；本轮补正 lab.jump_key 说明、过期“当前基线”及原清单状态。原始历史证据保留。 |
@@ -33,8 +33,9 @@
 2026-11-02 现行摘要：Python 遗弃连接回收已提交 `8f55472`。BadPacket 的权威结论见证据册
 §36–§49：深拷贝路径没有帧长度前缀，游戏侧 `NetworkSystem` 共享序列化缓冲的跨线程竞态产生
 粘连帧；旧「尚缺失败原帧」「声明长度 23」仅是历史阶段结论。harness 不补丁游戏网络栈。
-既有完整现场 **1076/1077** 的唯一必需 skip 来自错误套用 framing 判断，2026-11-02 已改为实际
-切片边界、完整性与序号检查，验收以 `reliability-repairs.md` 的本轮记录为准。类型枚举在
+2026-11-02 已把切片检查改为实际边界/完整性/序号验证；2026-11-03 现场恢复后完整
+`--require-complete` 为 **1090/1090**（0 fail、0 skip、0 required skip），验收以
+`reliability-repairs.md` 的本轮记录为准。类型枚举在
 `658d90a` 已落地。第14项旧候选现场28/29失败后已撤回，不能直接应用；原清单12–15按本轮
 工作表继续推进。下文数字与调查过程均保留为历史轮次证据。
 

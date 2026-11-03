@@ -332,12 +332,33 @@ def _wait_lifecycle(
         time.sleep(0.05)
 
 
+def _check_reloaded_command(client: ModClient, checks: Checks) -> None:
+    """Require the new DLL's registered command to change actual player state."""
+    original = client.state().get("mayfly") is True
+    try:
+        reply = client.command("togglefly")
+        checks.check("hot_reload_command_registered", reply.get("success") is True, str(reply))
+        wait_ticks(client, 8)
+        observed = client.state().get("mayfly") is True
+        checks.check("hot_reload_command_readback", observed is not original, str(observed))
+    finally:
+        with preserve_failure(checks, "hot_reload_command"):
+            if (client.state().get("mayfly") is True) is not original:
+                client.command("togglefly")
+                wait_ticks(client, 8)
+            checks.check(
+                "hot_reload_command_restored",
+                (client.state().get("mayfly") is True) is original,
+            )
+
+
 def check_hot_reload(
     client: ModClient,
     checks: Checks,
     *,
     report_path: Path | None = None,
     lifecycle_timeout: float = 10.0,
+    close_client: bool = True,
 ) -> None:
     """Require rejection safety, new lifecycle IDs and complete reload records."""
     started = time.monotonic()
@@ -381,6 +402,8 @@ def check_hot_reload(
         if not checks.check(
             "hot_reload_preflight",
             original.get("in_world") is True
+            and original.get("on_ground") is True
+            and original.get("flying") is not True
             and initial_macro.get("playing") is False
             and initial_macro.get("recording") is False,
             str(initial_macro),
@@ -487,6 +510,11 @@ def check_hot_reload(
             generation_advanced,
             str(after_lifecycle),
         )
+        checks.check(
+            "hot_reload_hooks_installed",
+            _hooks_match(after_lifecycle, True),
+            str(after_lifecycle.get("hooks")),
+        )
         expected_records = lifecycle_evidence["expected_records"]
         boot_delta = lifecycle_evidence["boot_delta"]
         checks.check(
@@ -503,6 +531,8 @@ def check_hot_reload(
             time.sleep(0.05)
         advanced = int(client.state()["tick"])
         checks.check("hot_reload_tick_alive", advanced > tick, f"{tick} -> {advanced}")
+        if generation_advanced and _hooks_match(after_lifecycle, True):
+            _check_reloaded_command(client, checks)
         final = client.state()
         macro = client.macro_status()
         try:
@@ -567,7 +597,8 @@ def check_hot_reload(
                         raise
         finally:
             try:
-                client.close()
+                if close_client:
+                    client.close()
             except Exception as exc:
                 report["close_error"] = f"{type(exc).__name__}: {exc}"
                 checks.note("hot_reload_close_failed", str(exc))

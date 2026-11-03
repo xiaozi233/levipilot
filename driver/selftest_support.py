@@ -141,6 +141,49 @@ class ViolationObservation:
                 else:
                     self.event("gap_uncovered", where=where)
 
+    @contextlib.contextmanager
+    def reload_gap(self) -> Iterator[None]:
+        """Preserve the old DLL's ring, then observe the new ring from zero."""
+        if self.path is None:
+            yield
+            return
+        generation: int | None = None
+        try:
+            generation = int(self.client.status()["lifecycle"]["generation"])
+            rows = self.client.violation_drain(self.since, 256)
+            texts = self.client.violation_text(0, 8)
+            self.event(
+                "checkpoint",
+                where="hot_reload",
+                generation=generation,
+                records=rows,
+                texts=texts if isinstance(texts, dict) else None,
+            )
+        except (ModPipeError, OSError, ValueError, KeyError) as exc:
+            self.event("error", where="reload_checkpoint", error=str(exc))
+            self.checks.check("violation_session_checkpoint", False, str(exc))
+        self.event("gap_begin", where="hot_reload")
+        try:
+            yield
+        finally:
+            try:
+                current = int(self.client.status()["lifecycle"]["generation"])
+                if generation is not None and current != generation:
+                    previous_since, self.since = self.since, 0
+                    self.event(
+                        "ring_reset",
+                        previous_generation=generation,
+                        generation=current,
+                        previous_since=previous_since,
+                    )
+                if self.resume("hot_reload"):
+                    self.event("gap_end", where="hot_reload")
+                else:
+                    self.event("gap_uncovered", where="hot_reload")
+            except (ModPipeError, OSError, ValueError, KeyError) as exc:
+                self.event("gap_uncovered", where="hot_reload", error=str(exc))
+                self.checks.check("violation_session_reloaded", False, str(exc))
+
     def finish(self) -> None:
         if self.path is None:
             return

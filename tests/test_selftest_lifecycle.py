@@ -8,7 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from driver.harness.errors import ModPipeError, ModProtocolError, ModTimeout
 from driver.selftest_lifecycle import check_hot_reload
@@ -31,7 +31,7 @@ class HotReloadTests(unittest.TestCase):
             encoding="utf-8",
         )
         spool = str(mod_dir / "spool-42.jsonl")
-        initial: dict[str, object] = {"in_world": True, "tick": 100}
+        initial: dict[str, object] = {"in_world": True, "tick": 100, "on_ground": True}
         final = {
             "in_world": True,
             "tick": 111,
@@ -49,12 +49,18 @@ class HotReloadTests(unittest.TestCase):
         client.state_box = state
 
         def status() -> dict[str, object]:
+            state["status_tick"] = int(state.get("status_tick", 0)) + 10
             lifecycle = (
                 {"generation": 5, "disable_id": 2, "running": True}
                 if state["reloaded"]
                 else {"generation": 4, "disable_id": 1, "running": True}
             )
+            lifecycle["hooks"] = dict.fromkeys(("key", "mouse", "player", "turn"), True)
+            if state["reloaded"] and state.get("missing_hook"):
+                lifecycle["hooks"]["key"] = False
             return {
+                "in_world": True,
+                "tick": state["status_tick"],
                 "spool": spool,
                 "version_ok": True,
                 "tick_recovery": {"active": False},
@@ -76,7 +82,9 @@ class HotReloadTests(unittest.TestCase):
             if state.get("quiesced"):
                 raise ModProtocolError("state: quiescing")
             rows = state["rows"]
-            return rows.pop(0) if rows else final  # type: ignore[union-attr]
+            result = dict(rows.pop(0) if rows else final)  # type: ignore[union-attr]
+            result["mayfly"] = state.get("mayfly", False)
+            return result
 
         client.state.side_effect = state_call
         state["rows"] = [
@@ -107,6 +115,15 @@ class HotReloadTests(unittest.TestCase):
             "text": text,
         }
         client.command.return_value = {"success": False}
+
+        def command(text: str) -> dict[str, object]:
+            if text != "togglefly":
+                return client.command.return_value
+            if not state.get("command_disabled"):
+                state["mayfly"] = not state.get("mayfly", False)
+            return {"success": not state.get("command_disabled")}
+
+        client.command.side_effect = command
 
         def request(
             message: dict[str, object], expected_event: str, **_: object
@@ -155,7 +172,10 @@ class HotReloadTests(unittest.TestCase):
             self.assertIn("hot_reload_boot_records", {row.name for row in checks.results})
             self.assertIn("hot_reload_rejected_no_reload", {row.name for row in checks.results})
             client.chat_send.assert_called_once_with("/ll reload probe", wait=True, timeout=10)
-            client.command.assert_called_once_with("ll reload __levipilot_missing__")
+            self.assertEqual(
+                client.command.call_args_list,
+                [call("ll reload __levipilot_missing__"), call("togglefly"), call("togglefly")],
+            )
             client.connect.assert_called_once_with()
             self.assertEqual(client.close.call_count, 2)
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -178,6 +198,38 @@ class HotReloadTests(unittest.TestCase):
                 set(failed), {"hot_reload_lifecycle_changed", "hot_reload_boot_records"}
             )
             self.assertEqual(checks.finish(), 1)
+
+    def test_caller_can_keep_the_shared_connection_open_for_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client, _, _ = self.fixture(Path(directory))
+            checks = Checks()
+            with contextlib.redirect_stdout(io.StringIO()):
+                check_hot_reload(client, checks, close_client=False)
+            # The old pipe closes for the reload; the caller owns the new one.
+            self.assertEqual(client.close.call_count, 1)
+            self.assertTrue(all(row.outcome == "pass" for row in checks.results))
+
+    def test_reload_with_missing_input_hook_fails_before_restoration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client, _, _ = self.fixture(Path(directory))
+            client.state_box["missing_hook"] = True
+            checks = Checks()
+            with contextlib.redirect_stdout(io.StringIO()):
+                check_hot_reload(client, checks)
+            failed = {row.name for row in checks.results if row.outcome == "fail"}
+            self.assertEqual(failed, {"hot_reload_hooks_installed"})
+
+    def test_reload_with_disabled_command_fails_actual_readback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client, _, _ = self.fixture(Path(directory))
+            client.state_box["command_disabled"] = True
+            checks = Checks()
+            with contextlib.redirect_stdout(io.StringIO()):
+                check_hot_reload(client, checks)
+            failed = {row.name for row in checks.results if row.outcome == "fail"}
+            self.assertEqual(
+                failed, {"hot_reload_command_registered", "hot_reload_command_readback"}
+            )
 
     def test_unaccepted_rejection_stops_before_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

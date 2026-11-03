@@ -46,10 +46,17 @@ bool ProbeMod::enable() {
     mChatCapture.reset();
     resetQueries();
     hookResetCalls();
-    if (!setLifecycleKeyHook(true)) bootLog("lifecycle: key hook restore failed");
-    if (!setLifecycleMouseHook(true)) bootLog("lifecycle: mouse hook restore failed");
-    if (!setLifecyclePlayerHook(true)) bootLog("lifecycle: player hook restore failed");
-    if (!setLifecycleTurnHook(true)) bootLog("lifecycle: turn hook restore failed");
+    bool const keyOk = setLifecycleKeyHook(true);
+    bool const mouseOk = setLifecycleMouseHook(true);
+    bool const playerOk = setLifecyclePlayerHook(true);
+    bool const turnOk = setLifecycleTurnHook(true);
+    if (!(keyOk && mouseOk && playerOk && turnOk)) {
+        mRunning.store(false);
+        stopLifecycleHooks();
+        bootLog("enable: hook installation failed");
+        return false;
+    }
+    bootLog("enable: hooks installed");
     mPoseEpoch.fetch_add(1);
 
     mMouseListener =
@@ -137,6 +144,14 @@ bool ProbeMod::enable() {
         ll::event::EventBus::getInstance().emplaceListener<ll::event::command::ServerCommandRegisterEvent>(
             [this](auto& event) { registerCommands(event.commandRegistry()); }
         );
+    // A reload inside an existing world does not fire the registration event
+    // again. Rebind our overload on the server thread after LL disabled the old
+    // DLL's factory. At the main menu there is no server; the event handles the
+    // first world normally.
+    queueServerTask([this] {
+        if (!mRunning.load(std::memory_order_acquire)) return;
+        if (auto registry = ll::service::getCommandRegistry(false)) registerCommands(*registry);
+    }, [](char const*) {});
     loadCheckpoints();
 
     mSpoolThread = std::thread([this] { spoolThreadLoop(); });
@@ -147,11 +162,21 @@ bool ProbeMod::enable() {
     return true;
 }
 
+bool ProbeMod::stopLifecycleHooks() {
+    // No short-circuit: one failure must not leave the other hooks installed.
+    bool const keyOk = setLifecycleKeyHook(false);
+    bool const mouseOk = setLifecycleMouseHook(false);
+    bool const playerOk = setLifecyclePlayerHook(false);
+    bool const turnOk = setLifecycleTurnHook(false);
+    return keyOk && mouseOk && playerOk && turnOk;
+}
+
 bool ProbeMod::disable() {
     if (!mRunning.exchange(false)) {
         // A prior disable may have failed to remove a diagnostic hook. Do not
         // turn a second disable into permission to unload its live callback.
-        return !violationWatchStats().value("active", true);
+        bool const hooksStopped = stopLifecycleHooks();
+        return !violationWatchStats().value("active", true) && hooksStopped;
     }
     // Teardown itself is not a queued request, so it must not be refused by the
     // quiesce gate it is about to establish for the next unload.
@@ -194,6 +219,7 @@ bool ProbeMod::disable() {
         );
         mServerCommandListener.reset();
     }
+    mCommandRegistry = nullptr;
     mWorld.stop();
 
     // The channel observes mRunning while waiting for connect/read/write and
@@ -221,6 +247,8 @@ bool ProbeMod::disable() {
         }
     }
     watchShutdown();
+    bool const hooksStopped = stopLifecycleHooks();
+    bootLog("disable: hooks stopped ok=" + std::to_string(hooksStopped ? 1 : 0));
 
     {
         std::lock_guard lock(mQueueMutex);
@@ -229,9 +257,9 @@ bool ProbeMod::disable() {
     getSelf().getLogger().info("harness: disabled");
     bootLog(
         "disable: done lifecycle=" + std::to_string(generation) + " disable_id=" + std::to_string(disableId)
-        + " ok=" + (violationStopped ? "1" : "0")
+        + " ok=" + (violationStopped && hooksStopped ? "1" : "0")
     );
-    return violationStopped;
+    return violationStopped && hooksStopped;
 }
 
 bool ProbeMod::unload() {
@@ -780,8 +808,6 @@ LL_TYPE_INSTANCE_HOOK(
     ::probe::ProbeMod::getInstance().afterPlayerTick(*this);
 };
 
-static ll::memory::HookRegistrar<ProbeLocalPlayerTickHook> gPlayerTickHook;
-
 namespace probe {
 
 bool ProbeMod::setLifecyclePlayerHook(bool on) {
@@ -823,8 +849,6 @@ LL_TYPE_INSTANCE_HOOK(
     }
     origin(delta);
 };
-
-static ll::memory::HookRegistrar<ProbeTurnDeltaHook> gTurnDeltaHook;
 
 namespace probe {
 

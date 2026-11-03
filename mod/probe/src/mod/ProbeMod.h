@@ -127,8 +127,11 @@ public:
     bool             hidTextInput(std::string const& text, std::string& error);
     void             captureCommandTemplate(Packet& packet);
     ll::event::ListenerPtr     mKeyListener;
-    std::atomic_bool       mLifecycleKeyHooked{true}, mLifecyclePlayerHooked{true};
-    std::atomic_bool       mLifecycleMouseHooked{true}, mLifecycleTurnHooked{true};
+    // Hooks belong to enable/disable, never CRT constructors/destructors under
+    // the Windows loader lock. These flags start at the actual unmapped state.
+    std::atomic_bool       mLifecycleKeyHooked{false}, mLifecyclePlayerHooked{false};
+    std::atomic_bool       mLifecycleMouseHooked{false}, mLifecycleTurnHooked{false};
+    bool stopLifecycleHooks();
     // Set while quiesced for unload: no new work is admitted between the last
     // in-flight request and the moment the static hooks come off.
     std::atomic_bool mQuiescing{false};

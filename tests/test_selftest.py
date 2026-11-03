@@ -422,7 +422,7 @@ class InterruptedSelftestTests(unittest.TestCase):
         ):
             factory.return_value.connect.return_value = client
             self.assertEqual(main(["--hot-reload-only"]), 0)
-        check.assert_called_once_with(client, unittest.mock.ANY)
+        check.assert_called_once_with(client, unittest.mock.ANY, close_client=False)
         client.close.assert_called_once()
 
     def test_specialized_entry_exports_before_closing_and_reports_world_loss(self):
@@ -519,6 +519,47 @@ class RecordMediumTests(unittest.TestCase):
 
 
 class ViolationObservationTests(unittest.TestCase):
+    def test_reload_preserves_old_records_and_resets_the_new_ring_cursor(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            client = InterruptedSelftestTests.observation_client()
+            client.status.side_effect = [
+                {"lifecycle": {"generation": 4}},
+                {"lifecycle": {"generation": 5}},
+            ]
+            client.violation_text.return_value = {"hits": [{"text": "old DLL detail"}]}
+            path = Path(directory) / "r.json"
+            observation = ViolationObservation(client, Checks(), str(path), lambda: 1)
+            observation.start()
+            old = {"head": 8, "hits": [{"synthetic": False, "seq": 8}], "count": 1}
+            client.violation_drain.return_value = old
+            with observation.reload_gap():
+                client.violation_drain.return_value = {"head": 0, "hits": [], "count": 0}
+            observation.finish()
+            client.violation_drain.assert_called_with(0, 256)
+            events = json.loads(path.read_text(encoding="utf-8"))["observation"]["events"]
+            checkpoint = next(e for e in events if e["kind"] == "checkpoint")
+            self.assertEqual(checkpoint["records"], old)
+            self.assertEqual(checkpoint["generation"], 4)
+            self.assertEqual(checkpoint["texts"]["hits"][0]["text"], "old DLL detail")
+            self.assertIn("ring_reset", [e["kind"] for e in events])
+            self.assertIn("gap_end", [e["kind"] for e in events])
+
+    def test_failed_reload_keeps_the_primary_failure_and_marks_uncovered_time(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            client = InterruptedSelftestTests.observation_client()
+            client.status.side_effect = [
+                {"lifecycle": {"generation": 4}},
+                ModPipeError("pipe lost"),
+            ]
+            observation = ViolationObservation(
+                client, Checks(), str(Path(directory) / "r.json"), lambda: 1
+            )
+            cause = WorldLost("primary")
+            with self.assertRaises(WorldLost) as caught, observation.reload_gap():
+                raise cause
+            self.assertIs(caught.exception, cause)
+            self.assertEqual(observation.events[-1]["kind"], "gap_uncovered")
+
     def test_incremental_dump_separates_synthetic_rows_and_records_gaps(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             client = InterruptedSelftestTests.observation_client()

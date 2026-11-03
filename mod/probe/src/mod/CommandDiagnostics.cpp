@@ -516,7 +516,11 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["lifecycle"] = {
             {"generation", mLifecycleGeneration.load()},
             {"disable_id", mDisableSerial.load()      },
-            {"running",    mRunning.load()            }
+            {"running",    mRunning.load()            },
+            {"hooks", {{"key", mLifecycleKeyHooked.load()},
+                       {"mouse", mLifecycleMouseHooked.load()},
+                       {"player", mLifecyclePlayerHooked.load()},
+                       {"turn", mLifecycleTurnHooked.load()}}}
         };
         auto const identity = localPlayerIdentity();
         auto const identityFailures = mPlayerIdentity.failures();

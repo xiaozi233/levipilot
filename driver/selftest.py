@@ -517,7 +517,8 @@ def run_live(
             elif args.tick_recovery_only or args.tick_recovery_world:
                 check_tick_recovery(client, checks, args.tick_recovery_world)
             elif args.hot_reload_only:
-                check_hot_reload(client, checks)
+                with observation.reload_gap():
+                    check_hot_reload(client, checks, close_client=False)
             elif args.lifecycle_prepare_only:
                 check_lifecycle_prepare(client, checks)
             elif args.teleport_only or args.teleport_world:

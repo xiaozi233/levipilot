@@ -291,8 +291,6 @@ LL_TYPE_INSTANCE_HOOK(
     origin(keyCode, inputOrigin);
 };
 
-static ll::memory::HookRegistrar<ProbeHardwareKeyHook> gHardwareKeyHook;
-
 // The same entry publishes real mouse buttons/motion and our injected ones;
 // injections run under mInputSession.injecting, so everything else is hardware.
 LL_TYPE_INSTANCE_HOOK(
@@ -315,8 +313,6 @@ LL_TYPE_INSTANCE_HOOK(
     }
     origin(actionButtonId, buttonData, x, y, dx, dy, forceMotionlessPointer);
 };
-
-static ll::memory::HookRegistrar<ProbeHardwareMouseHook> gHardwareMouseHook;
 
 bool ProbeMod::setLifecycleKeyHook(bool on) {
     if (on) {

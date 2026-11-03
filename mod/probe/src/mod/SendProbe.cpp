@@ -49,21 +49,12 @@ bool healthySendSize(std::uint32_t size) {
     }
 }
 
-// Fixed ring of the last serialize calls: no allocation, no locks, one writer.
-struct SendRec {
-    std::uint64_t tick;
-    std::uint64_t net;
-    std::uint32_t tid;
-    std::uint32_t before;
-    std::uint32_t after;
-};
-constexpr std::uint32_t    kSendRingSize = 64;
-SendRec                    gSendRing[kSendRingSize]{};
-std::atomic<std::uint32_t> gSendRingHead{0};
+// Allocated before either hook is installed; callbacks only publish fixed rows.
+SendProbeHistory gSendRing;
 
 void pushSendRec(std::uint64_t net, std::uint32_t before, std::uint32_t after) {
-    std::uint32_t const slot = gSendRingHead.fetch_add(1, std::memory_order_relaxed) % kSendRingSize;
-    gSendRing[slot] = SendRec{gWatchTick.load(std::memory_order_relaxed), net, GetCurrentThreadId(), before, after};
+    auto slot = gSendRing.reserve();
+    slot.publish(SendProbeRecord{gWatchTick.load(std::memory_order_relaxed), net, GetCurrentThreadId(), before, after});
 }
 
 void dumpSendRing() {
@@ -82,11 +73,12 @@ void dumpSendRing() {
     if (handle == INVALID_HANDLE_VALUE) {
         return;
     }
-    std::uint32_t const head  = gSendRingHead.load(std::memory_order_relaxed);
-    std::uint32_t const count = head < kSendRingSize ? head : kSendRingSize;
+    auto const head = gSendRing.head();
+    auto const begin = head > 64 ? head - 64 : 0;
     char                line[256];
-    for (std::uint32_t index = 0; index < count; ++index) {
-        SendRec const& rec    = gSendRing[(head - count + index) % kSendRingSize];
+    for (auto index = begin; index < head; ++index) {
+        SendProbeRecord rec;
+        if (gSendRing.read(index, rec) != SendProbeHistory::ReadResult::ready) continue;
         int const      length = std::snprintf(
             line,
             sizeof line,
@@ -262,9 +254,11 @@ nlohmann::json sendProbeStart(std::uint64_t address, std::uint64_t serializeAddr
         return nlohmann::json{
             {"event",   "send_probe"},
             {"active",  true        },
-            {"already", true        }
+            {"already", true        },
+            {"history_records", gSendRing.head()}
         };
     }
+    if (!gSendRing.initialize()) return errorJson("send_probe_allocation_failed");
     if (gSuspectPath[0] == 0) {
         auto const path = ProbeMod::getInstance().getSelf().getModDir()
                         / ("suspect-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
@@ -303,6 +297,7 @@ nlohmann::json sendProbeStart(std::uint64_t address, std::uint64_t serializeAddr
         {"path",             gSuspectPath   },
         {"hits",             0              },
         {"serialize_hooked", serializeHooked},
+        {"history_records", gSendRing.head()},
     };
 }
 
@@ -329,7 +324,8 @@ nlohmann::json sendProbeStop() {
         {"event",  "send_probe"                                  },
         {"active", gSendInstalled.load(std::memory_order_acquire)},
         {"hits",   gSendHits.load(std::memory_order_relaxed)     },
-        {"dumps",  gSendDumps.load(std::memory_order_relaxed)    }
+        {"dumps",  gSendDumps.load(std::memory_order_relaxed)    },
+        {"history_records", gSendRing.head()}
     };
 }
 

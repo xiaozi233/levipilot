@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from driver.harness.errors import ModPipeError, ModProtocolError, ModTimeout
+from driver.selftest_runtime import wait_ticks
 from driver.selftest_support import Checks, preserve_failure
 from driver.transport_mod import ModClient
 
@@ -47,6 +48,105 @@ def _reconnect(client: ModClient, timeout: float) -> None:
 RELOAD_COMMAND = "ll reload probe"
 MISSING_RELOAD_COMMAND = "ll reload __levipilot_missing__"
 TEMPLATE_PROBE_COMMAND = "version"
+
+
+def check_lifecycle_prepare(client: ModClient, checks: Checks) -> None:
+    """Exercise input admission and restore all hooks; never unload or reload."""
+    original: dict[str, Any] = dict(client.state())
+    macro = client.macro_status()
+    if not checks.check(
+        "lifecycle_prepare_preflight",
+        original.get("in_world") is True
+        and macro.get("playing") is False
+        and macro.get("recording") is False,
+        str(macro),
+    ):
+        return
+
+    def expect_busy(name: str, field: str) -> None:
+        reply = client.request({"cmd": "lifecycle_prepare", "on": False}, "lifecycle_prepare")
+        try:
+            busy = reply.get("busy", {})
+            checks.check(
+                name,
+                reply.get("ok") is False
+                and reply.get("reason") == "busy"
+                and isinstance(busy, dict)
+                and bool(busy.get(field)),
+                str(reply),
+            )
+        finally:
+            # Also restore if the regression unexpectedly accepts active input.
+            if reply.get("ok") is True:
+                restored = client.request(
+                    {"cmd": "lifecycle_prepare", "on": True}, "lifecycle_prepare"
+                )
+                checks.check(name + "_unexpected_accept_restored", _hooks_match(restored, True))
+
+    try:
+        client.look(0.1, relative=True, ticks=-1)
+        wait_ticks(client, 2)
+        expect_busy("lifecycle_prepare_continuous_look", "look_request")
+        client.look(0, relative=True, ticks=0)
+        client.set_input(forward=0.1, ticks=-1)
+        wait_ticks(client, 2)
+        expect_busy("lifecycle_prepare_continuous_move", "movement_request")
+        client.stop_move()
+        wait_ticks(client, 2)
+        client.key_event(87, True, via="hardware")
+        wait_ticks(client, 2)
+        expect_busy("lifecycle_prepare_held_event", "held_events")
+        client.key_event(87, False, via="hardware")
+        wait_ticks(client, 2)
+
+        # The original non-zero requests remain in the mailbox after expiry.
+        # They must not keep an otherwise idle session busy indefinitely.
+        client.set_input(forward=0.1, ticks=2)
+        client.look(0.1, relative=True, ticks=2)
+        wait_ticks(client, 5)
+        reply = client.request({"cmd": "lifecycle_prepare", "on": False}, "lifecycle_prepare")
+        checks.check(
+            "lifecycle_prepare_expired_requests",
+            reply.get("ok") is True
+            and reply.get("quiescing") is True
+            and _hooks_match(reply, False),
+            str(reply),
+        )
+    finally:
+        with preserve_failure(checks, "lifecycle_prepare"):
+            restored = client.request({"cmd": "lifecycle_prepare", "on": True}, "lifecycle_prepare")
+            if not checks.check(
+                "lifecycle_prepare_hooks_restored",
+                restored.get("ok") is True and _hooks_match(restored, True),
+                str(restored),
+            ):
+                raise ModPipeError("lifecycle prepare: hook restoration failed")
+            client.stop_move()
+            client.look(0, relative=True, ticks=0)
+            client.key_event(87, False, via="hardware")
+            wait_ticks(client, 3)
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 3)
+            final: dict[str, Any] = dict(client.state())
+            checks.check(
+                "lifecycle_prepare_input_released",
+                all(not final.get("input", {}).get(key) for key in ("w", "a", "s", "d", "jump")),
+                str(final.get("input")),
+            )
+            checks.check(
+                "lifecycle_prepare_pose_restored",
+                all(
+                    abs(float(final[f"feet_{a}"]) - float(original[f"feet_{a}"])) < 0.01
+                    for a in "xyz"
+                )
+                and abs((float(final["yaw"]) - float(original["yaw"]) + 180) % 360 - 180) < 0.1
+                and abs(float(final["pitch"]) - float(original["pitch"])) < 0.1,
+                str({k: final.get(k) for k in ("feet_x", "feet_y", "feet_z", "yaw", "pitch")}),
+            )
 
 
 def _wait_screen(client: ModClient, expected: str, timeout: float) -> None:

@@ -136,6 +136,12 @@ class ModModelTests(unittest.TestCase):
     def test_lifecycle_log_generations_and_disable_ids(self) -> None:
         self.run_native("lifecycle_model")
 
+    def test_send_probe_concurrent_history_and_publication(self) -> None:
+        self.run_native("send_probe_model")
+
+    def test_input_lifecycle_snapshot_countdowns_and_pending_requests(self) -> None:
+        self.run_native("input_lifecycle_model")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipes required")
     def test_pipe_cancellation_and_nonreading_client(self) -> None:
         self.run_native("pipe_channel")

@@ -318,6 +318,11 @@ def check_send_probe(client: ModClient, checks: Checks, wait_ticks: Callable[...
         stopped = client.send_probe(False)
         checks.check("send_probe_hits", int(stopped.get("hits", 0)) > 0, str(stopped))
         checks.check(
+            "send_probe_history_published",
+            int(stopped.get("history_records", 0)) > int(started.get("history_records", 0)),
+            f"{started.get('history_records')} -> {stopped.get('history_records')}",
+        )
+        checks.check(
             "send_probe_no_dumps",
             int(stopped.get("dumps", -1)) == 0,
             "healthy traffic must not produce suspect frames",

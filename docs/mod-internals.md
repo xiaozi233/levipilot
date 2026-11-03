@@ -1660,3 +1660,33 @@ observation_faults=0。这验证 mod 自己读取自然错误页原因及其与�
 - 验收：完整离线 **411/411**；自检/宏/热重载相关 **51/51**；ruff check/format、mypy（109 files）、
   profiles up to date；完整 C++ 构建及最终增量链接通过。没有安装新 DLL、操作游戏或重跑现场，
   热重载挂起与 HBUI 异常根因仍按上文保持未闭合。
+
+### P1：发送历史并发与输入卸载准入（2026-11-03）
+
+- `SendProbeHistory` 复用 `AtomicRing<SendProbeRecord,64>`：在装钩前分配槽位，hook 中只写定长
+  原子载荷；导出先取局部记录副本，只格式化 `ready` 的完整行。未发布、放弃或已被覆盖的行
+  不当成完整记录。没有重置仍可能被回调使用的环，也没有新增 hook 内分配或互斥锁。
+- `InputLifecycleStore` 由游戏线程在 pre/post 结束时发布同一份快照：世界代次、已消费的
+  input/jump/look 序号、实际剩余 tick、待起跳及事件持键数。原子载荷与有界序列校验保证
+  冷侧读取不撕裂；管道线程不再调用会改游戏线程 fallback 的 `readRequests()`。
+- `lifecycle_prepare off` 将快照序号与冷侧独立读取的最新邮箱比较；未消费请求、负数持续 tick、
+  事件持键/待处理事件均拒绝。有限请求 countdown 归零后，邮箱中保留的旧参数不影响准入。
+  无有效快照、世界代次不符或读取冲突均按 busy 处理。此修复不等于所有在途游戏回调的排空保证。
+- native `send_probe_model` 覆盖延迟发布、放弃、覆盖、4 写线程/2 读线程共 200000 条写入及
+  记录内字段一致性；`input_lifecycle_model` 覆盖持续/到期、未消费序号、事件持键、旧世界拒绝和
+  200000 次并发快照发布。`input_session_model` 同时验证发布/读取零分配。
+- 完整回归首轮 **1105/1107**：卸钩再恢复后，两个旧输入检查把 LL 全局事件计数当成游戏收键。
+  现场独立对照中 raw H 使 events 447→448，但游戏键状态仍为 false，脚本注入则为 true。
+  检查改为真实键状态 + `controls.injecting_input=false`，保留计数作诊断；四条负向/对照回归
+  覆盖事件计数增长、raw 真正进入游戏、注入标志未恢复及探针前按键未释放。没有修改游戏输入过滤。
+- 已通过：最终离线 **417/417**（144.192 秒；首轮 413/413 记录保留），生命周期 Python **13/13**，LLVM22 完整构建
+  （286.109 秒），ruff check/format、mypy、profiles、roles **56/63** 与 lint_public。
+  新 `--lifecycle-prepare-only --require-complete` 现场 **10/10**，含恢复全部 hook、释放输入和恢复姿态；
+  修正后的输入事件专项 **46/46**。
+  完整 `--require-complete` 重跑 **1107/1107**，0 fail、0 skip、0 required skip，证据
+  `out/p1-20261103-full-final-live.log`。不能用本专项或完整默认套件替代真实 reload 验收。
+- 原四键配置逐字节恢复并正常保存/重启加载，运行实例确认 `packet_capture_disabled`。
+  最终环境 **18/18**：世界/HUD/站稳、姿态、能力、效果、背包、释放/解锁、宏空闲与生命周期运行均回读通过。
+  124 个 crash 文件的名称/大小/mtime 不变，没有重算全部旧文件内容哈希。构建/安装 DLL SHA-256
+  均为 `fba2401104fda8f00e6b0ebf5a3f7a6250883ad268f3ad0fa10c9cf25633bee2`。
+  证据：`out/p1-20261103-final-integrity.json`、`out/p1-20261103-restore-restart.log`。

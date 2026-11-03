@@ -228,6 +228,16 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   `--mod-core-live-only --require-complete` **44/44**，恢复核对 **16/16**；ruff/format、mypy、
   profiles、roles 和 C++ 构建通过。本轮没有重跑完整现场或热重载，旧完整基线不能代替这两项重验。
   逐项证据见 `docs/reliability-repairs.md` 的后续记录。
+- 2026-11-03 P1 复修：发送探针历史改用 `AtomicRing`，多线程写入与导出只接收完整发布的行；
+  `send_probe` 增量字段 `history_records` 回读历史环的序号进度。输入执行状态由游戏线程
+  发布定长原子快照，卸载准入同时核对请求序号、实际剩余 tick、事件持键及待处理事件；
+  `ticks=-1` 仍视为忙碌，有限请求结束后的旧邮箱值不再误报。快照不可读或世界代次失效时拒绝准入。
+  可复现检查：`py -3.11 driver/selftest.py --lifecycle-prepare-only --require-complete`，
+  现场 **10/10**；该专项只卸钩/恢复，不执行 reload，也不证明任意在途回调已退出。
+  输入锁自检回读真实键状态与注入标志，LL 事件计数只作诊断（恢复 hook 后其观察顺序可能变化）；
+  输入专项 **46/46**、离线 **417/417**、最终完整 **1107/1107**（0 fail/skip）通过。
+  首轮完整 1105/1107 的日志保留；真实 reload 仍未重验，逐项证据见修复跟踪。
+  原四键配置恢复并重启加载，最终环境 **18/18**，124 个 crash 文件元数据无变化，构建与安装 DLL 一致。
 - 2026-11-03 结构拆分：`selftest.py` 降至约 630 行，默认套件、领域检查与共享运行时分离；
   封包/传送/飞行/legacy 录制请求分别由唯一状态对象持有，违规/断线页、入站与发送探针拆到
   `ViolationWatch.cpp`/`InboundWatch.cpp`/`SendProbe.cpp`。CLI、检查名和协议保持兼容。

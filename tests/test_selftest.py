@@ -31,7 +31,58 @@ from driver.selftest import (
     wait_ticks,
 )
 from driver.selftest_flight import EffectFixture
+from driver.selftest_input import check_input_events
 from driver.selftest_support import Checks, ViolationObservation, preserve_failure
+
+
+class InputGuardReadbackTests(unittest.TestCase):
+    def run_guard(self, *, before_down: bool, after_down: bool, injecting: bool) -> bool:
+        class Observed(Exception):
+            pass
+
+        class StopAtGuard(Checks):
+            def check(self, name: str, condition: bool, detail: str = "") -> bool:
+                result = super().check(name, condition, detail)
+                if name == "input_key_seh_guard_restored":
+                    raise Observed
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            client = Mock()
+            client.state.return_value = {"in_world": True, "input": {"locked": True}}
+            client.screen.return_value = {"name": "hud_screen"}
+            client.status.side_effect = [
+                {"spool": str(Path(directory) / "spool.jsonl")},
+                {"controls": {"injecting_input": injecting}},
+            ]
+            client.request.return_value = {"input_id": 1}
+            client.key_event.side_effect = [{"input_id": 2}, {"input_id": 3}]
+            client.wait_event.side_effect = [
+                {"ok": False, "reason": "input_fault"},
+                ModTimeout("no duplicate"),
+                {"ok": True},
+                {"ok": True},
+            ]
+            client.key_state.side_effect = [
+                {"down": before_down, "events": 41},
+                {"down": after_down, "events": 42},
+            ]
+            checks = StopAtGuard()
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(Observed):
+                check_input_events(client, checks)
+            return checks.results[-1].outcome == "pass"
+
+    def test_observer_event_does_not_imply_the_game_received_a_raw_key(self) -> None:
+        self.assertTrue(self.run_guard(before_down=False, after_down=False, injecting=False))
+
+    def test_raw_key_reaching_the_game_fails(self) -> None:
+        self.assertFalse(self.run_guard(before_down=False, after_down=True, injecting=False))
+
+    def test_stale_injection_flag_fails(self) -> None:
+        self.assertFalse(self.run_guard(before_down=False, after_down=False, injecting=True))
+
+    def test_unreleased_key_before_the_probe_fails(self) -> None:
+        self.assertFalse(self.run_guard(before_down=True, after_down=False, injecting=False))
 
 
 def row(tick: int, height: float, *, ground: bool = False) -> RecordEntry:

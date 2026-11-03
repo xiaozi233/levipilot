@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/InputEventModel.h"
+#include "mod/InputLifecycleModel.h"
 #include "mod/MovementModel.h"
 
 #include <array>
@@ -55,6 +56,22 @@ public:
         activeInputTicks = activeLookTicks = 0;
         jumpRequestPending = false;
     }
+    void publishLifecycle(std::uint64_t epoch) noexcept {
+        InputLifecycleSnapshot snapshot;
+        snapshot.epoch = epoch;
+        snapshot.inputSeq = seenInputSeq;
+        snapshot.jumpSeq = seenJumpSeq;
+        snapshot.lookSeq = seenLookSeq;
+        snapshot.inputTicks = activeInputTicks;
+        snapshot.lookTicks = activeLookTicks;
+        snapshot.jumpPending = jumpRequestPending;
+        for (auto const& held : heldEvents) snapshot.heldEvents += held.has_value();
+        snapshot.valid = lifecycleCurrent;
+        lifecycle.publish(snapshot);
+    }
+
+    InputLifecycleStore lifecycle;
+    bool lifecycleCurrent = false; // Game-thread owned, validated each pre/post.
 
     std::mutex eventMutex;
     InjectedEventQueue<> events;

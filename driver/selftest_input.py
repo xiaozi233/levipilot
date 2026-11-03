@@ -841,11 +841,21 @@ def check_input_events(client: ModClient, checks: Checks, world: str | None = No
         checks.check(
             f"input_key_{mode}_recovery", event_done(int(good["input_id"])).get("ok") is True
         )
-        count = int(client.key_state(72)["events"])
+        before_raw = client.key_state(72)
         raw = client.key_event(72, True, via="raw")
         event_done(int(raw["input_id"]))
+        after_raw = client.key_state(72)
+        controls = client.status().get("controls", {})
+        # LL observers can run before a restored lock hook and count an event
+        # that the game never receives. Verify the game state and our guard,
+        # retaining the observer counters only as diagnostic evidence.
         checks.check(
-            f"input_key_{mode}_guard_restored", int(client.key_state(72)["events"]) == count
+            f"input_key_{mode}_guard_restored",
+            before_raw.get("down") is False
+            and after_raw.get("down") is False
+            and isinstance(controls, dict)
+            and controls.get("injecting_input") is False,
+            str({"before": before_raw, "after": after_raw, "controls": controls}),
         )
         client.key_event(72, False, via="raw")
 

@@ -1138,3 +1138,30 @@ mypy（100 files）、profiles、roles（56/63）、lint_public、完整 C++ 构
   和完整 C++ 构建通过。最终增量构建同时验证三类诊断的跨 TU 链接。
 - 本轮只做结构验收，没有安装 DLL、输入注入、完整现场或 reload/unload。旧 **1097/1097**
   是重构前现场证据，不覆盖本轮；热重载挂起、HBUI 异常退档根因与游戏网络竞态仍未闭合。
+
+### 2026-11-03 P1 复修：发送历史与输入准入
+
+- 发送探针将普通 `SendRec[]` + 原子索引替换为已有 `AtomicRing` 的定长原子载荷；装钩前分配，
+  导出只使用通过发布/槽位代次检查的局部副本。新增 `history_records`（历史环序号进度），现场检查按本次开始/结束增量验证。
+- 管道卸载门禁移除对 `readRequests()` 游戏线程 fallback 的跨线程访问。游戏线程发布实际
+  input/look countdown、消费序号和 held events；冷侧对照最新邮箱，持续负 tick、待消费请求、
+  待起跳、持键/待处理事件均拒绝，有限请求自然结束后不再被历史参数永久阻塞。
+- 新增两个 native 模型回归：发送历史 4 写/2 读、200000 条并发记录与发布/覆盖/放弃；
+  输入生命周期 200000 次一致快照与负 tick、有限到期、待消费序号、事件持键、旧世界拒绝。
+- 离线 **413/413**，生命周期 Python **13/13**，完整构建及静态/profile/roles/lint 门禁通过。
+  经保存退出安装新 DLL，卸载准入专项 **10/10**（0 fail、0 skip、0 required skip）。
+  证据：`out/p1-20261103-{offline,build,restart,prepare-live}.log`。
+- 该专项不发送 `/ll reload`/`unload`。既有 reload 挂起归属与 HBUI 异常根因保持未闭合；
+  完整现场与最终恢复结果见本节末尾。
+- 首轮完整现场 **1105/1107**，两项失败是卸钩/恢复后旧输入检查使用 LL 全局事件数作判据。
+  独立现场对照 `out/p1-20261103-key-guard-proof.json`：raw H 使事件数 +1，但游戏键状态仍 false，
+  scripted H 则 true。改验真实键状态与注入标志，保留旧计数作诊断，并补四条对照/负向回归。
+  没有修改运行时输入过滤；输入专项 **46/46**，最终离线 **417/417**（144.192 秒），静态门禁通过。
+  原失败日志 `out/p1-20261103-full-live.log` 保留，修复后重跑写到 `out/p1-20261103-full-final-live.log`。
+- 最终完整 `--require-complete` **1107/1107**，0 fail、0 skip、0 required skip，新 DLL 与上述
+  native/离线验证对应同一份 C++ 实现。完整默认套件不触发真实 reload，不将其计为热重载验收。
+- 原四键配置逐字节恢复，正常保存退出后重启加载；运行实例明确拒绝 packet capture。
+  最终环境回读 **18/18**，124 个 crash 文件名称/大小/mtime 无变化（没有重算全部旧文件哈希）。
+  姿态、能力、效果、空背包、输入释放/解锁、宏空闲与世界 HUD/站稳均恢复。
+  安装/构建 DLL 一致：`fba2401104fda8f00e6b0ebf5a3f7a6250883ad268f3ad0fa10c9cf25633bee2`。
+  最终证据：`out/p1-20261103-final-integrity.json`、`out/p1-20261103-restore-restart.log`。

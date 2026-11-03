@@ -53,17 +53,24 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             // Unload contract: (1) refuse when anything is still in flight,
             // (2) stop admitting new work, (3) only then release the hooks.
             auto const     tasks    = taskStatusJson();
-            auto const     req      = readRequests();
-            bool const     movement = req.input.forward != 0.0f || req.input.strafe != 0.0f || req.input.sprint
-                                   || req.input.sneak || req.input.jump || req.input.rmb || req.input.lmb;
-            bool const     looking  = req.lookTicks > 0;
+            RequestBlock req;
+            InputLifecycleSnapshot controls;
+            bool const requestReady = mRequests.read(req);
+            bool const snapshotReady = mInputSession.lifecycle.read(controls, mPoseEpoch.load());
+            bool const pending = !requestReady || !snapshotReady
+                              || controls.pending(req.inputSeq, req.jumpSeq, req.lookSeq);
             nlohmann::json busy     = {
                 {"held_mask", mInputSession.controlHeldMask.load()},
                 {"injecting_input", mInputSession.injecting.load()},
                 {"injecting_look", mInputSession.injectingLook.load() != 0},
                 {"cleanup_pending", mInputSession.controlCleanupPending.load()},
-                {"movement_request", movement},
-                {"look_request", looking},
+                {"snapshot_ready", snapshotReady},
+                {"requests_pending", pending},
+                {"movement_request", controls.inputTicks != 0},
+                {"look_request", controls.lookTicks != 0},
+                {"jump_pending", controls.jumpPending != 0},
+                {"held_events", controls.heldEvents},
+                {"events_pending", mInputSession.events.pending()},
                 {"macro_playing", mMacroSession.playback.active()},
                 {"macro_recording", mMacroSession.recording.active()},
                 {"record_active", recordActive()},
@@ -71,7 +78,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                 {"tick_recovery", mTickRecovery.active()},
             };
             bool const idle = busy["held_mask"] == 0 && !busy["injecting_input"] && !busy["injecting_look"]
-                           && !busy["cleanup_pending"] && !busy["movement_request"] && !busy["look_request"]
+                           && !busy["cleanup_pending"] && !pending && !controls.active()
+                           && busy["events_pending"] == 0
                            && !busy["macro_playing"] && !busy["macro_recording"] && !busy["record_active"]
                            && busy["task"].is_null() && !busy["tick_recovery"];
             if (!idle) {

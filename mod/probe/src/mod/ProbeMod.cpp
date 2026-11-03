@@ -291,6 +291,7 @@ void ProbeMod::loadAutoConfig() {
 
 void ProbeMod::onPlayerTick(LocalPlayer& player) {
     mTickStartQpc = qpcNow();
+    mInputSession.lifecycleCurrent = false;
     // A bug in our own code must not take the game down with it.
     try {
         safeTickPre(player);
@@ -300,6 +301,7 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
     } catch (...) {
         reportInternalError(TickPhase::Pre, "unknown exception");
     }
+    mInputSession.publishLifecycle(mPoseEpoch.load());
     mPreUs = qpcElapsedUs(mTickStartQpc, qpcNow());
 }
 
@@ -324,6 +326,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         return;
     }
     mWorld.observePlayer(true);
+    mInputSession.lifecycleCurrent = true;
     mLastTickMs = GetTickCount64();
     if (recoverTickControls(player)) return;
 
@@ -476,6 +479,7 @@ void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requ
 
 void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     std::uint64_t const postStart = qpcNow();
+    mInputSession.lifecycleCurrent = false;
     try {
         safeTickPost(player);
         if (!mTickRecovery.active()) injectTickError(TickPhase::Post, false);
@@ -484,6 +488,7 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     } catch (...) {
         reportInternalError(TickPhase::Post, "unknown exception");
     }
+    mInputSession.publishLifecycle(mPoseEpoch.load());
     std::uint64_t const postEnd = qpcNow();
     std::uint64_t const hookUs  = mPreUs + qpcElapsedUs(postStart, postEnd);
     std::uint64_t const tickUs =
@@ -510,6 +515,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         return;
     }
     if (!current) return;
+    mInputSession.lifecycleCurrent = true;
     updateFocusState();
     overheadBusyTick();
 

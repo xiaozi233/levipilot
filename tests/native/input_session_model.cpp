@@ -49,6 +49,10 @@ int main() {
     session.failStop();
     session.resetButtons();
     session.clearMouse(true);
+    session.lifecycleCurrent = true;
+    session.publishLifecycle(1);
+    probe::detail::InputLifecycleSnapshot snapshot;
+    assert(session.lifecycle.read(snapshot, 1) && !snapshot.active());
     assert(!session.activeInput.active && session.activeInputTicks == 0);
     assert(session.activeLookTicks == 0 && !session.jumpRequestPending);
     assert(!session.prevJump && !session.mouseLeft && !session.mouseRight);

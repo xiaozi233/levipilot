@@ -303,16 +303,16 @@ size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序
 历史阻塞（已由后续实现与验收替代）：2026-11-01 22:20 第14项候选现场28/29失败
 （packet187/size48/error104→90），当时撤回候选且不能标完成；`c0c3398` 后来重新实现了
 UUID+epoch 统一解析，身份专项 44/44、飞行复验与完整现场已通过。早期逆向停止点不再是当前任务。
-第16项具名类型在658d90a已落地。当前离线 **411/411**，ruff check/format、mypy（109 files）、
+第16项具名类型在658d90a已落地。当前离线 **417/417**，ruff check/format、mypy（109 files）、
 profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。最新
-完整 `--require-complete` 为 **1097/1097**（0 fail、0 skip、0 required skip），记录见
+完整 `--require-complete` 为 **1107/1107**（0 fail、0 skip、0 required skip），记录见
 `docs/reliability-repairs.md`；HBUI 异常退档的形成根因仍未闭合，其他历史缺测已按范围补齐。
 
 - 宏录制/播放由 `MacroSession` 唯一持有；输入事件、held/latch、输入锁和 tick 状态由
   `InputSession` 唯一持有。`ProbeMod` 不再保留可变引用别名，直接访问唯一会话；
   冷锁只管准入/取消/回执，tick 不取冷锁。
 - PacketTap 常规身份采集只写定长记录；`serialize_ids` 是显式高成本 SDK 重序列化诊断，
-  可能分配，默认累计预算 20 ms，超预算记 `Budget`/`serialize_skipped`；不保留 Packet 指针，
+  可能分配，默认累计预算 1 秒，超预算停止后续采样并记 `Budget`/`serialize_skipped`；不保留 Packet 指针，
   也不是线上原帧。
 - 飞行只在服务端写能力，客户端有界回读原生同步，8 tick 只读观察；实体攻击/飞行与
   其他服务端领域统一 UUID+epoch 解析，删除隐式名字兜底。
@@ -323,7 +323,13 @@ profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实�
 - 2026-11-03 结构轮：`driver/selftest.py` 为 638 行，默认全套与七组领域检查独立；
   封包/传送/飞行/legacy 录制请求由四个 `*RequestState`/会话对象唯一持有；
   `ViolationWatch.cpp`/`InboundWatch.cpp`/`SendProbe.cpp` 按所有权分离。离线 **411/411**、
-  静态检查与完整 C++ 构建通过；本轮未安装 DLL 或重跑现场，旧现场基线不覆盖该结构轮。
+  静态检查与完整 C++ 构建通过；后续 P1 复修已安装新 DLL 并跑完整现场 **1107/1107**。
+- 2026-11-03 P1 复修：发送探针历史使用 AtomicRing，多线程与并发导出不再读写普通共享行；
+  卸载准入读取游戏线程发布的输入生命周期快照，比较已消费序号，负 tick/待处理请求/事件持键
+  均拒绝，有限请求结束后的旧邮箱值不再误报。`--lifecycle-prepare-only` **10/10**，不执行 reload。
+  输入锁检查以真实键状态与注入标志为准，LL 全局事件数仅作诊断，输入专项 **46/46**；
+  native 含 200000 条多生产者历史和 200000 次快照发布。首轮完整 **1105/1107** 的失败记录保留，
+  修正错误判据后完整 **1107/1107**。任意在途 tick 回调退出与真实 reload 仍未验收。
 - 飞行自检恢复姿态用 `teleport`，不再用会清效果的 `reset`；原效果按 duration/tick 判定是否
   应仍存在，允许自然到期；独立长时哨兵验证未提前清空且只移除哨兵。短/长现场均 50/50。
   显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。

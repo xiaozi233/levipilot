@@ -76,6 +76,17 @@ from driver.harness.memory import fnv1_64, fnv1a_64  # noqa: E402
 from driver.harness.record import RecordEntry, decode_dump  # noqa: E402
 from driver.harness.spool import read_spool  # noqa: E402
 from driver.parkour import read_until_run_end  # noqa: E402
+from driver.selftest_flight import (  # noqa: E402,F401
+    EffectFixture,
+    choose_sentinel_effect,
+    required_effect_ids,
+)
+from driver.selftest_lifecycle import check_hot_reload  # noqa: E402
+from driver.selftest_macro import (  # noqa: E402
+    check_macro_long_recording,
+    run_macro_capture,
+    run_macro_record_limits,
+)
 from driver.selftest_support import Checks, ViolationObservation, preserve_failure  # noqa: E402
 from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402
 
@@ -919,325 +930,11 @@ def check_entity_slot_capture(client: ModClient, checks: Checks) -> None:
 
 
 def check_macro_record_limits(client: ModClient, checks: Checks) -> None:
-    """Verify effective bounds and retained data without recording for hours."""
-    mod_dir = Path(str(client.status()["spool"])).parent
-    prefix = f"selftest_record_limit_{time.monotonic_ns()}"
-    paths: set[Path] = set()
-
-    def save(suffix: str) -> dict[str, Any]:
-        name = f"{prefix}_{suffix}"
-        paths.add(mod_dir / "macros" / f"{name}.json")
-        return client.macro_record_stop(name)
-
-    try:
-        for label, requested in (
-            ("omitted", None),
-            ("zero", 0),
-            ("boundary", 200000),
-            ("above", 200001),
-            ("uint64", (1 << 64) - 1),
-        ):
-            message: dict[str, Any] = {"cmd": "macro_rec_start"}
-            if requested is not None:
-                message["max_ticks"] = requested
-            started = client.request(message, "macro_rec_started")
-            status = client.macro_status()
-            checks.check(
-                f"macro_bound_{label}",
-                started.get("max_ticks") == 200000
-                and started.get("hard_limit") == 200000
-                and status.get("record_limit") == 200000
-                and status.get("recording") is True,
-            )
-            wait_ticks(client, 2)
-            saved = save(label)
-            checks.check(
-                f"macro_bound_{label}_save",
-                0 < int(saved.get("ticks", 0)) < 200000
-                and client.macro_status().get("recorded_ticks") == 0,
-            )
-
-        client.macro_record_start(3)
-        client.wait_event("macro_rec_limit", 3)
-        wait_ticks(client, 2)
-        status = client.macro_status()
-        checks.check(
-            "macro_bound_terminal",
-            status.get("recording") is False
-            and status.get("recorded_ticks") == 3
-            and status.get("record_limit") == 3,
-        )
-        duplicate = None
-        with contextlib.suppress(ModTimeout):
-            duplicate = client.wait_event("macro_rec_limit", 0.1)
-        checks.check("macro_bound_unique", duplicate is None)
-        for label, invalid in (("negative", -1), ("string", "bad"), ("fraction", 1.5)):
-            rejected = client.request({"cmd": "macro_rec_start", "max_ticks": invalid}, "error")
-            status = client.macro_status()
-            checks.check(
-                f"macro_bound_reject_{label}",
-                rejected.get("reason") == "bad_param"
-                and rejected.get("field") == "max_ticks"
-                and status.get("recorded_ticks") == 3
-                and status.get("recording") is False,
-            )
-        saved = save("terminal")
-        checks.check(
-            "macro_bound_terminal_save",
-            saved.get("ticks") == 3 and client.macro_status().get("recorded_ticks") == 0,
-        )
-        repeated = client.request({"cmd": "macro_rec_stop"}, "error")
-        checks.check("macro_bound_repeated_stop", repeated.get("reason") == "no_recorded_ticks")
-    finally:
-        with contextlib.suppress(ModPipeError):
-            if client.macro_status().get("recording"):
-                save("cleanup")
-        for path in paths:
-            path.unlink(missing_ok=True)
+    run_macro_record_limits(client, checks, wait_ticks)
 
 
 def check_macro_capture(client: ModClient, checks: Checks, world: str | None = None) -> None:
-    """Check production sampling ownership, retained partial data and cold saving."""
-    original = client.state()
-    if not checks.check("macro_capture_in_world", original.get("in_world") is True):
-        return
-    directory = Path(str(client.status()["spool"])).parent
-    before = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
-    prefix = f"selftest_macro_capture_{time.monotonic_ns()}"
-    paths: set[Path] = set()
-
-    def name_for(suffix: str) -> str:
-        name = f"{prefix}_{suffix}"
-        paths.add(directory / "macros" / f"{name}.json")
-        return name
-
-    def save_raw(suffix: str) -> tuple[dict[str, Any], list[Any]]:
-        name = name_for(suffix)
-        reply = client.request({"cmd": "macro_rec_stop", "name": name}, "macro_rec_saved")
-        # The protocol path may be relative to the game's working directory.
-        data = json.loads((directory / "macros" / f"{name}.json").read_text(encoding="utf-8"))
-        return reply, data
-
-    def unique(record_id: int) -> bool:
-        with contextlib.suppress(ModTimeout):
-            client.wait_event(
-                ("macro_rec_limit", "macro_rec_stopped"),
-                0.15,
-                predicate=lambda row: row.get("record_id") == record_id,
-            )
-            return False
-        return True
-
-    try:
-        for mode, reason in (("seh", "capture_fault"), ("cpp", "capture_failed")):
-            started = client.macro_record_start()
-            wait_ticks(client, 4)
-            armed = client.request(
-                {"cmd": "selftest_macro_capture", "mode": mode},
-                ("macro_capture_test_armed", "error"),
-            )
-            if not checks.check(
-                "macro_capture_fault_gate", armed.get("event") != "error", str(armed)
-            ):
-                return
-            done = client.wait_event(
-                "macro_rec_stopped",
-                3,
-                predicate=lambda row, record_id=started["record_id"]: (
-                    row.get("record_id") == record_id
-                ),
-            )
-            status = client.macro_status()
-            checks.check(
-                f"macro_capture_{mode}_terminal",
-                done.get("ok") is False
-                and done.get("reason") == reason
-                and int(done.get("ticks", 0)) >= 4
-                and status.get("recording") is False
-                and status.get("recorded_ticks") == done.get("ticks"),
-                str(done),
-            )
-            checks.check(f"macro_capture_{mode}_unique", unique(started["record_id"]))
-            saved, rows = save_raw(mode)
-            checks.check(
-                f"macro_capture_{mode}_partial_save",
-                saved.get("ok") is False
-                and saved.get("partial") is True
-                and saved.get("reason") == reason
-                and len(rows) == done["ticks"]
-                and saved.get("record_id") == started["record_id"]
-                and len(rows[0]) == 11
-                and rows[0][9:] == ["0", "0"],
-                str(saved),
-            )
-            checks.check(
-                f"macro_capture_{mode}_clear", client.macro_status().get("recorded_ticks") == 0
-            )
-            started = client.macro_record_start(3)
-            client.wait_event(
-                "macro_rec_limit",
-                3,
-                predicate=lambda row, record_id=started["record_id"]: (
-                    row.get("record_id") == record_id
-                ),
-            )
-            saved, rows = save_raw(f"{mode}_recovery")
-            checks.check(
-                f"macro_capture_{mode}_recovery",
-                saved.get("ok") is True
-                and len(rows) == 3
-                and rows[0][9:] == ["0", "0"]
-                and bool(client.ping()),
-            )
-
-        # A real save failure must preserve the stopped session for retry. The
-        # fixture makes the target a directory, so the atomic write fails at the
-        # replace step ("cannot replace"); a read-only temp fails earlier
-        # ("cannot write"). Both stages must keep the recording for a retry.
-        started = client.macro_record_start(3)
-        client.wait_event(
-            "macro_rec_limit", 3, predicate=lambda row: row.get("record_id") == started["record_id"]
-        )
-        blocked_name = name_for("blocked")
-        blocked = directory / "macros" / f"{blocked_name}.json"
-        blocked.mkdir()
-        try:
-            failed = client.request({"cmd": "macro_rec_stop", "name": blocked_name}, "error")
-            status = client.macro_status()
-            reason = str(failed.get("reason"))
-            checks.check(
-                "macro_capture_save_failure_retains",
-                ("cannot replace" in reason or "cannot write" in reason)
-                and status.get("recorded_ticks") == 3
-                and status.get("recording") is False,
-                str(failed),
-            )
-        finally:
-            blocked.rmdir()
-        saved, rows = save_raw("retry")
-        checks.check(
-            "macro_capture_save_retry",
-            saved.get("ok") is True
-            and len(rows) == 3
-            and saved.get("record_id") == started["record_id"],
-        )
-
-        atomic_name = name_for("atomic")
-        atomic_path = directory / "macros" / f"{atomic_name}.json"
-        old_rows = [["false"] * 9 + ["0", "0"]]
-        new_rows = [["true"] + ["false"] * 8 + ["1", "2"]]
-        client.macro_save(atomic_name, old_rows)
-        old_bytes = atomic_path.read_bytes()
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateFileW.restype = ctypes.c_void_p
-        handle = kernel32.CreateFileW(str(atomic_path), 0x80000000, 1, None, 3, 0x80, None)
-        checks.check(
-            "macro_atomic_lock_fixture",
-            handle != ctypes.c_void_p(-1).value,
-            str(handle),
-        )
-        try:
-            failed = client.request(
-                {"cmd": "macro_save", "name": atomic_name, "ticks": new_rows}, "error"
-            )
-            checks.check(
-                "macro_atomic_replace_failure_preserves_old",
-                "cannot replace" in str(failed.get("reason"))
-                and atomic_path.read_bytes() == old_bytes,
-                str(failed),
-            )
-        finally:
-            if handle != ctypes.c_void_p(-1).value:
-                kernel32.CloseHandle(ctypes.c_void_p(handle))
-        checks.check(
-            "macro_atomic_failure_cleans_temp",
-            not list(atomic_path.parent.glob(f"{atomic_path.name}.tmp-*")),
-        )
-        client.macro_save(atomic_name, new_rows)
-        checks.check(
-            "macro_atomic_save_reload",
-            json.loads(atomic_path.read_text(encoding="utf-8")) == new_rows
-            and client.macro_load(atomic_name).get("event") == "macro_loaded"
-            and client.macro_status().get("ticks") == 1,
-        )
-
-        for index in range(4):
-            started = client.macro_record_start()
-            wait_ticks(client, 2)
-            saved, rows = save_raw(f"rapid_{index}")
-            checks.check(
-                f"macro_capture_stop_snapshot_{index}",
-                saved.get("ok") is True
-                and len(rows) >= 2
-                and len(rows) == saved["ticks"]
-                and rows[0][9:] == ["0", "0"]
-                and saved.get("record_id") == started["record_id"],
-            )
-            wait_ticks(client, 2)
-            checks.check(
-                f"macro_capture_no_late_frame_{index}",
-                client.macro_status().get("recorded_ticks") == 0,
-            )
-
-        if world:
-            started = client.macro_record_start()
-            wait_ticks(client, 4)
-            try:
-                client.leave_world()
-                client.wait_event("world_left", 45)
-                done = client.wait_event(
-                    "macro_rec_stopped",
-                    5,
-                    predicate=lambda row: row.get("record_id") == started["record_id"],
-                )
-                checks.check(
-                    "macro_capture_world_cancel",
-                    done.get("ok") is False
-                    and done.get("reason") == "world_left"
-                    and int(done.get("ticks", 0)) >= 4,
-                    str(done),
-                )
-                deadline = time.monotonic() + 45
-                while not client.worlds().get("ready"):
-                    if time.monotonic() >= deadline:
-                        raise ModTimeout("macro capture: menu did not become ready")
-                    time.sleep(0.1)
-                refused = client.request({"cmd": "macro_rec_start"}, "error")
-                checks.check("macro_capture_menu_rejected", refused.get("reason") == "not_in_world")
-                saved, rows = save_raw("world_partial")
-                checks.check(
-                    "macro_capture_menu_save_partial",
-                    saved.get("ok") is False
-                    and saved.get("reason") == "world_left"
-                    and len(rows) == done["ticks"],
-                )
-            finally:
-                client.enter_world_ready(world)
-                client.wait_in_world(timeout=60)
-                client.teleport(
-                    *(float(original[f"feet_{a}"]) for a in "xyz"),
-                    yaw=float(original["yaw"]),
-                    pitch=float(original["pitch"]),
-                )
-                checks.check("macro_capture_world_still", settle(client)["ok"])
-            started = client.macro_record_start(3)
-            client.wait_event(
-                "macro_rec_limit",
-                3,
-                predicate=lambda row: row.get("record_id") == started["record_id"],
-            )
-            saved, rows = save_raw("world_recovery")
-            checks.check("macro_capture_world_recovery", saved.get("ok") is True and len(rows) == 3)
-        after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
-        checks.check("macro_capture_handled_fault_no_dump", after == before)
-    finally:
-        with contextlib.suppress(ModPipeError):
-            if client.macro_status().get("recording"):
-                save_raw("cleanup")
-        for path in paths:
-            path.unlink(missing_ok=True)
+    run_macro_capture(client, checks, world, wait_ticks, settle)
 
 
 def check_tick_safety(client: ModClient, checks: Checks, world: str | None = None) -> None:
@@ -1862,6 +1559,17 @@ def check_tick_recovery(client: ModClient, checks: Checks, world: str | None = N
                     < 0.05,
                     f"before={state['yaw']}, after={after_state['yaw']}",
                 )
+        for phase in ("pre", "post"):
+            rebase()
+            row = fault(phase, "client_read")
+            recovered = ready()
+            checks.check(
+                f"tick_recovery_{phase}_client_read_isolated",
+                row.get("message") == "client_player_read_fault"
+                and recovered["tick_recovery"]["active"] is False
+                and bool(client.ping()),
+                ascii(row),
+            )
         for event_level in (False, True):
             rebase()
             client.macro_save(macro_name, [["true", *["false"] * 8, "1", "0"]] * 4)
@@ -2729,15 +2437,6 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
     checks.check("teleport_handled_fault_no_dump", after == before)
 
 
-def required_effect_ids(durations: dict[int, int], elapsed_ticks: int) -> set[int]:
-    """Effects that must still exist after elapsed ticks; expired ids are exempt."""
-    return {
-        effect_id
-        for effect_id, duration in durations.items()
-        if duration < 0 or duration - elapsed_ticks > 0
-    }
-
-
 def check_flight(client: ModClient, checks: Checks, world: str | None = None) -> None:
     """Verify staged abilities, bounded tick assertion, failures and retirement."""
     original = client.state()
@@ -2751,26 +2450,7 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
     # serialization-mode mismatch from a payload that was written short.
     bytes_dump = os.environ.get("LEVIPILOT_VIOLATION_DUMP") or None
     bytes_armed = False
-    original_effect_durations = {
-        int(row["id"]): int(row.get("duration", 0)) for row in original.get("effects", [])
-    }
-    original_effect_tick = int(original.get("tick", 0))
-    sentinel_effect = next(
-        (
-            (name, effect_id)
-            for name, effect_id in (
-                ("night_vision", 16),
-                ("water_breathing", 13),
-                ("fire_resistance", 12),
-                ("invisibility", 14),
-                ("glowing", 24),
-                ("luck", 26),
-            )
-            if effect_id not in original_effect_durations
-        ),
-        None,
-    )
-    added_effect = sentinel_effect is not None
+    effect_fixture = EffectFixture(original)
     if bytes_dump:
         try:
             # Observed violations were inbound bodies that ran short: 39
@@ -2818,20 +2498,7 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
         )
 
     try:
-        if added_effect:
-            assert sentinel_effect is not None
-            sentinel_name, sentinel_id = sentinel_effect
-            client.command(f"effect @s {sentinel_name} 3600 0 true")
-            wait_ticks(client, 2)
-            fixture_effects = client.state().get("effects", [])
-            checks.check(
-                "flight_effect_fixture",
-                any(
-                    int(row["id"]) == sentinel_id and int(row.get("duration", 0)) > 0
-                    for row in fixture_effects
-                ),
-                str(fixture_effects),
-            )
+        effect_fixture.install(client, checks, wait_ticks)
         client.command("gamemode survival @s")
         wait_ticks(client, 8)
         checks.check("flight_disable_applies_both", off())
@@ -3006,38 +2673,14 @@ def check_flight(client: ModClient, checks: Checks, world: str | None = None) ->
             )
             wait_ticks(client, 10)
             require_world(client, "flight cleanup")
-            before_sentinel_removal = client.state()
-            restored_effect_ids = {
-                int(row["id"]) for row in before_sentinel_removal.get("effects", [])
-            }
-            elapsed = int(before_sentinel_removal["tick"]) - original_effect_tick
-            required = required_effect_ids(original_effect_durations, elapsed)
-            if added_effect:
-                assert sentinel_effect is not None
-                required.add(sentinel_effect[1])
-            checks.check(
-                "flight_preserves_effects",
-                required.issubset(restored_effect_ids),
-                f"required={sorted(required)} actual={sorted(restored_effect_ids)} elapsed={elapsed}",
-            )
-            if added_effect:
-                client.command(f"effect @s clear {sentinel_effect[0]}")
-                wait_ticks(client, 2)
+            effect_fixture.verify(client, checks, wait_ticks)
     restored = client.state()
     checks.check(
         "flight_restores_abilities",
         restored.get("mayfly") == original.get("mayfly")
         and restored.get("flying") == original.get("flying"),
     )
-    restored_effect_ids = {int(row["id"]) for row in restored.get("effects", [])}
-    required = required_effect_ids(
-        original_effect_durations, int(restored["tick"]) - original_effect_tick
-    )
-    checks.check(
-        "flight_restores_original_effects",
-        required.issubset(restored_effect_ids),
-        f"required={sorted(required)} actual={sorted(restored_effect_ids)}",
-    )
+    effect_fixture.verify_restored(restored, checks)
     checks.check("flight_tick_alive", bool(client.ping()) and restored.get("in_world") is True)
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     checks.check("flight_handled_fault_no_dump", after == before)
@@ -3949,7 +3592,11 @@ def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None
             if result.get("ready"):
                 return result
             if time.monotonic() >= deadline:
-                raise ModTimeout(f"entry lifecycle: menu not ready: {result.get('entry')}")
+                raise ModTimeout(
+                    "entry lifecycle: menu not ready: "
+                    f"entry={result.get('entry')} menu={result.get('menu')} "
+                    f"leave={result.get('leave_completed')}/{result.get('leave_request')}"
+                )
             time.sleep(0.1)
 
     def no_duplicate(entry_id: int) -> bool:
@@ -3960,9 +3607,23 @@ def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None
 
     try:
         left = client.leave_world()
+        leave_id = int(left.get("leave_id", 0))
         checks.check("entry_lifecycle_leave", left.get("ok") is True)
-        client.wait_event("world_left", 45)
-        checks.check("entry_lifecycle_menu", menu_ready().get("ready") is True)
+        left_event = client.wait_event("world_left", 45)
+        checks.check(
+            "entry_lifecycle_leave_correlation",
+            leave_id > 0 and left_event.get("leave_id") == leave_id,
+            f"result={left} event={left_event}",
+        )
+        ready_menu = menu_ready()
+        checks.check("entry_lifecycle_menu", ready_menu.get("ready") is True)
+        checks.check(
+            "entry_lifecycle_menu_diagnostics",
+            ready_menu.get("leave_completed") == leave_id
+            and ready_menu.get("menu", {}).get("server_instance") is False
+            and ready_menu.get("menu", {}).get("world_list_available") is True,
+            str(ready_menu.get("menu")),
+        )
         last_id = 0
         for mode in ("timeout", "probe_fault", "start_fault"):
             accepted = client.request(
@@ -4694,6 +4355,16 @@ def main(argv: list[str] | None = None) -> int:
         help="check recording limit normalization, unique termination and buffered data preservation",
     )
     modes.add_argument(
+        "--macro-long-recording-only",
+        action="store_true",
+        help="record, save and reload all 200000 ticks at real speed (about 2h47 at 20 TPS)",
+    )
+    parser.add_argument(
+        "--macro-resume",
+        action="store_true",
+        help="with --macro-long-recording-only, resume the same active recording after a watcher restart",
+    )
+    modes.add_argument(
         "--macro-capture-only",
         action="store_true",
         help="check macro sampling faults and retained saves",
@@ -4758,6 +4429,11 @@ def main(argv: list[str] | None = None) -> int:
         "--tick-recovery-world",
         metavar="WORLD",
         help="also check recovery across reconnect/leave/rejoin",
+    )
+    modes.add_argument(
+        "--hot-reload-only",
+        action="store_true",
+        help="reload probe through chat input and verify the same live process",
     )
     modes.add_argument(
         "--player-identity-only",
@@ -4841,6 +4517,8 @@ def main(argv: list[str] | None = None) -> int:
             cwd=ROOT,
             check=False,
         ).returncode
+    if args.macro_resume and not args.macro_long_recording_only:
+        parser.error("--macro-resume requires --macro-long-recording-only")
     if args.stress_cycles < 0 or (args.stress_world and args.stress_cycles < 10):
         parser.error(
             "--stress-cycles must be nonnegative; --stress-world requires at least 10 cycles"
@@ -4919,6 +4597,7 @@ def run_live(
         or args.teleport_world
         or args.tick_recovery_only
         or args.tick_recovery_world
+        or args.hot_reload_only
         or args.controls_only
         or args.player_identity_only
         or args.player_identity_world
@@ -4931,6 +4610,7 @@ def run_live(
         or args.query_capture_only
         or args.query_lifecycle_world
         or args.macro_limit_only
+        or args.macro_long_recording_only
         or args.entry_lifecycle_world
         or args.tick_stream_only
         or args.tick_stream_world
@@ -4958,6 +4638,8 @@ def run_live(
                 check_packet_injection(client, checks, args.packet_injection_world)
             elif args.tick_recovery_only or args.tick_recovery_world:
                 check_tick_recovery(client, checks, args.tick_recovery_world)
+            elif args.hot_reload_only:
+                check_hot_reload(client, checks)
             elif args.teleport_only or args.teleport_world:
                 check_teleport(client, checks, args.teleport_world)
             elif args.controls_only:
@@ -4985,6 +4667,11 @@ def run_live(
                 check_entry_lifecycle(client, checks, args.entry_lifecycle_world)
             elif args.macro_limit_only:
                 check_macro_record_limits(client, checks)
+            elif args.macro_long_recording_only:
+                if args.macro_resume:
+                    check_macro_long_recording(client, checks, resume=True)
+                else:
+                    check_macro_long_recording(client, checks)
             elif args.query_lifecycle_world:
                 check_query_lifecycle(client, checks, args.query_lifecycle_world)
             else:
@@ -5003,6 +4690,8 @@ def run_live(
                 if args.packet_injection_only or args.packet_injection_world
                 else "tick_recovery_error"
                 if args.tick_recovery_only or args.tick_recovery_world
+                else "hot_reload_error"
+                if args.hot_reload_only
                 else "teleport_error"
                 if args.teleport_only or args.teleport_world
                 else "controls_error"
@@ -5025,6 +4714,8 @@ def run_live(
                 if args.macro_capture_only or args.macro_capture_world
                 else "macro_limit_error"
                 if args.macro_limit_only
+                else "macro_long_recording_error"
+                if args.macro_long_recording_only
                 else "query_capture_error"
             )
             checks.check(name, False, str(exc))

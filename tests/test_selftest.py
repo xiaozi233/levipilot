@@ -22,6 +22,7 @@ from driver.selftest import (
     check_record_medium,
     check_task_operations,
     check_teleport,
+    choose_sentinel_effect,
     dump_packet_tap,
     jump_arcs,
     main,
@@ -29,6 +30,7 @@ from driver.selftest import (
     wait_rotation,
     wait_ticks,
 )
+from driver.selftest_flight import EffectFixture
 from driver.selftest_support import Checks, ViolationObservation, preserve_failure
 
 
@@ -149,6 +151,49 @@ class EffectExpiryTests(unittest.TestCase):
     def test_infinite_effect_never_expires(self):
         self.assertEqual(required_effect_ids({16: -1}, 1000000), {16})
 
+    def test_sentinel_uses_supported_fallbacks_when_candidates_are_occupied(self):
+        self.assertEqual(choose_sentinel_effect(set()), ("night_vision", 16))
+        self.assertEqual(choose_sentinel_effect({16, 13, 12, 14}), ("regeneration", 10))
+        self.assertEqual(choose_sentinel_effect({16, 13, 12, 14, 10, 11}), ("absorption", 22))
+        self.assertIsNone(choose_sentinel_effect({16, 13, 12, 14, 10, 11, 22}))
+
+    def test_fixture_uses_fallback_and_permits_natural_expiry(self):
+        original = {
+            "tick": 100,
+            "effects": [{"id": effect_id, "duration": 3600} for effect_id in (16, 13, 12, 14)]
+            + [{"id": 1, "duration": 20}],
+        }
+        long_effects = original["effects"][:-1]
+        fixture = EffectFixture(original)
+        client = Mock()
+        client.state.return_value = {
+            "tick": 105,
+            "effects": [*original["effects"], {"id": 10, "duration": 71995}],
+        }
+        checks = Checks()
+        waits = Mock(return_value=105)
+        fixture.install(client, checks, waits)
+        client.command.assert_called_once_with("effect @s regeneration 3600 0 true")
+        self.assertEqual(checks.results[-1].outcome, "pass")
+
+        client.state.return_value = {
+            "tick": 130,
+            "effects": [*long_effects, {"id": 10, "duration": 1}],
+        }
+        fixture.verify(client, checks, waits)
+        client.command.assert_called_with("effect @s clear regeneration")
+        fixture.verify_restored({"tick": 140, "effects": long_effects}, checks)
+        self.assertTrue(all(row.outcome == "pass" for row in checks.results))
+
+    def test_fixture_rejects_unexpected_effect_loss(self):
+        fixture = EffectFixture({"tick": 100, "effects": [{"id": 1, "duration": 20}]})
+        client = Mock()
+        client.state.return_value = {"tick": 101, "effects": [{"id": 16, "duration": 71999}]}
+        checks = Checks()
+        fixture.verify(client, checks, Mock(return_value=101))
+        self.assertEqual(checks.results[0].name, "flight_preserves_effects")
+        self.assertEqual(checks.results[0].outcome, "fail")
+
 
 class InterruptedSelftestTests(unittest.TestCase):
     def test_no_world_stops_before_modifications_and_preserves_the_failure(self):
@@ -184,8 +229,8 @@ class InterruptedSelftestTests(unittest.TestCase):
         body = source.split("def check_flight", 1)[1].split("def check_input_events", 1)[0]
         self.assertNotIn("client.reset(", body)
         self.assertIn("client.teleport(", body)
-        self.assertIn("flight_preserves_effects", body)
-        self.assertIn("flight_restores_original_effects", body)
+        self.assertIn("effect_fixture.verify(client, checks, wait_ticks)", body)
+        self.assertIn("effect_fixture.verify_restored(restored, checks)", body)
 
     def test_flight_cleanup_preserves_first_error_and_type(self):
         for cause in (WorldLost("level vanished at tick 763"), ModTimeout("first request timeout")):
@@ -295,6 +340,35 @@ class InterruptedSelftestTests(unittest.TestCase):
                     check(client, Checks())
                 self.assertIs(caught.exception, cause)
                 self.assertIn(str(cleanup), cause.__notes__[0])
+
+    def test_long_recording_has_an_explicit_cli_mode(self):
+        client = self.observation_client()
+        with (
+            patch("driver.selftest.ModClient") as factory,
+            patch("driver.selftest.check_macro_long_recording") as check,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            factory.return_value.connect.return_value = client
+            self.assertEqual(main(["--macro-long-recording-only"]), 0)
+        check.assert_called_once_with(client, unittest.mock.ANY)
+        self.assertEqual(
+            [call.args[0] for call in client.input_lock.call_args_list], [True, False, False]
+        )
+        client.close.assert_called_once()
+
+    def test_hot_reload_has_an_explicit_cli_mode(self):
+        client = self.observation_client()
+        with (
+            patch("driver.selftest.ModClient") as factory,
+            patch("driver.selftest.check_hot_reload") as check,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            factory.return_value.connect.return_value = client
+            self.assertEqual(main(["--hot-reload-only"]), 0)
+        check.assert_called_once_with(client, unittest.mock.ANY)
+        client.close.assert_called_once()
 
     def test_specialized_entry_exports_before_closing_and_reports_world_loss(self):
         with tempfile.TemporaryDirectory() as directory:

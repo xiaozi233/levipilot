@@ -72,8 +72,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json --out-dir out/mod
 
 `sample` 控制 JSONL 字段；`flags` 展开为 `{lo, mid, hi}`。
 
-速度按相邻 tick 的位置差计算（`speed_basis: "pos_delta"`）；`vel` 是摩擦前速度，
-只作参考，不能直接当速度用。
+速度按相邻 tick 的位置差计算（`speed_basis: "pos_delta"`）。`vel` 来自 mod 的
+`Actor::getVelocity()`，只作参考；不要把 `StateVector` 原始字段或单次 `vel` 直接当成实际位移。
 
 ## 另见
 

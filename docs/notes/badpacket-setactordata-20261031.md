@@ -1955,7 +1955,7 @@ py -3.11 out/analyze_mark.py out/<mark>  # 拿到后：id varint、可疑偏移�
 
 ## §44 续案：packet 187 / 48 字节 / 104（2026-11-01 22:20:40Z 现场）
 
-接 `docs/notes/prompts/badpacket-187-followup-20261101.md`。先回答第一个问题：
+本节记录 packet 187 续案。先回答第一个问题：
 **现有原始数据够不够定位这一帧？答案是不够。**
 
 ### 1. 现场元数据（`[实测]`，来自 `out/server-context-*`）

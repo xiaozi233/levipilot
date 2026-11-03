@@ -85,28 +85,26 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 | `driver/transport_mod.py` | 兼容入口（旧导入与 `python driver/transport_mod.py ...` 仍可用） |
 | `driver/mod_agent.py`, `driver/run_mod.py` | 场景 DSL 适配器与执行入口 |
 | `driver/macro.py` | dmf-mpk macro 文件工具 |
+| `driver/selftest.py`, `driver/selftest_*.py` | live 自检入口、默认套件、共享夹具与领域检查 |
 | `scenarios/` | 场景 JSON |
 | `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
-| `docs/` | 补充文档 |
-| `skills/` | 单一逆向 + 实验 skill（`bedrock-re`，ZCode 本地通过 `.zcode/skills/` 联接发现） |
+| `docs/` | 现行指南与逆向证据 |
+| `skills/` | 逆向实验（`bedrock-re`）与文档规范（`project-docs`）；ZCode 通过 `.zcode/skills/` 联接发现 |
 | `tests/` | 不依赖游戏的单元测试 |
 
 ## 文档
 
-- Mod 构建、API、协议与使用限制：[`mod/README.md`](mod/README.md)；实现细节与逐项实测数字：
-  [`docs/mod-internals.md`](docs/mod-internals.md)（含「实测数字速查」）
+- Mod 构建、API、协议与使用限制：[`mod/README.md`](mod/README.md)
 - 架构与扩展指南：[`docs/architecture.md`](docs/architecture.md)
-- 跑酷记录、跳跃分析与重复尝试：[`docs/parkour.md`](docs/parkour.md)
-- dmf-mpk 逆向报告：[`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
-- 场景 DSL 与输出格式：[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
-- 流体运动机制（水/岩浆，1.26.51.01 实测复核）：[`docs/fluid-movement.md`](docs/fluid-movement.md)；
-  面向 wiki 的精简版：[`docs/fluid-wiki.md`](docs/fluid-wiki.md)
-- 证据册与历轮任务提示词（已并入仓库）：[`docs/notes/`](docs/notes/)
-- 单一逆向 + 实验 skill（静态优先、版本角色、逐轮落盘、建场/录制/输入坑）：[`skills/bedrock-re/`](skills/bedrock-re/)
-- UI 自动化（启动 / 进存档 / 退档）：[`docs/ui-automation.md`](docs/ui-automation.md)
-- IDA MCP 排障：[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
-- Agent 常驻约定（硬约束 / 已知坑 / 当前优先级）：[`AGENTS.md`](AGENTS.md)
-- 文档索引：[`docs/README.md`](docs/README.md)
+- 子系统实现与诊断语义：[`docs/mod-internals.md`](docs/mod-internals.md)
+- 当前验收与未覆盖范围：[`docs/reliability-repairs.md`](docs/reliability-repairs.md)
+- 跑酷、场景 DSL：[`docs/parkour.md`](docs/parkour.md)、[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
+- 流体机制：[`docs/fluid-movement.md`](docs/fluid-movement.md)；wiki 精简版：[`docs/fluid-wiki.md`](docs/fluid-wiki.md)
+- 逆向证据：[`docs/notes/`](docs/notes/) 与 [`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
+- 逆向实验与文档规范：[`skills/bedrock-re/`](skills/bedrock-re/)、[`skills/project-docs/`](skills/project-docs/)
+- UI 与 IDA 排障：[`docs/ui-automation.md`](docs/ui-automation.md)、[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
+- Agent 常驻约定：[`AGENTS.md`](AGENTS.md)
+- 完整索引：[`docs/README.md`](docs/README.md)
 
 ## 状态与限制
 
@@ -132,8 +130,9 @@ py -3.11 -m unittest discover -s tests -v   # 不需要游戏
 py -3.11 driver/selftest.py                 # 需要游戏已进入存档
 ```
 
-GitHub Actions 运行 `tests.yml`（Python 单元测试及独立 C++ 任务模型）。mod 构建依赖本机的 LLVM22/xmake 补丁，
-是本地步骤，见 [`docs/mod-build-environment.md`](docs/mod-build-environment.md)。
+GitHub Actions 的 `tests.yml` 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端
+mod。CI 不启动 Minecraft；现场验收仍需本机游戏，工具链见
+[`docs/mod-build-environment.md`](docs/mod-build-environment.md)。
 
 ## License
 

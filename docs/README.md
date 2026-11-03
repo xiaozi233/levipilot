@@ -1,38 +1,41 @@
 # 文档索引
 
-本目录只放与当前实现一致的资料。历史/参考材料单独标出，不要当成现行行为。
+先读根目录 `README.md` 了解使用方式，再按主题查本文档。这里只索引当前实现与逆向证据；
+历史过程记录以 Git 历史为准。
 
-## 现行实现
+## 使用与扩展
 
 | 文档 | 内容 |
 | --- | --- |
-| [`architecture.md`](architecture.md) | 进程内线程模型、管道协议、生命周期、spool、VEH |
-| [`mod-internals.md`](mod-internals.md) | 各模块实现细节（内存原语、watch、hook、ECS、版本 profile、开销指标、输入事件层、封包层）与「实测数字速查」 |
-| [`porting.md`](porting.md) | 换游戏版本的移植流程：profile、生成头文件、兼容模式与排查命令 |
-| [`parkour.md`](parkour.md) | 跑酷相关的起跳/落点/记录口径与实验方法 |
-| [`fluid-movement.md`](fluid-movement.md) | 水/岩浆流体运动机制（三介质递推、流推、泳姿、深海行者；1.26.51.01 实测 + 45→51 静态比对） |
-| [`fluid-wiki.md`](fluid-wiki.md) | 上者的 wiki 精简版：只保留结论、公式与实用数据，适合对外发布 |
-| [`scenario-dsl.md`](scenario-dsl.md) | `scenarios/*.json` 的步骤、采样字段和运行方式 |
-| [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 xmake / LLVM / SDK 布局、构建命令（`xmake -j4`）、必须保留的 SDK 补丁与常见问题 |
-| [`ui-automation.md`](ui-automation.md) | 主菜单/世界列表/暂停菜单的桌面 UI 操作；世界内 UI 已可由 `key_event` 完成 |
-| [`offsets/`](offsets/) | 版本 profile（`runtime:true` 的 JSON 会被编进 `GeneratedProfiles.h`） |
-| [`roles/`](roles/) | RE 角色 → 静态地址与证据（与 offsets 分开；`unresolved` 不猜地址） |
-| [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | IDA MCP 代理卡死等排障（逆向工具链） |
-| [`reverse-engineering.md`](reverse-engineering.md) | **静态优先**的逆向工作流与踩坑：证据分级、无符号定位手法（注释记录/vtable/SDK）、顺序类问题的判据、磁盘与库纪律、动态取证的边界 |
-| [`notes/`](notes/) | 证据册（`re-fluid-12651.md`、`tick-order-12651.md`）与历轮任务提示词；已由外部 notes 工作树并入仓库 |
+| [`architecture.md`](architecture.md) | 分层、线程模型、协议、生命周期和扩展步骤 |
+| [`mod-internals.md`](mod-internals.md) | 子系统实现细节、容量/预算、诊断语义和当前验收 |
+| [`../mod/README.md`](../mod/README.md) | mod 构建、安装、API、配置与使用限制 |
+| [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 LLVM 22、xmake、SDK 补丁和构建故障排查 |
+| [`porting.md`](porting.md) | 新版本 profile、生成头文件、兼容模式和验收流程 |
+| [`scenario-dsl.md`](scenario-dsl.md) | 场景 JSON、步骤、输出和采样语义 |
+| [`parkour.md`](parkour.md) | 跑酷录制、跳跃分析、路点、扫描与存档点 |
+| [`ui-automation.md`](ui-automation.md) | 需要真实桌面操作时的菜单/对话框兜底流程 |
 
-## 历史 / 参考
+## 质量与验收
 
-| 文档 | 说明 |
+| 文档 | 内容 |
 | --- | --- |
-| [`refactoring.md`](refactoring.md) | 2026-10-23/24 结构重构、任务与会话重设计、世界进入崩溃修复的**决策与验收记录**；其中的通过数随时间过时，现行结构看 `architecture.md` 与 `mod-internals.md` |
+| [`reliability-repairs.md`](reliability-repairs.md) | 当前离线/现场基线、覆盖前提和未验收范围 |
+| [`code-quality-review.md`](code-quality-review.md) | 当前未决风险、外部限制和维护优先级，不保留逐轮流水账 |
+| [`../skills/project-docs/`](../skills/project-docs/) | 文档写作、同步、精简、删除和交付检查规范 |
 
-## 约定
+## 流体与逆向资料
 
-- 改代码后同步更新：使用限制/基线进 `mod/README.md` 的「实测 / 限制」，逐项实测数字
-  进 `mod-internals.md` 的对应小节或「实测数字速查」，并同步这里的相关文档。
-- 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收结论直接写进
-  `mod-internals.md` 与 `mod/README.md`。
-- 静态优先的逆向 + 实验手册（建场回读、录制语义、输入/热键坑、版本角色、逐轮落盘）在仓库根目录
-  [`skills/bedrock-re/`](../skills/bedrock-re/)；ZCode 本地通过 `.zcode/skills/` 联接发现，
-  用户级通过 `~/.agents/skills/` 联接发现。
+| 文档 | 内容 |
+| --- | --- |
+| [`fluid-movement.md`](fluid-movement.md) | 水/岩浆运动机制、公式与静态/实测复核 |
+| [`fluid-wiki.md`](fluid-wiki.md) | 流体结论的 wiki 精简版 |
+| [`reverse-engineering.md`](reverse-engineering.md) | 静态优先的逆向方法与证据纪律 |
+| [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | IDA MCP 端点、超时、会话与坏库恢复 |
+| [`notes/`](notes/) | BadPacket、流体、ECS 顺序和黏液反弹等原始证据 |
+| [`offsets/`](offsets/) | 版本 profile；`runtime:true` 的 JSON 参与生成 |
+| [`roles/`](roles/) | RE 角色与静态地址证据；`unresolved` 不猜地址 |
+| [`../skills/bedrock-re/`](../skills/bedrock-re/) | 逆向与逐 tick 实验 skill |
+
+文档变更应更新现有正文，不再追加按日期排列的验收章节。旧提示词、交接稿和过程性报告
+已从 Git 清理；需要追溯时查提交历史。

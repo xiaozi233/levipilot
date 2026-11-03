@@ -1,6 +1,6 @@
 # 1.26.51.01 findings
 
-当前版本的角色表在 [`docs/roles/1.26.51.01.json`](../../../docs/roles/1.26.51.01.json)。
+当前版本的角色表在 [`docs/roles/1.26.51.01.json`](../../../../docs/roles/1.26.51.01.json)。
 
 ## Cases
 
@@ -11,4 +11,4 @@
 
 - `docs/fluid-movement.md`（流体/疾跑/泳姿）
 - `docs/reverse-engineering.md`（静态优先方法）
-- `docs/mod-internals.md`（实测数字速查）
+- `docs/mod-internals.md`（诊断语义与验证边界）

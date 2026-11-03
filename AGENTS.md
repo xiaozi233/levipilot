@@ -1,350 +1,174 @@
 # AGENTS.md
 
-给在本仓库工作的 agent 的常驻约定。人类开发者请先读 [`README.md`](README.md) 与
-[`docs/architecture.md`](docs/architecture.md)；本文件只写「必须遵守」与「容易踩」。
+给在本仓库工作的 agent 的常驻约定。人类开发者先读 [`README.md`](README.md) 和
+[`docs/architecture.md`](docs/architecture.md)；本文件只写必须遵守的规则、常见坑和当前限制。
 
-## 项目是什么
+## 项目与命令
 
-**LeviPilot**：Minecraft Bedrock **1.26.51.01**（LeviLamina 26.51.7）的客户端实验 harness。
-一个 C++ mod（`mod/probe/`）+ 命名管道 `\\.\pipe\mcbe-harness` 的 UTF-8 JSONL 协议 +
-Python 客户端（`driver/harness/`）。目标是让脚本/LLM 读状态、控玩家、跑逐 tick 实验。
-
-## 常用命令
+**LeviPilot** 是 Minecraft Bedrock **1.26.51.01**（LeviLamina **26.51.7**）的客户端实验
+harness：C++ mod + UTF-8 JSONL 命名管道 `\\.\pipe\mcbe-harness` + Python 客户端。
 
 ```bash
-# C++ mod（本机 xmake + LLVM22，见 docs/mod-build-environment.md）
-cd mod/probe && xmake -j4 -y   # -j4 限制 CPU 占用
+# C++ mod；本机工具链见 docs/mod-build-environment.md
+cd mod/probe && xmake -j4 -y
 
-# 开发循环：按需编译 → 重启 exe → 等主菜单 → 直接进世界 → 等玩家站稳（不用点 UI）
-# 源码比 probe.dll 新时会自动重建；--no-build 可跳过，--build 强制
+# 按需构建、受控重启、等待菜单并进世界；--no-build 跳过，--build 强制
 py -3.11 driver/dev.py run --world "超平坦测试"
 
-# 卡在断开错误页（HBUI、worlds.ready=false）时：先落盘现场，再受控重启回菜单/重进世界
-# 报告写到 out/disconnect-<时间>.json；不加 --world 只回到菜单
+# 断开错误页恢复：先落盘诊断，再回菜单/重进；不要凭 HBUI 推断保存状态
 py -3.11 driver/dev.py recover --world "超平坦测试"
 
-# 违规守望（只读）：所有 live 入口统一观察/增量落盘；设施自测与 panic 空窗明确记入报告
-LEVIPILOT_VIOLATION_DUMP=out/violation.json py -3.11 driver/selftest.py
-py -3.11 driver/selftest.py --violation-only   # 合成记录验证设施，不是真实违规
-py -3.11 driver/selftest.py --require-complete # 必需覆盖 skip 也返回失败；仍需完整权限/空槽前提
-py -3.11 driver/selftest.py --connection-only --require-complete # 空闲时验证遗弃/退出后的管道重连
-py -3.11 driver/selftest.py --diagnostic-export-only --require-complete # 导出现有环，不安装 hook
-
-# 无游戏单测 / 静态检查
+# 无游戏检查
 py -3.11 -m unittest discover -s tests -v
-py -3.11 -m ruff check driver tests && py -3.11 -m mypy
+py -3.11 -m ruff check driver tests
+py -3.11 -m ruff format --check driver tests
+py -3.11 -m mypy
 
-# 需要游戏已进存档；先清空快捷栏（`clear @s`），否则两组 task 检查会 skip，
-# 显式 SKIP 保留在分母；992/992 是历史全覆盖基线，后续 1065/1066 有 1 required skip
-py -3.11 driver/selftest.py
+# 需要已进入测试存档；权限或空槽不足产生的 required skip 在严格模式下也失败
+py -3.11 driver/selftest.py --require-complete
+py -3.11 driver/selftest.py --connection-only --require-complete
+py -3.11 driver/selftest.py --diagnostic-export-only --require-complete
+py -3.11 driver/selftest.py --lifecycle-prepare-only --require-complete
 
-# 逆向账本：begin → probe → claim → end → close（账本在 skills/bedrock-re/findings）
+# 逆向账本
 py -3.11 driver/landing.py begin --case <slug> --goal "..."
 ```
 
-`py -3.11` 是硬要求（默认解释器可能没有依赖）。
+`py -3.11` 是硬要求。需要完整现场覆盖时先清空快捷栏并开启所需能力；普通模式中的
+SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是真实违规复现。
 
 ## 目录地图
 
 | 路径 | 内容 |
 | --- | --- |
-| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`WorldSession`（世界生命周期）、`ClientDispatch`（主线程投递/SEH）、`PacketTap`（封包 tap）、`PacketRequestState`/`TeleportRequestState`/`FlightRequestState`/`LegacyStreamState`（领域请求唯一所有者）、`ViolationWatch`（违规+断线页）、`InboundWatch`（入站解析）、`SendProbe`（发送探针）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
-| `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands/`（按领域 mixin 组成 `ModClient`）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`/`lab`（实验辅助：回读验证建场、录制会话、逐 tick 拟合）；CLI 为 `cli`（入口/注册表分发）/`cli_parser`（参数）/`cli_commands`（领域执行，各带 `COMMANDS` 声明），以及解码辅助模块 |
-| `driver/dev.py` | 启动 + 自动进世界的开发循环 |
-| `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
-| `driver/parkour.py` | tick 录制、跳跃分段、两次运行对比、attempts |
-| `driver/landing.py` | 每轮逆向落盘：`begin/probe/claim/end/close/abandon`；账本在 `skills/bedrock-re/findings/` |
-| `driver/bounce_predict.py` | 黏液反弹预测器（覆盖高度 + 落差 → 弹否）；`--validate` 回放账本里的逐 tick 实测 |
-| `driver/pe_map.py` | 地址 → 所属段/函数（`.pdata` 二分，读磁盘上的 exe，离线可用） |
-| `driver/ida.py` | IDA MCP 客户端：端点发现、`idb_open` 重试、会话缓存、`decompile/callers` |
-| `scenarios/` | 场景 DSL 的 JSON |
-| `skills/bedrock-re/` | 静态优先的逆向 + 实验 skill（取代 `bedrock-client-re` / `reverse-security` / `mcbe-harness-experiments`），**真身、随仓库提交**；`.zcode/skills/bedrock-re` 与 `~/.agents/skills/bedrock-re` 是目录联接 |
-| `docs/` | 架构、场景 DSL、跑酷、流体运动（`fluid-movement.md`）、UI 自动化、mod 构建、移植流程（`porting.md`）、静态优先的逆向方法与踩坑（`reverse-engineering.md`）、`offsets/` 版本 profile |
-| `docs/notes/` | 证据册与任务提示词（由外部 notes 工作树合并；`re-fluid-12651.md` / `tick-order-12651.md` / `prompts/`） |
-| `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
+| `mod/probe/src/mod/` | C++ 实现。`ProbeMod` 管生命周期/tick，`WorldSession` 管世界流程，`ClientDispatch` 管主线程投递，`Transport` 管管道/spool，`Commands` 管分发与异常隔离 |
+| `mod/probe/src/mod/*RequestState.h` | 封包、传送、飞行和 legacy 录制请求的唯一状态所有者；不要把字段复制回 `ProbeMod` 或另建 reset 清单 |
+| `mod/probe/src/mod/{ViolationWatch,InboundWatch,SendProbe}.cpp` | 违规/断线页、入站解析、发送探针；共享定长记录与冷侧格式化在 `ViolationWatchShared.h` |
+| `driver/harness/` | Python 客户端：`connection`、`commands/`、`facade`、`client`、`protocol`、`errors`、`lab`；CLI 为 `cli`/`cli_parser`/`cli_commands/` |
+| `driver/selftest.py` | live 自检 CLI、专项分发和兼容导出 |
+| `driver/selftest_*.py` | `default` 默认全套，`runtime` 共享门禁/夹具，core/tasks/queries/packets/streams/input/recovery 等领域检查 |
+| `driver/dev.py` | 受控启动、保存退出、重启和自动进世界 |
+| `driver/gen_profiles.py` | 从 `docs/offsets/*.json` 生成 `GeneratedProfiles.h`；`--check` 用于 CI |
+| `docs/offsets/`、`docs/roles/` | 版本 profile 与 RE 角色；不要混用 |
+| `docs/notes/`、`reverse/`、`skills/bedrock-re/` | 逆向证据、调查原文和实验方法；不是第二套现行 API 文档 |
+| `scenarios/`、`tests/` | 场景 DSL 与无游戏/native 测试 |
 
-## 硬约束（改代码前先读这段）
+## 硬约束
 
-1. **`Internal.h` 是唯一被所有 TU 引用的内部头**；新共享工具放 `probe::detail`。
-2. **管道线程绝不直接碰游戏对象**：只设请求标志，服务端操作走 `queueServerTask()`，
-   世界/UI 操作走 `queueClientTask()`（游戏平台主线程队列，在主菜单也运行）。
-   LL 的 `ClientThreadExecutor` 只随世界 tick 执行，不能用来进世界或等主菜单登录。
-3. **需要逐 tick 反馈的逻辑留在游戏线程**（`safeTickPre` / `safeTickPost`），
-   不要让 Python 进入反馈环。
-4. **热路径纪律**：tick 内、以及任何可能被高频调用的钩子体里，禁止
-   `std::string` / `nlohmann::json` / 动态分配 / 新增 mutex。只允许写预分配的定长结构，
-   格式化放管道线程或 Python 侧。
-5. **错误不穿透游戏 tick**：一切异常变成事件（`internal_error` 等）。注意 MSVC 默认
-   `/EHsc` 下访问违例**不是**可捕获异常 —— 新写的 handler 用 `__try/__except` 包住。
-6. **版本数据只进 profile**：版本号、锚点签名、结构偏移、组件 id 一律写
-   `docs/offsets/<version>.json`（带 `"runtime": true`），再跑
-   `py -3.11 driver/gen_profiles.py` 生成 `GeneratedProfiles.h`。`.cpp` 里禁止出现这些常量；
-   没有 profile 时功能降级（`version_ok=false`、偏移表为空），不是崩溃。
-   移植流程见 `docs/porting.md`。RE 侧的函数/全局角色写 `docs/roles/<version>.json`
-   （与 offsets 分开；`unresolved` 不填地址），由 `skills/bedrock-re/roles/resolve.py` 校验。
-7. **协议只做增量变更**：`{"event":"hello","protocol":4,"capabilities":[...]}` 是握手；
-   升号时旧字段必须继续可用，未知命令仍回 `error/unknown_cmd`。
-8. **强能力默认关闭**：任意内存写、任意地址装钩这类能力必须显式开启并留审计日志。
+1. **`Internal.h` 是所有 C++ TU 的统一内部入口**；共享工具放 `probe::detail`，不要新建第二套
+   全局包含链。
+2. **管道线程不直接访问游戏对象**。服务端操作走 `queueServerTask()`，世界/UI 操作走
+   `queueClientTask()`。LL 的 `ClientThreadExecutor` 只随世界 tick 执行，不能用于主菜单。
+3. **逐 tick 反馈留在游戏线程**（`safeTickPre`/`safeTickPost`），Python 不进入反馈环。
+4. **热路径不分配、不 JSON、不新增锁**。tick 和高频 hook 只写预分配定长结构；格式化放到
+   管道/spool 线程或 Python。显式诊断的额外成本必须单独披露。
+5. **错误不能穿透游戏 tick**。MSVC `/EHsc` 下访问违例不是 C++ 异常；危险处理使用局部
+   `__try/__except` 或既有 `guardedGameRead`，不要用包住整个持锁 tick 的 SEH 跳过析构。
+6. **版本数据只进 profile**。版本号、签名、偏移和组件 id 写入 `docs/offsets/<version>.json`
+   （`runtime:true`），再运行 `driver/gen_profiles.py`。RE 函数/全局角色写入 `docs/roles/`，
+   `unresolved` 不填地址。没有 profile 时降级，不能崩溃。
+7. **协议只做增量变更**。握手是 `hello.protocol=4`；旧字段保持可用，未知命令仍回
+   `error/unknown_cmd`。
+8. **强能力默认关闭**。内存写、任意 VA 装钩、输入/封包注入、压力与崩溃测试都要显式开启；
+   需要审计的能力必须写日志。
+9. **不擅自推送、不强停未保存会话**。保存状态不能确认时保留进程；只有调用者明确放弃未保存
+   更改时才使用 `--force`/force-stop。
 
-## 加东西的标准步骤
+## 扩展步骤
 
-**加一个管道命令**：对应 `Command<领域>.cpp` 加分支（处理后返回 true，含拒绝/参数错误；未识别才返回 false）→
-`ProbeMod.h` 加请求字段/方法 → 对应模块实现 → `driver/harness/commands/<领域>.py` 加
-`request(..., expected_event)`（超时参数用 `float | None = None`）→
-`cli_parser.py` 加参数、`cli_commands/<领域>.py` 加执行分支并把命令名登入该模块的
-`COMMANDS`（`tests/test_cli.py` 会校验与 parser 一致）→ `tests/` 加无游戏单测（需要游戏的检查加到 `driver/selftest.py`）。
-新增领域时才在 `Commands.cpp::dispatchLine` 接入；它统一负责 JSON 解析、未知命令与请求级异常隔离。
+### 加管道命令
 
-**加一个闭环任务**：`TaskModel.h` 定义定长 `XxxTask` 并加入 `TaskState` →
-`CommandTasks.cpp` 完整验证参数后 `startTask()`、回带 `task_id` 的 `xxx_started` →
-`Tasks.cpp` 实现 `tickXxx`，只填 `TaskStep` → `TaskEvents.cpp` 格式化状态/结果 →
-`commands/tasks.py` 的 `_task_request`/`facade.Harness`/CLI 加阻塞封装 → 扩展 native 模型与 live selftest，
-用 `blocks` / `state` **回读验证**。禁止新增独立 optional 任务槽、手写 reset 列表，或在 tick 内格式化任务 JSON。
-`TaskController` 锁内回调不得重入控制器或同步等待需要任务锁的线程。
+1. 在对应 `Command<领域>.cpp` 处理并返回 `true`（拒绝和参数错误也算已处理）；只有新领域才
+   修改 `Commands.cpp::dispatchLine`。
+2. 请求状态归入对应领域所有者，在 `ProbeMod.h` 只声明必要方法/会话，不复制一份别名。
+3. 在 `driver/harness/commands/<领域>.py` 添加 `request(..., expected_event)`；超时参数使用
+   `float | None = None`。
+4. 更新 `cli_parser.py` 与 `cli_commands/<领域>.py`，命令名加入该模块 `COMMANDS`。
+5. 添加无游戏测试；live 检查放进对应 `selftest_<领域>.py`，保持 CLI 和检查名兼容。
+6. 更新 `mod/README.md` 的 API/限制及 `docs/mod-internals.md` 的实现说明。
 
-## 已知坑（别重复踩）
+### 加闭环任务
 
-- Windows 同步句柄上挂起的 `ReadFile` 会阻塞同一句柄的 `WriteFile` ⇒ 客户端必须用轮询读线程
-  （`PeekNamedPipe`），不能用阻塞读。
-- Python 探针仍用 `with ModClient()` 或 `try/finally: client.close()`。连接的后台读线程与
-  GC finalizer 只能持 `_PipeStream`，不能经带订阅的 `_PipeSession` 反向保活 client。
-  EOF/溢出主动关闭句柄；GC 只兜底无引用（含已不可达订阅循环）的 client，不回收活跃引用。
-  该修复已留 `--connection-only`；不要由此宣称所有 Errno 22 或 mod 侧管道挂起均已解决。
-- `command` 的方块类命令是 deferred，`success=false` 不代表失败，以 `blocks` / verify 为准。
-- `GameMode::interact` 在空物品上下文会崩 ⇒ `interact_entity` 只做转向 + 注入使用按钮（best effort）。
-- 直接写客户端位置（`StateVector`/`ActorSetPositionRequest`）会被服务端覆盖；位置是服务端权威。
-- 朝向必须走命令通道（`/tp @s ~ ~ ~ yaw pitch`）；只改组件会橡皮筋（客户端相机每帧写回）。
-- **移动输入契约（2026-10-28）**：`set_input` / `move` / `jump` 默认把数字状态翻译成
-  **当前键位绑定的 Hardware HID 按键沿**：每次从
-  `IOptionRegistry::getCurrentKeyboardRemapping()` 读 `key.forward/back/left/right/sneak/jump/sprint`，
-  `state.bindings` 暴露实际 key code；疾跑按当前绑定键（现在是 R），未绑定才回退双击前进。
-  与真实键盘同 origin；禁止把直接写 `MoveInputComponent` / `MoveInputState`、
-  queue/handler 重发、`jumpFromGround` 当默认路径。legacy `mode`/`jump_impulse` 只在
-  `input_cfg force=true` 下作对照实验，正常脚本不要用。
-- 游泳态（ADF bit57）由**客户端 sprint 状态**门控：深水里前进 + 当前疾跑键
-  （`set_input` 自动完成）4–8 tick 置位；只给前进、不给 sprint 进不去。
-  **如果实测仍进不去，先查 HID 注入的时序/origin，不要把状态位直写加回来。**
-  旧“纯 HID 进不去游泳态”的结论是旧注入组合下的 harness 现象，待用新路径复核。
-  `lab.swim_drive()` / CLI `swim --drive` 同样走输入路径；`jump-key` 是拍空格（HID Space）。
-- 移动输入由游戏自己的输入管线同步到服务端；不要再在 harness 里手工“客户端+服务端双写”
-  来补偿，那会制造正常玩家到不了的状态。
-- **`set_input(sprint=True)` 旧实现**（legacy mode 1|2|4）会在 queue/handler 里重发 sprint 按钮，
-  并在 1.26.51.01 触发一次 0.42 跳跃；该路径现在只在 `force=true` 下可复现。
-  默认路径已不再经过它，回归检查 `sprint_no_jump`。
-  实验每一步先 `lab.settle(...)` 验证 `on_ground`/静止/`in_water`/`sprinting` 再注入，
-  不要用裸 `sleep` 当前提（`swim_start_still` 也是回归检查）。
-- **水里的疾跑延迟 = 记录位 → 输入/疾跑状态 → ADF 写位，约 2 tick**：`record`/`state` 的 `sprint`
-  （`Player::isSprinting()`）不是水阻力读的位；ADF bit3 由 `Actor::setSprinting`
-  （`sub_14B17C820`，写点 `0x14B17C870`）写入，但中间还有一拍状态链。同一 tick 内
-  E14 主 pass 的注册序 ActionSprintTrigger 早于水阻力系统，阻力在写位之后读到**新位**
-  （集合追加+正序；调用栈 [实测] 确认主 pass，catchup/correction 不在链上。旧“观察点显示
-  阻力写 `vx` 早于写位 ⇒ 读上一 tick”的结论已撤回）。所以 0.9 落在 ADF 写位那一拍，而写位
-  比记录位晚约 2 tick：常规手动相位（按键落在采样点后）序列
-  `0.01959/0.03528/0.05133`（t3）；早相位（疾跑键在采样前已按住/注入落在采样前）
-  `0.01959/0.03723`（t2）。差别是输入落点，不是阻力读旧位——0.03723 不再是纯 harness 假象。
-  地面加速的最终模长来自**移动速度属性**（疾跑时
-  `Actor::setSprinting` 把共享 modifier `SPRINTING_BOOST` 压进属性队列：amount 0.3f、
-  `MULTIPLY_TOTAL`，重算 `(0.3+1)×0.1=0.13`；代码里没有 1.3 常数，早前归给实体定义字段
-  `DEFAULT_SPRINT_SPEED_MULTIPLIER` 是错的——那是 AI goal 的 JSON 字段）
-  （0.1→0.13，`sub_14289A180` 把属性实例 `+124` 的值拷进移动结构；`sub_14666CEE0` 再写
-  `speed*(0.546/friction)^3`），不是原始输入标志。同路径的 `sub_142E11910` 也直接读 ADF bit3
-  （`(*adf & 8) == 0` → 表 {0.026,0.02}），但那是 0.02/0.026 的基础加速度字段，不是最终
-  0.13 的来源。地面状态 +1 来自速度属性、水状态 +2 来自 ADF 位状态链。
-- **`state.input.sprint` 可能是静止锁存的 true**：当前世界里只按 W（HID）或
-  `set_input(forward=1, sprint=False)` 都会在第一个移动 tick 进疾跑（0.28 稳态）。
-  做走/跑对照前让 `lab.settle(..., input_sprint=False)` 通过，否则走路基线其实是疾跑。
-- **旧输入路径的跳跃结论**：直接标志/队列/handler 曾出现前 3 tick 位置不动、第 4 tick
-  一次性补 V1+V2+V3（约 0.99 格），当时用 `jumpFromGround` 对照。
-  这不适用于默认 Hardware HID 路径，禁止据此恢复默认冲量注入。
-  水中按 Space 到第一个 `+0.04` 有 2–4 tick 延迟（输入队列 + 水物理切换）。
-- 版本锚点的导入符号是 `jmp [rip+0]` thunk，且指针随 ASLR 变化；签名必须先跟 thunk 到真实
-  函数，绝不能把 thunk 里的绝对地址当签名。
-- 运行时 hook 的通用 VA detour 只保留 rcx/rdx/r8/r9；float/xmm 参数、向量返回、超过 4 个
-  参数或隐藏返回指针的目标必须写 typed detour，否则 origin 会收到错误参数。
-  VA 只校验“可执行页”，指令边界由 IDA 侧确认。
-- `StateVectorComponent+0x18` 的**原始字段**不是 harness 报的速度：地表行走时它是
-  0.546 × 真实位移（实测位移 0.2159 格/tick，`mem_read` 读到 0.1179），站着不动时 vy 仍留着
-  −0.0784。`state`/`record` 的 `vx/vy/vz` 来自 `Actor::getVelocity()`，等于下一 tick 的位移
-  （液体里与 Δy 1:1），不要再乘 0.546；判速度仍以相邻 tick 位置差为准。
-- `pos.y` 是**脚部**；StateVector 里是眼睛（脚部 + 1.6200101）。
-- 失焦是否暂停世界由 `options.txt` 的 `pause_menu_on_focus_lost` 决定（置 0 后后台仍满速 tick）；
-  raw input 在后台仍可能转视角，由 `_applyTurnDelta` 钩子 + `background_guard` 拦掉。
-- `harness.json` 的 `auto_enter` 要求游戏在**前台**（后台进世界会触发鼠标捕获）。
-- 脚本运行会锁真实输入：`input_lock {on}`（配置 `lock_input` / `dev.py --lock-input`；selftest 自动上锁）
-  丢弃硬件来源键鼠与转向；注入照常，但 `key_event` 的 `via` 决定是否过锁——
-  `hid`(Virtual) 与 `hardware`(Hardware+注入标记) 放行，`raw`(Hardware 无标记) 被丢。
-  实验脚本建议开头 `client.input_lock(True)`、结束时解锁。
-  **配置里的 `lock_input` 只在客户端连着时生效**（连接时上锁、断开自动解锁）：启动即锁会让手动开的
-  游戏在主界面点不动按钮（2026-10-25 踩过，`harness.json` 残留 `lock_input:true` 就会中招）。
-  当前锁状态看 `state.input.locked`。
-- 双击空格飞行只认 `InputOrigin::Hardware`（`via=hid` 只起跳、不翻转 `flying`），
-  且每次按下要跨至少 1 tick；用 `lab.double_space_fly()`，不要手搓零长度的 down/up。
-  能力门是 `MayFly`，脚本侧用 `togglefly` 封装（带 8 tick 重断言）；切换游戏模式会把它
-  重置回该模式默认值（生存/冒险 false、创造 true），模式变了要重新开。
-- 客户端 mod 在 `enable()` 里注册游戏内命令会 `0xC0000005`（主界面阶段还没有服务器命令表）：
-  必须挂 `ServerCommandRegisterEvent`，并按 `CommandRegistry*` 身份判重（命令表按世界重建）。
-  只有服务端侧注册才有意义——能力是服务端权威。
-- 请求块里的 `TeleportRequest.clearEffects` 是**共享字段**：`reset` 会写 true，`teleport` 必须显式写回
-  false（2026-10-25 修过一次泄漏 —— 做过一次 reset 后，之后每次 teleport 都静默清空所有药水效果，
-  表现为"刚挂的抗火/水下呼吸凭空消失"）。`checkpoint_load` 走 `resetPlayer(..., clearEffects=false)`。
-- 接收侧封包只能挂 `LoopbackPacketSender::$sendToClient`（两个重载）；`Packet::sendTo*`
-  辅助层在单机里实测 0 调用，`NetworkConnection::receivePacket` 也是 0。recv 默认关闭，
-  用 `packet_capture {directions:["send","recv"]}` 开；同一 tick 同对象会去重，
-  原始投递次数看 `packet_stats.recv_anchors`。
-- 改 `docs/offsets/*.json` 后必须跑 `py -3.11 driver/gen_profiles.py`；`GeneratedProfiles.h`
-  是提交物，`tests/test_profiles.py` 会比对，忘了生成 CI 直接红。
-- 只有带 `"runtime": true` 的 profile 才参与生成；旧 schema（绝对 VA）没有这个标记，
-  生成器会跳过。
-- `allow_version_mismatch` 只是移植开关：没有 profile 校验，偏移可能读错；日常配置保持关闭。
-- 硬件观察点只记录**装过 DR 的线程**；其他线程上的 DR6 事件计入 `watch_list.foreign_hits`。
-  旧线程遗留的 DR 曾导致服务端线程被误记为写 tick 变量。
-- 主菜单/世界列表/暂停菜单/对话框仍需桌面 UI 操作（见 `docs/ui-automation.md`），
-  但日常开发循环不需要。
-- **role 地址是静态 VA，运行时要重定位**：`docs/roles/*.json` 的 `image_base`（0x140000000）
-  只是记法；本机 exe 被 PeEditor 改写首选基址并 ASLR，内存里的 PE `ImageBase` 等于加载地址，
-  按头部换算会 `not_mapped`。运行期地址 = `diag.module_base + (role_va - image_base)`。
-  这套 exe 上安装任意 VA hook 前都要先这样换算。
-- **断开错误页不是菜单**：它同样是 `ui://./hbui/index.html`，但 `worlds.ready=false`。
-  `world_state()` 的 `disconnect_error` = 关卡已卸载 + 世界列表不可用 + HBUI（未知/仍有服务端
-  对象一律归 `exiting`）。`dev.py recover` 先落盘诊断：`disconnect_error` 自停并重启
-  （两次现场 `diag` 全 false，没有服务端可刷盘；世界在断开时已保存），`world/menu/exiting`
-  仍走保存门禁、失败保留进程，只有显式 `--force` 才放弃会话。**不得**由 URL 放宽
-  `enter_world` 的准入，也不得对 `exiting` 自动强停。
-- tick 记录会同时写入 `<modDir>/spool-<pid>.jsonl`（100 ms / 64 KB 刷盘）；连接时不再清空队列，
-  而是先刷 spool 再补发。崩溃取证走 VEH 写 `crash-<pid>-<tick>.dmp` + `crash-<pid>.txt`。
-- 请求级 AV 由 `dispatchWithSeh` 转成 `internal_error`；不要把会崩的代码放到 tick 线程，
-  那里没有同样的保护。
-- 键位事件优先走 `HIDController::onKeyDown(code, InputOrigin::Virtual|Hardware)`（`ll::service::getAppPlatform()
-  → getPlatformShim() → Platform_GameCore::mHIDController`）；它才会触发 LL `KeyInputEvent` 和绑定。
-  `Keyboard::_inputs().push_back(KeyboardAction)` 也能改槽位/开背包，但不发 LL 事件，只作对照路径。
-- 暂停菜单不响应注入的按键（Esc/Enter 都无效），退出暂停仍需桌面点击 Resume；
-  背包/聊天（`/`）可以开，背包用 Esc 回到 hud。
-- `mouse_event action=move dx=...` 能转向；左/右键只到 `MouseInputEvent` 层并增加计数，
-  在 1.26.51.01 上没有触发世界攻击（攻击绑定不在这一层），不要用它代替 `click`。
-- 真实鼠标会转动相机并让宏回放落点漂移；`background_guard` 只拦后台转向，selftest 的宏
-  确定性检查在检测到相机被外部移动时会标记 skipped。
-- 玩家 StateVector 在集成服务端线程上写；观察用 `watch_set(thread="both")`。
-  `thread="all"` 已被 mod 显式拒绝（`thread_all_unsupported`；历史上装 100+ 线程会搞崩游戏）。
-- 按 runtime id 查 ECS 得到的是服务端 Actor；客户端 context 用 `state.context`，
-  再走 `ecs_context`。不要在 tick 线程枚举客户端 registry。
-- `xmake` 默认吃满所有核心，构建用 `xmake -j4`；只改 `.cpp` 是增量，改 `Internal.h`/`ProbeMod.h`
-  会全量重编（约 2–3 分钟）。
-- **不要对正在打开的 IDA/idalib 进程 `taskkill /F`**：会把 `.i64` 写坏（之后 idalib 和
-  `idat -A` 都报 `internal error 1228`，只能从 exe 重建，本机约 1 小时）。停后端用
-  `idb_close(save=true)`；坏库留 `.i64.corrupt` 后再重建。地址→函数用
-  `driver/pe_map.py`，IDA 客户端用 `driver/ida.py`（会代传 `IDA_MCP_TOOL_TIMEOUT_SEC`）。
+1. `TaskModel.h` 定义定长 `XxxTask` 并加入 `TaskState`。
+2. `CommandTasks.cpp` 完整验证后 `startTask()`，返回带 `task_id` 的 `xxx_started`。
+3. `Tasks.cpp` 只计算并填 `TaskStep`；`TaskEvents.cpp` 负责后台状态/结果格式化。
+4. Python 经 `_task_request`、facade 和 CLI 按 ID 等待结果。
+5. 扩展 native 模型与 live selftest，用 `blocks`/`state` 回读真实效果。
 
-## 当前状态
+禁止新增独立 optional 任务槽、跨 TU 手写 reset 列表或 tick 内 JSON。`TaskController` 锁内
+回调不得重入控制器，也不得同步等待另一个需要任务锁的线程。
 
-主线功能与历次修复/加固轮（T1–T9、F1–F10、H0–H4、G1–G6、2026-10-24 审阅加固与结构轮、
-2026-10-24/25 流体复核 + 输入锁 + ECS 线程归属修复轮、2026-10-25 双击空格/`/togglefly` 轮）
-已有验收记录；当前审阅剩余项仍按下文推进。使用限制在 `mod/README.md`，实现细节与逐项验收数字在 `docs/mod-internals.md`，
-执行记录在 git 历史与 `docs/refactoring.md`。历史全绿基线：live selftest **992/992**
-（`harness.json` 开 `allow_input_inject`/`allow_selftest_stress` 和
-`allow_packet_capture`/`allow_packet_inject`；2026-10-31 全套，无跳过）、
-离线单测 **346/346**、ruff/mypy（driver+tests）全绿。tick 内部错误恢复专项 51/51、
-真实生命周期 57/57；最终姿态/能力/站稳、释放与解锁已回读恢复。此前 HBUI ready=false 在用户正常
-退出重启后恢复，本批未复现，根因仍待复核。审阅修复进度见
-[`docs/reliability-repairs.md`](docs/reliability-repairs.md)，其余项目仍待推进。
+## 常见坑
 
-2026-10-31 封包路径后续已验收：来源/独占注入真实生命周期 55/55，传送专项 45/45、
-真实生命周期 50/50，完整 992/992、离线 346/346。传送检查先回读首条朝向连续三 tick 匹配，
-再验证无角度传送；Python panic 保留先于自身回执的领域取消。意外退档停止自检并保存诊断，
-菜单等待使用 ready 门禁，recover 仅在确认 `disconnect_error` 或显式 `--force` 时强停。临时配置已逐字节恢复并重启加载，
-最终姿态/能力/背包/站稳、释放/解锁均回读通过，113 个 crash 无新增/修改。
-后续只读 ViolationWatch 已补静态 origin 槽生命周期、合成标记与观察会话；首错保护与
-PASS/FAIL/SKIP 门禁已接入。最新离线 **362/362**，ruff/format/mypy、完整 C++ 构建及
-profiles/roles（up to date / 50/57）通过。完整两轮 **1053/1055**（水流夹具污染）和
-**465/466**（23:38:53 自然退档）均失败，不能用旧 992/992 宣称当前全绿。
-水池修复专项 **11/11**，新完整在 flight 收尾中止，尚未覆盖到修复后的水池。
-自然事件同 tick 861/tid 30828：callback `response=3/packet_id=39/packet_size=34/
-error_value=104`，随后 screen `disconnect_reason=90/context=Block`；SDK 枚举确认 39 是
-SetActorData（非 UpdateAbilitiesPacket）。
-2026-11-01 已把这条链闭合（证据册 §36–§49）：
-解析缓冲是 0x28 元素环出队的**深拷贝**，元素 size 由入队 `sub_140D7CFC0` 从源
-string 的 `_Mysize` 原样写入；这条路上**没有帧长度前缀**，切片也不是更大缓冲的
-子区间（`parent_view` 0/4444）。
-**根因已确认**：`NetworkSystem` 只有一份序列化缓冲（`+0x1B0` 字符串 + `+0x190`
-流视图），`sub_1416B0490`「清空 → 写 Header Data → peer 写 body → 入队」整段没有
-串行化，**两个线程会同时走这条路径**（实测 tid 42212/12404 在同一 tick 交替，
-`before/after` 链条自相矛盾）。清空与写入交错 ⇒ 一帧里塞进两个包的字节
-（实测 `1d 01… + 187 帧`、`188 帧 + 187 尾巴`、`6f 0e 01…` 54 字节），解析器按
-第一个 id 读，剩余字节触发 104 / 或把下个 id 读成垃圾 → BadPacket(90)。
-「声明长度被切短」「切片含邻居 payload」两种旧说法撤回。这是游戏侧共享缓冲缺少
-串行化，**不由 harness 打补丁**；能做的只有规避（避免在 tick 外并发触发发包）。
-取证工具：`send_probe` 命令（只读，异常帧连栈写 `<modDir>/suspect-<pid>.jsonl`）。
-不可由 packet_capture=false/chat_sent=0 排除原生状态同步的间接影响。
-真实错误页 recover exit 0；原配置逐字节恢复并重启加载，最终姿态/能力/背包/输入等
-回读 **16/16**，113 个 crash 无新增/修改。证据见 `docs/reliability-repairs.md`。
-本批未执行新增逆向；后续诊断提示词为
-`docs/notes/prompts/badpacket-setactordata-20261031.md`。不自行推送，不把当前失败提交为全绿。
+### 管道、线程与生命周期
 
-2026-11-01 BadPacket 已按证据册 §36–§49 闭合：入队/出队都是深拷贝、长度取源 string
-size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序列化缓冲被两个线程并发
-使用**（同 tick 两个 tid 交替、before/after 链条自相矛盾，产出粘连帧 → 104 → BadPacket）。
-早期「声明 23」「邻居 payload 混入」定论已撤回。harness 不打补丁，只做规避；
-完整现场 **1093/1093**（`--require-complete`，0 fail、0 skip、0 required skip），
-`send_probe` 与首错冻结均有 selftest 检查。
+- Windows 同步句柄上的挂起 `ReadFile` 会阻塞同句柄 `WriteFile`；客户端必须使用
+  `PeekNamedPipe` 轮询读线程。
+- Python 探针使用 `with ModClient()` 或 `try/finally: client.close()`。读线程与 GC finalizer
+  只持 `_PipeStream`，不能经订阅循环保活 client；GC 不回收仍被业务引用的对象。
+- `command` 的方块操作是 deferred，`success=false` 不代表失败，以 `blocks`/verify 回读为准。
+- 客户端位置会被服务端覆盖；位置走服务端权威路径。朝向走命令通道，不能只改组件。
+- `enter_world` 必须等安全菜单；HBUI 不等于可进入。断开错误页同样可能是 HBUI，但
+  `worlds.ready=false`；`world_state()` 的 `disconnect_error` 与 `exiting` 不得混淆。
+- `lifecycle_prepare` 只检查自有输入/任务/录制和已发布输入生命周期，不证明游戏线程内
+  任意在途回调已退出，也不证明真实 reload 可用。
+- 主菜单、暂停菜单和某些对话框仍需桌面 UI；暂停菜单不响应注入 Esc/Enter。
+- tick 记录写 `<modDir>/spool-<pid>.jsonl`；崩溃取证由 VEH 写 crash 文件。请求级 AV 由
+  `dispatchWithSeh` 转成 `internal_error`，不要把危险代码无保护地放进 tick。
 
-2026-10-29 工具链轮：`hook_install` 增加 `mem_arg/mem_offset/mem_size`（detour 内同步采
-参数指向的短命缓冲，`hook_drain` 带 `mem{ok,addr,hex,f32}`）；`ecs_components` 逐 storage
-探测，坏条目进 `skipped` 而不是整条 `internal_error`；`dev.py` 改写 `harness.json` 改为合并
-+ 备份 + `restore-config`；管道连接失败按 WinError 给可操作提示。痛点和验收见
-[`docs/notes/tooling-pain-points.md`](docs/notes/tooling-pain-points.md)。
+### 输入与玩家操作
 
-2026-10-28 mod 核心补充验收：native `--mod-core-only` **3/3**；安装新 DLL 后
-`--mod-core-live-only` **33/33**（仅管道与录制，无逆向命令/输入注入/世界修改）。
-完整 222/222 是此前现场基线，本轮未重跑默认全套。
+- 默认移动/跳跃读取当前键位，合成 **Hardware HID** 按键沿。禁止把直接写
+  `MoveInputComponent`、queue/handler 重发或 `jumpFromGround` 恢复成默认路径；legacy
+  `mode`/`jump_impulse` 只允许 `input_cfg force=true` 的对照实验。
+- 输入锁丢弃真实硬件来源，注入仍可工作：`hid`=Virtual，`hardware`=Hardware+注入标记，
+  `raw`=Hardware 无标记。配置的 `lock_input` 只在客户端连着时生效，断开自动解锁。
+- 双击空格飞行要求 Hardware origin 且按下跨 tick，使用 `lab.double_space_fly()`。能力门是
+  `MayFly`；切换游戏模式会重置能力。
+- 实验先 `lab.settle(...)` 验证地面、静止、水中和 sprint 前提，不用裸 `sleep` 代替。
+  `state.input.sprint` 可能锁存，走/跑对照前要明确清到 `input_sprint=False`。
+- `StateVectorComponent+0x18` 的原始字段不是 `state` 报告的速度：地表行走时约为
+  **0.546 × 实际位移**；后者来自 `Actor::getVelocity()`，实际速度仍以相邻 tick 位置差判定。
+  `pos.y` 是脚部，StateVector 中的眼睛高度为 **脚部 + 1.6200101**。
+- `GameMode::interact` 在空物品上下文会崩；`interact_entity` 只做转向和注入使用按钮。
+  `mouse_event` 的左右键不等于 `click`/`attack_entity`。
+- `reset` 清效果；普通 `teleport` 和 `checkpoint_load` 不清效果。共享传送请求必须显式设置
+  `clearEffects`，不能沿用上次 reset 的值。
 
-任务提示词见 `docs/notes/prompts/`；历史提示词与旧结论不能覆盖当前验收口径。
+### 诊断、版本与逆向
 
-后续修复与结构改善（优先级以 `docs/code-quality-review.md` 为准）：
+- 版本锚点可能是 `jmp [rip+0]` thunk；先跟 thunk 再取签名。role 是静态 VA，运行期地址为
+  `diag.module_base + (role_va - image_base)`。
+- 通用 VA detour 只保留 rcx/rdx/r8/r9；XMM、向量返回、隐藏返回指针或更多参数必须 typed
+  detour。VA 只校验可执行页，指令边界由 IDA 确认。
+- `allow_version_mismatch` 只用于移植，不校验 profile，日常保持关闭。改 offsets 后必须重新
+  生成 `GeneratedProfiles.h`。
+- 硬件观察点只记录装过 DR 的线程，其他线程事件进入 `foreign_hits`；玩家 StateVector 观察用
+  `thread="both"`，`thread="all"` 被显式拒绝。
+- 接收封包走 `LoopbackPacketSender::$sendToClient`；`Packet::sendTo*` 辅助层和
+  `NetworkConnection::receivePacket` 在单机实测为 0 调用。
+- `serialize_ids` 在原上下文同步重序列化，可能分配；默认累计预算 1 秒，超预算记
+  `Budget`/`serialize_skipped`。预算不能中断正在执行的 SDK 调用，也不是线上原帧。
+- 入站深拷贝切片没有帧长度前缀，`before_hex` 是邻接堆字节，不得猜成声明长度。
+- 不要在 tick 线程枚举客户端 ECS registry；runtime id 对应服务端 Actor，客户端 context
+  使用 `state.context`。
+- 不要对正在打开的 IDA/idalib 进程 `taskkill /F`。停止后端用 `idb_close(save=true)`；
+  地址到函数用 `driver/pe_map.py`，IDA 客户端用 `driver/ida.py`。
+- 流体、tick 顺序和 BadPacket 的证据分别看 `docs/fluid-movement.md`、`docs/notes/` 与
+  `skills/bedrock-re/`，不要把历史观测当成静态机制结论。
 
-历史阻塞（已由后续实现与验收替代）：2026-11-01 22:20 第14项候选现场28/29失败
-（packet187/size48/error104→90），当时撤回候选且不能标完成；`c0c3398` 后来重新实现了
-UUID+epoch 统一解析，身份专项 44/44、飞行复验与完整现场已通过。早期逆向停止点不再是当前任务。
-第16项具名类型在658d90a已落地。当前离线 **417/417**，ruff check/format、mypy（109 files）、
-profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。最新
-完整 `--require-complete` 为 **1107/1107**（0 fail、0 skip、0 required skip），记录见
-`docs/reliability-repairs.md`；HBUI 异常退档的形成根因仍未闭合，其他历史缺测已按范围补齐。
+## 当前状态与维护
 
-- 宏录制/播放由 `MacroSession` 唯一持有；输入事件、held/latch、输入锁和 tick 状态由
-  `InputSession` 唯一持有。`ProbeMod` 不再保留可变引用别名，直接访问唯一会话；
-  冷锁只管准入/取消/回执，tick 不取冷锁。
-- PacketTap 常规身份采集只写定长记录；`serialize_ids` 是显式高成本 SDK 重序列化诊断，
-  可能分配，默认累计预算 1 秒，超预算停止后续采样并记 `Budget`/`serialize_skipped`；不保留 Packet 指针，
-  也不是线上原帧。
-- 飞行只在服务端写能力，客户端有界回读原生同步，8 tick 只读观察；实体攻击/飞行与
-  其他服务端领域统一 UUID+epoch 解析，删除隐式名字兜底。
-- 宏保存使用同目录唯一临时文件 + `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`，
-  失败清理并保留旧文件。Overhead 已做同 DLL 四组 1100 tick 对照，无可重复提速结论。
-- 诊断/入站/send_probe/PacketTap 检查已迁 `driver/selftest_diagnostics.py`，
-  可复用 fixture 在 `driver/selftest_fixtures.py`；入口、检查名与专项参数保持兼容。
-- 2026-11-03 结构轮：`driver/selftest.py` 为 638 行，默认全套与七组领域检查独立；
-  封包/传送/飞行/legacy 录制请求由四个 `*RequestState`/会话对象唯一持有；
-  `ViolationWatch.cpp`/`InboundWatch.cpp`/`SendProbe.cpp` 按所有权分离。离线 **411/411**、
-  静态检查与完整 C++ 构建通过；后续 P1 复修已安装新 DLL 并跑完整现场 **1107/1107**。
-- 2026-11-03 P1 复修：发送探针历史使用 AtomicRing，多线程与并发导出不再读写普通共享行；
-  卸载准入读取游戏线程发布的输入生命周期快照，比较已消费序号，负 tick/待处理请求/事件持键
-  均拒绝，有限请求结束后的旧邮箱值不再误报。`--lifecycle-prepare-only` **10/10**，不执行 reload。
-  输入锁检查以真实键状态与注入标志为准，LL 全局事件数仅作诊断，输入专项 **46/46**；
-  native 含 200000 条多生产者历史和 200000 次快照发布。首轮完整 **1105/1107** 的失败记录保留，
-  修正错误判据后完整 **1107/1107**。任意在途 tick 回调退出与真实 reload 仍未验收。
-- 飞行自检恢复姿态用 `teleport`，不再用会清效果的 `reset`；原效果按 duration/tick 判定是否
-  应仍存在，允许自然到期；独立长时哨兵验证未提前清空且只移除哨兵。短/长现场均 50/50。
-  显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。
-  `macro_session_model` 直接覆盖聚合生命周期。
-- 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成；退档增加 leave_id/菜单快照，
-  专项 **32/32**。tick 客户端读取局部 SEH 专项 **55/55**，不能推广为整个 tick 已隔离。
-  原“空闲热重载 **9/9**”因错误命令和缺少代次证据已撤回；改用 `/ll reload probe` 重验后，
-  卸载侧正常（单独 `/ll unload probe` 的对照成功、DLL 真被释放），但 reload 可复现挂起，
-  具体阻塞点与归属 unresolved，该项保持未通过。真实 200000 tick 录制/保存/重载 **9/9**，
-  支持只重启等待器的 `--macro-resume`，不拼接录制文件。
+当前基线为离线 **422/422**、完整现场 `--require-complete` **1100/1100**；另有生命周期
+准入 **10/10**、输入专项 **46/46**、200000 tick 长录制 **9/9**。这些数字对应其代码与权限
+前提，后续变更必须重新验证适用范围，不能永久当作“全绿”。
 
-> 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收标准与结论：
-> 使用限制与基线数字在 `mod/README.md`，实现细节与逐项实测数字在 `docs/mod-internals.md`
-> （含「实测数字速查」），以后看这两处。
+经 prepare 的受控空闲真实热重载已通过，详见当前验收文档；不要在 DLL 静态构造/析构中装卸
+hook。仍未闭合：未经 prepare 或任意在途 tick 回调的卸载排空、HBUI 异常退档
+根因、游戏侧共享序列化缓冲竞态。高频查询后的管道失联只保留诊断，不添加未经验证的跨线程
+句柄看门狗。
 
-改完任何一项，都要在 `driver/selftest.py` 留一条可复现的检查；使用限制/基线变化补进
-`mod/README.md` 的「实测 / 限制」，逐项实测数字补进 `docs/mod-internals.md` 的对应
-小节或「实测数字速查」—— 这个仓库的文档是活的，别让它和代码脱节。
+写文档先读 [`skills/project-docs/SKILL.md`](skills/project-docs/SKILL.md)。文档只维护当前行为、
+当前验收和未决限制；旧过程记录以 Git 历史为准，不再向文档末尾追加时间日志。改行为时同步
+`mod/README.md`、`docs/mod-internals.md` 和相关指南；改验收时同步
+`docs/reliability-repairs.md`，不要把未运行或未通过的范围写成完成。

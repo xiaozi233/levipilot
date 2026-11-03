@@ -1,431 +1,192 @@
 # 架构与扩展指南
 
-本项目分三层：游戏内的 C++ mod、JSON Lines 管道协议、Python 客户端。目标是让脚本/LLM
-用少量命令控制玩家并读取状态，同时把需要逐 tick 反馈的逻辑留在游戏线程里。
+LeviPilot 由游戏内 C++ mod、UTF-8 JSON Lines 管道协议和 Python 客户端组成。脚本/LLM 可以
+读取状态、控制玩家并运行逐 tick 实验；需要逐 tick 反馈的逻辑留在游戏线程。
 
-```
+```text
 scenario DSL / LLM / shell
           │
    driver/harness (Python)
-   CLI 入口 → 参数 / 领域处理器 → commands → connection → protocol
-   facade ────────────────────↗
-          │  \\.\pipe\mcbe-harness  (UTF-8 JSON lines, protocol 4)
+   CLI → parser → 领域处理器 → commands → connection → protocol
+   facade ────────────────────────↗
+          │  \\.\pipe\mcbe-harness (protocol 4)
    mod/probe (LeviLamina client mod)
-   Transport → Commands → Command<领域> → 请求 / Tasks / State / ...
+   Transport → Commands → Command<领域> → 请求/任务/快照
           │
    Minecraft Bedrock 1.26.51.01
 ```
 
-## C++ 模块
+## C++ 模块与所有权
 
-`mod/probe/src/mod/` 下每个文件只负责一类事情：
+`mod/probe/src/mod/` 按领域划分。下表是导航，不要求每个类型都经过 `ProbeMod` 的全局状态。
 
-| 文件 | 职责 |
+| 模块 | 职责 |
 | --- | --- |
-| `ProbeMod.h` | `ProbeMod` 的生命周期接口与领域组件；任务状态由 `TaskController` 封装 |
-| `ProbeMod.cpp` | mod 生命周期、tick 前后编排、钩子注册、错误上报；世界生命周期委托 `WorldSession` |
-| `Internal.h` / `Internal.cpp` | 共享工具：数学、JSON 解析、物品/方块辅助、输入快照 |
-| `Input.cpp` | 移动/视角注入、按键事件、左右键动作、macro 的单 tick 应用 |
-| `InputEvents.cpp` | HID/键鼠事件注入、文本顺序屏障、客户端 UI 查询与后台回执 |
-| `InputEventModel.h` | 有界事件及结果槽、文本屏障、代次取消与请求独享的文本/UI 快照；不依赖游戏 SDK |
-| `InputSessionModel.h` | 输入整体会话：事件、held/latch、输入锁、tick 消费与统一重置；冷锁和 tick 无锁边界分离 |
-| `Flight.cpp` / `FlightModel.h` | 飞行能力的服务端单写、客户端有界同步回读、截止与取消、按请求编号准入的 8 tick 只读观察及后台回执 |
-| `TaskModel.h` | 独立于游戏 SDK 的任务类型、单活动任务控制器、固定事件队列 |
-| `Tasks.cpp` | 六种任务的逐 tick 计算，只写定长结果，不格式化 JSON |
-| `TaskEvents.cpp` | 任务状态/事件 JSON、服务端物品使用调度与 SEH 隔离 |
-| `Chat.cpp` | 客户端线程聊天快照、定长 mailbox 与后台 JSON 格式化 |
-| `SnapshotMailbox.h` / `QueryModel.h` | 请求独享的定长查询快照、取消/超时和分批扫描模型；不依赖游戏 SDK |
-| `State.cpp` | `state`、`buttons`、`blocks`、`scan` 的游戏线程采样与后台 JSON 格式化 |
-| `Inventory.cpp` | 背包定长采样与写入、give/clear、快捷栏选择 |
-| `Entities.cpp` | 附近实体列表、实体信息/攻击/交互/看向 |
-| `EntityModel.h` | 实体请求独享的定长快照、分阶段调度、超时与迟到回调隔离；不依赖游戏 SDK |
-| `StagedCapture.h` | 实体、ECS 与飞行共用的请求独享分阶段生命周期、截止/取消、唯一消费与重连隔离 |
-| `EcsModel.h` / `Ecs.cpp` | ECS 定长快照、有界逐 storage 探测、所属线程读取与后台协议格式化 |
-| `Server.cpp` | 服务端权威传送与仅在服务端线程解析的 `ServerPlayerContext` |
-| `WorldSession.h` / `WorldSession.cpp` | 世界状态与事件订阅、异步登录/自动进入、调度代次和延迟回调取消 |
-| `WorldEntryModel.h` | 独立进入编号、启动截止、唯一终结与安全菜单恢复；不依赖游戏 SDK |
-| `World.cpp` | 世界列表、进入与退出的主线程实现 |
-| `ClientDispatch.cpp` | 游戏平台主线程投递与 SEH/C++ 异常隔离；主菜单也能执行 |
-| `SignIn.cpp` | 主菜单 Xbox Live 登录态查询（OreUI → MainMenuScreenModel） |
-| `Checkpoints.cpp` | 命名脚部坐标存档、JSON 原子持久化 |
-| `PoseModel.h` | 单 tick 姿态原子载荷快照、有界一致读取、世界代次隔离与故障计数 |
-| `PlayerIdentityModel.h` / `PlayerIdentity.cpp` | 无字符串/锁的 UUID 身份快照、局部采样边界与世界代次校验；冷侧读者不访问客户端玩家 |
-| `TeleportModel.h` / `Server.cpp` | 服务端独占传送请求、修改前准入、后台唯一回执与取消 |
-| `TickRecoveryModel.h` / `TickRecovery.cpp` | 定长内部错误、恢复编号、后台会话清理与游戏线程释放/快照准入 |
-| `Options.cpp` | 运行时改选项并写回 `options.txt` |
-| `Macro.cpp` | macro 文件加载/保存/回放记录 |
-| `MacroRecordModel.h` | 宏录制帧所有权、旋转差分、上限与唯一终结、停止后独享快照；不依赖游戏 SDK |
-| `MacroPlaybackModel.h` | 宏播放帧所有权、无锁 tick 准入、范围/循环、运行编号与停止/失败/释放重试；不依赖游戏 SDK |
-| `MacroSessionModel.h` | 播放/录制互斥、统一停止/世界退出、冷侧锁与无锁 tick 取消的唯一所有者 |
-| `Commands.cpp` | 单次 JSON 解析、领域分发、未知命令、请求级 SEH/异常隔离 |
-| `CommandDiagnostics.cpp` | 心跳、状态、版本诊断、panic、spool 与故障/开销自检命令 |
-| `CommandInspection.cpp` | 内存、watch、hook 命令的校验与分发 |
-| `CommandInput.cpp` | 移动/视角、键鼠、屏幕、点击与飞行命令 |
-| `CommandPackets.cpp` | 封包采集/注入、权限与命令开关、符号解析命令 |
-| `CommandRecording.cpp` | tick/二进制记录及 macro 命令 |
-| `CommandQuery.cpp` | 玩家/方块/实体、背包与 ECS 查询和请求投递 |
-| `CommandWorld.cpp` | 服务端命令、世界、选项、传送与 checkpoint 命令 |
-| `CommandTasks.cpp` | 闭环任务参数解析与安装；逐 tick 实现仍在 `Tasks.cpp` |
-| `Transport.cpp` | 命名管道服务端、写队列、`queueServerTask`、spool、诊断日志 |
-| `PipeChannel.h` | 管道线程独占的 overlapped 句柄、超时、取消与 I/O 回收；不依赖 Bedrock SDK |
-| `TransportModel.h` | 有界 JSONL 分帧与复用缓冲的批量写入；不依赖 Bedrock SDK |
-| `RecordModel.h` | 采样准入、start/stop 生命周期与原子发布的定长记录；不依赖 Bedrock SDK |
-| `TickStreamModel.h` / `TickStreams.cpp` | JSON 录制与跑酷事件的定长单生产者队列、采样边界、录制终结顺序与后台格式化 |
-| `Memory.cpp` | 内存读写、地址校验、Block/Legacy 偏移表与结构化 probe |
-| `Watch.cpp` | 调试寄存器观察点（DR0–DR3）、VEH 命中环、崩溃 minidump |
-| `RecordRing.cpp` | 64 字节定长 tick 环、降采样、jsonl/hex dump |
-| `ViolationWatch.cpp` / `ViolationWatchModel.h` | 默认关闭的只读违规/断线页观察、定长环、静态 origin 槽与合成来源标记 |
-| `HookVa.cpp` | 运行时符号/VA detour、dry_run 校验、命中环、独享 hook_call 请求及后台回执 |
-| `Ecs.cpp` | EnTT registry 枚举、组件地址/stride/原始字节 |
-| `PacketTap.h` / `PacketTap.cpp` | 封包 tap 的全部状态与 send/recv 钩子、逐锚点统计、局部读取/序列化边界、定长身份/字节及失败记录与后台 drain |
-| `Packets.cpp` / `PacketInjectionModel.h` | 定长来源模板、带编号的独占命令包请求、客户端队列发送及后台唯一回执；对 tap 钩子的薄转发 |
-| `Overhead.cpp` | tick/hook 开销采样与分位数、自检忙等 |
-| `OverheadModel.h` | 原子载荷的定长统计窗口、有界一致快照及路径计数；不依赖游戏 SDK |
-| `Resolve.cpp` | exe 版本指纹、符号锚点 + 24 字节签名、offsets.json 覆盖 |
+| `ProbeMod.*`、`WorldSession.*` | 生命周期、tick 编排、世界事件与恢复 |
+| `Internal.*`、`ClientDispatch.cpp` | 统一内部入口、游戏平台主线程投递、局部 SEH/C++ 边界 |
+| `Input.cpp`、`InputEvents.cpp`、`InputSessionModel.h` | Hardware HID 移动/视角、事件/文本、held/latch、输入锁与统一清理 |
+| `InputLifecycleModel.h` | 游戏线程发布输入消费序号、剩余 tick 和事件持键的一致快照，供卸载准入冷读 |
+| `TaskModel.h`、`Tasks.cpp`、`TaskEvents.cpp` | 单活动任务、逐 tick 定长计算与后台事件格式化 |
+| `QueryModel.h`、`State.cpp`、`Inventory.cpp` | 定长查询快照、跨 tick 扫描、背包读写与快捷栏 |
+| `Entities.cpp`、`Ecs.cpp`、`StagedCapture.h` | 实体/ECS 分阶段采样、服务端攻击与客户端交互 |
+| `Server.cpp`、`ServerPlayerContext` | 服务端权威命令、传送和 UUID+epoch 玩家解析 |
+| `Flight.cpp`、`FlightModel.h` | 服务端能力写入、客户端有界回读与 8 tick 只读观察 |
+| `Macro*`、`InputSessionModel.h` | 宏加载/播放/录制、互斥、唯一终结和输入释放 |
+| `TickStreamModel.h`、`TickStreams.cpp`、`RecordRing.cpp` | legacy JSON 录制、跑酷事件和 64 B 二进制记录环 |
+| `LegacyStreamState.h` | legacy 录制的流、冷锁、终结与世界退出状态 |
+| `PacketRequestState.h`、`Packets.cpp`、`PacketInjectionModel.h` | 命令模板、封包注入、代次/ID 与冷锁 |
+| `TeleportRequestState.h`、`TeleportModel.h` | 服务端传送请求、代次、ID 和唯一回执 |
+| `FlightRequestState.h` | 飞行分阶段请求、重断言、代次与冷锁 |
+| `PacketTap.*` | send/recv 身份与可选重序列化诊断、锚点统计和后台 drain |
+| `ViolationWatch.cpp`、`InboundWatch.cpp`、`SendProbe.cpp` | 违规/断线页、入站解析、发送/序列化探针 |
+| `ViolationWatchShared.h`、`SendProbeModel.h` | 定长记录、冷侧格式化、原子发送历史 |
+| `Transport.*`、`PipeChannel.h` | 命名管道、有界写入、spool、后台消费与 I/O 回收 |
+| `Memory.cpp`、`Watch.cpp`、`HookVa.cpp` | 内存原语、DR 观察点、VEH、运行时 hook 与崩溃取证 |
+| `Resolve.cpp`、`GeneratedProfiles.h` | 版本选择、锚点校验和生成 profile |
+| `Options.cpp`、`Checkpoints.cpp`、`PoseModel.h` | 选项、存档点与单 tick 姿态快照 |
 
-`Internal.h` 是唯一允许被所有 TU 引用的内部头；它集中引入 Bedrock 头文件，避免每个
-翻译单元各自维护一份包含列表。新增共享工具时放在 `probe::detail`。
+`Internal.h` 是所有 TU 的统一内部入口；共享工具放 `probe::detail`。`ProbeMod` 只组合领域
+所有者，不保留同一请求的可变别名。`StagedCapture` 为实体、ECS、飞行、传送和封包注入提供
+请求独享的分阶段生命周期，不能让迟到回调操作新请求。
 
-领域处理器返回 `true` 表示已处理（包含拒绝或参数错误），只有不认识该命令才返回 `false`。
-入口按顺序短路调用；输入权限检查和实际处理在同一个领域内。所有处理器仍受外层
-`dispatchWithSeh` 保护，服务端回调继续由 `queueServerTask` 隔离。
+## 线程与异常边界
 
-## 线程模型
+- **客户端 tick**：`LocalPlayer::$normalTick` 的 pre/origin/post 编排输入、任务和定长采样。
+  高频路径不分配、不 JSON、不取冷锁。
+- **管道线程**：独占 `PipeChannel`，解析命令并发布请求，不直接访问游戏对象。完整和分片输入
+  都受 1 MiB 限制；输出批量/大行写入有 5 秒总预算，超时关闭当前客户端。
+- **集成服务端线程**：`queueServerTask()` 执行命令、传送、背包和物品使用，回调有局部异常隔离。
+- **客户端平台主线程**：`queueClientTask()` 执行世界/UI、聊天、实体/ECS 客户端阶段。主菜单
+  也能运行；LL 的世界 tick executor 不能替代它。
+- **spool 线程**：每 25 ms 消费定长事件和快照，格式化响应、推进 wall-clock 截止并写
+  `spool-<pid>.jsonl`。文件按 100 ms/64 KB 刷盘，启动和超过 64 MiB 时轮转。
+- **VEH**：处理观察点和进程级崩溃取证。已处理的请求/采样异常先标记归属，避免误写崩溃 dump。
 
-- **游戏线程**：`LocalPlayer::$normalTick` 钩子。`safeTickPre` 在 origin 前注入输入/推进任务，
-  `safeTickPost` 在 origin 后采样状态。
-- **管道线程**：`serverLoop` 独占 `PipeChannel`，用 overlapped connect/read/write 读写 JSON 行并
-  分发命令，`PeekNamedPipe` 判断是否有输入。等待每 25 ms 检查停止标志，取消后回收 pending
-  I/O 才释放缓冲；不再从 unload 线程对下一次同步写入做一次性的取消。它不直接调用游戏对象，
-  只设置请求标志或调用 `queueServerTask`。
-- **服务端线程**：通过 `ServerInstance::queueForServerThread` 执行传送、命令、背包写入和使用物品。
-  所有回调由 `queueServerTask` 包装，异常不会穿过游戏服务端 tick。
-- **客户端主线程**：世界列表、进退世界、登录查询和自动进入经 `queueClientTask` 投递到
-  `AppPlatform::queueForMainThread_DEPRECATED`，由 SEH/C++ 异常边界保护。
-  登录与自动进入的延迟用 wall-clock timer 计时，再排回主线程；`WorldSession::stop`
-  取消计时器并更新代次，使过期回调失效。聊天快照同样走平台主线程队列；LL 默认
-  `ClientThreadExecutor` 仅在世界 tick 执行，不能用于任何需要主菜单响应的请求。
-  世界启动的 30 秒截止由 spool 的 wall-clock 检查推进；实际玩家/HUD 与菜单/服务端探测
-  排回客户端线程。超时先进入隔离状态，菜单和旧服务端停止连续确认 500 ms 才恢复准入。
-- **spool 线程**：每 25 ms 检查一次，把积压的记录按“100 ms 或 64 KB”批量写进
-  `spool-<pid>.jsonl`；`world_left` / `panic` / `stop` / `disable` 会强制刷盘。
-  该线程也消费任务事件与聊天/查询定长快照、格式化响应并调度 `use` 的服务端工作。
-  启动时同 PID 的旧文件会改名为 `spool-<pid>-<n>.jsonl`，单文件超过 64 MiB 也会轮转；
-  swap 与写文件由 `mSpoolWriteMutex` 串行化。它只碰文件和缓冲区，不碰任何游戏对象。
-- **VEH**：`AddVectoredExceptionHandler` 同时负责观察点命中和进程级崩溃取证。请求分发期间的
-  结构化异常由 `dispatchWithSeh` 转成 `internal_error`。请求、录制采样及客户端/服务端回调的
-  SEH 边界在当前线程标记异常归属，已处理故障不会被 first-chance VEH 误记为进程崩溃。
+危险 SDK 读取使用局部 SEH/C++ 边界并转成失败结果；不要用包住整个持锁 tick 的 SEH 跳过
+析构。tick 内部错误走 fail-stop、输入释放、后台清理和恢复编号；局部保护不代表整个 tick
+或所有 SDK 调用都已隔离。
 
-tick 的 C++ 异常发布定长错误并立即停止控制，spool 清理会话和格式化；恢复期间
-拒绝新控制命令，游戏线程完成释放并读到清理后的有效请求快照才恢复准入。
-恢复冷锁由 handleLine 在 dispatchWithSeh 外持有，tick 不使用；编号隔离迟到清理，
-诊断队列满也不会提前开放。它不替代各 SDK 调用的局部 SEH 边界。专项 51/51、
-真实重连/退出/重进 57/57、完整 919/919 和离线 318/318 通过，验收边界见 reliability-repairs.md。
+## 请求与生命周期
 
-输入、视角合并在 `RequestBlock`：`RequestMailbox` 在私有副本上更新，成功后才发布；
-载荷按 64 位原子字读写，tick 有界校验序号，竞争时保留上一份已验证快照，不等待写者。
-其他跨线程状态使用互斥量（任务、背包等请求）或原子量（各种 `*Requested`、`mRunning`）。
+### 输入和玩家操作
 
-事件级按键/鼠标使用 128 项 `InjectedEventQueue`；每项一直保留到 tick 应用与后台结果消费
-都完成，队列满显式拒绝。tick 每个事件独立 SEH/C++ 隔离并恢复注入标记，不取冷侧锁。
-重连/退出更新输入代次，tick 先释放跟踪的 held 键，再清除旧代次请求；释放失败留待后续重试。
-文本由独占 `TextCapture` 在客户端平台队列注入，环中的屏障保证前序按键先进入游戏，
-文本经过 UI 消费窗口后才放行后续 Enter。重复文本返回 busy，2 秒截止终结屏障；
-文本失败/超时取消后续旧输入，保留同一连接上的编号取消回执，避免提交残留文字。
-完成表示 HID 调用及消费窗口结束，不证明当前输入框接受了文字。
-`screen/key_state` 由独立 `UiCapture` 在客户端平台队列读取，后台格式化，文本在途不占用
-UI 查询槽。两类请求均有截止、取消与重连隔离，旧成功字段和 queued 回执保留。
+移动/跳跃默认读取当前键位并合成 Hardware HID 按键沿。legacy 标志/queue/handler/冲量只在
+`input_cfg force=true` 下作对照。输入锁区分真实硬件与注入来源，断开客户端自动解锁。
 
-管道 `fly/togglefly` 使用独占 `FlightCapture`：客户端平台队列只读取身份与目标，服务端队列
-按 UUID（当前仍有完整玩家名兜底）唯一写入能力，再由客户端队列有界回读原生同步结果；
-spool 负责调度和格式化。2 秒截止、忙时拒绝、退出取消和重连丢弃。`client_applied` 与新增
-`client_observed` 只有回读一致才为 true，避免把客户端重复写入当作同步证明。成功事件保留原名
-与字段，新增 `application=server_with_client_readback`、`assertion=readback`。`togglefly_ok`
-不等待后续 8 tick 观察；观察仅读能力状态并发布固定结果，不写能力、不取冷侧锁、不读玩家名、
-不投递任务或格式化。请求编号阻止已取消回调重新启动观察，后续失败发独立
-`flight_assertion_failed`。失败保守标记 `partial=true`；已开始的游戏调用不能抢占或回滚。
-这减少自有双侧重复写入，但不证明已消除游戏共享序列化缓冲的跨线程竞态。
+`InputLifecycleStore` 在 tick pre/post 发布同一份输入快照：世界代次、已消费 input/jump/look
+序号、实际剩余 tick、待起跳和事件持键。`lifecycle_prepare` 用冷侧最新邮箱与快照比较，拒绝
+未消费请求、持续 tick 和事件持键；已结束的有限请求不会因旧邮箱参数误报 busy。它只证明自有
+工作准入，不证明任意在途游戏回调已退出。
 
-客户端 tick 用 `PlayerIdentityStore` 发布 UUID、tick 和世界 epoch；不调用返回 owning
-字符串的 `getRealName()`，也不取得玩家名锁。采样受局部 SEH/C++ 保护，失败/空 UUID
-发布无效快照；有界读失败不沿用上次身份。主菜单或 epoch 变化使旧快照不可用，重连
-同一世界保留当前身份。`status.player_identity` 暴露有效性、采样 tick/epoch 和故障计数。
-背包四组写入、管道命令、权限与服务端物品使用捕获值身份，在服务端回调内用共用
-`serverPlayerContext` 再验证 epoch 并解析 UUID；不在请求中保留 Player/Level 指针。
-命令可显式指定完整玩家名；默认使用本地 UUID。玩家未知/找不到时明确拒绝，不再
-自动改为控制台 origin、名字前缀或另一玩家，避免改变 `@s`/`~` 语义或改用 Owner 权限。
-传送、实体攻击与飞行均在服务端所属队列共用同一 `ServerPlayerContext`，不再保留名字兜底；
-指针只在回调内短暂使用。这里不宣称已开始的服务端调用能被退出或截止抢占。
+飞行由服务端写能力，客户端回读原生同步；`FlightAssertion` 只读观察 8 tick。实体攻击、飞行、
+命令、传送和背包默认按 UUID+epoch 解析玩家，显式完整玩家名仍可指定；不再做隐式名字兜底。
 
-任务由 `TaskController` 持有一个 `variant`，使用原任务互斥量的单一同步边界：
-安装、取消、tick 的游戏副作用和事件提交互斥，没有复制后再写回的竞态。互斥区内禁止
-重入控制器；游戏调用不得同步等待另一个需要任务锁的线程。
+`reset` 清任务/输入/macro/药水效果后传送；普通 `teleport` 与 `checkpoint_load` 保留效果。
+所有接受回执、后台完成回执和实际游戏效果是不同阶段，最终效果必须回读。
 
-`state/buttons/inventory/blocks/scan/select_slot` 各有一个预分配 `SnapshotMailbox`，生命周期为
-`Idle → Pending → Capturing → Ready → Consuming → Idle`。管道线程提交，游戏线程用 CAS
-取得独占快照并采样，spool 线程取得完成快照后格式化；采样不取得控制锁，也不访问传输队列。
-控制锁只串行化提交、取消、超时及消费回收；取消/断连不会复用仍在采样或格式化的存储。
-重复请求返回对应 `*_busy`，`state/buttons/inventory/blocks/select_slot` 有 2 秒截止，`scan` 为 10 秒。
-退出世界取消未完成请求；新连接丢弃旧的在途快照，已进入传输队列的历史行仍遵循原 replay 契约。
+### 查询、实体与 ECS
 
-危险的游戏读取由局部 SEH 边界转成失败结果，C++ 异常由 mailbox 转成 `capture_failed`；
-不把 SEH 包在持锁的整个 tick 外层。`state` 的方块字段失败以 `partial/warnings` 表示。
-`scan` 按 x/y/z 顺序每 tick 至多读 512 格，总量 32768 格、结果最多 16384 条；响应标明
-`first_tick/last_tick`，因此它是跨 tick 扫描，不能用于证明同一 tick 的原子世界快照。
-扫描存储固定占约 4.4 MiB，背包快照约 1.1 MiB。背包保留 slots/armor/offhand/selected_slot
-字段，最多采样 256 个背包槽，文本/槽位截断时标记 `truncated`。物品复制与格式化共用
-`ItemSnapshot`，其中只有复制可触碰游戏对象；`guardedGameRead` 统一局部 SEH 规则。
-快捷栏仍在原 tick 后应用，固定快照保留 slot/applied/ok/item，spool 格式化 `select_slot_done`；
-接受回执 `select_slot_ok` 不表示已应用。内部任务槽选择与用户请求分开，不再生成用户完成回执。
+`state/buttons/inventory/blocks/scan/select_slot` 使用请求独享的定长快照与 `*_busy`、截止、
+取消语义。`scan` 每 tick 最多 512 格，响应带 `first_tick/last_tick`，不是同 tick 原子世界快照。
+实体和 ECS 在所属客户端/服务端队列分阶段采样；队列只持弱引用，JSON 在 spool 格式化。
+已开始的游戏调用不支持超时抢占或自动回滚。
 
-实体路径已离开 tick：spool 只调度，客户端平台队列复制玩家上下文，服务端队列查找/读取实体
-并执行攻击，必要时平台队列用值快照转向/注入交互。每个请求冷侧分配一个约 2.2 MiB 的定长
-快照，最多 512 个实体，文字截断显式报告；同域请求在途返回 `entities_busy`。截止为 2 秒，
-退出取消，重连丢弃；队列仅持弱引用，迟到阶段不能操作新请求，JSON 在 spool 格式化。
-已开始的游戏调用不支持超时抢占；不会把跨阶段快照宣称为同一 tick 的原子状态。
-`look_at_done` 附带实际使用的 `eye/target` 坐标（分别来自客户端和服务端阶段），
-验收据此重算方向并回读朝向，避免把移动实体的后续位置当作请求当时的位置。
+ECS context 必须属于当前客户端或服务端 registry；runtime id 对应服务端 Actor，客户端玩家
+context 来自 `state.context`。原始地址复用不能代替身份校验。
 
-JSON 逐 tick 录制（内部名 legacy）与跑酷事件已迁到固定队列、局部 SEH 和后台格式化；
-旧 JSON 接口仍供 Python、CLI 与跑酷使用，二进制环形录制作为另一套协议并存。
+### 任务、宏与录制
 
-传送的 `TeleportCapture` 从服务端阶段开始，spool 投递独占
-请求并格式化唯一结果；tick 不再读取玩家名、分配任务或处理传送槽。按 UUID/世界代次
-共用 `ServerPlayerContext`，忙时拒绝，2 秒截止，退出/panic 取消，重连丢弃旧请求。
-reset/checkpoint 的成功事件仍表示接受，附 `teleport_id`；`teleported` 才表示服务端调用
-返回，实际到达用 state/settle 回读。失败保守 partial，不回滚或自动重放已开始的 SDK 调用。
+`TaskController` 同时只持有一个任务。新任务替换旧任务，完成/失败/取消按 `task_id` 关联；
+`use` 进入 `server_pending` 后有 5 秒 wall-clock 预算，迟到回调不得操作物品。任务事件使用
+固定队列，禁止独立 optional 任务槽和跨 TU reset 清单。
 
-移动/视角的逐边沿/视角调用采用局部异常边界与 bool 失败传播；固定原子计数交
-spool 生成 control_error，status.controls 提供 held 与清理标记。默认控制对不确定按下
-保留释放意图，释放成功后才清除；失败序列停止，后续先清理再接纳新输入。视角 scope
-使用计数支持平台队列/tick 交错。接受回执、后台诊断与实际完成是不同语义；专项
-126/126、传送生命周期 49/49、完整 868/868 通过，边界见 reliability-repairs.md；
-这些数字是历史验收。显式高成本诊断限制见下文；2026-11-03 已补一次空闲热重载，
-但持有按键或在途请求时的释放与卸载安全仍未证明。
+宏录制和播放由 `MacroSession` 互斥。录制最多 200000 tick，到顶保留缓冲并可保存；保存使用
+同目录临时文件和原子替换。播放/录制/释放失败都有唯一终结，重连或退出取消旧代次。
 
-二进制 `RecordBuffer` 在冷侧准备存储、tick 无锁准入与发布，停止等待已准入采样。
-采样故障、退出和卸载终结当前 record_id，冷侧发送一次 `record_failed`；停止/导出保留
-失败及部分帧。Python 默认拒绝失败或丢行，显式部分导出仍校验代次，实验会话保留原异常。
-宏录制由 `MacroRecordSession` 冷侧一次初始化帧存储，tick 只写已准入的固定槽位；
-停止等待在途采样结束，后台报告唯一终结，保存使用停止后的独享快照。
-宏播放由 `MacroPlayback` 独占冷侧加载的帧；tick 单次 CAS 准入，不取会话锁、不复制
-shared_ptr，也不生成 JSON。冷侧换帧/启动用 Writing 门等待已准入操作退出，后台消费
-带 run_id 的唯一终结。播放与按键释放分别有局部 SEH/C++ 边界，失败保留释放请求供后续
-tick 重试；新播放先完成旧输入清理。世界退出取消与启动前后世界代次检查共同隔离旧运行。
-点击结果写 128 项定长队列，由 spool 格式化；故障和队列溢出有明确诊断。
-ECS 已移出 tick，和实体共用 `StagedCapture`：客户端平台队列读取客户端 registry，
-服务端队列读取 runtime-id 对应实体。原始 context 先复制 registry 身份和 entity id，
-只有与当前客户端或服务端 registry 匹配后才读取组件，陌生 registry 返回 context_not_found。
-每请求冷侧独享约 37 KiB 快照；最多 1024 条结果/失败 id、4096 个 storage 探测、512 字节
-组件原始数据，超限标记 truncated；逐 storage 局部 SEH/C++ 故障记入 skipped/partial。
-后台处理 2 秒截止、busy、退出取消、重连丢弃与 JSON；运行中的游戏调用不支持超时抢占。
-按需 state/inventory 的 SDK owning 名称复制仍在所属线程执行，有固定容量和截断标记；
-`serialize_ids`、`mem_arg` 与守望/发送探针是默认关闭的显式高成本诊断。不能将整个 tick
-或所有 SDK 调用宣称为零分配，也不能把局部边界推广为所有异步调用可抢占。
+legacy JSON 录制和二进制记录是两套接口。前者使用 `LegacyStreamState`；后者是 64 B 定长环，
+停止等待已准入采样，失败可导出部分帧但拒绝跨 record_id 拼接。
 
-## 任务生命周期
+### 世界与卸载
 
-1. `CommandTasks` 完整验证参数后调用 `startTask`。新任务替换任何旧任务；旧任务生成
-   `task_cancelled(reason=replaced)`，新任务返回带 `task_id` 的 `*_started`。
-2. 游戏 tick 推进唯一活动任务。接管时释放前任输入；宏按键释放在游戏线程执行。
-3. 完成、失败、取消写入预分配事件队列。spool 线程的 `drainTaskEvents` 格式化并发送，
-   因此事件可能晚一个 25 ms 消费周期到达；按 ID 关联，不能依赖与命令回复的相邻顺序。
-4. `use` 达到 tick 数后进入 `server_pending`，仍占有活动槽。消费线程调度服务端回调；
-   从该阶段起有 5 秒 wall-clock 预算，spool 线程在世界 tick 暂停时也能终结超时任务。
-   回调取得任务锁后重新核对 ID 和当前时间，取消/替换/超时后的旧回调不会操作物品。
-   使用失败、投递失败、异常都产生同 ID 的唯一终结事件。游戏调用仍在任务锁内执行，
-   已开始的游戏调用不承诺超时抢占；内层 SEH 在返回控制器前处理故障，以保证锁正常释放。
-5. `task_stop`、panic、reset、world_left、disable 统一取消；正常终结与取消互斥。
+世界进入有独立 `entry_id`、30 秒截止和安全菜单恢复；退档用 `leave_id` 关联，菜单快照只描述
+当时状态。HBUI 不等于安全菜单，不能凭 URL 放宽进入或保存门禁。
 
-任务文字使用 256 字节固定缓冲，`expected` 最长 255 UTF-8 字节，报告中的方块/物品名称
-最多保存 255 字节；路线最多 64 点。非法模式、非对象 waypoint、超长路线/expected
-明确报错且不替换当前任务。
-
-128 槽事件队列为活动任务预留取消空间。消费不及时会暂缓推进并拒绝新任务
-（`error/task_backpressure`），不会覆盖终结事件。进程崩溃和下游 20000 行传输队列溢出
-仍受整体取证/传输限制；这不是跨进程的可靠消息协议。
-
-`mine` / `place` 保留原游戏 API 及回读验证；物品使用仍在服务端落库并同步背包。
-新增任务只扩展封闭的类型集合和领域计算，不需要增加一组可选状态及全域 reset 列表。
+`lifecycle_prepare off` 先拒绝自有在途工作，再进入 quiescing 并卸四个常驻 hook；失败恢复。
+hook 由显式 enable/disable 管理，避免在 DLL 静态构造/析构中暂停其他线程。受控空闲真实重载
+的验收见 `reliability-repairs.md`；不能用管道重连或 disable 日志
+代替成功证据。
 
 ## 管道协议
 
-- 命名管道 `\\.\pipe\mcbe-harness`，字节模式，UTF-8 JSON Lines。
-- 连接后 mod 先发 `{"event":"hello","protocol":4,"capabilities":[...],"spool":...,
-  "replay_rows":N,...}`；客户端验证 hello 并保存协议号。新增字段是增量的，旧客户端仍可用。
-- 请求是 `{"cmd": "...", ...}`；响应/事件用 `event` 区分。未知命令回
-  `{"event":"error","reason":"unknown_cmd"}`。
-- 服务端复用 64 KiB 缓冲合并相邻行，大行直接发送；按 `WriteFile` 返回值继续部分写入。
-  每次批量/大行写入有 5 s 总预算，超时关闭当前连接并增加 `status.pipe_write_timeouts`，
-  当前预算见 `status.pipe_write_timeout_ms`。队列上限 20000，溢出计数在 `status.queue_dropped`。
-- `CommandFramer` 只保留不完整尾行；完整行和分片行都受 1 MiB 上限约束，超限只报告一次，
-  丢弃到下一换行后继续解析。新模型头仅由所需的领域 TU 引用，未加入通用头的全局依赖链。
-- 命令/事件的完整列表见 [`../mod/README.md`](../mod/README.md)。
+- 握手：`{"event":"hello","protocol":4,"capabilities":[...],"spool":...,"replay_rows":N,...}`。
+- 请求：`{"cmd":"...",...}`；未知命令回 `error/unknown_cmd`。协议只增量扩展，旧字段保持可用。
+- 输出队列上限 20000，溢出计数在 `status.queue_dropped`；长时间录制必须持续消费。
+- 身份 tap 只记录定长 `(tick,seq,id,tid)`。`serialize_ids` 是显式 SDK 重序列化诊断，可能分配，
+  默认累计预算 1 秒；超预算停止后续采样并记 `Budget`/`serialize_skipped`。字节不是线上原帧。
+- 入站深拷贝切片没有帧长度前缀；`before_hex` 只保留邻接堆字节，不用于猜长度。
+- 命令表和字段见 [`../mod/README.md`](../mod/README.md)，诊断细节见
+  [`mod-internals.md`](mod-internals.md)。
 
 ## Python 包
 
-```
+```text
 driver/harness/
-  __init__.py   # 公开导出
-  errors.py     # ModPipeError / ModTimeout / ModDisconnected / ModProtocolError
-  protocol.py   # 管道名、LineDecoder、kernel32 PeekNamedPipe 绑定、Hello/State TypedDict
-  client.py     # 兼容导出 ModClient / Harness
-  connection.py # PipeConnection：独立会话、轮询读取、事件缓冲、请求串行化、超时与重连
-  commands/     # ModClient = 按领域 mixin 组合（session/diag/input/memory/watch/hooks/
-                #   packets/ecs/tasks/query/world/macro/recording）；超时统一 None→连接超时
-  facade.py     # Harness：脚本便捷方法、集合解包与组合操作
-  hooks.py      # hook 命中解码、float bits
-  memory.py     # 地址/hex 解析、FNV 辅助
-  packets.py    # packet id 名称、字节布局解码
-  record.py     # 64 字节记录解码、flags、方块名哈希
-  spool.py      # 增量、可容忍轮转/半行的 spool 读取器（字节级缓冲）
-  watch.py      # watch 命中解码与可续读游标
-  cli.py        # 稳定入口：离线命令、注册表分发（REGISTRY）、错误与退出码
-  cli_parser.py # argparse 定义；保留参数默认值、命令和帮助顺序
-  cli_commands/ # diagnostics/input/... 八个模块；每个导出 COMMANDS frozenset 供注册表分发
-driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
-driver/selftest_support.py # 三态统计、首错保护、统一 live 观察会话与空窗/增量导出
-driver/selftest_diagnostics.py # 入站切片、违规守望、send_probe 与 PacketTap 领域检查
-driver/selftest_fixtures.py # 可复用 live fixture（crash 文件快照）；主入口保留原检查名和专项参数
-driver/selftest_flight.py  # 飞行效果夹具：候选哨兵、自然到期和只清理哨兵
-driver/selftest_macro.py   # 宏限长/采集、显式 200000 tick 录制与同 record_id 接续
-driver/selftest_lifecycle.py # 显式热重载、同进程重连和配置/DLL/crash 完整性检查
-driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
-driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
+  connection.py  # 独立连接代次、轮询读取、事件缓冲、超时与重连
+  commands/      # 按领域 mixin 组成 ModClient
+  facade.py      # Harness 组合与脚本便捷操作
+  client.py      # 兼容导出
+  cli.py         # 稳定 CLI 入口和注册表分发
+  cli_parser.py  # argparse 定义
+  cli_commands/  # 领域执行与 COMMANDS 声明
+  protocol.py    # JSONL、Hello/State 类型和管道绑定
+  lab.py         # 建场回读、settle、录制与实验辅助
+
+driver/selftest.py           # live CLI、专项分发与兼容导出
+driver/selftest_default.py   # 默认完整套件
+driver/selftest_runtime.py   # WorldLost、等待与共享夹具
+driver/selftest_{core,tasks,queries,packets,streams,input,recovery}.py
+driver/selftest_{diagnostics,flight,macro,lifecycle,support,fixtures}.py
 ```
 
-`PipeConnection.subscribe(event, consumer)` 在请求线程分发通知，并返回幂等的取消函数。
-订阅只属于当前连接代次；订阅者不得重入请求。场景录制订阅 tick，不再替换 `readline`，
-因此 `request` / `wait_ticks` 消费响应时也会采集 tick，且不会把采样堆积到 pending 队列。
+每次连接有独立 `_PipeSession` 和 `_PipeStream`；读线程与 finalizer 只持 stream，避免订阅
+循环保活客户端。脚本仍须显式 close。`exchange()` 串行化一个工作流；protocol 4 没有通用请求
+ID，低层多步 `send`/`readline` 必须放在同一 exchange 中。请求超时关闭连接，独立事件等待
+超时不关闭连接。
 
-`ModClient` 用独立轮询线程读取同步管道，避免挂起的 `ReadFile` 阻塞写入。
-每次连接建立 `_PipeSession`，独占订阅和延后事件；其 `_PipeStream` 独占句柄、停止信号、
-读队列和读线程。读取线程与 `weakref.finalize` 仅持 stream，不经订阅回调保活客户端；
-客户端被遗弃（包括订阅循环引用被 GC 回收）时会关闭句柄，读线程遇 EOF/溢出也主动关闭。
-重连不复用停止信号或消息队列，旧代关闭不会碰新连接。`close()` 幂等并唤醒阻塞消费者，
-资源取走受短锁保护，实际 close/join 在锁外完成。脚本仍应使用 `with ModClient() as client`
-或 `try/finally: client.close()`；GC 只兜底无引用对象，不负责结束仍被业务持有的连接。
-
-`exchange()` 使用可重入锁串行化一个完整请求/任务工作流，protocol 4 没有通用请求 ID，
-不支持同一连接多路并发响应。低层 `send` + `readline` 多步调用应放在同一个 exchange 中；
-另一个线程的 `close()` 可中断等待，不能用另一个阻塞式请求抢占任务。
-
-`request` 只从新流中取本次响应，其他事件进入 pending；`readline` 按顺序消费 pending，
-`wait_event` 可匹配其中的指定事件并保留其余事件。pending 上限 4096，原始接收队列
-上限 8192，超限明确终止连接。长时间录制必须及时消费，避免无限占用内存。
-任务封装先等待 `*_started`，再按 ID 等待终结；取消抛 `ModTaskCancelled(task_id, reason)`。
-请求超时关闭连接，独立事件等待超时不关闭连接。
-
-`ModClient` 继承连接实现，`Harness` 通过组合使用 `ModClient`，保持单向依赖。
-包根、`harness.client` 和 `transport_mod` 的公开导出保持一致。
-
-## 世界与设置
-
-- `worlds` 直接从 `IMinecraftGame::getLevelListCache()` 读缓存；实测在管道线程调用即可。
-- `enter_world` 用 `LevelSummary` 构造 `LevelSettings`，再调纯虚的
-  `IGameServerStartup::startLocalServerAsync`（vtable，不需要导入符号）。
-  `startLocalServerAsyncFromSummary` 没有导出，不能直接链接。
-- 世界事件 `ClientStartJoinLevelEvent` / `ClientJoinLevelEvent` / `ClientExitLevelEvent` /
-  `ClientCancelJoinLevelEvent` 转成 `world_joining` / `world_entered` / `world_left` /
-  `world_join_cancelled`。
-- `options_set` 用 `IOptionRegistry::loadOptionsFromString` 实时应用（FOV/gamma 等立即生效），
-  然后自己更新 `options.txt`（保留 CRLF 和未知行），因为游戏自身的
-  `saveIfNeeded` 在当前版本不会立即落盘。
-- `harness.json` 的 `auto_enter` 让直接启动 exe 后自动进世界；自动线程会等世界列表非空
-  且游戏在前台再动手，避免在加载阶段或后台触发鼠标捕获。
-
-## 跑酷数据
-
-`start` 录制的 tick 事件包含 `jump_edge`、`in_air`、`block_below`、`block_feet`、
-`block_head`。`driver/parkour.py` 不依赖游戏，负责：
-
-- `segment_jumps`：用地面 true→false→true 切分，起跳前 4 tick 的 `jump_edge` 关联到该跳；
-- `summarize`：距离、滞空、顶点、起跳速度；
-- `splits`：按 checkpoint 找第一次进入半径的 tick；
-- `compare_runs`：逐跳对齐两次运行；
-- `record` / `run_attempts`：驱动 macro 回放、`reset`、录制和成功率统计。
-
-细节见 [`parkour.md`](parkour.md)。
-
-## 后台焦点守卫
-
-Bedrock 的 raw input 在窗口失焦后仍可能驱动视角。mod 默认 `background_guard=true`：
-
-- 失去前台时 `ClipCursor(nullptr)` 并平衡 `ShowCursor`，让光标可见；
-- hook `LocalPlayer::_applyTurnDelta`，非前台且不是 mod 自己注入的转向时直接丢弃；
-- mod 的 `look`/任务通过 `mInjectingLook` 放行；`auto_enter` 要求窗口在前台。
-
-## 开发循环
+## 开发、构建与扩展
 
 ```bash
-py -3.11 driver/dev.py run --world "超平坦测试" --build
-```
+py -3.11 driver/dev.py run --world "超平坦测试"
 
-流程：`xmake -y` → 结束旧进程 → 复制 DLL → 直接 `Popen` exe → 等管道 → 等世界列表 →
-`enter_world` → `wait_in_world`。全程不需要 Computer Use；CUA 只在需要看真实画面时用。
-`--write-config` 会写 `harness.json`，之后直接启动 exe 也会自动进世界。
-
-## 如何扩展
-
-新增能力时按领域落在已有的三层结构里：C++ 领域处理器 → 管道命令 → Python 命令/CLI。
-下面用两个既有能力作为参照，再给出两个标准的扩展清单。
-
-### 已经走通的一条链路：聊天快照
-
-`chat_history` 展示了「游戏对象只在游戏线程读、格式化在后台线程」的完整路径：
-
-- 客户端：`ModClient.chat_history(limit=32)`；CLI：`harness chat-history --limit 32`。
-- `Chat.cpp` 在平台主线程队列里把游戏保留的最近消息复制进请求独享的定长快照
-  （最多 64 条、每条 2047 UTF-8 字节，带截断标记），管道线程不直接读取 UI 对象；
-  spool 线程把快照格式化成 `chat_history` 事件。
-- 等待超过 2 秒回 `ok=false/reason=chat_history_timeout` 并释放请求槽；退出世界取消
-  在途请求，主菜单返回 `no_player`。旧回调只持有自己的快照，无法改写新请求。
-- 历史由游戏管理，不保证重启后保留；`hello.capabilities` 里的 `chat_history` 标示该能力可用。
-
-### 加一个管道命令
-
-1. 在对应的 `Command<领域>.cpp` 加分支，处理后返回 `true`；只有新增领域才需修改
-   `Commands.cpp` 的 `dispatchLine`。需要修改游戏状态时继续设置请求或通过 `queueServerTask`。
-2. 在 `ProbeMod.h` 增加必要的请求字段/方法，在对应模块实现。
-3. 在 `driver/harness/commands/<领域>.py` 加 `ModClient` 方法
-   （`request(..., "expected_event")`，超时参数用 `float | None = None`）。
-4. 在 `facade.py` 的 `Harness` 加便捷封装，在 `cli_parser.py` 加参数定义、对应
-   `cli_commands/<领域>.py` 加执行分支（已处理返回 true，未识别返回 false），
-   并把命令名加进该模块的 `COMMANDS` frozenset（`test_cli` 会校验与 parser 一致）。
-5. 在 `tests/test_transport.py` 加协议/转发测试；需要游戏时在 `driver/selftest.py` 加检查。
-
-### 加一个闭环任务
-
-1. 在 `TaskModel.h` 定义定长、可平凡复制的 `XxxTask`，加入 `TaskState`。
-2. `CommandTasks.cpp` 验证完整参数，再调用 `startTask`，返回含 ID 的 `xxx_started`。
-3. `Tasks.cpp` 实现 `tickXxx`，只填 `TaskStep`；在 `TaskEvents.cpp` 增加状态及结果格式化。
-4. Python 通过 `_task_request` 绑定任务 ID，CLI/facade 按需包装。
-5. 扩展独立 C++ 模型检查及 live selftest，用 `blocks/state` 回读验证游戏效果。
-
-## 构建与检查
-
-```bash
-# C++（本机工具链见 docs/mod-build-environment.md）
-cd mod/probe
-xmake -j4 -y
-
-# Python（不需要游戏）
+cd mod/probe && xmake -j4 -y
 py -3.11 -m ruff check driver tests
 py -3.11 -m ruff format --check driver tests
 py -3.11 -m mypy
 py -3.11 -m unittest discover -s tests -v
-
-# 需要游戏已进入存档
-py -3.11 driver/selftest.py
+py -3.11 driver/selftest.py --require-complete
 ```
 
-C++ 风格由仓库根目录的 `.clang-format` 约束；Python 由 `pyproject.toml` 里的 ruff/mypy 配置约束。
-CI 的 unittest 编译并运行独立 C++ 模型；Windows 的 mod-build 作业也构建完整 mod。
-现场自检仍需本机游戏与测试世界，离线 CI 不替代现场验收。
+开发循环会先处理保存/退出和进程选择，再构建、安装、启动并等待世界。CI 运行 Python/native
+测试，Windows `mod-build` 也构建完整客户端 mod；CI 不启动 Minecraft，不能替代现场验收。
+
+### 加管道命令
+
+1. 在对应 `Command<领域>.cpp` 处理并返回 `true`；只有新领域才修改 `Commands.cpp`。
+2. 请求字段归入对应状态所有者，实现实际模块。
+3. 在 `driver/harness/commands/<领域>.py` 添加请求封装，必要时更新 facade。
+4. 更新 `cli_parser.py`、领域执行模块和 `COMMANDS`。
+5. 添加无游戏测试与对应领域 live 检查，保持协议/CLI 兼容并回读真实效果。
+
+### 加闭环任务
+
+1. `TaskModel.h` 定义定长任务并加入 `TaskState`。
+2. `CommandTasks.cpp` 完整验证后 `startTask()`，返回带 ID 的 started。
+3. `Tasks.cpp` 只填 `TaskStep`，`TaskEvents.cpp` 格式化后台事件。
+4. Python 按 ID 等待结果；扩展 native 模型和 live selftest，以 `blocks`/`state` 验证。
 
 ## 另见
 
-- 命令表、`state` 字段与配置开关：[`../mod/README.md`](../mod/README.md)。
-- 各子系统实现细节与实测数字：[`mod-internals.md`](mod-internals.md)。
-- 换版本的移植流程：[`porting.md`](porting.md)。
-- 历史重构决策与验收记录：[`refactoring.md`](refactoring.md)。
+- API、配置与使用限制：[`../mod/README.md`](../mod/README.md)
+- 容量、诊断与实现细节：[`mod-internals.md`](mod-internals.md)
+- 当前验收与未覆盖范围：[`reliability-repairs.md`](reliability-repairs.md)
+- 新版本移植：[`porting.md`](porting.md)

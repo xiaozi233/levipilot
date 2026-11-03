@@ -80,8 +80,9 @@ add_repositories("local-repo local-repo")
 
 - **xmake 卡在交互式 `please input: y`**：缺少 `XMAKE_GLOBALDIR` / `XMAKE_PKG_INSTALLDIR`，
   xmake 试图在项目内重新下载依赖。按上面的环境变量设置后重试。
-- **复制 `probe.dll` 报 `Device or resource busy`**：游戏仍在运行，先
-  `taskkill /F /IM Minecraft.Windows.exe`。
+- **复制 `probe.dll` 报 `Device or resource busy`**：游戏仍在运行。先用
+  `py -3.11 driver/dev.py stop` 按保存门禁关闭目标实例；只有明确放弃未保存更改时才使用
+  force 选项，不要按映像名强杀所有游戏进程。
 - **构建吃满 CPU 导致桌面卡顿**：始终使用 `xmake -j4`，不要用默认并发。
 
 ## 另见

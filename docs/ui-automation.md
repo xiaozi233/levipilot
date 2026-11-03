@@ -1,59 +1,42 @@
 # UI 自动化（启动 / 进存档 / 退档）
 
-实验控制走 mod API；**启动游戏、主菜单、世界列表、暂停菜单、对话框**这类 UI 仍需要真正的
-桌面操作。本文只记录当前机器上验证过的坐标与流程，作为兜底参考。
+实验控制优先走 mod API。只有首次搭建、主菜单、世界列表、暂停菜单或对话框无法经 API 处理时，
+才使用真实桌面操作。
 
-日常开发循环**不需要**本文：`py -3.11 driver/dev.py run --world "..."` 会直接启动 exe 并
-经 mod 进世界。只有需要操作真实界面（例如首次搭建、调试暂停菜单）时才用下面的流程。
-完整排查顺序见 skill **`mcbe-desktop-control`**
-（`~/.agents/skills/mcbe-desktop-control/SKILL.md`）。
+日常开发不需要手工点击：
 
-## 规则
-
-- UI 操作**只用 ZCode 官方电脑操作** `agent.computerUse`（`mcp__node_repl__js` + bootstrap）。
-- **按按钮 = 悬停 + 回车**：合成鼠标的悬停生效并接管键盘焦点，点击会被 Minecraft 丢弃。
-- 坐标只按**本次返回的光栅**读；窗口移动不用改数字，但不要混用 helper 的物理像素。
-- 世界内鼠标被游戏捕获：悬停无效，位移会变成转视角。要操作 UI 先按 `Escape` 开菜单。
-
-## Bootstrap
-
-```js
-const root = process.env.ZCODE_CUA_PLUGIN_ROOT;
-const { join } = await import("node:path");
-const { pathToFileURL } = await import("node:url");
-const { setupComputerUseRuntime } = await import(
-  pathToFileURL(join(root, "scripts", "computer-use-client.mjs")).href,
-);
-await setupComputerUseRuntime({ globals: globalThis });
-
-const listed = await agent.computerUse.listApps({ emit: false });
-const list = Array.isArray(listed) ? listed : listed.apps;
-const app = await agent.computerUse.getApp({
-  pid: list.find((a) => /Minecraft\.Windows\.exe$/i.test(a.bundle_id || "")).pid,
-});
-await app.click([640, 385]);   // 悬停“游戏”
-await app.pressKey("Return");  // 激活
-await app.getScreenshot();     // 官方截图会自己显示
+```bash
+py -3.11 driver/dev.py run --world "超平坦测试"
 ```
 
-## 已验证流程（官方 1280×764 光栅）
+该命令处理构建、受控重启、菜单等待和进入世界。`dev.py recover` 用于断开错误页，但保存状态
+不明时仍遵守保留进程的门禁。
 
-- 主菜单 → 游戏：悬停 `(640, 369)` → `Return`
-- 世界列表：卡片顺序是 `[游玩][铅笔][游玩][铅笔]…`；方向键移动焦点，`Return` 进入。
-  列表会滚动，落点前先截图看焦点环，**不要盲按**。
-- 暂停菜单：`Escape` → 悬停“保存并退出” `(374, 521)` → `Return`
-- 退出确认框：`Escape` 取消不了；悬停“取消”再 `Return`
-- 存档加载期间可能出现“线上游戏未分级”提示；用方向键把焦点移到“继续”再 `Return`
+## 桌面操作规则
 
-## 已知限制
+使用本环境的 **`mcbe-desktop-control` skill**；具体工具名、bootstrap 和坐标格式以该 skill
+的当前说明为准，不要复制旧宿主（node-repl/ZCode）的调用代码。
 
-- Minecraft 不暴露无障碍元素（`getAXState` 只有 7 个窗口边框），只能按坐标。
-- 官方路径报 `Computer Use is unavailable for this node_repl session` 时，说明本会话的
-  node-repl 宿主没拿到 CUA 权限代理（长寿命进程，补不上）→ 重启 ZCode 后重新 bootstrap。
-- CUA 的合成点击在后台只产生鼠标移动事件；录制真实按键需要窗口在前台并使用 raw 输入。
+- 按当前截图的光栅坐标操作，窗口缩放或 DPI 改变后重新取图，不混用物理像素。
+- Minecraft 的合成点击可能只产生悬停；按钮采用“悬停 + 回车”的已验证方式。
+- 世界内鼠标被捕获，移动会转视角。先进入菜单再操作 UI。
+- 世界列表会滚动，卡片顺序和焦点必须以当前截图为准，不盲按固定坐标。
+- 暂停菜单不响应 mod 注入的 Esc/Enter；退出暂停需要桌面点击 Resume。
+- 游戏没有可用的无障碍控件树时，只能按截图和焦点环操作。
+
+## 已验证的界面路径
+
+- 主菜单 → 游戏：悬停“游戏”后回车。
+- 世界列表：方向键移动焦点，确认目标卡片后回车。
+- 暂停菜单：Escape → 悬停“保存并退出”后回车。
+- 确认对话框：按当前文字选择，不能假定 Escape 总是取消。
+- 存档加载中的提示：先读当前页面，再把焦点移到“继续”。
+
+这些路径只描述操作顺序，不固定坐标。官方桌面工具不可用或返回 `unavailable` 时，按 skill
+的排查步骤恢复宿主/权限，不要改用未经协调的强杀或注入方式绕过保存门禁。
 
 ## 另见
 
-- 自动进世界的非 UI 路径：[`../README.md`](../README.md) 的「快速开始」与
-  [`../mod/README.md`](../mod/README.md) 的「自动进入世界」。
-- 键鼠事件注入（世界内 UI 可用）：[`mod-internals.md`](mod-internals.md) 的「输入事件层」。
+- 非 UI 开发循环：[`../README.md`](../README.md) 的「快速开始」。
+- 自动进入与配置：[`../mod/README.md`](../mod/README.md)。
+- 世界内键鼠注入：[`mod-internals.md`](mod-internals.md) 的输入部分。

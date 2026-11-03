@@ -1,31 +1,19 @@
-# notes：证据册与任务提示词
+# notes：逆向证据与调查原文
 
-这个目录由外部 `mcbe-harness-notes` 工作树合并而来，**不再单独维护第二个仓库**。
-内容只做两件事：
-
-- 逆向证据与逐 tick 调查原文（`re-fluid-12651.md`、`tick-order-12651.md`）；
-- 历轮开发任务提示词（`prompts/`）。
-
-## 证据册
+本目录保留可复核的原始证据，不作为第二套 API 或当前状态文档。现行使用方式看
+`mod/README.md`，实现看 `docs/mod-internals.md`，未决范围看
+`docs/reliability-repairs.md`。
 
 | 文件 | 内容 |
 | --- | --- |
-| [`re-fluid-12651.md`](re-fluid-12651.md) | 1.26.51.01 流体/疾跑/泳姿的静态证据册（函数、偏移、公式、撤回项） |
-| [`tick-order-12651.md`](tick-order-12651.md) | ECS 调度顺序、E14/catchup/correction、注册链与调用栈证据 |
+| [`badpacket-setactordata-20261031.md`](badpacket-setactordata-20261031.md) | BadPacket 的入站切片、深拷贝、共享序列化缓冲竞态与撤回项 |
+| [`badpacket-187-20261101.md`](badpacket-187-20261101.md) | packet 187 的现场与后续调查边界 |
+| [`re-fluid-12651.md`](re-fluid-12651.md) | 流体、疾跑和泳姿的函数、偏移、公式及静态证据 |
+| [`tick-order-12651.md`](tick-order-12651.md) | ECS 调度顺序、注册链和调用栈证据 |
+| [`bounce-12651.md`](bounce-12651.md) | 黏液反弹覆盖高度、落差与逐 tick 证据 |
 
-公开结论仍以 `docs/*.md` 为准；这两册是复核时用的原始证据，不是第二套正文。
-地址与角色会随版本变化，换版本前先跑 `skills/bedrock-re/roles/resolve.py --check`。
+地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
+旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。
 
-## 提示词
-
-[`prompts/README.md`](prompts/README.md) 是索引。提示词是开发过程记录，不是现行规范；
-现行约束看 `AGENTS.md` 与 `docs/`。
-
-## 脱敏
-
-合并时已把本机用户目录替换为 `%USERPROFILE%`，仓库路径替换为 `<repo>` 或相对路径。
-提交前仍建议跑：
-
-```bash
-py -3.11 skills/bedrock-re/checks/lint_public.py
-```
+开发提示词、交接稿和过程性痛点记录已移出 Git；需要追溯时查提交历史。合并时的脱敏约定
+不变：提交前运行 `py -3.11 skills/bedrock-re/checks/lint_public.py`。

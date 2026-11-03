@@ -19,12 +19,12 @@
 | 10 | Chat 请求超时、主菜单生命周期 | 完成 | 请求独享快照、2 秒超时、退出取消、主菜单平台队列；native 回归、专项现场 9/9、完整现场 237/237 |
 | 11 | UseTask 服务端等待没有截止条件 | 完成 | 5 秒截止、迟到副作用拒绝、拥有者失败回调；native 边界/竞争/零分配、专项现场 16/16、完整现场 253/253 |
 | 12 | 游戏线程采样异常边界、JSON、分配与锁 | 完成；显式高成本诊断保留限制 | 常规路径已迁定长快照/队列、局部 SEH、后台格式化与分阶段生命周期。PacketTap 身份不序列化；`serialize_ids` 明确为原上下文高成本重序列化诊断，可能分配且无时间预算，不保留 Packet 指针或冒充线上原帧。`mem_arg`、ViolationWatch/send_probe 同属默认关闭诊断；按需 state/inventory 的 SDK owning 名称复制有界且不属高频 hook。native/现场边界通过，四组开销对照无提速结论 |
-| 13 | ProbeMod 跨领域状态耦合 | 完成；构建/native 通过，2026-11-03 现场复验通过 | MacroSession 统一播放/录制/冷锁/停止与世界退出；InputSession 统一事件、held/latch、输入锁、tick 状态及清理。旧名字为非 owning 别名，无跨 TU reset 清单；tick 无冷锁/分配/JSON，Hardware HID 与既有协议不变 |
+| 13 | ProbeMod 跨领域状态耦合 | 完成；构建/native 通过，2026-11-03 现场复验通过 | MacroSession 统一播放/录制/冷锁/停止与世界退出；InputSession 统一事件、held/latch、输入锁、tick 状态及清理。ProbeMod 不再保留可变引用别名，直接访问唯一会话；无跨 TU reset 清单，tick 无冷锁/分配/JSON，Hardware HID 与既有协议不变 |
 | 14 | 服务端玩家解析重复 | 完成；身份专项 44/44 | 背包、命令、权限、物品使用、传送、实体攻击与飞行共用 ServerPlayerContext；UUID+epoch 为默认身份，显式命令名保留，实体/飞行名字兜底已删除。无玩家/换世界/旧请求/故障恢复通过；后续飞行与完整现场见恢复记录 |
 | 15 | 交互覆盖、自检跳过统计 | 完成；现场未验范围单列 | 三态/--require-complete、WorldLost 首错与 finally 保留；诊断/入站/send_probe/PacketTap 迁领域模块，CrashSnapshot 可复用，原检查名/专项参数不变。攻击/放置/使用以血量、方块、背包回读真实效果，interact_entity 仍 best effort。身份 44/44、离线 23/23；HBUI/热卸载/超长录制不冒充已验收 |
 | 16 | 类型码命名、失效文档 | 完成原定范围 | `658d90a` 已落地 PlacePhase/ControlInputMode/JumpImpulse；本轮核对实现，清理仍写待做的状态及默认起跳/当前基线的陈旧说明 |
 
-原清单第 1–12、16 项已完成各自范围；第 12 项的显式高成本诊断限制保留，13–15 继续按工作表推进。
+原清单第 1–16 项已完成各自范围；第 12 项的显式高成本诊断限制保留，13–15 的后续验收见文末记录。
 补充审阅的宏硬上限、世界进入看门狗与 Overhead 统计环并发已修复；完成状态不表示整个 tick 或
 所有 SDK 调用零分配，也不表示性能提升或游戏网络竞态已根治。
 
@@ -1019,5 +1019,49 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
 - 玩家背包、姿态、能力、效果、选中槽、输入与宏状态已回读恢复，原 3 键配置按 CRLF 字节恢复并
   重启加载，管道 ping 通过。证据 `out/review-20261103-restored.json`、
   `out/review-20261103-final-restart.log`。
-- 旧候选、管道阻塞与重跑要求已标为历史；当前未验收范围仍仅 HBUI、现场热卸载和
-  200000 tick 长录制。未新增逆向。
+- 旧候选、管道阻塞与重跑要求已标为历史；当时未验收的 HBUI、现场热卸载和
+  200000 tick 长录制由后续批次继续处理，未新增逆向。
+
+## 2026-11-03 后续缺陷修复与长时验收
+
+| 范围 | 当前结果与证据 |
+| --- | --- |
+| 完整离线（含 native 模型） | **399/399**，`out/review-20261103-final-offline-deliverable.log` |
+| tick 局部读取边界 | **55/55**，`out/review-20261103-tick-recovery.log` |
+| 退档序号与菜单诊断 | **32/32**，`out/review-20261103-final-entry-lifecycle.log` |
+| 前四种效果已占用的哨兵场景 | **48/48**，`out/review-20261103-occupied-refactored.log` |
+| 最终 DLL 的空闲热重载 | **9/9**，`out/review-20261103-final-hot-reload.log` |
+| 200000 tick 现场录制/保存/重载 | **9/9**，`out/review-20261103-macro-long-resume-ready.log` |
+| 完整现场 `--require-complete` | **1097/1097，0 fail、0 skip、0 required skip**，`out/review-20261103-final-full.log` |
+
+- `safeTickPre/safeTickPost` 的客户端实例及本地玩家读取已放入局部 `guardedGameRead`。
+  `client_read` 故障注入只在该边界消费，其他 C++/未知异常仍走原恢复；pre/post 都回
+  `client_player_read_fault`，输入释放、后续请求和无 crash 均验证。这不是整个 tick 的 SEH 保护。
+- 飞行效果夹具迁到 `driver/selftest_flight.py`，统一安装、回读、自然到期判定和只删哨兵。
+  `glowing/luck` 已移除；前四种候选占用时用 `regeneration`，后续兜底为 `resistance/absorption`。
+  占用现场保留原 `[12,13,14,16]`，哨兵 `10` 单独清理；离线另覆盖提前清空与自然到期。
+- `ProbeMod` 的 68 个输入可变引用别名和 7 个宏可变引用别名已删除，直接访问唯一
+  `InputSession`/`MacroSession`。没有新增 tick 锁、JSON 或分配。默认输入契约测试改查真实会话字段；
+  首轮 398 项中两条旧别名文本断言失败后已修正，新增接续覆盖后的完整 399 项通过。
+- 自检保留原入口和检查名，宏限长/采集迁到 `driver/selftest_macro.py`，热重载迁到
+  `driver/selftest_lifecycle.py`；`selftest.py` 从约 6900 行降为约 6600 行，薄封装和专项参数兼容。
+- 长录制同一 `record_id=1` 实际跑满 **200000 tick**，总耗时 **10603 秒**。因实际速率低于 20 TPS，
+  只重启 Python 等待器，游戏与录制未中断，从 **71371** 行以 `--macro-resume` 接续。最终文件
+  **28600002 字节**，SHA-256 `8d334ad7417eeff36e446c65d11b58f0bd63a7116de5b06a7a81a6e29e8b282c`，
+  重载 ticks=200000；不是 native 模拟、缩短上限或拼接两段录制。报告
+  `out/macro-long-recording-6654531000000.json`。
+- 热重载通过 Hardware HID 聊天执行 `/ll mod reload probe`，不在 probe 自己的服务端命令回调里
+  自卸载。同进程重连、tick 推进、输入解锁、宏空闲、配置/DLL/crash 完整性通过；仅证明空闲场景，
+  不证明持有按键或任意在途请求时可安全卸载。
+- `leave_world_result/world_left` 增加 `leave_id`，`worlds` 增加退档序号和菜单快照。
+  正常退档瞬间可见 `toast_screen`、`leave_done=false`、服务端对象仍存在，之后 HBUI 与世界列表恢复；
+  菜单复合门禁未放宽。**异常 HBUI 退档的形成根因仍未复现、未闭合**，新增字段只用于关联诊断。
+- 最终完整现场的违规观察为 **0 真实、4 合成、0 丢失、0 观察故障**，报告
+  `out/review-20261103-final-violation.json`。PacketTap `serialize_ids` 仍是默认关闭、可能分配且
+  无时间预算的显式重序列化诊断，不视为低成本观察。游戏共享序列化缓冲竞态没有新增调查或补丁。
+- 最终构建/安装 DLL SHA-256 均为 `750110319c3985c4872af4b0014fbd05c282375ae9d472e71f6c25639b77f330`。
+  配置按原 4 键 CRLF 字节恢复，SHA-256 `fc33faf25181fc0c0c154e036437792ca981d048880096b34c4b128a3065bc37`，
+  并重启加载。最终姿态/朝向用保留效果的 `teleport` 恢复，能力、效果、空背包、选中槽、输入解锁、
+  宏空闲和 ping 回读 **13/13** 通过，证据 `out/review-20261103-final-integrity.json`。
+  124 个 crash 文件无新增/修改；其中 `crash-30368-0.dmp` 是先前强制恢复遗留的 0 字节文件，
+  不是本轮 tick 故障产物。未新增逆向。

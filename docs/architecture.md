@@ -200,7 +200,8 @@ spool 生成 control_error，status.controls 提供 held 与清理标记。默�
 保留释放意图，释放成功后才清除；失败序列停止，后续先清理再接纳新输入。视角 scope
 使用计数支持平台队列/tick 交错。接受回执、后台诊断与实际完成是不同语义；专项
 126/126、传送生命周期 49/49、完整 868/868 通过，边界见 reliability-repairs.md；
-这些数字是历史验收。显式高成本诊断限制见下文，现场热卸载仍未验收。
+这些数字是历史验收。显式高成本诊断限制见下文；2026-11-03 已补一次空闲热重载，
+但持有按键或在途请求时的释放与卸载安全仍未证明。
 
 二进制 `RecordBuffer` 在冷侧准备存储、tick 无锁准入与发布，停止等待已准入采样。
 采样故障、退出和卸载终结当前 record_id，冷侧发送一次 `record_failed`；停止/导出保留
@@ -286,6 +287,9 @@ driver/transport_mod.py  # 兼容门面，旧导入和脚本入口继续可用
 driver/selftest_support.py # 三态统计、首错保护、统一 live 观察会话与空窗/增量导出
 driver/selftest_diagnostics.py # 入站切片、违规守望、send_probe 与 PacketTap 领域检查
 driver/selftest_fixtures.py # 可复用 live fixture（crash 文件快照）；主入口保留原检查名和专项参数
+driver/selftest_flight.py  # 飞行效果夹具：候选哨兵、自然到期和只清理哨兵
+driver/selftest_macro.py   # 宏限长/采集、显式 200000 tick 录制与同 record_id 接续
+driver/selftest_lifecycle.py # 显式热重载、同进程重连和配置/DLL/crash 完整性检查
 driver/dev.py             # 直接启动 exe + 自动进世界的开发循环
 driver/parkour.py         # tick 录制、跳跃分段、运行对比、attempts
 ```

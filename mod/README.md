@@ -197,6 +197,23 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
 
 ## 实测（1.26.51.01 创作存档）
 
+2026-11-03 后续稳定性验收：
+- tick 的客户端实例/本地玩家读取已收进局部 SEH，pre/post 的 `client_player_read_fault`
+  均进入既有恢复；`--tick-recovery-only` **55/55**。这不是整个 tick 的 SEH 保护。
+- `leave_world_result/world_left` 增加 `leave_id`，`worlds` 增加退档序号与菜单快照；
+  `--entry-lifecycle-world "超平坦测试"` **32/32**。正常退档的瞬时 toast/服务端未清空可见，
+  复合菜单门禁保持不变；HBUI 异常退档的形成根因仍未闭合。
+- 飞行效果夹具统一安装、验证和只删除哨兵，支持 `regeneration/resistance/absorption` 备用候选；
+  前四种候选被占用时现场 **48/48**，原效果保留。原效果按 duration/tick 允许自然到期。
+- `--hot-reload-only` **9/9**：通过 Hardware HID 聊天执行 `/ll mod reload probe`，同进程重连、
+  tick 推进、输入解锁、宏空闲及配置/DLL/crash 完整性通过。仅验收空闲场景，不证明在途释放安全。
+- `--macro-long-recording-only` **9/9**：同一 `record_id=1` 实际录满 **200000 tick**，
+  总耗时 10603 秒；文件 28600002 字节，SHA-256
+  `8d334ad7417eeff36e446c65d11b58f0bd63a7116de5b06a7a81a6e29e8b282c`，重载 ticks=200000。
+  等待器重启后 `--macro-resume` 从 71371 行接续，游戏和录制没有重开，不拼接两段文件。
+- 当前离线 **399/399**，ruff/format、mypy、profiles、roles 和完整 C++ 构建通过；
+  最新完整现场与恢复证据见 `docs/reliability-repairs.md` 的后续记录。
+
 2026-11-01 Python 连接生命周期：新增 `py -3.11 driver/selftest.py --connection-only --require-complete`
 专项，验证客户端遗弃（含订阅循环）、正常退出和 `os._exit` 后的真实重连。实现与本批验收见
 [`../docs/mod-internals.md`](../docs/mod-internals.md#python-连接资源生命周期2026-11-01)。

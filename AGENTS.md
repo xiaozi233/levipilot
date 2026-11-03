@@ -303,13 +303,14 @@ size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序
 历史阻塞（已由后续实现与验收替代）：2026-11-01 22:20 第14项候选现场28/29失败
 （packet187/size48/error104→90），当时撤回候选且不能标完成；`c0c3398` 后来重新实现了
 UUID+epoch 统一解析，身份专项 44/44、飞行复验与完整现场已通过。早期逆向停止点不再是当前任务。
-第16项具名类型在658d90a已落地。当前离线 **387/387**，ruff check/format、mypy（95 files）、
-profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。管道恢复后的
-完整 `--require-complete` 为 **1090/1090**（0 fail、0 skip、0 required skip），记录见
-`docs/reliability-repairs.md`；仅有 HBUI、现场热卸载和 200000 tick 长录制仍明确未验收。
+第16项具名类型在658d90a已落地。当前离线 **399/399**，ruff check/format、mypy（100 files）、
+profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。最新
+完整 `--require-complete` 为 **1097/1097**（0 fail、0 skip、0 required skip），记录见
+`docs/reliability-repairs.md`；HBUI 异常退档的形成根因仍未闭合，其他历史缺测已按范围补齐。
 
 - 宏录制/播放由 `MacroSession` 唯一持有；输入事件、held/latch、输入锁和 tick 状态由
-  `InputSession` 唯一持有。既有名字是非 owning 别名；冷锁只管准入/取消/回执，tick 不取冷锁。
+  `InputSession` 唯一持有。`ProbeMod` 不再保留可变引用别名，直接访问唯一会话；
+  冷锁只管准入/取消/回执，tick 不取冷锁。
 - PacketTap 常规身份采集只写定长记录；`serialize_ids` 是显式高成本 SDK 重序列化诊断，
   可能分配且无时间预算，不保留 Packet 指针，也不是线上原帧。
 - 飞行只在服务端写能力，客户端有界回读原生同步，8 tick 只读观察；实体攻击/飞行与
@@ -322,8 +323,10 @@ profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实�
   应仍存在，允许自然到期；独立长时哨兵验证未提前清空且只移除哨兵。短/长现场均 50/50。
   显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。
   `macro_session_model` 直接覆盖聚合生命周期。
-- 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成，专项 30/30；
-  UseTask 5 秒截止、chat_history 2 秒超时也已现场验收。现场热卸载与 200000 tick 长录制仍未验收。
+- 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成；退档增加 leave_id/菜单快照，
+  专项 **32/32**。tick 客户端读取局部 SEH 专项 **55/55**，不能推广为整个 tick 已隔离。
+  空闲热重载 **9/9**（不证明在途安全）；真实 200000 tick 录制/保存/重载 **9/9**，
+  支持只重启等待器的 `--macro-resume`，不拼接录制文件。
 
 > 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收标准与结论：
 > 使用限制与基线数字在 `mod/README.md`，实现细节与逐项实测数字在 `docs/mod-internals.md`

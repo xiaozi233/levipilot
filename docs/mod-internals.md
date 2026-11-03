@@ -244,8 +244,8 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   未做性能提升对照，不能推广为整个 tick 零分配或第 12/13 项全部完成。
 - 录制：WASD/Sprint/Sneak/Jump 来自输入状态，Yaw/Pitch 由 `ActorRotation` 差分；
   RMB/LMB 由 `MouseInputEvent` 记录。
-- 2026-11-02 `MacroSession` 唯一持有播放、录制和冷侧互斥锁；既有名字只是非 owning 别名，
-  不再在 disable/world_left/tick recovery 分别维护重置清单。世界退出用原子标记延迟录制终结，
+- 2026-11-02 `MacroSession` 唯一持有播放、录制和冷侧互斥锁；后续已移除 `ProbeMod` 的
+  可变引用别名，直接访问唯一会话，不在 disable/world_left/tick recovery 分别维护重置清单。世界退出用原子标记延迟录制终结，
   tick 只做无锁播放取消。录制采样仍由 `MacroRecordSession` 独享，停止先禁止新采样并等待
   已准入采样退出，再在冷侧复制完整快照、锁外保存；保存完成后按录制代次清理。
   达到 `max_ticks` 后保留缓冲供 `macro_rec_stop`，录制/播放互斥拒绝保持不变。
@@ -264,7 +264,8 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` 替换；失败删除临时文件、保留旧目标与录制缓冲，
   可重试。未模拟磁盘写满，不宣称宏播放或整个游戏 tick 已无分配/无锁。
 - 同期 `InputSession` 唯一持有事件队列、held/latch、输入锁、鼠标/按钮状态和 tick 倒计时；
-  重连取消、故障停控、按钮/鼠标清理统一走会话方法。冷侧 `eventMutex` 仅用于准入/取消/回执，
+  重连取消、故障停控、按钮/鼠标清理统一走会话方法。`ProbeMod` 的可变引用别名已移除，
+  各领域直接访问这个唯一会话。冷侧 `eventMutex` 仅用于准入/取消/回执，
   tick 不取该锁；既有 Hardware HID、释放重试、播放/任务接管和协议字段不变。
 - 宏硬上限验收：`driver/selftest.py --macro-limit-only` **17/17**，完整现场 **322/322**
   （无跳过），离线 **284/284**。原生模型实际追加 200000 条，覆盖省略/0/上限/超上限/
@@ -1558,3 +1559,34 @@ observation_faults=0。这验证 mod 自己读取自然错误页原因及其与�
 最新离线 **362/362**、ruff/format/mypy、完整 C++ 构建通过；profiles up to date、roles 50/57。
 完整现场失败保留，不覆盖历史全绿基线。后续仅转交
 [`诊断提示词`](notes/prompts/badpacket-setactordata-20261031.md)，本批未执行新增逆向。
+
+## 2026-11-03 后续稳定性实现与实测
+
+- `ProbeMod.cpp` 的 pre/post 客户端实例与 `getLocalPlayer()` 读取统一在局部 SEH 内执行。
+  `TickRecovery.cpp` 按 `clientRead` 区分注入点，避免外层提前消费 `client_read`；
+  `client_player_read_fault` 复用既有 fail-stop、输入释放和恢复编号。专项 **55/55**；
+  最终完整现场 **1097/1097** 也覆盖 pre/post 两条路径，无 crash 产物。
+- `WorldSession` 以原子 `mLeaveSerial/mLeaveRequest/mLeaveCompleted` 关联请求和关卡退出。
+  `world_left.menu` 只描述退出当时的快照，`worlds.menu` 提供后续菜单状态，不把关卡退出等同于
+  菜单恢复。专项 **32/32**；异常 HBUI 状态的形成原因仍未闭合，不放宽 `menuReadyOnClient` 门禁。
+- `driver/selftest_flight.py::EffectFixture` 集中处理哨兵选择、安装回读、自然到期和单独清理；
+  支持 `night_vision/water_breathing/fire_resistance/invisibility/regeneration/resistance/absorption`。
+  前四种占用时现场 **48/48**，保留全部长时原效果，未误用不受支持的 `glowing/luck`。
+- `InputSession` 与 `MacroSession` 仍是唯一状态所有者，但 `ProbeMod` 不再保存可写成员别名；
+  各 TU 直接访问会话字段。`Internal.h::guardedControl` 和世界退出清理也走相同会话，未改变
+  Hardware HID、冷锁/tick 所有权、协议字段或热路径分配纪律。C++ 全量及增量构建均通过。
+- `selftest.py` 保留原函数薄封装；`selftest_macro.py` 统一限长、采样故障、原子保存和显式长录制，
+  `selftest_lifecycle.py` 统一热重载和完整性证据。离线 **399/399** 覆盖真实生产 native 模型、
+  效果占用/自然到期/意外丢失、接续不重启录制、瞬时假负世界状态、热重载和清理首错。
+- `--macro-long-recording-only` 等待真实 `macro_rec_limit`，每 30 秒落盘进度，核对唯一 ID、
+  实际文件内容/哈希和重载 ticks。`--macro-resume` 只接受同一代次且仍在录制或已完整保留的会话，
+  不把已停止的部分数据续成成功。长录制 **9/9**：总耗时 10603 秒，接续点 71371，最终 200000 行、
+  28600002 字节，SHA-256 `8d334ad7417eeff36e446c65d11b58f0bd63a7116de5b06a7a81a6e29e8b282c`。
+- `--hot-reload-only` 使用真实聊天输入而不是 `command` 的服务端回调触发自卸载；同对象重连后
+  验证 tick、输入、宏和配置/DLL/crash 哈希，**9/9**。该结果不覆盖在途请求和持有按键的释放保证。
+- 最终 DLL SHA-256 `750110319c3985c4872af4b0014fbd05c282375ae9d472e71f6c25639b77f330`；
+  完整 `--require-complete` **1097/1097，0 fail、0 skip、0 required skip**，违规观察 real=0、
+  synthetic=4、lost=0。原 4 键配置逐字节恢复并重启，最终恢复 **13/13**，124 个 crash 无变化。
+  证据汇总 `out/review-20261103-final-evidence.json`、`out/review-20261103-final-integrity.json`。
+- 本轮未新增逆向。BadPacket 仍以证据册 §36–§49 的游戏共享序列化缓冲竞态为边界；
+  PacketTap 显式 SDK 重序列化仍可能分配、没有执行时间预算，不宣称性能提升或游戏缺陷已根治。

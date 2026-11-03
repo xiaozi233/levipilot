@@ -13,16 +13,36 @@
 严重程度：P1 为条件满足时可能崩溃的高风险边界；P2 为确定性错误、无法恢复的等待或
 可观的维护/时序风险；P3 为可读性和契约完善。以下保留复核顺序，完成范围随验收更新。
 
+## 当前状态索引（2026-11-03，先看这里）
+
+版本：MCBE **1.26.51.01** / LeviLamina **26.51.7**。下表的「当前」只认本行证据，
+早期条目与历史数字仍保留在后面，但不再作为现状依据。
+
+| 类别 | 事项 | 当前状态 |
+| --- | --- | --- |
+| 已完成，不再重开 | 200000 tick 长录制/保存/重载 **9/9**；效果保护与自然到期；原子保存；InputSession/MacroSession 唯一所有权；tick 局部读取 SEH 专项 **55/55** | 见 `reliability-repairs.md` 与 `mod-internals.md` 的对应小节 |
+| 已完成，不再重开 | 退档 leave_id/菜单快照 **32/32**；飞行短/长 **50/50**；宏采集 **28/28**、播放 **52/52**；输入 **44/44**；控制 **131/131**；诊断 **3/3**；连接 **11/11** | 同上 |
+| **未通过** | 空闲热重载：正确命令下 `reload` 可复现挂起；仅 `/ll unload probe` 的对照成功；**阻塞点与归属 unresolved** | `reliability-repairs.md` 2026-11-03 小节 |
+| **未闭合** | HBUI 异常退档（`worlds.ready=false`/`world_busy`）的形成根因 | 只有诊断与正常恢复验收 |
+| 已完成（2026-11-03） | 卸载静默契约：`lifecycle_prepare` 现在先拒绝在途（持键/移动/朝向请求/宏/录制/任务/恢复中）→ 置 `quiescing` 停收新请求 → 再卸 4 个钩子；失败撤销静默。现场已验证 busy 与 quiescing 两条路径 | `mod-internals.md` 的卸载静默契约小节 |
+| 未验收 | 游戏线程内正在执行的 tick 回调是否在卸载前退出（不属上一条的自有工作范围） | 与 reload 挂起的关系未证实 |
+| 已完成结构拆分（2026-11-03） | `selftest.py` 降至约 630 行，默认套件/领域检查/共享运行时分离；封包、传送、飞行、legacy 录制请求各有唯一状态所有者；违规/断线页、入站、发送探针分 TU | 检查名、CLI 与协议兼容；离线 **411/411**、ruff/format、mypy、完整 C++ 构建通过；本轮未重跑现场 |
+| 已完成（2026-11-03） | PacketTap `serialize_ids` 加了硬预算：累计耗时超预算即停止重序列化，记 `error=Budget` 与 `serialize_skipped`，`packet_stats` 暴露样本数/耗时/峰值 | 默认 20 ms；常规身份采集不走该路径 |
+| 外部限制 | 游戏侧共享序列化缓冲竞态 | harness 不打补丁，只做规避 |
+
+> 历史记录（本文件后面的逐条清单、`docs/notes/prompts/` 里的旧提示词、`out/` 里的旧日志）
+> 只作证据保留，不能覆盖上表。
+
 | 顺序 | 等级 / 处理 | 位置 | 具体问题、影响与建议 |
 | --- | --- | --- | --- |
 | 1 | P1 / 部分修复，其余立即处理 | `ProbeMod.cpp::onPlayerTick/afterPlayerTick`、移动/传送等 | tick 外层只有 C++ try/catch；在 `/EHs` 下不能隔离访问违例。查询/JSON 录制/跑酷/宏录制、hook_call 与姿态采样已加局部 SEH；实体/ECS/飞行各队列阶段、宏播放/释放、点击、事件输入与飞行重断言同样已加局部 SEH，文本/UI 查询迁到客户端平台队列；身份采样已改局部 SEH/C++ 与无锁 UUID 快照。其他游戏读取仍需逐一收进局部边界，不能推广为整个 tick 安全。禁止直接包住持有 mutex 的整个 tick，以免跳过析构。 |
 | 2 | P2 / 已修复 | `MacroRecordModel.h`、`Macro.cpp::recordMacroTick`、`CommandRecording.cpp` 的 `macro_rec_start` | 原默认 0/超上限会在满 200000 条后仍保持 recording=true。现统一有效上限，到顶停止并保留缓冲，只报告一次 limit；冷侧预留容量，追加不增长 vector。原生模型跑完整 200000 条，覆盖 0/超上限/边界/停止后不再追加；现场专项 17/17 验证配置、唯一终结、保存及无效参数不破坏已有数据。 |
 | 3 | P2 / 已修复 | `WorldEntryModel.h`、`World.cpp::enterOnClient/probeEntryOnClient`、`WorldSession.cpp::pollEntry` | 已增加独立进入编号、30 秒截止、唯一终结及主线程实际状态观察；超时保留隔离，无玩家/安全菜单/服务端消失连续确认 500 ms 才恢复准入，避免重叠启动。Python 按编号匹配结果；native 验证截止/旧编号/竞争，专项现场 30/30 验证模拟超时、启动/观察 SEH 与真实缺失 join 后恢复。 |
-| 4 | P2 / 本批完成，显式诊断保留成本 | `ProbeMod.cpp::safeTickPre/safeTickPost`、`InputEvents.cpp::tickInputInjection`、`Transport.cpp::enqueue` | 常规 tick/高频 hook 的自有 JSON、owning 状态与冷锁已迁到定长快照/队列及后台格式化，游戏读取有局部边界。PacketTap 身份路径不序列化；`serialize_ids` 明确为 `sdk_hot_path_diagnostic`，在原上下文同步重序列化、可能分配且无时间预算，不保留 Packet 指针，也不冒充线上原帧。`hook_install mem_arg`、ViolationWatch/send_probe 同样属于默认关闭的显式诊断。按需 state/inventory 查询仍在所属线程复制 SDK owning 名称，不在高频 hook 中运行，保留固定容量与截断标记。native/现场验证边界与生命周期；受控对照没有证明性能提升，详见 reliability-repairs.md。 |
+| 4 | P2 / 本批完成，显式诊断保留成本 | `ProbeMod.cpp::safeTickPre/safeTickPost`、`InputEvents.cpp::tickInputInjection`、`Transport.cpp::enqueue` | 常规 tick/高频 hook 的自有 JSON、owning 状态与冷锁已迁到定长快照/队列及后台格式化，游戏读取有局部边界。PacketTap 身份路径不序列化；`serialize_ids` 明确为 `sdk_hot_path_diagnostic`，在原上下文同步重序列化、可能分配，重序列化有默认 20 ms 累计预算，不保留 Packet 指针，也不冒充线上原帧。`hook_install mem_arg`、ViolationWatch/send_probe 同样属于默认关闭的显式诊断。按需 state/inventory 查询仍在所属线程复制 SDK owning 名称，不在高频 hook 中运行，保留固定容量与截断标记。native/现场验证边界与生命周期；受控对照没有证明性能提升，详见 reliability-repairs.md。 |
 | 5 | P2 / 本批完成 | `State.cpp::captureScan`、`QueryModel.h::advanceScan` | 原实现缺少每 tick 预算，过滤 air 时小 limit 也读完整区域。现每 tick 最多 512 格，带取消/超时、tick 跨度和截断原因；native 验证顺序/边界/零分配，现场 32768 格为 64 批，重连和退出取消通过。扫描跨 tick，不能当成同 tick 的原子世界快照。 |
 | 6 | P2 / 本批完成 | `ProbeMod.h` 宏/输入字段、`Macro.cpp`、`CommandRecording.cpp`、`Tasks.cpp::beginTask` | MacroSession 唯一持有播放/录制与冷锁，统一互斥、停止快照和世界退出；InputSession 唯一持有事件、held/latch、输入锁和 tick 倒计时，统一重连取消、故障停控与按钮/鼠标清理。ProbeMod 不再保留可变引用别名，直接访问唯一会话；无第二份模型或跨 TU reset 清单。冷锁只用于准入/取消/回执，tick 不取锁、不分配、不 JSON；native 生命周期通过，现场复验 2026-11-03 通过（宏采集 28/28、播放 52/52、输入 44/44、控制 131/131、完整 1093/1093）。 |
 | 7 | P2 / 本批完成 | `Server.cpp::serverPlayerContext/captureTeleport`、`Flight.cpp`、`Entities.cpp::captureEntityStage` | 背包、命令、权限、物品使用、传送、实体攻击与飞行均在服务端所属队列共用 ServerPlayerContext，默认 UUID+世界代次；显式命令玩家名仍支持。删除实体/飞行的隐式名字兜底，身份失效不换成另一玩家或控制台，指针不跨阶段保存。身份专项 44/44 覆盖无玩家、旧世界、重连、故障与恢复；管道恢复后的飞行复验 51/51、完整 `--require-complete` 1093/1093 已通过。 |
-| 8 | P2 / 本批完成，现场边界保留 | `driver/selftest_support.py::Checks`、`driver/selftest.py`、`driver/selftest_diagnostics.py`、`driver/selftest_fixtures.py` | 三态/--require-complete、WorldLost 首错和四组 finally 保留。诊断/入站/send_probe/PacketTap 已迁领域模块，主入口仅转发且检查名/专项参数不变；CrashSnapshot 可复用。攻击/放置/使用继续以血量、方块、背包回读真实效果，interact_entity 明确 best effort。身份 44/44 与离线 23/23 通过；2026-11-03 现场恢复后诊断 3/3、连接 11/11、完整 `--require-complete` 1093/1093 通过；HBUI/热卸载/超长录制仍单列未验收。 |
+| 8 | P2 / 本批完成，现场边界保留 | `driver/selftest_support.py::Checks`、`driver/selftest.py`、`driver/selftest_diagnostics.py`、`driver/selftest_fixtures.py` | 三态/--require-complete、WorldLost 首错和四组 finally 保留。诊断/入站/send_probe/PacketTap 已迁领域模块，主入口仅转发且检查名/专项参数不变；CrashSnapshot 可复用。攻击/放置/使用继续以血量、方块、背包回读真实效果，interact_entity 明确 best effort。身份 44/44 与离线 23/23 通过；2026-11-03 现场恢复后诊断 3/3、连接 11/11、完整 `--require-complete` 1093/1093 通过；HBUI 异常退档与持键/在途卸载仍单列未闭合（超长录制已完成，见当前状态索引）。 |
 | 9 | P2 / 本批完成 | `State.cpp::captureState/stateJson` | 原方块读取失败被静默吞掉，响应缺字段却像完整成功。现局部 SEH 返回 partial/warnings，正常查询可恢复；专项验证失败字段缺省、其他字段存在及后续恢复。整条采样 C++ 异常走明确的 capture_failed，不再静默成功。 |
 | 10 | P3 / 已实现，文档已校准 | `TaskModel.h::PlaceTask::phase`、`Tasks.cpp::tickPlace`、`Input.cpp::applyControls` | `658d90a` 已引入 PlacePhase、ControlInputMode、JumpImpulse；使用处均按具名阶段/标志判断，仅在协议边界转换兼容数字。本轮核对实际代码并清理仍把这些类型列为待做的记录，未重做既有实现。 |
 | 11 | P3 / 已校准原定范围 | `docs/mod-internals.md` 的历史“移动、跳跃与输入”与实验辅助小节、`docs/architecture.md` 的 CI 说明、`skills/bedrock-re/SKILL.md` 的旧基线 | jumpFromGround 数据已标为 legacy，现行默认 Hardware HID、完整 mod CI 与历史/当前验收分开表述；本轮补正 lab.jump_key 说明、过期“当前基线”及原清单状态。原始历史证据保留。 |
@@ -47,12 +67,17 @@
 - 本次指出的 tick SDK 读取已收进局部 SEH，pre/post `client_player_read_fault` 均通过恢复，
   专项 **55/55**。仍不能推广为整个 tick 或所有 SDK 调用都已隔离。
 - HBUI 退档已增加 `leave_id` 和菜单快照，专项 **32/32**；正常退档恢复已验证，但异常形成根因未闭合。
-- 空闲热重载 **9/9**、真实 200000 tick 录制/保存/重载 **9/9** 已补齐，适用边界见
+- 原“空闲热重载 **9/9**”因错误命令和缺少代次验证已撤回；真实 200000 tick 录制/保存/重载
+  **9/9** 已补齐。修正后的热重载须验证实例代次与 disable/enable 记录，适用边界见
   `reliability-repairs.md`。持有按键/在途请求卸载与游戏共享序列化缓冲竞态不在已完成范围内。
+- 2026-11-03 按正确命令 `/ll reload probe` 修正后重验：代次证据与负向测试已补齐、`unload()`
+  正常返回、单独 `/ll unload probe` 的对照卸载成功，但 `reload` 可复现挂起（三次，无 crash
+  文件），具体阻塞点与归属 **unresolved** —— 现有证据不足以判给框架或 probe 自身。
+  该专项保持**未通过**，不再计入已完成项。
 - `ProbeMod` 的输入/宏可变别名已移除，直接访问唯一会话；宏/飞行/生命周期检查拆到领域模块，
-  原入口与检查名兼容。当前离线 **399/399**、最终完整现场 **1097/1097**，ruff/format、mypy、
+  原入口与检查名兼容。当前离线 **411/411**、最终完整现场 **1097/1097**，ruff/format、mypy、
   profiles、roles、lint_public 和完整 C++ 构建通过。
-- PacketTap `serialize_ids` 仍是显式高成本诊断；默认关闭、可能分配且无时间预算，不视为低成本观察。
+- PacketTap `serialize_ids` 仍是显式高成本诊断；默认关闭、可能分配，重序列化有默认 20 ms 累计预算，不视为低成本观察。
   配置和姿态已恢复，124 个 crash 无变化，最终恢复 **13/13**。后续结果以修复跟踪为准。
 
 ## 已修复问题与验收界限

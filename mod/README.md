@@ -205,14 +205,34 @@ mod 目录下的 `harness.json` 可以让游戏启动后自己进世界（适合
   复合菜单门禁保持不变；HBUI 异常退档的形成根因仍未闭合。
 - 飞行效果夹具统一安装、验证和只删除哨兵，支持 `regeneration/resistance/absorption` 备用候选；
   前四种候选被占用时现场 **48/48**，原效果保留。原效果按 duration/tick 允许自然到期。
-- `--hot-reload-only` **9/9**：通过 Hardware HID 聊天执行 `/ll mod reload probe`，同进程重连、
-  tick 推进、输入解锁、宏空闲及配置/DLL/crash 完整性通过。仅验收空闲场景，不证明在途释放安全。
+- 原“空闲热重载 **9/9**”已撤回：提交的 `/ll mod reload probe` 被拒绝（语法错误：意外的“mod”），
+  旧检查只验证输入和重连，未证明发生重载。正确形式为 `/ll reload probe`；必须另验实例代次和
+  disable/enable 记录，不能以管道恢复代替重载证据。
+- 2026-11-03 修正后重验**仍未通过**：日志显示已经进入 `disable`/`unload()`；只发
+  `/ll unload probe` 的对照里卸载成功（`probe.dll` 已释放、进程正常响应），但 `reload`
+  可复现挂起（全部线程 Wait、`probe.dll` 仍映射、crash 文件无新增）。**具体阻塞点与归属
+  unresolved**：`unload: disable returned 1` 只证明内部 `disable()` 返回，不能证明整个卸载
+  回调已返回；缺 `load` 行也不能排除 probe 自己的静态初始化/析构/注册器路径。
+  `lifecycle_prepare` 已覆盖全部 4 个静态钩子（以 `unhook()` 真实返回值判定状态），
+  但不调用它也同样挂起。运行该专项需要 `allow_packet_inject` 与 `allow_packet_capture`
+  （模板取自真实 `CommandRequestPacket`），4 键基线配置下会以 `packet_inject_disabled` 明确失败。
+- 模板准入由 `status.command_template{ready,reason}` 回读，使用与 `chat_send` 相同的
+  owner/generation/内容校验；attempt/fault 计数仅作诊断。无效或缺少可用性证据时不进入卸钩，
+  明确的发包拒绝立即进入恢复。主错误与恢复错误同时发生时，JSON 分别保留 `error` 与
+  `cleanup_error`，关闭连接与落盘仍执行。崩溃取证只注册可注销的 VEH，不替换进程全局异常过滤器。
 - `--macro-long-recording-only` **9/9**：同一 `record_id=1` 实际录满 **200000 tick**，
   总耗时 10603 秒；文件 28600002 字节，SHA-256
   `8d334ad7417eeff36e446c65d11b58f0bd63a7116de5b06a7a81a6e29e8b282c`，重载 ticks=200000。
   等待器重启后 `--macro-resume` 从 71371 行接续，游戏和录制没有重开，不拼接两段文件。
-- 当前离线 **399/399**，ruff/format、mypy、profiles、roles 和完整 C++ 构建通过；
-  最新完整现场与恢复证据见 `docs/reliability-repairs.md` 的后续记录。
+- 2026-11-03 生命周期边界修复：离线 **411/411**，基础现场
+  `--mod-core-live-only --require-complete` **44/44**，恢复核对 **16/16**；ruff/format、mypy、
+  profiles、roles 和 C++ 构建通过。本轮没有重跑完整现场或热重载，旧完整基线不能代替这两项重验。
+  逐项证据见 `docs/reliability-repairs.md` 的后续记录。
+- 2026-11-03 结构拆分：`selftest.py` 降至约 630 行，默认套件、领域检查与共享运行时分离；
+  封包/传送/飞行/legacy 录制请求分别由唯一状态对象持有，违规/断线页、入站与发送探针拆到
+  `ViolationWatch.cpp`/`InboundWatch.cpp`/`SendProbe.cpp`。CLI、检查名和协议保持兼容。
+  离线 **411/411**、ruff/format、mypy（109 files）、profiles 与完整 C++ 构建通过；
+  本轮没有安装 DLL 或重跑现场，不能据此宣称热重载或既有完整现场已复验。
 
 2026-11-01 Python 连接生命周期：新增 `py -3.11 driver/selftest.py --connection-only --require-complete`
 专项，验证客户端遗弃（含订阅循环）、正常退出和 `os._exit` 后的真实重连。实现与本批验收见
@@ -516,7 +536,10 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
 - `mouse_event` 的按键只到 `MouseInputEvent` 层：计数会涨，但在 1.26.51.01 上不会触发世界攻击；
   攻击仍用 `click`/`attack_entity`。`action=move` 的 dx 能转向。
 - H1 常规身份 tap 只写定长记录，不调用 `Packet::write`。`serialize_ids` 是显式
-  `sdk_hot_path_diagnostic`：在原投递上下文同步重序列化，可能分配且没有执行时间预算；
+  `sdk_hot_path_diagnostic`：在原投递上下文同步重序列化、可能分配；现在有硬预算
+  `serialize_budget_us`（默认 20000，0 不限），累计超预算后不再重序列化，改为记一条
+  `error=Budget` 并累加 `serialize_skipped`，`packet_stats` 同时给出
+  `serialize_samples/us/max_us/skipped/budget_us`。
   不跨线程保留 `Packet*`，字节不是线上原帧。`packet_capture` 回执标明 `serialization/diagnostic`，
   `packet_stats` 同样可见；`packet_bytes` 保留旧字段并标记来源和截断。`peer_sends` 恒为 0
   是实测结果：单机回环不经过 `BatchedNetworkPeer` / `NetworkConnection::receivePacket`。

@@ -33,6 +33,11 @@ $env:XMAKE_PKG_INSTALLDIR = 'D:\Tools\xmake-packages'
 产物在 `mod/probe/bin/probe/`：`probe.dll`、`probe.pdb`、`manifest.json`
 （`"platform": "client"`）。构建日志写入 `out/ci-mod-build.log`。
 
+脚本只在 `xmake` 的退出码非零时判失败。xmake 和 prelink 辅助程序会把进度写到
+stderr，`Tee-Object` 会把它变成 `NativeCommandError`；脚本因此在两条 xmake 命令前后
+临时把 `$ErrorActionPreference` 降为 `Continue`，否则一次正常的
+`[Prelink]: Generating bedrock_runtime_api.lib...` 就会让构建中止（2026-11-03 修复）。
+
 ## CI 完整构建
 
 `tests.yml` 的 `mod-build` 在 Windows 2022 runner 上安装固定版本 LLVM 22.1.8

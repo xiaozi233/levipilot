@@ -9,7 +9,10 @@
 
 namespace probe::detail {
 
-enum class PacketByteError : std::uint8_t { None, Seh, Cpp, Reentrant };
+// Budget: the explicit serialize_ids diagnostic stopped because the capture
+// session already spent its sampling time. The row is published so the caller
+// can see the cut-off instead of silently losing the tail.
+enum class PacketByteError : std::uint8_t { None, Seh, Cpp, Reentrant, Budget };
 
 struct PacketByteRecord {
     std::uint64_t   order = 0;

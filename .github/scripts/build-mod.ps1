@@ -18,11 +18,20 @@ $buildLog = Join-Path $logDirectory 'ci-mod-build.log'
 
 Push-Location (Join-Path $repoRoot 'mod/probe')
 try {
-    # Explicit tools avoid the older clang bundled with Visual Studio. Neither
-    # xmake's installation nor the SDK needs a machine-specific path patch.
-    & xmake f -y -p windows -a x64 -m release --target_type=client `
-        "--cc=$compiler" "--cxx=$compiler" 2>&1 | Tee-Object -FilePath $buildLog
-    if ($LASTEXITCODE -ne 0) {
+    # Native stderr (xmake progress, the prelink helper) is not a terminating
+    # error; only $LASTEXITCODE decides whether the build failed.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # Explicit tools avoid the older clang bundled with Visual Studio. Neither
+        # xmake's installation nor the SDK needs a machine-specific path patch.
+        & xmake f -y -p windows -a x64 -m release --target_type=client `
+            "--cc=$compiler" "--cxx=$compiler" 2>&1 | Tee-Object -FilePath $buildLog
+        $configureFailed = $LASTEXITCODE -ne 0
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($configureFailed) {
         # Package install failures keep the compiler output in install.txt.
         # Surface it before failing so a clean runner failure is diagnosable.
         if ($env:XMAKE_GLOBALDIR) {
@@ -38,8 +47,15 @@ try {
         }
         throw "xmake configure failed; see $buildLog"
     }
-    & xmake -j4 -y 2>&1 | Tee-Object -FilePath $buildLog -Append
-    if ($LASTEXITCODE -ne 0) { throw "xmake build failed; see $buildLog" }
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & xmake -j4 -y 2>&1 | Tee-Object -FilePath $buildLog -Append
+        $buildFailed = $LASTEXITCODE -ne 0
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($buildFailed) { throw "xmake build failed; see $buildLog" }
     foreach ($name in @('probe.dll', 'probe.pdb', 'manifest.json')) {
         $artifact = Join-Path 'bin/probe' $name
         if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) { throw "Missing output: $artifact" }

@@ -57,21 +57,21 @@ nlohmann::json stoppedJson(LegacyStream<>::Completion const& done) {
 } // namespace
 
 bool ProbeMod::startLegacy(std::uint64_t maxTicks, std::size_t capacity, StreamTest test, std::uint64_t drainDelayMs) {
-    std::lock_guard lock(mLegacyMutex);
-    if (mLegacyWorldLeft.exchange(false)) mLegacyStream.stop(StreamEnd::WorldLeft);
+    std::lock_guard lock(mLegacy.mutex);
+    if (mLegacy.worldLeft.exchange(false)) mLegacy.stream.stop(StreamEnd::WorldLeft);
     drainLegacyLocked();
-    if (!mLegacyStream.ready()) return false;
-    mLegacyLastCompletion = {};
-    mLegacyTest.store(test, std::memory_order_release);
-    mLegacyDrainAfterMs = GetTickCount64() + drainDelayMs;
+    if (!mLegacy.stream.ready()) return false;
+    mLegacy.lastCompletion = {};
+    mLegacy.test.store(test, std::memory_order_release);
+    mLegacy.drainAfterMs = GetTickCount64() + drainDelayMs;
     // Preserve the old global reset, but number JSON samples within their own
     // session so a tick already in progress cannot create gaps or end early.
     mTick = 0;
-    mLegacyStream.begin(maxTicks, capacity);
+    mLegacy.stream.begin(maxTicks, capacity);
     enqueue(
         nlohmann::json{
             {"event",     "started"               },
-            {"record_id", mLegacyStream.recordId()},
+            {"record_id", mLegacy.stream.recordId()},
             {"max_ticks", maxTicks                }
     }.dump()
     );
@@ -80,9 +80,9 @@ bool ProbeMod::startLegacy(std::uint64_t maxTicks, std::size_t capacity, StreamT
 
 bool ProbeMod::drainLegacyLocked() {
     LegacyTick row;
-    while (mLegacyStream.pop(row)) enqueue(legacyJson(row).dump());
-    if (auto done = mLegacyStream.takeCompletion()) {
-        mLegacyLastCompletion = *done;
+    while (mLegacy.stream.pop(row)) enqueue(legacyJson(row).dump());
+    if (auto done = mLegacy.stream.takeCompletion()) {
+        mLegacy.lastCompletion = *done;
         enqueue(stoppedJson(*done).dump());
         return true;
     }
@@ -90,13 +90,13 @@ bool ProbeMod::drainLegacyLocked() {
 }
 
 void ProbeMod::stopLegacy(StreamEnd reason, bool reply) {
-    std::lock_guard lock(mLegacyMutex);
-    if (reason == StreamEnd::Client && (mLegacyWorldLeft.exchange(false) || !mWorld.inWorld())) {
+    std::lock_guard lock(mLegacy.mutex);
+    if (reason == StreamEnd::Client && (mLegacy.worldLeft.exchange(false) || !mWorld.inWorld())) {
         reason = StreamEnd::WorldLeft;
     }
-    mLegacyStream.stop(reason);
+    mLegacy.stream.stop(reason);
     if (!drainLegacyLocked() && reply) {
-        auto done = mLegacyLastCompletion;
+        auto done = mLegacy.lastCompletion;
         if (!done.recordId) done.reason = reason;
         // An explicit idempotent stop acknowledges the request using the last
         // outcome. It cannot turn an auto-stop failure into success.
@@ -106,9 +106,9 @@ void ProbeMod::stopLegacy(StreamEnd reason, bool reply) {
 }
 
 void ProbeMod::captureLegacyTick(ClientInstance& client, LocalPlayer& player) {
-    mLegacyStream.tick([&](LegacyTick& out) {
+    mLegacy.stream.tick([&](LegacyTick& out) {
         return guardedGameRead([&] {
-            injectStreamFault(mLegacyTest.exchange(StreamTest::None));
+            injectStreamFault(mLegacy.test.exchange(StreamTest::None));
             auto const& pos = player.getPosition();
             auto const  vel = player.getVelocity();
             auto const  rot = player.getRotation();
@@ -190,10 +190,10 @@ void ProbeMod::tickParkourEvents(LocalPlayer& player, std::uint64_t tick) {
 
 void ProbeMod::drainTickStreams() {
     {
-        std::lock_guard lock(mLegacyMutex);
-        if (mLegacyWorldLeft.exchange(false) || !mWorld.inWorld()) mLegacyStream.stop(StreamEnd::WorldLeft);
-        if (!mRunning.load()) mLegacyStream.stop(StreamEnd::Disabled);
-        if (!mLegacyStream.active() || GetTickCount64() >= mLegacyDrainAfterMs) drainLegacyLocked();
+        std::lock_guard lock(mLegacy.mutex);
+        if (mLegacy.worldLeft.exchange(false) || !mWorld.inWorld()) mLegacy.stream.stop(StreamEnd::WorldLeft);
+        if (!mRunning.load()) mLegacy.stream.stop(StreamEnd::Disabled);
+        if (!mLegacy.stream.active() || GetTickCount64() >= mLegacy.drainAfterMs) drainLegacyLocked();
     }
     ParkourEvent event;
     while (mParkourEvents.pop(event)) {

@@ -132,7 +132,7 @@ void WorldSession::start() {
         hookCancelCalls("world_left");
         recordCancel(RecordEnd::WorldLeft);
         mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);
-        mOwner.mLegacyWorldLeft.store(true, std::memory_order_release);
+        mOwner.mLegacy.worldLeft.store(true, std::memory_order_release);
         mOwner.mMacroSession.worldLeft();
         mOwner.mChatCapture.cancel("world_left");
         mOwner.cancelQueries("world_left");

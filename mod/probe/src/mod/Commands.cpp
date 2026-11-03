@@ -74,6 +74,13 @@ void ProbeMod::dispatchLine(std::string const& line) {
         enqueue(R"({"event":"error","reason":"tick_recovering"})");
         return;
     }
+    // Quiesced for unload: no new work may be admitted between the last
+    // in-flight request and the moment the hooks come off. Only the lifecycle
+    // switch, liveness and the emergency stop stay reachable.
+    if (mQuiescing.load(std::memory_order_acquire) && !quiesceExempt(cmd)) {
+        enqueue(R"({"event":"error","reason":"quiescing"})");
+        return;
+    }
     // Each domain returns true only after consuming the command. Keep all
     // handlers under dispatchWithSeh, including their early error responses.
     if (dispatchDiagnosticsCommand(cmd, j)

@@ -102,6 +102,13 @@ private:
     std::atomic<std::uint64_t>      mDenied{0};
     std::atomic<std::uint64_t>      mRecvRecords{0};
     std::atomic<std::uint64_t>      mIdFaults{0}, mByteFaults{0};
+    // serialize_ids is an explicit diagnostic with a hard sampling budget: once
+    // the accumulated reserialization time passes it, later samples are cut.
+    std::atomic<std::uint64_t>      mSerializeSamples{0};
+    std::atomic<std::uint64_t>      mSerializeUs{0};
+    std::atomic<std::uint64_t>      mSerializeMaxUs{0};
+    std::atomic<std::uint64_t>      mSerializeSkipped{0};
+    std::atomic<std::uint64_t>      mSerializeBudgetUs{20000};
     std::atomic<TestFault>          mTestFault{TestFault::None};
     // Stop closes callback entry before waiting, so it cannot miss a callback
     // paused between entry and an ordinary in-flight counter increment.

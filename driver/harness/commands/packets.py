@@ -17,6 +17,7 @@ class PacketCommands(PipeConnection):
         sample: int = 1,
         serialize_ids: list[int] | None = None,
         directions: list[str] | None = None,
+        serialize_budget_us: int | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         message: dict[str, Any] = {"cmd": "packet_capture", "on": bool(on), "sample": int(sample)}
@@ -26,6 +27,8 @@ class PacketCommands(PipeConnection):
             message["serialize_ids"] = [int(value) for value in serialize_ids]
         if directions is not None:
             message["directions"] = [str(value) for value in directions]
+        if serialize_budget_us is not None:
+            message["serialize_budget_us"] = int(serialize_budget_us)
         return self.request(message, "packet_capture", timeout=timeout)
 
     def packet_drain(self, since: int = 0, limit: int = 1024) -> dict[str, Any]:

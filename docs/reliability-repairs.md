@@ -18,7 +18,7 @@
 | 9 | Hook 槽复用的旧 mem 数据 | 完成 | 命中记录改为零初始化定长载荷；无 mem 配置不会继承上一次快照 |
 | 10 | Chat 请求超时、主菜单生命周期 | 完成 | 请求独享快照、2 秒超时、退出取消、主菜单平台队列；native 回归、专项现场 9/9、完整现场 237/237 |
 | 11 | UseTask 服务端等待没有截止条件 | 完成 | 5 秒截止、迟到副作用拒绝、拥有者失败回调；native 边界/竞争/零分配、专项现场 16/16、完整现场 253/253 |
-| 12 | 游戏线程采样异常边界、JSON、分配与锁 | 完成；显式高成本诊断保留限制 | 常规路径已迁定长快照/队列、局部 SEH、后台格式化与分阶段生命周期。PacketTap 身份不序列化；`serialize_ids` 明确为原上下文高成本重序列化诊断，可能分配且无时间预算，不保留 Packet 指针或冒充线上原帧。`mem_arg`、ViolationWatch/send_probe 同属默认关闭诊断；按需 state/inventory 的 SDK owning 名称复制有界且不属高频 hook。native/现场边界通过，四组开销对照无提速结论 |
+| 12 | 游戏线程采样异常边界、JSON、分配与锁 | 完成；显式高成本诊断保留限制 | 常规路径已迁定长快照/队列、局部 SEH、后台格式化与分阶段生命周期。PacketTap 身份不序列化；`serialize_ids` 明确为原上下文高成本重序列化诊断，可能分配，默认累计预算 20 ms，不保留 Packet 指针或冒充线上原帧。`mem_arg`、ViolationWatch/send_probe 同属默认关闭诊断；按需 state/inventory 的 SDK owning 名称复制有界且不属高频 hook。native/现场边界通过，四组开销对照无提速结论 |
 | 13 | ProbeMod 跨领域状态耦合 | 完成；构建/native 通过，2026-11-03 现场复验通过 | MacroSession 统一播放/录制/冷锁/停止与世界退出；InputSession 统一事件、held/latch、输入锁、tick 状态及清理。ProbeMod 不再保留可变引用别名，直接访问唯一会话；无跨 TU reset 清单，tick 无冷锁/分配/JSON，Hardware HID 与既有协议不变 |
 | 14 | 服务端玩家解析重复 | 完成；身份专项 44/44 | 背包、命令、权限、物品使用、传送、实体攻击与飞行共用 ServerPlayerContext；UUID+epoch 为默认身份，显式命令名保留，实体/飞行名字兜底已删除。无玩家/换世界/旧请求/故障恢复通过；后续飞行与完整现场见恢复记录 |
 | 15 | 交互覆盖、自检跳过统计 | 完成；现场未验范围单列 | 三态/--require-complete、WorldLost 首错与 finally 保留；诊断/入站/send_probe/PacketTap 迁领域模块，CrashSnapshot 可复用，原检查名/专项参数不变。攻击/放置/使用以血量、方块、背包回读真实效果，interact_entity 仍 best effort。身份 44/44、离线 23/23；HBUI/热卸载/超长录制不冒充已验收 |
@@ -1030,7 +1030,8 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
 | tick 局部读取边界 | **55/55**，`out/review-20261103-tick-recovery.log` |
 | 退档序号与菜单诊断 | **32/32**，`out/review-20261103-final-entry-lifecycle.log` |
 | 前四种效果已占用的哨兵场景 | **48/48**，`out/review-20261103-occupied-refactored.log` |
-| 最终 DLL 的空闲热重载 | **9/9**，`out/review-20261103-final-hot-reload.log` |
+| 原“最终 DLL 的空闲热重载” | **9/9 已撤回**：错误命令被游戏拒绝，未证明发生重载；原日志保留 `out/review-20261103-final-hot-reload.log` |
+| 修正后的空闲热重载 | **未通过**：卸载成功（`probe.dll` 已释放），重载死锁在框架加载阶段，见本文件 2026-11-03 小节 |
 | 200000 tick 现场录制/保存/重载 | **9/9**，`out/review-20261103-macro-long-resume-ready.log` |
 | 完整现场 `--require-complete` | **1097/1097，0 fail、0 skip、0 required skip**，`out/review-20261103-final-full.log` |
 
@@ -1050,9 +1051,40 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
   **28600002 字节**，SHA-256 `8d334ad7417eeff36e446c65d11b58f0bd63a7116de5b06a7a81a6e29e8b282c`，
   重载 ticks=200000；不是 native 模拟、缩短上限或拼接两段录制。报告
   `out/macro-long-recording-6654531000000.json`。
-- 热重载通过 Hardware HID 聊天执行 `/ll mod reload probe`，不在 probe 自己的服务端命令回调里
-  自卸载。同进程重连、tick 推进、输入解锁、宏空闲、配置/DLL/crash 完整性通过；仅证明空闲场景，
-  不证明持有按键或任意在途请求时可安全卸载。
+- 原“热重载 **9/9**”已撤回：Hardware HID 提交的 `/ll mod reload probe` 被游戏拒绝
+  （语法错误：意外的“mod”），旧检查只验证输入、重连和 tick，没有证明重载。原报告
+  `out/hot-reload-13638828000000.json` 保留。改用 `/ll reload probe` 后又发现 mod 未注册卸载函数，
+  现场 **12/14** 正确失败；正在补 `ProbeMod::unload()` 与持久代次/日志，完成前不得恢复完成结论。
+- **2026-11-03 修正后重验：仍未通过；reload 可复现挂起，阻塞点归属 unresolved。**
+  - 命令已按 LeviLamina 26.51.7 源码改正为 `/ll reload probe`（`ModManage.cpp` 的
+    `LeviCommand{operation, mod}`，alias `ll`；`ll mod reload probe` 多一层不存在的字面量）。
+  - 正向证据已落地：`status.lifecycle{generation, disable_id, running}` 与
+    `harness-boot.log` 的 `enable: begin/done lifecycle=N`、`disable: begin/done lifecycle=N
+    disable_id=M ok=1` 互相印证，跨进程重启单调递增（现场实测 337→338→…→345）。专项要求
+    同一 PID 内 `generation` 与 `disable_id` **同时**增长且四条日志齐全，否则判失败。
+  - 负向回归：`tests/test_selftest_lifecycle.py` 覆盖「代次未变 → 失败」「命令未返回失败 →
+    不进入 reload」「明确协议拒绝 → 视为失败而不是"发送后断开"」「模板只有 attempt、
+    伴随 fault → 失败」「卸钩失败 → 阻止 reload」「恢复抛错 → 仍 close 且报表落盘」。
+  - mod 侧：新增 `ProbeMod::unload()`；`lifecycle_prepare` 覆盖全部 4 个静态钩子
+    （key/mouse/player/turn），四个 helper 都以 `unhook()` 的真实返回值决定状态，聚合时
+    不短路，回执同时带 `ok`、逐钩子 `results` 与真实 `hooks`；`unload()` 加
+    `unload: begin` / `unload: disable returned N` 面包屑。异常过滤器曾补顺序恢复，后续复核发现
+    两次全局 setter 不能防止覆盖并发安装者；现已删除该补充过滤器，只保留可注销的 VEH。
+  - 现场（三次可复现）：命令被服务端接受并真正进入卸载 —— `disable: begin/done ok=1` →
+    `unload: begin` → `unload: disable returned 1`，随后进程挂起：全部线程 `Wait`、
+    `probe.dll` 仍映射、crash 文件 124 个无新增（不是崩溃）。
+  - 对照实验：`reload` 不调用 `lifecycle_prepare` 同样挂起（说明去掉 prepare 不足以消除现象，
+    不等于证明与其无关）；只发 `/ll unload probe` 时该次对照**卸载成功**，进程
+    `Responding=True` 且 `probe.dll` 已从模块表消失。
+  - **能确证的边界**：`unload: disable returned 1` 在 `return stopped` 之前写出，只证明内部
+    `disable()` 返回，不能证明整个卸载回调已返回；缺 `load` 行也不能排除 logger、DLL 静态
+    初始化/析构、注册器等 probe 自身路径；全部线程 `Wait` 与无 crash 文件不能单独定位归属。
+    因此：**reload 挂起可复现，具体阻塞点及归属 unresolved**。
+  - 结论：专项保持**未通过**，`--require-complete` 会如实失败；不写成"已定位为框架缺陷"。
+    该专项需要 `allow_packet_inject` 与 `allow_packet_capture`（模板取自真实
+    `CommandRequestPacket`），4 键基线配置下会以 `packet_inject_disabled` 明确失败。
+    证据：`out/hang-20261103/`、`out/hot-reload-*.json`、
+    `out/review-20261103-hot-reload-fixed.log`、`out/acceptance-20261103-hot-reload-review.md`。
 - `leave_world_result/world_left` 增加 `leave_id`，`worlds` 增加退档序号和菜单快照。
   正常退档瞬间可见 `toast_screen`、`leave_done=false`、服务端对象仍存在，之后 HBUI 与世界列表恢复；
   菜单复合门禁未放宽。**异常 HBUI 退档的形成根因仍未复现、未闭合**，新增字段只用于关联诊断。
@@ -1065,3 +1097,44 @@ profile `--check` 为 up to date，roles **50/57**。固定水池修复只有专
   宏空闲和 ping 回读 **13/13** 通过，证据 `out/review-20261103-final-integrity.json`。
   124 个 crash 文件无新增/修改；其中 `crash-30368-0.dmp` 是先前强制恢复遗留的 0 字节文件，
   不是本轮 tick 故障产物。未新增逆向。
+
+### 2026-11-03 生命周期失败边界复修
+
+修复独立复核报告 `out/acceptance-20261103-hot-reload-fixes-review.md` 的三处剩余问题：
+
+1. 移除补充的进程全局异常过滤器，保留可注销 VEH；不通过两次 setter 模拟条件恢复。
+2. 新增 `status.command_template{ready,reason}`，直接回读与注入端相同的 latest 校验结果；
+   热重载准备在真实可用性确认之后进行，缺少证据或明确拒绝立即停止。packet injection 专项保留
+   正常/故障/超长模板的状态回读。attempt+fault 回归已改为同时递增，另补无 fault 的无效模板、
+   旧 mod 缺字段、busy 行发布完成等对照。
+3. 先保存恢复异常，再由首错保护处理传播；主错误与清理错误同时发生时 JSON 同时包含
+   `error/cleanup_error`。补正文失败及检查失败早退与恢复失败的组合回归，close/落盘均执行。
+
+验收：离线 **411/411**（185.484 秒，无 skip）；生命周期 Python **13/13**；ruff check/format、
+mypy（100 files）、profiles、roles（56/63）、lint_public、完整 C++ 构建通过。
+正常保存退出后安装新 DLL、重进同一世界；基础现场
+`--mod-core-live-only --require-complete` **44/44，0 fail、0 skip**，最终恢复 **16/16**。
+配置逐字节不变（`fc33faf25181fc0c0c154e036437792ca981d048880096b34c4b128a3065bc37`）；
+安装/构建 DLL 均为 `5b72e6ca181464c3f91dbc3ec0c8e03b81bfef7b611b5871de7792f24b721ba3`。
+124 个 crash 的文件名、大小与 mtime 和修复前一致。本轮没有重算旧 crash 内容哈希。
+
+证据：`out/fix-20261103-lifecycle-offline.log`、`out/fix-20261103-lifecycle-build.log`、
+`out/fix-20261103-lifecycle-restart.log`、`out/fix-20261103-lifecycle-core-live.log`、
+`out/fix-20261103-lifecycle-final-integrity.json`。首次恢复核对的 pitch 偏差保留在
+`out/fix-20261103-lifecycle-pre-restore-integrity.json`，通过保留效果的 teleport 恢复后重新核对全过。
+
+本轮未执行 `/ll reload` 或 `/ll unload`，没有强停未保存会话，没有新增逆向。
+真实热重载仍未通过，既有挂起的阻塞点与归属仍 unresolved；不将离线及基础现场通过写成完整现场通过。
+
+### 2026-11-03 自检入口与诊断所有权结构轮
+
+- `selftest.py` 从 6620 行降至约 630 行：默认全套、共享运行时和七组领域检查独立成模块，
+  原 CLI、检查名与兼容导出不变。`ProbeMod` 的封包、传送、飞行和 legacy 录制请求字段分别迁入
+  四个唯一状态对象；没有引入第二套生命周期或可变别名。
+- 违规/断线页留在 `ViolationWatch.cpp`，入站/copy 系列归入 `InboundWatch.cpp`，发送/序列化
+  探针归入 `SendProbe.cpp`。共享头仅承载定长记录和冷侧工具；首错冻结、origin 槽、JSON 字段与
+  热路径纪律保持原契约。
+- 完整离线 **411/411**，自检相关 **51/51**，ruff check/format、mypy（109 files）、profiles
+  和完整 C++ 构建通过。最终增量构建同时验证三类诊断的跨 TU 链接。
+- 本轮只做结构验收，没有安装 DLL、输入注入、完整现场或 reload/unload。旧 **1097/1097**
+  是重构前现场证据，不覆盖本轮；热重载挂起、HBUI 异常退档根因与游戏网络竞态仍未闭合。

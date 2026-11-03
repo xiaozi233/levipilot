@@ -21,20 +21,35 @@ ProbeMod& ProbeMod::getInstance() {
 }
 
 bool ProbeMod::load() {
+    // Deliberately the first thing load() does: on the hot-reload path the
+    // absence of this line separates "the loader never called ll_mod_load" from
+    // "our load path started and then blocked".
+    bootLog("load: enter");
     getSelf().getLogger().info("harness: loading");
-    bootLog("load");
+    bootLog("load: done");
     return true;
 }
 
 bool ProbeMod::enable() {
+    bootLog("enable: enter tid=" + std::to_string(GetCurrentThreadId()));
+    mQuiescing.store(false, std::memory_order_release);
     if (mRunning.exchange(true)) {
+        bootLog("enable: already running");
         return true;
     }
-    bootLog("enable: begin");
-    if (!mCommandTemplates.initialize()) bootLog("packet templates: allocation failed");
+    auto const previous   = readLifecycleCounters(getSelf().getModDir() / "harness-boot.log");
+    auto const generation = previous.generation + 1;
+    mLifecycleGeneration.store(generation);
+    mDisableSerial.store(previous.disable);
+    bootLog("enable: begin lifecycle=" + std::to_string(generation));
+    if (!mPacketRequests.templates.initialize()) bootLog("packet templates: allocation failed");
     mChatCapture.reset();
     resetQueries();
     hookResetCalls();
+    if (!setLifecycleKeyHook(true)) bootLog("lifecycle: key hook restore failed");
+    if (!setLifecycleMouseHook(true)) bootLog("lifecycle: mouse hook restore failed");
+    if (!setLifecyclePlayerHook(true)) bootLog("lifecycle: player hook restore failed");
+    if (!setLifecycleTurnHook(true)) bootLog("lifecycle: turn hook restore failed");
     mPoseEpoch.fetch_add(1);
 
     mMouseListener =
@@ -105,7 +120,8 @@ bool ProbeMod::enable() {
             }
         }
     }
-    installCrashHandler();
+    // VEH owns crash diagnostics and is explicitly removed by watchShutdown().
+    // Do not install a process-global filter that could outlive this DLL.
     resolveInit(getSelf().getModDir());
     watchInit();
     overheadInit();
@@ -127,7 +143,7 @@ bool ProbeMod::enable() {
 
     mServerThread = std::thread([this] { serverLoop(); });
     getSelf().getLogger().info("harness: enabled, pipe=\\\\.\\pipe\\mcbe-harness");
-    bootLog("enable: done");
+    bootLog("enable: done lifecycle=" + std::to_string(generation));
     return true;
 }
 
@@ -137,8 +153,15 @@ bool ProbeMod::disable() {
         // turn a second disable into permission to unload its live callback.
         return !violationWatchStats().value("active", true);
     }
+    // Teardown itself is not a queued request, so it must not be refused by the
+    // quiesce gate it is about to establish for the next unload.
+    mQuiescing.store(false, std::memory_order_release);
 
+    auto const generation = mLifecycleGeneration.load();
+    auto const disableId  = mDisableSerial.fetch_add(1) + 1;
+    bootLog("disable: begin lifecycle=" + std::to_string(generation) + " disable_id=" + std::to_string(disableId));
     stopLegacy(StreamEnd::Disabled, false);
+    bootLog("disable: streams stopped");
     cancelTasks("disabled");
     mChatCapture.cancel("disabled");
     cancelQueries("disabled");
@@ -150,6 +173,7 @@ bool ProbeMod::disable() {
         std::lock_guard lock(mMacroSession.mutex);
         drainMacroRecordingLocked();
     }
+    bootLog("disable: work cancelled");
     // Real input is unlocked below. Held injected edges still require the game
     // tick for release; stopping the session does not prove they were released.
     packetCaptureStop();
@@ -177,11 +201,13 @@ bool ProbeMod::disable() {
     if (mServerThread.joinable()) {
         mServerThread.join();
     }
+    bootLog("disable: server thread joined");
     bool const violationStopped = !violationWatchStop().value("active", true);
     recordStop();
     if (mSpoolThread.joinable()) {
         mSpoolThread.join();
     }
+    bootLog("disable: spool thread joined");
     // The spool worker can finish before an admitted capture releases its
     // lease. stop() has now joined it, so persist any remaining final failure.
     if (auto failure = recordTakeFailure()) enqueue(failure->dump());
@@ -201,7 +227,22 @@ bool ProbeMod::disable() {
         mQueue.clear();
     }
     getSelf().getLogger().info("harness: disabled");
+    bootLog(
+        "disable: done lifecycle=" + std::to_string(generation) + " disable_id=" + std::to_string(disableId)
+        + " ok=" + (violationStopped ? "1" : "0")
+    );
     return violationStopped;
+}
+
+bool ProbeMod::unload() {
+    // Breadcrumbs for the hot-reload acceptance: the process hung once after
+    // "disable: done" with probe.dll still mapped. "returning" is written on the
+    // last statement, so a missing line means the block is still inside.
+    bootLog("unload: begin tid=" + std::to_string(GetCurrentThreadId()));
+    bool const stopped = disable();
+    bootLog("unload: disable returned " + std::to_string(stopped ? 1 : 0));
+    bootLog("unload: returning " + std::to_string(stopped ? 1 : 0));
+    return stopped;
 }
 
 void ProbeMod::loadAutoConfig() {
@@ -622,24 +663,11 @@ void ProbeMod::updateFocusState() {
 }
 
 
-void ProbeMod::installCrashHandler() {
-    // LeviLamina or the game may replace the top-level filter after mod load,
-    // so the authoritative hook is the vectored handler registered by
-    // watchInit(). This filter stays as a second chance.
-    SetUnhandledExceptionFilter(&ProbeMod::crashFilter);
-}
-
 void ProbeMod::handleFatalException(EXCEPTION_POINTERS* info) {
     if (mCrashDumpInProgress.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
     writeCrashArtifacts(info);
-}
-
-LONG WINAPI ProbeMod::crashFilter(EXCEPTION_POINTERS* info) {
-    getInstance().writeCrashArtifacts(info);
-    // Let Windows Error Reporting / the previous filter continue as usual.
-    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
@@ -748,6 +776,30 @@ LL_TYPE_INSTANCE_HOOK(
 
 static ll::memory::HookRegistrar<ProbeLocalPlayerTickHook> gPlayerTickHook;
 
+namespace probe {
+
+bool ProbeMod::setLifecyclePlayerHook(bool on) {
+    if (on) {
+        if (mLifecyclePlayerHooked.load(std::memory_order_acquire)) return true;
+        int const status = ProbeLocalPlayerTickHook::hook();
+        if (status != 0) {
+            bootLog("lifecycle: player hook restore failed status=" + std::to_string(status));
+            return false;
+        }
+        mLifecyclePlayerHooked.store(true, std::memory_order_release);
+        return true;
+    }
+    if (!mLifecyclePlayerHooked.exchange(false, std::memory_order_acq_rel)) return true;
+    if (!ProbeLocalPlayerTickHook::unhook()) {
+        mLifecyclePlayerHooked.store(true, std::memory_order_release);
+        bootLog("lifecycle: player hook unhook failed");
+        return false;
+    }
+    return true;
+}
+
+} // namespace probe
+
 // Background raw mouse input still reaches the game; without this guard the
 // camera keeps turning while another window is focused. Our own look/task calls
 // set mInputSession.injectingLook and pass through.
@@ -768,5 +820,28 @@ LL_TYPE_INSTANCE_HOOK(
 
 static ll::memory::HookRegistrar<ProbeTurnDeltaHook> gTurnDeltaHook;
 
+namespace probe {
+
+bool ProbeMod::setLifecycleTurnHook(bool on) {
+    if (on) {
+        if (mLifecycleTurnHooked.load(std::memory_order_acquire)) return true;
+        int const status = ProbeTurnDeltaHook::hook();
+        if (status != 0) {
+            bootLog("lifecycle: turn hook restore failed status=" + std::to_string(status));
+            return false;
+        }
+        mLifecycleTurnHooked.store(true, std::memory_order_release);
+        return true;
+    }
+    if (!mLifecycleTurnHooked.exchange(false, std::memory_order_acq_rel)) return true;
+    if (!ProbeTurnDeltaHook::unhook()) {
+        mLifecycleTurnHooked.store(true, std::memory_order_release);
+        bootLog("lifecycle: turn hook unhook failed");
+        return false;
+    }
+    return true;
+}
+
+} // namespace probe
 
 LL_REGISTER_MOD(probe::ProbeMod, probe::ProbeMod::getInstance());

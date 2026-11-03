@@ -133,6 +133,9 @@ class ModModelTests(unittest.TestCase):
     def test_overhead_window_concurrent_wrap_and_allocation_contract(self) -> None:
         self.run_native("overhead_model")
 
+    def test_lifecycle_log_generations_and_disable_ids(self) -> None:
+        self.run_native("lifecycle_model")
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipes required")
     def test_pipe_cancellation_and_nonreading_client(self) -> None:
         self.run_native("pipe_channel")

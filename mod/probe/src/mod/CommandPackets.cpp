@@ -88,11 +88,14 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             return true;
         }
         auto const mode = j.value("mode", std::string{});
-        if (mode == "seh") mPacketTemplateTest = CaptureTest::Fault;
-        else if (mode == "cpp") mPacketTemplateTest = CaptureTest::Cpp;
-        else if (mode == "long") mPacketTemplateTest = CaptureTest::Partial;
-        else if (mode == "off") mPacketTemplateTest = CaptureTest::None;
-        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        if (mode == "seh") mPacketRequests.templateTest = CaptureTest::Fault;
+        else if (mode == "cpp") mPacketRequests.templateTest = CaptureTest::Cpp;
+        else if (mode == "long") mPacketRequests.templateTest = CaptureTest::Partial;
+        else if (mode == "off") mPacketRequests.templateTest = CaptureTest::None;
+        else {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
         enqueue(R"({"event":"packet_template_test_armed"})");
         return true;
     }

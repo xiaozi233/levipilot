@@ -39,6 +39,87 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         enqueue(R"({"event":"tick_error_test_armed"})");
         return true;
     }
+    if (cmd == "lifecycle_prepare") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
+        }
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        bool const on = j.value("on", true);
+        if (!on) {
+            // Unload contract: (1) refuse when anything is still in flight,
+            // (2) stop admitting new work, (3) only then release the hooks.
+            auto const     tasks    = taskStatusJson();
+            auto const     req      = readRequests();
+            bool const     movement = req.input.forward != 0.0f || req.input.strafe != 0.0f || req.input.sprint
+                                   || req.input.sneak || req.input.jump || req.input.rmb || req.input.lmb;
+            bool const     looking  = req.lookTicks > 0;
+            nlohmann::json busy     = {
+                {"held_mask", mInputSession.controlHeldMask.load()},
+                {"injecting_input", mInputSession.injecting.load()},
+                {"injecting_look", mInputSession.injectingLook.load() != 0},
+                {"cleanup_pending", mInputSession.controlCleanupPending.load()},
+                {"movement_request", movement},
+                {"look_request", looking},
+                {"macro_playing", mMacroSession.playback.active()},
+                {"macro_recording", mMacroSession.recording.active()},
+                {"record_active", recordActive()},
+                {"task", tasks.value("active", nlohmann::json())},
+                {"tick_recovery", mTickRecovery.active()},
+            };
+            bool const idle = busy["held_mask"] == 0 && !busy["injecting_input"] && !busy["injecting_look"]
+                           && !busy["cleanup_pending"] && !busy["movement_request"] && !busy["look_request"]
+                           && !busy["macro_playing"] && !busy["macro_recording"] && !busy["record_active"]
+                           && busy["task"].is_null() && !busy["tick_recovery"];
+            if (!idle) {
+                enqueue(
+                    nlohmann::json{
+                        {"event",  "lifecycle_prepare"},
+                        {"on",     false              },
+                        {"ok",     false              },
+                        {"reason", "busy"             },
+                        {"busy",   busy               }
+                }.dump()
+                );
+                return true;
+            }
+            mQuiescing.store(true, std::memory_order_release);
+        }
+        // Every statically registered hook must be gone before the DLL is
+        // unloaded, so a restore attempt must cover all four even when an
+        // earlier one fails (no short-circuit).
+        bool const keyOk    = setLifecycleKeyHook(on);
+        bool const mouseOk  = setLifecycleMouseHook(on);
+        bool const playerOk = setLifecyclePlayerHook(on);
+        bool const turnOk   = setLifecycleTurnHook(on);
+        bool const allOk    = keyOk && mouseOk && playerOk && turnOk;
+        if (!on && !allOk) {
+            // A hook is still installed: lift the quiesce state so the session
+            // stays usable instead of deadlocking behind a partial teardown.
+            mQuiescing.store(false, std::memory_order_release);
+        }
+        if (on) {
+            mQuiescing.store(false, std::memory_order_release);
+        }
+        enqueue(
+            nlohmann::json{
+                {"event",     "lifecycle_prepare"                                                         },
+                {"on",        on                                                                          },
+                {"ok",        allOk                                                                       },
+                {"quiescing", mQuiescing.load()                                                           },
+                {"results",   {{"key", keyOk}, {"mouse", mouseOk}, {"player", playerOk}, {"turn", turnOk}}},
+                {"hooks",
+                 {{"key", mLifecycleKeyHooked.load()},
+                  {"mouse", mLifecycleMouseHooked.load()},
+                  {"player", mLifecyclePlayerHooked.load()},
+                  {"turn", mLifecycleTurnHooked.load()}}                                                  }
+        }.dump()
+        );
+        return true;
+    }
     if (cmd == "ping") {
         enqueue(
             R"({"event":"pong","mod":"probe","protocol":4,"capabilities":["tick_json","bin_record","mem","watch","signin","hook"]})"
@@ -424,43 +505,72 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         nlohmann::json out;
         out["event"]           = "status";
         out["in_world"]        = mWorld.inWorld();
+        out["lifecycle"] = {
+            {"generation", mLifecycleGeneration.load()},
+            {"disable_id", mDisableSerial.load()      },
+            {"running",    mRunning.load()            }
+        };
         auto const identity = localPlayerIdentity();
         auto const identityFailures = mPlayerIdentity.failures();
-        out["player_identity"] = {{"valid", identity.valid != 0}, {"epoch", mPoseEpoch.load()},
-            {"sample_tick", identity.tick}, {"uuid_a", identity.uuidA}, {"uuid_b", identity.uuidB},
-            {"faults", identityFailures.fault}, {"failures", identityFailures.cpp}, {"empty", identityFailures.empty}};
-        out["controls"] = {{"injecting_input", mInputSession.injecting.load()}, {"injecting_look", mInputSession.injectingLook.load() != 0},
-            {"cleanup_pending", mInputSession.controlCleanupPending.load()}, {"held_mask", mInputSession.controlHeldMask.load()}};
+        out["player_identity"]      = {
+            {"valid",       identity.valid != 0   },
+            {"epoch",       mPoseEpoch.load()     },
+            {"sample_tick", identity.tick         },
+            {"uuid_a",      identity.uuidA        },
+            {"uuid_b",      identity.uuidB        },
+            {"faults",      identityFailures.fault},
+            {"failures",    identityFailures.cpp  },
+            {"empty",       identityFailures.empty}
+        };
+        out["controls"] = {
+            {"injecting_input", mInputSession.injecting.load()            },
+            {"injecting_look",  mInputSession.injectingLook.load() != 0   },
+            {"cleanup_pending", mInputSession.controlCleanupPending.load()},
+            {"held_mask",       mInputSession.controlHeldMask.load()      }
+        };
         auto const recovery = mTickRecovery.snapshot();
-        out["tick_recovery"] = {{"recovery_id", recovery.id}, {"active", recovery.phase != TickRecovery::Phase::Running},
-            {"phase", recovery.phase == TickRecovery::Phase::Running ? "running"
-                      : recovery.phase == TickRecovery::Phase::Pending ? "pending" : "prepared"}};
-        out["world_entry"]     = mWorld.entryStatus();
-        out["recording"]       = mLegacyStream.active();
-        out["tick"]                  = mTick.load();
-        out["macro_playing"]         = mMacroSession.playback.active();
-        out["macro_index"]           = mMacroSession.playback.index();
-        out["macro_recording"]       = mMacroSession.recording.active();
-        out["queue_dropped"]   = mQueueDropped.load();
+        out["tick_recovery"] = {
+            {"recovery_id", recovery.id                                   },
+            {"active",      recovery.phase != TickRecovery::Phase::Running},
+            {"phase",
+             recovery.phase == TickRecovery::Phase::Running   ? "running"
+             : recovery.phase == TickRecovery::Phase::Pending ? "pending"
+                                                              : "prepared"}
+        };
+        out["world_entry"]       = mWorld.entryStatus();
+        out["recording"]         = mLegacy.stream.active();
+        out["tick"]              = mTick.load();
+        out["macro_playing"]     = mMacroSession.playback.active();
+        out["macro_index"]       = mMacroSession.playback.index();
+        out["macro_recording"]   = mMacroSession.recording.active();
+        out["queue_dropped"]     = mQueueDropped.load();
         out["pipe_write_timeouts"] = mPipeWriteTimeouts.load();
         out["pipe_write_timeout_ms"] = PipeChannel::DefaultTimeoutMs;
-        out["spool"]           = mSpoolPath.string();
-        out["spool_rows"]      = mSpoolRows.load();
-        out["spool_flushes"]   = mSpoolFlushes.load();
-        out["allow_write"]     = mAllowMemoryWrite.load();
-        out["tick_thread_id"]  = mTickThreadId.load();
-        out["server_thread_id"] = gServerThreadId.load();
-        out["packet_capture"]   = mPackets.capturing();
-        out["packet_records"]   = mPackets.records();
+        out["spool"]               = mSpoolPath.string();
+        out["spool_rows"]          = mSpoolRows.load();
+        out["spool_flushes"]       = mSpoolFlushes.load();
+        out["allow_write"]         = mAllowMemoryWrite.load();
+        out["tick_thread_id"]      = mTickThreadId.load();
+        out["server_thread_id"]    = gServerThreadId.load();
+        out["packet_capture"]      = mPackets.capturing();
+        out["packet_records"]      = mPackets.records();
         out["packet_recv_records"] = mPackets.recvRecords();
         out["packet_recv_hooked"]  = mPackets.recvEnabled();
-        out["packet_peer_sends"] = mPackets.peerSends();
-        out["packet_inject"]     = mAllowPacketInject.load();
-        out["chat_sent"]         = mChatSent.load();
-        out["command_template_attempts"] = mCommandTemplates.attempts();
-        out["command_template_faults"] = mPacketTemplateFaults.load();
-        out["tick_probe_addr"] =
-            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
+        out["packet_peer_sends"]   = mPackets.peerSends();
+        out["packet_inject"]       = mAllowPacketInject.load();
+        out["chat_sent"]                 = mPacketRequests.chatSent.load();
+        out["command_template_attempts"] = mPacketRequests.templates.attempts();
+        out["command_template_faults"]   = mPacketRequests.templateFaults.load();
+        // Cold pipe-thread snapshot: use the same admission check as chat_send.
+        // Attempt/fault counters do not describe TooLong, NoOwner or stale rows.
+        CommandTemplate commandTemplate;
+        auto const templateError = mPacketRequests.templates
+                                       .latest(commandTemplate, identity, mPacketRequests.generation.load());
+        out["command_template"]  = {
+            {"ready",  templateError == nullptr          },
+            {"reason", templateError ? templateError : ""}
+        };
+        out["tick_probe_addr"]  = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
         out["watch_count"]   = watchCount();
         out["watch_hits"]    = watchTotalHits();
         out["watch_dropped"] = watchDroppedHits();

@@ -23,7 +23,7 @@ ServerPlayerContext serverPlayerContext(
 namespace probe {
 
 std::uint64_t ProbeMod::queueTeleport(TeleportQuery query, bool resetControls, std::uint64_t timeout) {
-    std::lock_guard lock(mTeleportMutex);
+    std::lock_guard lock(mTeleport.mutex);
     if (!hooksAllowed() || !mWorld.inWorld()) {
         enqueue(nlohmann::json{{"event", "error"}, {"reason", hooksAllowed() ? "not_in_world" : "version_mismatch"}}.dump());
         return 0;
@@ -34,16 +34,16 @@ std::uint64_t ProbeMod::queueTeleport(TeleportQuery query, bool resetControls, s
         return 0;
     }
     auto const now = GetTickCount64();
-    query.id = mNextTeleportId + 1;
-    query.generation = mTeleportGeneration.load();
+    query.id = mTeleport.nextId + 1;
+    query.generation = mTeleport.generation.load();
     query.deadline = now + timeout;
     if (query.test == TeleportTest::Obsolete) ++query.identity.epoch;
-    auto request = mTeleportCapture.begin(query, now, timeout);
+    auto request = mTeleport.capture.begin(query, now, timeout);
     if (!request) {
         enqueue(R"({"event":"error","reason":"teleport_busy"})");
         return 0;
     }
-    mNextTeleportId = query.id;
+    mTeleport.nextId = query.id;
     // Admission precedes reset side effects: a rejected reset/checkpoint must
     // not cancel the active task, replace a teleport, or strip effects.
     try {
@@ -69,10 +69,10 @@ std::uint64_t ProbeMod::queueTeleport(TeleportQuery query, bool resetControls, s
 }
 
 void ProbeMod::cancelTeleport(char const* reason, bool discard) {
-    std::lock_guard lock(mTeleportMutex);
-    mTeleportGeneration.fetch_add(1);
-    if (discard) mTeleportCapture.reset();
-    else mTeleportCapture.cancel(reason);
+    std::lock_guard lock(mTeleport.mutex);
+    mTeleport.generation.fetch_add(1);
+    if (discard) mTeleport.capture.reset();
+    else mTeleport.capture.cancel(reason);
 }
 
 void ProbeMod::captureTeleport(TeleportQuery const& query, TeleportSnapshot& out) {
@@ -80,7 +80,7 @@ void ProbeMod::captureTeleport(TeleportQuery const& query, TeleportSnapshot& out
     Vec2 rotation;
     if (!guardedGameRead([&] {
         applyTeleport(query, out,
-            [&] { return teleportAdmission(query, mTeleportGeneration.load(), mPoseEpoch.load(), mWorld.inWorld(), GetTickCount64()); },
+            [&] { return teleportAdmission(query, mTeleport.generation.load(), mPoseEpoch.load(), mWorld.inWorld(), GetTickCount64()); },
             [&]() -> char const* {
                 auto context = serverPlayerContext(query.identity, mPoseEpoch.load(), mWorld.inWorld());
                 if (!context.level) return "teleport_no_server_level";
@@ -102,8 +102,8 @@ void ProbeMod::captureTeleport(TeleportQuery const& query, TeleportSnapshot& out
 }
 
 void ProbeMod::drainTeleport() {
-    std::lock_guard lock(mTeleportMutex);
-    if (auto request = mTeleportCapture.current(); request && request->query.test != TeleportTest::Deferred) {
+    std::lock_guard lock(mTeleport.mutex);
+    if (auto request = mTeleport.capture.current(); request && request->query.test != TeleportTest::Deferred) {
         if (auto stage = request->dispatch()) {
             auto weak = std::weak_ptr{request};
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
@@ -117,7 +117,7 @@ void ProbeMod::drainTeleport() {
             } catch (...) { request->cancel("teleport_queue_failed"); }
         }
     }
-    auto done = mTeleportCapture.take(GetTickCount64());
+    auto done = mTeleport.capture.take(GetTickCount64());
     if (!done.request) return;
     // A timeout/cancelled callback may still own snapshot; never read it until
     // successful Ready publication. Failure is conservatively partial.

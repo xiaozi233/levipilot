@@ -3,19 +3,19 @@
 #include "mod/ChatModel.h"
 #include "mod/EcsModel.h"
 #include "mod/EntityModel.h"
-#include "mod/FlightModel.h"
+#include "mod/FlightRequestState.h"
 #include "mod/InputSessionModel.h"
+#include "mod/LegacyStreamState.h"
 #include "mod/MacroSessionModel.h"
 #include "mod/MovementModel.h"
+#include "mod/PacketRequestState.h"
 #include "mod/PacketTap.h"
-#include "mod/PacketInjectionModel.h"
 #include "mod/PlayerIdentityModel.h"
 #include "mod/PoseModel.h"
 #include "mod/QueryModel.h"
 #include "mod/RequestModel.h"
 #include "mod/TaskModel.h"
-#include "mod/TeleportModel.h"
-#include "mod/TickStreamModel.h"
+#include "mod/TeleportRequestState.h"
 #include "mod/TickRecoveryModel.h"
 #include "mod/WorldSession.h"
 
@@ -83,6 +83,7 @@ public:
     bool load();
     bool enable();
     bool disable();
+    bool unload();
 
     // Small append-only diagnostics file in the mod directory. LeviLamina's own
     // log location depends on how the game was launched, so this is the one
@@ -102,6 +103,10 @@ public:
     void                                         tickInputInjection();
     bool                                         releaseInputEvents();
     char const*                                  hidKeyEdge(int code, bool down, bool hardware);
+    bool          setLifecycleKeyHook(bool on);
+    bool          setLifecycleMouseHook(bool on);
+    bool          setLifecyclePlayerHook(bool on);
+    bool          setLifecycleTurnHook(bool on);
 
     // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
     // own owner; these forwarders keep the file-scope LL hooks unchanged.
@@ -112,15 +117,9 @@ public:
     void             packetPeerTick();
     void             packetCaptureStop();
 
-    std::atomic_bool                           mAllowPacketCapture{false};
-    std::atomic_bool                           mAllowPacketInject{false};
-    std::atomic<std::uint64_t>                 mChatSent{0};
-    detail::CommandTemplateStore mCommandTemplates;
-    detail::PacketInjectionCapture mPacketInjection;
-    std::mutex mPacketInjectionMutex; // Cold admission, scheduling and completion only.
-    std::atomic<std::uint64_t> mPacketGeneration{0}, mPacketTemplateFaults{0};
-    std::uint64_t mNextPacketId = 0; // Cold-owned.
-    std::atomic<detail::CaptureTest> mPacketTemplateTest{detail::CaptureTest::None};
+    std::atomic_bool mAllowPacketCapture{false};
+    std::atomic_bool mAllowPacketInject{false};
+    detail::PacketRequestState mPacketRequests;
     void queuePacketInjection(detail::PacketInjectionQuery query, std::uint64_t timeout = 2000);
     void drainPacketInjection();
     void cancelPacketInjection(char const* reason, bool discard = false);
@@ -128,18 +127,19 @@ public:
     bool             hidTextInput(std::string const& text, std::string& error);
     void             captureCommandTemplate(Packet& packet);
     ll::event::ListenerPtr     mKeyListener;
+    std::atomic_bool       mLifecycleKeyHooked{true}, mLifecyclePlayerHooked{true};
+    std::atomic_bool       mLifecycleMouseHooked{true}, mLifecycleTurnHooked{true};
+    // Set while quiesced for unload: no new work is admitted between the last
+    // in-flight request and the moment the static hooks come off.
+    std::atomic_bool mQuiescing{false};
 
     // Called by the _applyTurnDelta hook: background mouse look must not move
     // the camera, but our own look/task injections must still work.
     [[nodiscard]] bool allowTurnDelta() const;
-    [[nodiscard]] bool hardwareInputLocked() const
-    {
+    [[nodiscard]] bool hardwareInputLocked() const {
         return mInputSession.hardwareLocked.load(std::memory_order_relaxed);
     }
-    [[nodiscard]] bool injectingInput() const
-    {
-        return mInputSession.injecting.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] bool injectingInput() const { return mInputSession.injecting.load(std::memory_order_relaxed); }
 
     // Called from the vectored exception handler for genuinely fatal faults
     // (an access violation that is not part of a dispatched request).
@@ -175,8 +175,6 @@ private:
     std::uint64_t      flushSpool(bool force);
     // Re-append swapped-out rows after a failed spool write (bounded).
     void               requeueSpool(std::string& data);
-    void               installCrashHandler();
-    static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info);
     void               writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
     void               recordCommand(std::string const& line);
     // Runs a callback on the integrated server thread with exception isolation.
@@ -334,6 +332,7 @@ private:
     std::thread            mServerThread;
 
     std::atomic_bool mRunning{false};
+    std::atomic<std::uint64_t> mLifecycleGeneration{0}, mDisableSerial{0};
     std::atomic<std::uint64_t> mLastTickMs{0};
     // QPC timestamps for the T9 overhead metric (tick thread only).
     std::uint64_t              mTickStartQpc     = 0;
@@ -342,14 +341,13 @@ private:
     std::atomic<std::uint64_t> mTick{0};
     // Tick writes fixed samples; commands/spool serialize consumption and
     // lifecycle with this cold-only lock. No transport or JSON on the tick.
-    detail::LegacyStream<> mLegacyStream;
-    std::mutex mLegacyMutex;
-    detail::LegacyStream<>::Completion mLegacyLastCompletion;
-    std::atomic<detail::StreamTest> mLegacyTest{detail::StreamTest::None};
-    std::atomic_bool mLegacyWorldLeft{false};
-    std::uint64_t mLegacyDrainAfterMs = 0; // Cold lock; gated overflow selftest.
-    bool startLegacy(std::uint64_t maxTicks, std::size_t capacity = 256,
-                     detail::StreamTest test = detail::StreamTest::None, std::uint64_t drainDelayMs = 0);
+    detail::LegacyStreamState mLegacy;
+    bool                      startLegacy(
+        std::uint64_t      maxTicks,
+        std::size_t        capacity     = 256,
+        detail::StreamTest test         = detail::StreamTest::None,
+        std::uint64_t      drainDelayMs = 0
+    );
     void stopLegacy(detail::StreamEnd reason, bool reply);
     bool drainLegacyLocked();
     void drainTickStreams();
@@ -440,15 +438,8 @@ private:
     detail::ChatCapture mChatCapture;
     detail::EntityCapture mEntityCapture;
     detail::EcsCapture mEcsCapture;
-    detail::FlightCapture mFlightCapture;
-    detail::TeleportCapture mTeleportCapture{detail::TeleportStage::Server, "teleport_stage_invalid"};
-    std::mutex mTeleportMutex; // Cold admission, scheduling and lifecycle only.
-    std::atomic<std::uint64_t> mTeleportGeneration{0};
-    std::uint64_t mNextTeleportId = 0; // Cold-owned.
-    detail::FlightAssertion mFlightAssertion;
-    std::mutex mFlightMutex; // Cold admission, completion and lifecycle only.
-    std::atomic<std::uint64_t> mFlightGeneration{0};
-    std::uint64_t mNextFlightId = 0, mFlightReplyAfter = 0; // Cold-owned.
+    detail::TeleportRequestState mTeleport;
+    detail::FlightRequestState   mFlight;
     struct ClickResult {
         int         button = 0, hitType = 0, x = 0, y = 0, z = 0, face = 0;
         float       hitX = 0, hitY = 0, hitZ = 0;

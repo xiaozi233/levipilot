@@ -45,7 +45,9 @@ void templates() {
     });
     assert(is(store.latest(out, owner, 4), "command_template_fault"));
     std::array<char, 513> longId{};
+    auto const attempts = store.attempts();
     store.capture(owner, 4, [&](auto& row) { row.setRequestId({longId.data(), 513}); return true; });
+    assert(store.attempts() == attempts + 1);
     assert(is(store.latest(out, owner, 4), "command_template_too_long"));
     store.capture(owner, 4, [&](auto& row) { row.setRequestId({longId.data(), 512}); return true; });
     assert(!store.latest(out, owner, 4) && out.requestIdSize == 512);
@@ -53,6 +55,10 @@ void templates() {
     assert(is(store.latest(out, owner, 4), "command_template_fault"));
     store.capture({}, 4, [](auto&) { assert(false); return true; });
     assert(is(store.latest(out, owner, 4), "command_template_stale"));
+    auto noOwner = owner;
+    noOwner.valid = 0;
+    store.capture(noOwner, 4, [](auto&) { assert(false); return true; });
+    assert(is(store.latest(out, owner, 4), "command_template_owner_mismatch"));
     assert(allocations.load() == before);
 }
 

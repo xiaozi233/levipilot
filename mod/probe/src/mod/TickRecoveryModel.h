@@ -80,4 +80,16 @@ inline bool blockedDuringTickRecovery(std::string_view command) {
     return false;
 }
 
+// Quiesced for unload: everything is refused except the switch that lifts the
+// quiesce state itself, liveness probes, the emergency stop and the one command
+// packet that triggers the unload. Keeping these reachable means a failed or
+// aborted unload can always be rolled back, and the trigger itself can be sent.
+inline bool quiesceExempt(std::string_view command) {
+    constexpr std::string_view commands[] = {
+        "lifecycle_prepare", "ping", "status", "panic", "chat_send"
+    };
+    for (auto known : commands) if (command == known) return true;
+    return false;
+}
+
 } // namespace probe::detail

@@ -41,11 +41,22 @@ check_untyped_defs = true
 warn_unused_ignores = true
 files = ["driver", "tests", "skills/bedrock-re/tools"]
 
-# The live acceptance script and the test doubles trade strict typing for
+# The live acceptance scripts and the test doubles trade strict typing for
 # brevity (fakes hang dynamic attributes off real classes); the shipped
 # client code stays fully checked.
 [[tool.mypy.overrides]]
-module = ["driver.selftest", "tests.*"]
+module = [
+    "driver.selftest",
+    "driver.selftest_core",
+    "driver.selftest_default",
+    "driver.selftest_input",
+    "driver.selftest_packets",
+    "driver.selftest_queries",
+    "driver.selftest_recovery",
+    "driver.selftest_streams",
+    "driver.selftest_tasks",
+    "tests.*",
+]
 disable_error_code = [
     "arg-type",
     "assignment",

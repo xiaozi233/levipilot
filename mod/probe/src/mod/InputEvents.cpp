@@ -318,4 +318,47 @@ LL_TYPE_INSTANCE_HOOK(
 
 static ll::memory::HookRegistrar<ProbeHardwareMouseHook> gHardwareMouseHook;
 
+bool ProbeMod::setLifecycleKeyHook(bool on) {
+    if (on) {
+        if (mLifecycleKeyHooked.load(std::memory_order_acquire)) return true;
+        int const status = ProbeHardwareKeyHook::hook();
+        if (status != 0) {
+            bootLog("lifecycle: key hook restore failed status=" + std::to_string(status));
+            return false;
+        }
+        mLifecycleKeyHooked.store(true, std::memory_order_release);
+        return true;
+    }
+    if (!mLifecycleKeyHooked.exchange(false, std::memory_order_acq_rel)) return true;
+    // The flag must follow the real teardown state: reporting "off" while the
+    // detour is still installed would let the caller unload a DLL that is still
+    // being called.
+    if (!ProbeHardwareKeyHook::unhook()) {
+        mLifecycleKeyHooked.store(true, std::memory_order_release);
+        bootLog("lifecycle: key hook unhook failed");
+        return false;
+    }
+    return true;
+}
+
+bool ProbeMod::setLifecycleMouseHook(bool on) {
+    if (on) {
+        if (mLifecycleMouseHooked.load(std::memory_order_acquire)) return true;
+        int const status = ProbeHardwareMouseHook::hook();
+        if (status != 0) {
+            bootLog("lifecycle: mouse hook restore failed status=" + std::to_string(status));
+            return false;
+        }
+        mLifecycleMouseHooked.store(true, std::memory_order_release);
+        return true;
+    }
+    if (!mLifecycleMouseHooked.exchange(false, std::memory_order_acq_rel)) return true;
+    if (!ProbeHardwareMouseHook::unhook()) {
+        mLifecycleMouseHooked.store(true, std::memory_order_release);
+        bootLog("lifecycle: mouse hook unhook failed");
+        return false;
+    }
+    return true;
+}
+
 } // namespace probe

@@ -100,14 +100,14 @@ class RotationGateTests(unittest.TestCase):
             self.state(7),
             self.state(8),
         ]
-        with patch("driver.selftest.time.sleep"):
+        with patch("driver.selftest_runtime.time.sleep"):
             wait_rotation(client, 55, 15)
         self.assertEqual(client.state.call_count, 8)
 
     def test_accepts_wrapped_yaw_with_original_tolerance(self):
         client = Mock()
         client.state.side_effect = [self.state(tick, -175.01) for tick in (1, 2, 3)]
-        with patch("driver.selftest.time.sleep"):
+        with patch("driver.selftest_runtime.time.sleep"):
             wait_rotation(client, 185, 15)
 
     def test_never_accepts_a_stale_pose(self):
@@ -127,7 +127,10 @@ class RotationGateTests(unittest.TestCase):
     def test_tick_wait_aborts_before_stall_timeout(self):
         client = Mock()
         client.status.side_effect = [{"in_world": True, "tick": 842}, {"in_world": False}]
-        with self.assertRaisesRegex(WorldLost, "842"), patch("driver.selftest.time.sleep") as sleep:
+        with (
+            self.assertRaisesRegex(WorldLost, "842"),
+            patch("driver.selftest_runtime.time.sleep") as sleep,
+        ):
             wait_ticks(client, 10)
         sleep.assert_not_called()
 
@@ -225,7 +228,7 @@ class InterruptedSelftestTests(unittest.TestCase):
             dump_packet_tap(client, str(Path(directory)))
 
     def test_flight_cleanup_uses_effect_preserving_teleport(self):
-        source = Path("driver/selftest.py").read_text(encoding="utf-8")
+        source = Path("driver/selftest_input.py").read_text(encoding="utf-8")
         body = source.split("def check_flight", 1)[1].split("def check_input_events", 1)[0]
         self.assertNotIn("client.reset(", body)
         self.assertIn("client.teleport(", body)
@@ -333,7 +336,8 @@ class InterruptedSelftestTests(unittest.TestCase):
                     client.command.side_effect = cause
                     client.task_stop.side_effect = cleanup
                 with (
-                    patch("driver.selftest.settle"),
+                    patch("driver.selftest_input.settle"),
+                    patch("driver.selftest_tasks.settle"),
                     contextlib.redirect_stdout(io.StringIO()),
                     self.assertRaises(WorldLost) as caught,
                 ):
@@ -445,10 +449,11 @@ class RecordMediumTests(unittest.TestCase):
         cause = ModPipeError("record download failed")
         client.record_dump_all.side_effect = cause
         with (
-            patch("driver.selftest.require_world"),
-            patch("driver.selftest.Builder") as builder,
-            patch("driver.selftest.wait_ticks"),
-            patch("driver.selftest.settle", return_value={"ok": True, "state": original}),
+            patch("driver.selftest_streams.require_world"),
+            patch("driver.selftest_runtime.Builder") as builder,
+            patch("driver.selftest_runtime.wait_ticks"),
+            patch("driver.selftest_streams.wait_ticks"),
+            patch("driver.selftest_streams.settle", return_value={"ok": True, "state": original}),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             builder.return_value.build.return_value = [Mock(ok=True)]

@@ -399,7 +399,8 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   `hello.replay_rows` 告诉客户端有多少行。队列溢出仍丢最旧，但会往 spool 追加一条
   `{"event":"queue_dropped","count":N}` 标记。
 - 崩溃取证走 VEH（`AddVectoredExceptionHandler`），因为 LeviLamina/游戏可能在 mod 加载后
-  覆盖 `SetUnhandledExceptionFilter`。致命结构化异常（AV、非法指令、栈溢出等）且不属于
+  管理自己的进程全局异常过滤器；probe 不调用 `SetUnhandledExceptionFilter`，不保存或恢复
+  其他模块的过滤器。VEH 在 `watchShutdown()` 注销。致命结构化异常（AV、非法指令、栈溢出等）且不属于
   `dispatchWithSeh` 时，写：
   - `crash-<pid>-<tick>.dmp`：`MiniDumpNormal | MiniDumpWithThreadInfo`；
   - `crash-<pid>.txt`：异常码/地址/线程/tick/最后命令/最后位置/`queue_dropped`/spool 路径。
@@ -800,6 +801,13 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   执行时间预算；常规身份采集不进入该路径。`Packet*` 不跨线程保留，结果是 SDK 重序列化字节，
   不是线上原帧。`packet_bytes` 增量返回 `source/captured_size/truncated`，旧 `size/hex/serialized`
   保持；定长记录、128 B 边界、重入与环读取由 `packet_tap_model` native 覆盖。
+- **重序列化预算（2026-11-03）**：`packet_capture` 新增 `serialize_budget_us`（默认 20000，
+  0 表示不限，上限 600000），只作用于 `serialize_ids` 这条显式诊断。每次重序列化用 QPC 计时，
+  累计超过预算后**不再调用 `Packet::write`**，改为发布一条 `error=Budget` 的字节记录并累加
+  `serialize_skipped`。`packet_stats` 新增 `serialize_samples / serialize_us / serialize_max_us /
+  serialize_skipped / serialize_budget_us`。现场：预算 1 µs 时 1 个样本（528 µs）后连续 25 次
+  被截断；预算 200 ms 时 21 个样本、合计 14.0 ms、单次最大 794 µs、0 次截断。
+  常规身份采集仍不经过这条路径，预算只限制显式诊断本身。
 
 2026-11-02 同 DLL/配置、同世界四组各 1100 tick 对照（每组统计窗口 1024 样本）：
 
@@ -1582,11 +1590,73 @@ observation_faults=0。这验证 mod 自己读取自然错误页原因及其与�
   实际文件内容/哈希和重载 ticks。`--macro-resume` 只接受同一代次且仍在录制或已完整保留的会话，
   不把已停止的部分数据续成成功。长录制 **9/9**：总耗时 10603 秒，接续点 71371，最终 200000 行、
   28600002 字节，SHA-256 `8d334ad7417eeff36e446c65d11b58f0bd63a7116de5b06a7a81a6e29e8b282c`。
-- `--hot-reload-only` 使用真实聊天输入而不是 `command` 的服务端回调触发自卸载；同对象重连后
-  验证 tick、输入、宏和配置/DLL/crash 哈希，**9/9**。该结果不覆盖在途请求和持有按键的释放保证。
+- 原 `--hot-reload-only` **9/9** 已撤回：错误形式 `/ll mod reload probe` 被游戏拒绝，
+  旧检查只证明输入与管道恢复，不能证明重载。正确形式 `/ll reload probe` 必须补实例代次及
+  disable/enable 记录；在途请求和持有按键的释放仍不属于该专项保证范围。
+- 2026-11-03 修正后重验**仍未通过**：`status.lifecycle{generation,disable_id,running}` 与
+  `harness-boot.log` 的 enable/disable 四条记录是正向证据（跨重启单调，现场 345），专项要求
+  同一 PID 内两者同时增长；`lifecycle_prepare` 覆盖全部 4 个静态钩子（key/mouse/player/turn），
+  以 `unhook()` 真实返回值判定状态、聚合不短路，失败即阻止 reload。现场三次复现：
+  `disable: done ok=1` → `unload: begin` → `unload: disable returned 1` 之后进程挂起，
+  `probe.dll` 仍映射、crash 无新增；只发 `/ll unload probe` 的对照则卸载成功、
+  `probe.dll` 已释放。**具体阻塞点与归属 unresolved**（面包屑在 `return` 之前写出，
+  缺 `load` 行也不能排除 probe 自身初始化/析构路径）。
+  该专项需要 `allow_packet_inject` + `allow_packet_capture`（模板取自真实 `CommandRequestPacket`），
+  4 键基线配置下会以 `packet_inject_disabled` 明确失败。
+- **卸载静默契约（2026-11-03）**：`lifecycle_prepare {on:false}` 现在是三段式，而不是直接卸钩：
+  1) **拒绝在途**：`held_mask`、`injecting_input`、`injecting_look`、`cleanup_pending`、
+  `movement_request`（`forward/strafe/sprint/sneak/jump/rmb/lmb` 非零）、`look_request`
+  （`lookTicks>0`）、宏播放/录制、录制流、仍在跑的任务、tick 恢复中 —— 任一成立即回
+  `ok=false / reason=busy` 并附完整 `busy` 快照，**不卸钩、不进入静默**。
+  2) **停止接收**：置 `mQuiescing`，`dispatchLine` 对除
+  `lifecycle_prepare/ping/status/panic/chat_send` 以外的命令回 `{"event":"error","reason":"quiescing"}`；
+  `chat_send` 保留是因为卸载触发本身就是一个命令包。
+  3) **卸钩**：四个 helper 都以 `unhook()` 真实返回值决定状态，聚合不短路；任一失败则**撤销静默**并
+  回 `ok=false`，避免会话卡在半卸载状态。`on:true` 先复钩再解除静默。
+  现场验证：空闲 → `ok:true/quiescing:true/hooks 全 false`，`state` 被拒为 `quiescing`；
+  持 W 时 → `ok:false/reason:busy/movement_request:true`；释放后恢复可卸。`ping`/`status` 全程可用。
+  这仍然只覆盖"我们自己的在途工作"，**不证明**游戏线程内正在执行的 tick 回调已退出。
 - 最终 DLL SHA-256 `750110319c3985c4872af4b0014fbd05c282375ae9d472e71f6c25639b77f330`；
   完整 `--require-complete` **1097/1097，0 fail、0 skip、0 required skip**，违规观察 real=0、
   synthetic=4、lost=0。原 4 键配置逐字节恢复并重启，最终恢复 **13/13**，124 个 crash 无变化。
   证据汇总 `out/review-20261103-final-evidence.json`、`out/review-20261103-final-integrity.json`。
 - 本轮未新增逆向。BadPacket 仍以证据册 §36–§49 的游戏共享序列化缓冲竞态为边界；
-  PacketTap 显式 SDK 重序列化仍可能分配、没有执行时间预算，不宣称性能提升或游戏缺陷已根治。
+  PacketTap 显式 SDK 重序列化仍可能分配，默认累计预算 20 ms；不宣称性能提升或游戏缺陷已根治。
+
+### 生命周期失败边界复修（2026-11-03）
+
+- 删除补充的进程全局异常过滤器及其保存/恢复字段，避免“设空取旧值 → 再写回”的并发覆盖窗口。
+  崩溃取证保留原有可注销 VEH，不改变首错 dump 防重入逻辑。
+- `status.command_template{ready,reason}` 是冷侧只读快照，直接调用注入端使用的
+  `CommandTemplateStore::latest(template, identity, packetGeneration)`；原 attempt/fault 字段保留。
+  `TooLong`、`NoOwner`、stale、busy 等都不能由计数推断为可用。热重载自检在捕获/清理后再次读取
+  可用性，缺少该字段也判失败，且发生在卸钩之前；明确发包拒绝立即恢复，不再等待不存在的生命周期。
+  `check_packet_injection` 增加正常、SEH、C++、超长模板的实际状态回读检查。
+- 恢复异常在 `preserve_failure` 抑制前写入 `cleanup_error` 和失败检查，正文的 `error` 与原异常
+  保持不变；close 和报告落盘各自保留 finally 保证。组合回归覆盖正文异常、检查失败早退与恢复失败。
+- 独立验证：离线 **411/411**（含 native，0 skip，185.484 秒），生命周期 Python 回归 **13/13**；
+  ruff check/format、mypy（100 files）、profiles、roles（56/63）、lint_public、C++ 构建通过。
+  经正常保存门禁重启并安装新 DLL 后，基础现场 **44/44，0 fail、0 skip**，恢复核对 **16/16**。
+  原配置逐字节不变，124 个 crash 文件的名称/大小/mtime 不变；没有重新计算所有旧 crash 的内容哈希。
+- DLL SHA-256：`5b72e6ca181464c3f91dbc3ec0c8e03b81bfef7b611b5871de7792f24b721ba3`，
+  安装与构建一致。证据为 `out/fix-20261103-lifecycle-{offline,build,core-live}.log` 与
+  `out/fix-20261103-lifecycle-final-integrity.json`。首次恢复核对发现 pitch 偏差约 0.23°，
+  原记录保留为 `out/fix-20261103-lifecycle-pre-restore-integrity.json`，恢复后 16 项全部通过。
+  本轮未执行 reload/unload、强停未保存会话或新增逆向；完整现场与真实热重载没有重跑，后者仍未通过。
+
+### 领域入口与请求所有权拆分（2026-11-03）
+
+- `driver/selftest.py` 只保留 CLI、专项分发、兼容导出和少量适配器（约 630 行）。
+  `selftest_default.py` 编排默认全套；`selftest_runtime.py` 统一 `WorldLost`、世界门禁、等待与水池夹具；
+  core/tasks/queries/packets/streams/input/recovery 分别承载对应领域检查。原检查名、专项参数和
+  `driver.selftest` 导出保持兼容，mock 路径随实际实现模块更新。
+- `PacketRequestState`、`TeleportRequestState`、`FlightRequestState`、`LegacyStreamState` 分别唯一持有
+  封包模板/注入、传送、飞行/重断言、legacy 录制及其冷锁、代次与 ID。`ProbeMod` 只保留一个对应
+  会话成员，各 TU 使用 `mPacketRequests`/`mTeleport`/`mFlight`/`mLegacy`；没有可变引用别名或第二份
+  请求模型，原有 tick/cold 锁边界与回执顺序不变。
+- `ViolationWatch.cpp` 保留违规回调、断线页与共享文本环；`InboundWatch.cpp` 独立持有解析边界、
+  loop/assign/copy 探针和首错冻结；`SendProbe.cpp` 独立持有发送/序列化探针与 suspect 落盘。
+  `ViolationWatchShared.h` 只共享定长记录、冷侧 drain/格式化和跨域接口，命令与 JSON 字段不变。
+- 验收：完整离线 **411/411**；自检/宏/热重载相关 **51/51**；ruff check/format、mypy（109 files）、
+  profiles up to date；完整 C++ 构建及最终增量链接通过。没有安装新 DLL、操作游戏或重跑现场，
+  热重载挂起与 HBUI 异常根因仍按上文保持未闭合。

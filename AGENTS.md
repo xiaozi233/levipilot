@@ -48,7 +48,7 @@ py -3.11 driver/landing.py begin --case <slug> --goal "..."
 
 | 路径 | 内容 |
 | --- | --- |
-| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`WorldSession`（世界生命周期）、`ClientDispatch`（主线程投递/SEH）、`PacketTap`（封包 tap）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
+| `mod/probe/src/mod/` | mod 全部实现：`ProbeMod`（生命周期/tick）、`WorldSession`（世界生命周期）、`ClientDispatch`（主线程投递/SEH）、`PacketTap`（封包 tap）、`PacketRequestState`/`TeleportRequestState`/`FlightRequestState`/`LegacyStreamState`（领域请求唯一所有者）、`ViolationWatch`（违规+断线页）、`InboundWatch`（入站解析）、`SendProbe`（发送探针）、`Commands`（管道分发/SEH 隔离）、`Transport`（管道/spool）、`Memory`（内存原语）、`Watch`（DR 观察点/崩溃取证）、`RecordRing`（64 B tick 环）、`HookVa`（运行时 detour）、`Ecs`（组件内省）、`Resolve`（版本/签名）、`SignIn`（主菜单登录态）、`Checkpoints`（存档点）、`Input`/`Tasks`/`State`/`Inventory`/`Entities`/`Server`/`World`/`Options`/`Macro`、`Internal`（唯一共享头） |
 | `driver/harness/` | Python 客户端：`connection`（连接/超时）/`commands/`（按领域 mixin 组成 `ModClient`）/`facade`（Harness）/`client`（兼容导出）/`protocol`/`errors`/`lab`（实验辅助：回读验证建场、录制会话、逐 tick 拟合）；CLI 为 `cli`（入口/注册表分发）/`cli_parser`（参数）/`cli_commands`（领域执行，各带 `COMMANDS` 声明），以及解码辅助模块 |
 | `driver/dev.py` | 启动 + 自动进世界的开发循环 |
 | `driver/gen_profiles.py` | 把 `docs/offsets/*.json` 生成 `mod/probe/src/mod/GeneratedProfiles.h`（`--check` 给 CI 用） |
@@ -303,7 +303,7 @@ size、路径上没有帧长度前缀；**根因是游戏侧 `NetworkSystem` 序
 历史阻塞（已由后续实现与验收替代）：2026-11-01 22:20 第14项候选现场28/29失败
 （packet187/size48/error104→90），当时撤回候选且不能标完成；`c0c3398` 后来重新实现了
 UUID+epoch 统一解析，身份专项 44/44、飞行复验与完整现场已通过。早期逆向停止点不再是当前任务。
-第16项具名类型在658d90a已落地。当前离线 **399/399**，ruff check/format、mypy（100 files）、
+第16项具名类型在658d90a已落地。当前离线 **411/411**，ruff check/format、mypy（109 files）、
 profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实现和现场范围。最新
 完整 `--require-complete` 为 **1097/1097**（0 fail、0 skip、0 required skip），记录见
 `docs/reliability-repairs.md`；HBUI 异常退档的形成根因仍未闭合，其他历史缺测已按范围补齐。
@@ -312,20 +312,27 @@ profiles、roles（56/63）、lint_public 通过；原清单12–15已完成实�
   `InputSession` 唯一持有。`ProbeMod` 不再保留可变引用别名，直接访问唯一会话；
   冷锁只管准入/取消/回执，tick 不取冷锁。
 - PacketTap 常规身份采集只写定长记录；`serialize_ids` 是显式高成本 SDK 重序列化诊断，
-  可能分配且无时间预算，不保留 Packet 指针，也不是线上原帧。
+  可能分配，默认累计预算 20 ms，超预算记 `Budget`/`serialize_skipped`；不保留 Packet 指针，
+  也不是线上原帧。
 - 飞行只在服务端写能力，客户端有界回读原生同步，8 tick 只读观察；实体攻击/飞行与
   其他服务端领域统一 UUID+epoch 解析，删除隐式名字兜底。
 - 宏保存使用同目录唯一临时文件 + `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`，
   失败清理并保留旧文件。Overhead 已做同 DLL 四组 1100 tick 对照，无可重复提速结论。
 - 诊断/入站/send_probe/PacketTap 检查已迁 `driver/selftest_diagnostics.py`，
   可复用 fixture 在 `driver/selftest_fixtures.py`；入口、检查名与专项参数保持兼容。
+- 2026-11-03 结构轮：`driver/selftest.py` 为 638 行，默认全套与七组领域检查独立；
+  封包/传送/飞行/legacy 录制请求由四个 `*RequestState`/会话对象唯一持有；
+  `ViolationWatch.cpp`/`InboundWatch.cpp`/`SendProbe.cpp` 按所有权分离。离线 **411/411**、
+  静态检查与完整 C++ 构建通过；本轮未安装 DLL 或重跑现场，旧现场基线不覆盖该结构轮。
 - 飞行自检恢复姿态用 `teleport`，不再用会清效果的 `reset`；原效果按 duration/tick 判定是否
   应仍存在，允许自然到期；独立长时哨兵验证未提前清空且只移除哨兵。短/长现场均 50/50。
   显式 framing 只接受真实前缀起点覆盖完整捕获窗口的 varint，歧义不猜。
   `macro_session_model` 直接覆盖聚合生命周期。
 - 世界进入 30 秒截止、安全菜单恢复与 entry_id 关联已完成；退档增加 leave_id/菜单快照，
   专项 **32/32**。tick 客户端读取局部 SEH 专项 **55/55**，不能推广为整个 tick 已隔离。
-  空闲热重载 **9/9**（不证明在途安全）；真实 200000 tick 录制/保存/重载 **9/9**，
+  原“空闲热重载 **9/9**”因错误命令和缺少代次证据已撤回；改用 `/ll reload probe` 重验后，
+  卸载侧正常（单独 `/ll unload probe` 的对照成功、DLL 真被释放），但 reload 可复现挂起，
+  具体阻塞点与归属 unresolved，该项保持未通过。真实 200000 tick 录制/保存/重载 **9/9**，
   支持只重启等待器的 `--macro-resume`，不拼接录制文件。
 
 > 任务提示词已并入 `docs/notes/prompts/`（历史记录，不是现行规范）；验收标准与结论：

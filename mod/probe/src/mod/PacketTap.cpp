@@ -325,6 +325,16 @@ void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record
     bytes.id    = static_cast<std::uint32_t>(record.id);
     bytes.tid   = record.tid;
     bytes.dir   = record.dir;
+    auto const budgetUs = mSerializeBudgetUs.load(std::memory_order_relaxed);
+    if (budgetUs != 0 && mSerializeUs.load(std::memory_order_relaxed) >= budgetUs) {
+        // Budget exhausted: publish the cut-off row and stop reserializing, so a
+        // long diagnostic session cannot keep paying this cost per packet.
+        bytes.error = ByteError::Budget;
+        mSerializeSkipped.fetch_add(1, std::memory_order_relaxed);
+        mByteRing->reserve().publish(bytes);
+        return;
+    }
+    std::uint64_t const startedQpc = qpcNow();
     static thread_local bool busy = false;
     if (!PacketSerializationGuard::enter(busy)) bytes.error = ByteError::Reentrant;
     else {
@@ -343,6 +353,15 @@ void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record
                 copyPacketBytes(bytes, buffer);
             })) bytes.error = ByteError::Seh;
         } catch (...) { bytes.error = ByteError::Cpp; }
+    }
+    auto const elapsedUs = qpcElapsedUs(startedQpc, qpcNow());
+    mSerializeSamples.fetch_add(1, std::memory_order_relaxed);
+    mSerializeUs.fetch_add(elapsedUs, std::memory_order_relaxed);
+    std::uint64_t previous = mSerializeMaxUs.load(std::memory_order_relaxed);
+    while (elapsedUs > previous
+           && !mSerializeMaxUs.compare_exchange_weak(
+               previous, elapsedUs, std::memory_order_relaxed, std::memory_order_relaxed
+           )) {
     }
     if (bytes.error != ByteError::None) {
         bytes.size = 0;
@@ -491,6 +510,17 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     mRecvRecords.store(0, std::memory_order_relaxed);
     mIdFaults.store(0, std::memory_order_relaxed);
     mByteFaults.store(0, std::memory_order_relaxed);
+    mSerializeSamples.store(0, std::memory_order_relaxed);
+    mSerializeUs.store(0, std::memory_order_relaxed);
+    mSerializeMaxUs.store(0, std::memory_order_relaxed);
+    mSerializeSkipped.store(0, std::memory_order_relaxed);
+    if (args.contains("serialize_budget_us") && args["serialize_budget_us"].is_number_integer()) {
+        auto const requested = args["serialize_budget_us"].get<std::int64_t>();
+        mSerializeBudgetUs.store(
+            static_cast<std::uint64_t>(std::clamp<std::int64_t>(requested, 0, 600000)),
+            std::memory_order_relaxed
+        );
+    }
     for (auto& hits : mRecvHits) {
         hits.store(0, std::memory_order_relaxed);
     }
@@ -653,6 +683,11 @@ nlohmann::json PacketTap::status() {
         {"peer_hooked",  mPeerHooked.load(std::memory_order_relaxed)     },
         {"ids",          std::move(ids)                                        },
         {"serialize_ids", std::move(serializeIds)},
+        {"serialize_samples", mSerializeSamples.load(std::memory_order_relaxed)},
+        {"serialize_us", mSerializeUs.load(std::memory_order_relaxed)},
+        {"serialize_max_us", mSerializeMaxUs.load(std::memory_order_relaxed)},
+        {"serialize_skipped", mSerializeSkipped.load(std::memory_order_relaxed)},
+        {"serialize_budget_us", mSerializeBudgetUs.load(std::memory_order_relaxed)},
         {"serialization", mSerializeCount ? "sdk_hot_path_diagnostic" : "disabled"},
     };
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/AtomicRing.h"
+#include "mod/LifecycleModel.h"
 #include "mod/ProbeMod.h"
 #include "mod/RecordModel.h"
 #include "mod/ViolationWatchModel.h"

@@ -19,8 +19,8 @@ void ProbeMod::onPacketSent(Packet& packet) {
                 if (packet.getId() == MinecraftPacketIds::CommandRequest) captureCommandTemplate(packet);
             })) throw 0;
         } catch (...) {
-            mPacketTemplateFaults.fetch_add(1);
-            mCommandTemplates.capture(localPlayerIdentity(), mPacketGeneration.load(), [](auto&) { return false; });
+            mPacketRequests.templateFaults.fetch_add(1);
+            mPacketRequests.templates.capture(localPlayerIdentity(), mPacketRequests.generation.load(), [](auto&) { return false; });
         }
     }
     mPackets.onSent(packet, mTick.load(std::memory_order_relaxed));
@@ -34,10 +34,10 @@ void ProbeMod::packetPeerTick() { mPackets.peerTick(); }
 void ProbeMod::packetCaptureStop() { mPackets.stop(); }
 
 void ProbeMod::captureCommandTemplate(Packet& packet) {
-    mCommandTemplates.capture(localPlayerIdentity(), mPacketGeneration.load(), [&](CommandTemplate& out) {
+    mPacketRequests.templates.capture(localPlayerIdentity(), mPacketRequests.generation.load(), [&](CommandTemplate& out) {
         bool ok = false;
         try { ok = guardedGameRead([&] {
-            auto const test = mPacketTemplateTest.exchange(CaptureTest::None);
+            auto const test = mPacketRequests.templateTest.exchange(CaptureTest::None);
             injectCaptureFault(test);
             auto const& payload = static_cast<CommandRequestPacket const&>(packet);
             auto const& origin = *payload.mOrigin;
@@ -47,42 +47,42 @@ void ProbeMod::captureCommandTemplate(Packet& packet) {
             out.playerId = origin.mPlayerId;
             out.setRequestId(*origin.mRequestId);
             if (test == CaptureTest::Partial) out.error = CommandTemplateError::TooLong;
-        }); } catch (...) { mPacketTemplateFaults.fetch_add(1); throw; }
-        if (!ok) mPacketTemplateFaults.fetch_add(1);
+        }); } catch (...) { mPacketRequests.templateFaults.fetch_add(1); throw; }
+        if (!ok) mPacketRequests.templateFaults.fetch_add(1);
         return ok;
     });
 }
 
 void ProbeMod::queuePacketInjection(PacketInjectionQuery query, std::uint64_t timeout) {
-    std::lock_guard lock(mPacketInjectionMutex);
+    std::lock_guard lock(mPacketRequests.mutex);
     query.owner = localPlayerIdentity();
     if (!query.owner.valid) {
         enqueue(R"({"event":"error","reason":"packet_player_unknown"})");
         return;
     }
     auto const now = GetTickCount64();
-    query.id = mNextPacketId + 1;
-    query.generation = mPacketGeneration.load();
+    query.id = mPacketRequests.nextId + 1;
+    query.generation = mPacketRequests.generation.load();
     query.deadline = now + timeout;
-    query.templateError = mCommandTemplates.latest(query.origin, query.owner, query.generation);
+    query.templateError = mPacketRequests.templates.latest(query.origin, query.owner, query.generation);
     if (query.test == PacketInjectionTest::Obsolete) ++query.owner.epoch;
     if (query.test == PacketInjectionTest::WrongOwner) ++query.origin.owner.uuidA;
-    auto request = mPacketInjection.begin(std::move(query), now, timeout);
+    auto request = mPacketRequests.injection.begin(std::move(query), now, timeout);
     if (!request) {
         enqueue(R"({"event":"error","reason":"packet_inject_busy"})");
         return;
     }
-    mNextPacketId = request->query.id;
-    bootLog("input: chat_send queued id=" + std::to_string(mNextPacketId));
-    enqueue(nlohmann::json{{"event", "chat_send_queued"}, {"packet_id", mNextPacketId}}.dump());
+    mPacketRequests.nextId = request->query.id;
+    bootLog("input: chat_send queued id=" + std::to_string(mPacketRequests.nextId));
+    enqueue(nlohmann::json{{"event", "chat_send_queued"}, {"packet_id", mPacketRequests.nextId}}.dump());
 }
 
 void ProbeMod::cancelPacketInjection(char const* reason, bool discard) {
-    std::lock_guard lock(mPacketInjectionMutex);
-    mPacketGeneration.fetch_add(1);
-    mPacketTemplateTest = CaptureTest::None;
-    if (discard) mPacketInjection.reset();
-    else mPacketInjection.cancel(reason);
+    std::lock_guard lock(mPacketRequests.mutex);
+    mPacketRequests.generation.fetch_add(1);
+    mPacketRequests.templateTest = CaptureTest::None;
+    if (discard) mPacketRequests.injection.reset();
+    else mPacketRequests.injection.cancel(reason);
 }
 
 void ProbeMod::sendCommandPacket(PacketInjectionQuery const& query, PacketInjectionSnapshot& out) {
@@ -99,7 +99,7 @@ void ProbeMod::sendCommandPacket(PacketInjectionQuery const& query, PacketInject
     if (!guardedGameRead([&] {
         applyPacketInjection(out,
             [&]() -> char const* {
-                if (auto error = packetInjectionAdmission(query, mPacketGeneration.load(), mPoseEpoch.load(),
+                if (auto error = packetInjectionAdmission(query, mPacketRequests.generation.load(), mPoseEpoch.load(),
                                                           mWorld.inWorld(), GetTickCount64())) return error;
                 if (!mAllowPacketInject.load()) return "packet_inject_disabled";
                 auto client = ll::service::getClientInstance();
@@ -135,8 +135,8 @@ void ProbeMod::sendCommandPacket(PacketInjectionQuery const& query, PacketInject
 }
 
 void ProbeMod::drainPacketInjection() {
-    std::lock_guard lock(mPacketInjectionMutex);
-    if (auto request = mPacketInjection.current(); request && request->query.test != PacketInjectionTest::Deferred) {
+    std::lock_guard lock(mPacketRequests.mutex);
+    if (auto request = mPacketRequests.injection.current(); request && request->query.test != PacketInjectionTest::Deferred) {
         if (auto stage = request->dispatch()) {
             auto weak = std::weak_ptr{request};
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
@@ -151,7 +151,7 @@ void ProbeMod::drainPacketInjection() {
             } catch (...) { failed("packet_inject_queue_failed"); }
         }
     }
-    auto done = mPacketInjection.take(GetTickCount64());
+    auto done = mPacketRequests.injection.take(GetTickCount64());
     if (!done.request) return;
     // Cancellation may finish while a callback still owns snapshot. Never
     // inspect that snapshot or claim rollback; report conservative partial.
@@ -164,7 +164,7 @@ void ProbeMod::drainPacketInjection() {
     if (error) result["reason"] = error;
     auto line = result.dump();
     if (done.release()) {
-        if (!error) mChatSent.fetch_add(1);
+        if (!error) mPacketRequests.chatSent.fetch_add(1);
         enqueue(std::move(line));
     }
 }

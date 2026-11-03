@@ -126,7 +126,7 @@ void WorldSession::start() {
         mOwner.mPoseEpoch.fetch_add(1);
         mOwner.mPoseTest = CaptureTest::None;
         mOwner.mPlayerIdentityTest = CaptureTest::None;
-        for (auto& test : mOwner.mControlTests) test = ControlTest::None;
+        for (auto& test : mOwner.mInputSession.controlTests) test = ControlTest::None;
         for (auto& test : mOwner.mTickErrorTests) test = TickErrorTest::None;
         mOwner.mTickRecoveryHoldUntilMs = 0;
         hookCancelCalls("world_left");
@@ -139,7 +139,12 @@ void WorldSession::start() {
         mOwner.cancelTasks("world_left");
         mOwner.beginTask();
         mPhase = Phase::Leaving;
-        mOwner.enqueue(R"({"event":"world_left"})");
+        auto const leaveId = mLeaveRequest.exchange(0);
+        mLeaveCompleted.store(leaveId);
+        nlohmann::json left{{"event", "world_left"}, {"leave_id", leaveId}};
+        left["menu"] = menuDiagnosticsOnClient();
+        left["menu_error"] = left["menu"].is_null();
+        mOwner.enqueue(left.dump());
         settleEntry(false, "left_while_joining");
         // F4: this listener may run on the client thread; ask the spool thread
         // to flush immediately instead of doing file IO here.

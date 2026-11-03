@@ -71,14 +71,14 @@ bool ProbeMod::hidTextInput(std::string const& text, std::string& error) {
 }
 
 std::uint64_t ProbeMod::queueInputInjection(InputInjection const& item) {
-    std::lock_guard lock(mInputEventMutex);
-    return mInputEvents.push(item);
+    std::lock_guard lock(mInputSession.eventMutex);
+    return mInputSession.events.push(item);
 }
 
 char const* ProbeMod::applyInputEvent(InputInjection const& item) {
     char const* error = nullptr;
     // Restore the flag outside the raw SEH frame, including partial SDK calls.
-    auto const previous = mInjectingInput.exchange(item.kind != InputKind::Raw);
+    auto const previous = mInputSession.injecting.exchange(item.kind != InputKind::Raw);
     try {
         if (!guardedGameRead([&] {
             injectCaptureFault(item.test);
@@ -100,20 +100,20 @@ char const* ProbeMod::applyInputEvent(InputInjection const& item) {
                 device.feed(static_cast<char>(item.code), static_cast<schar>(item.data),
                             item.hasPos ? item.x : device._x, item.hasPos ? item.y : device._y,
                             item.dx, item.dy, false);
-                mMouseInjected.fetch_add(1, std::memory_order_relaxed);
+                mInputSession.mouseInjected.fetch_add(1, std::memory_order_relaxed);
                 if ((item.code == 0 || item.code == 7) && (item.dx || item.dy))
-                    mInjectTurnUntilTick.store(mTick.load(std::memory_order_relaxed) + 2,
+                    mInputSession.injectTurnUntilTick.store(mTick.load(std::memory_order_relaxed) + 2,
                                               std::memory_order_relaxed);
             }
         })) error = "input_fault";
     } catch (...) { error = "input_failed"; }
-    mInjectingInput.store(previous, std::memory_order_release);
+    mInputSession.injecting.store(previous, std::memory_order_release);
     return error;
 }
 
 bool ProbeMod::releaseInputEvents() {
     bool released = true;
-    for (auto& held : mHeldEvents) {
+    for (auto& held : mInputSession.heldEvents) {
         if (!held) continue;
         auto up = *held;
         up.data = 0;
@@ -125,34 +125,34 @@ bool ProbeMod::releaseInputEvents() {
 }
 
 void ProbeMod::tickInputInjection() {
-    mInputTickSerial.fetch_add(1, std::memory_order_release);
-    auto const generation = mInputEvents.generation();
-    if (generation != mInputEventGeneration) {
+    mInputSession.tickSerial.fetch_add(1, std::memory_order_release);
+    auto const generation = mInputSession.events.generation();
+    if (generation != mInputSession.eventGeneration) {
         if (!releaseInputEvents()) return; // Retry failed releases before admitting new input.
-        mInputEventGeneration = generation;
+        mInputSession.eventGeneration = generation;
     }
-    mInputEvents.tick([&](InputInjection const& item) {
+    mInputSession.events.tick([&](InputInjection const& item) {
         std::size_t const slot = item.kind == InputKind::Mouse ? 256 + item.code : item.code;
         bool const track = item.kind != InputKind::Mouse
             || (item.code != 0 && item.code != 4 && item.code != 7);
         // A fault may happen after an edge reaches the SDK. Keep its release
         // even if the call reports failure; an extra key-up is harmless.
-        if (track && item.data) mHeldEvents[slot] = item;
+        if (track && item.data) mInputSession.heldEvents[slot] = item;
         auto error = applyInputEvent(item);
-        if (track && !item.data && !error) mHeldEvents[slot].reset();
+        if (track && !item.data && !error) mInputSession.heldEvents[slot].reset();
         return error;
-    }, mInputEventGeneration);
+    }, mInputSession.eventGeneration);
 }
 
 bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
-    std::lock_guard lock(mInputEventMutex);
-    TextQuery query{std::move(text), mInputEvents.nextId(), mInputEvents.generation(), test};
-    auto request = mTextCapture.begin(std::move(query), GetTickCount64());
+    std::lock_guard lock(mInputSession.eventMutex);
+    TextQuery query{std::move(text), mInputSession.events.nextId(), mInputSession.events.generation(), test};
+    auto request = mInputSession.textCapture.begin(std::move(query), GetTickCount64());
     if (!request) { enqueue(R"({"event":"error","reason":"text_input_busy"})"); return false; }
     InputInjection barrier;
     barrier.kind = InputKind::Text;
-    if (!mInputEvents.push(barrier)) {
-        mTextCapture.reset();
+    if (!mInputSession.events.push(barrier)) {
+        mInputSession.textCapture.reset();
         enqueue(R"({"event":"error","reason":"inject_queue_full"})");
         return false;
     }
@@ -161,8 +161,8 @@ bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
 }
 
 bool ProbeMod::queueUiQuery(UiQuery query) {
-    std::lock_guard lock(mInputEventMutex);
-    if (mUiCapture.begin(query, GetTickCount64())) return true;
+    std::lock_guard lock(mInputSession.eventMutex);
+    if (mInputSession.uiCapture.begin(query, GetTickCount64())) return true;
     enqueue(R"({"event":"error","reason":"ui_query_busy"})");
     return false;
 }
@@ -171,15 +171,15 @@ void ProbeMod::resetInputEvents() { mInputSession.resetEvents(); }
 void ProbeMod::cancelInputEvents(char const* reason) { mInputSession.cancelEvents(reason); }
 
 void ProbeMod::drainInputEvents() {
-    std::lock_guard lock(mInputEventMutex);
+    std::lock_guard lock(mInputSession.eventMutex);
     InputOutcome row;
-    while (mInputEvents.pop(row)) {
-        if (row.kind == InputKind::Text || row.generation < mInputReplyGeneration) continue;
+    while (mInputSession.events.pop(row)) {
+        if (row.kind == InputKind::Text || row.generation < mInputSession.replyGeneration) continue;
         nlohmann::json out{{"event", "input_event_done"}, {"input_id", row.id}, {"ok", !row.error}};
         if (row.error) out["reason"] = row.error;
         enqueue(out.dump());
     }
-    if (auto request = mTextCapture.current(); request && mInputEvents.textReady(request->query.id)) {
+    if (auto request = mInputSession.textCapture.current(); request && mInputSession.events.textReady(request->query.id)) {
         if (auto stage = request->dispatch(); stage && request->query.test != CaptureTest::Deferred) {
             auto weak = std::weak_ptr{request};
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
@@ -187,25 +187,25 @@ void ProbeMod::drainInputEvents() {
                 queueClientTask([this, weak, stage = *stage] {
                     if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](TextSnapshot& out) {
                         if (stage == InputStage::Flush)
-                            return mInputTickSerial.load(std::memory_order_acquire) >= out.resumeTick
+                            return mInputSession.tickSerial.load(std::memory_order_acquire) >= out.resumeTick
                                 ? InputStage::Complete : InputStage::Flush;
                         std::string error;
                         if (!guardedGameRead([&] {
                             injectCaptureFault(active->query.test);
-                            if (active->query.generation != mInputEvents.generation() || !mWorld.inWorld())
+                            if (active->query.generation != mInputSession.events.generation() || !mWorld.inWorld())
                                 out.error = "world_left";
                             else if (!hidTextInput(active->query.text, error)) out.error = "text_input_failed";
                         })) out.error = "text_input_fault";
                         // onTextInput queues UI work. Cross two player tick
                         // boundaries before releasing a following Enter edge.
-                        out.resumeTick = mInputTickSerial.load(std::memory_order_acquire) + 2;
+                        out.resumeTick = mInputSession.tickSerial.load(std::memory_order_acquire) + 2;
                         return out.error ? InputStage::Complete : InputStage::Flush;
                     });
                 }, failed);
             } catch (...) { request->cancel("text_input_queue_failed"); }
         }
     }
-    if (auto done = mTextCapture.take(GetTickCount64()); done.request) {
+    if (auto done = mInputSession.textCapture.take(GetTickCount64()); done.request) {
         auto error = done.error ? done.error : done.request->snapshot.error;
         nlohmann::json out{{"event", "text_input_done"}, {"input_id", done.request->query.id}, {"ok", !error}};
         if (error) out["reason"] = error;
@@ -213,11 +213,11 @@ void ProbeMod::drainInputEvents() {
         // A queued Enter must never submit a partially applied/old command
         // after text fails. Keep numbered cancellation replies on this client;
         // reconnect alone advances the reply cutoff and discards old work.
-        if (error && done.request->query.generation == mInputEvents.generation()) mInputEvents.cancel();
-        mInputEvents.completeText(done.request->query.id);
+        if (error && done.request->query.generation == mInputSession.events.generation()) mInputSession.events.cancel();
+        mInputSession.events.completeText(done.request->query.id);
         if (done.release()) enqueue(std::move(line));
     }
-    if (auto request = mUiCapture.current()) {
+    if (auto request = mInputSession.uiCapture.current()) {
         if (auto stage = request->dispatch(); stage && request->query.test != CaptureTest::Deferred) {
             auto weak = std::weak_ptr{request};
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
@@ -236,11 +236,11 @@ void ProbeMod::drainInputEvents() {
                             } else {
                                 if (!out.inWorld) { out.error = "not_in_world"; return; }
                                 out.down = Keyboard::_states()[active->query.code] != 0;
-                                out.events = mKeyEventCount.load();
-                                out.injectedSeen = mKeyInjectedSeen.load();
-                                out.lastCode = mKeyLastCode.load();
-                                out.lastAction = mKeyLastAction.load();
-                                out.pending = mInputEvents.pending();
+                                out.events = mInputSession.keyEventCount.load();
+                                out.injectedSeen = mInputSession.keyInjectedSeen.load();
+                                out.lastCode = mInputSession.keyLastCode.load();
+                                out.lastAction = mInputSession.keyLastAction.load();
+                                out.pending = mInputSession.events.pending();
                             }
                         })) out.error = "ui_query_fault";
                         return InputStage::Complete;
@@ -249,7 +249,7 @@ void ProbeMod::drainInputEvents() {
             } catch (...) { request->cancel("ui_query_queue_failed"); }
         }
     }
-    if (auto done = mUiCapture.take(GetTickCount64()); done.request) {
+    if (auto done = mInputSession.uiCapture.take(GetTickCount64()); done.request) {
         auto error = done.error ? done.error : done.request->snapshot.error;
         nlohmann::json out;
         if (error) out = {{"event", "error"}, {"phase", "ui_query"}, {"reason", error}};
@@ -281,7 +281,7 @@ LL_TYPE_INSTANCE_HOOK(
     auto& mod = ::probe::ProbeMod::getInstance();
     // Origin is the whole test: a real key press is Hardware. Scripted presses
     // that must reproduce one (double-space flight only reacts to the Hardware
-    // path) arrive through the inject ring under mInjectingInput, so they pass
+    // path) arrive through the inject ring under mInputSession.injecting, so they pass
     // while the guest's own keyboard is dropped.
     if (mod.hardwareInputLocked()
         && inputOrigin == Bedrock::Input::KeyboardEventProcessor::InputOrigin::Hardware
@@ -294,7 +294,7 @@ LL_TYPE_INSTANCE_HOOK(
 static ll::memory::HookRegistrar<ProbeHardwareKeyHook> gHardwareKeyHook;
 
 // The same entry publishes real mouse buttons/motion and our injected ones;
-// injections run under mInjectingInput, so everything else is hardware.
+// injections run under mInputSession.injecting, so everything else is hardware.
 LL_TYPE_INSTANCE_HOOK(
     ProbeHardwareMouseHook,
     ll::memory::HookPriority::Normal,

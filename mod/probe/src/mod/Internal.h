@@ -537,7 +537,7 @@ namespace probe {
 template <class Apply>
 bool ProbeMod::guardedControl(detail::ControlOp op, Apply&& apply) {
     using namespace detail;
-    auto const test = mControlTests[static_cast<unsigned>(op)].exchange(ControlTest::None);
+    auto const test = mInputSession.controlTests[static_cast<unsigned>(op)].exchange(ControlTest::None);
     bool ok = false;
     try {
         if (!guardedGameRead([&] {
@@ -547,14 +547,14 @@ bool ProbeMod::guardedControl(detail::ControlOp op, Apply&& apply) {
                 if (test == ControlTest::SehAfter) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
                 if (test == ControlTest::CppAfter) throw 1;
             })) {
-            mControlDiagnostics.record(op, ControlIssue::Fault);
+            mInputSession.controlDiagnostics.record(op, ControlIssue::Fault);
             return false;
         }
     } catch (...) {
-        mControlDiagnostics.record(op, ControlIssue::Failed);
+        mInputSession.controlDiagnostics.record(op, ControlIssue::Failed);
         return false;
     }
-    if (!ok) mControlDiagnostics.record(op, ControlIssue::Unavailable);
+    if (!ok) mInputSession.controlDiagnostics.record(op, ControlIssue::Unavailable);
     return ok;
 }
 

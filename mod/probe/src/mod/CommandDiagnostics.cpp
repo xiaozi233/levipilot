@@ -16,7 +16,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             for (auto& test : mTickErrorTests) test = TickErrorTest::None;
             mTickRecoveryHoldUntilMs = 0;
         } else {
-            if (!mAllowInputInject.load() || !mWorld.inWorld() || mTickRecovery.active()) {
+            if (!mInputSession.allowInject.load() || !mWorld.inWorld() || mTickRecovery.active()) {
                 enqueue(R"({"event":"error","reason":"tick_test_unavailable"})");
                 return true;
             }
@@ -30,6 +30,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             else if (mode == "unknown") test = TickErrorTest::Unknown;
             else if (mode == "long") test = TickErrorTest::LongMessage;
             else if (mode == "invalid") test = TickErrorTest::InvalidMessage;
+            else if (mode == "client_read") test = TickErrorTest::ClientRead;
             else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
             auto const hold = std::clamp(j.value("hold_ms", 0), 0, 2000);
             mTickRecoveryHoldUntilMs = GetTickCount64() + hold;
@@ -428,8 +429,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["player_identity"] = {{"valid", identity.valid != 0}, {"epoch", mPoseEpoch.load()},
             {"sample_tick", identity.tick}, {"uuid_a", identity.uuidA}, {"uuid_b", identity.uuidB},
             {"faults", identityFailures.fault}, {"failures", identityFailures.cpp}, {"empty", identityFailures.empty}};
-        out["controls"] = {{"injecting_input", mInjectingInput.load()}, {"injecting_look", mInjectingLook.load() != 0},
-            {"cleanup_pending", mControlCleanupPending.load()}, {"held_mask", mControlHeldMask.load()}};
+        out["controls"] = {{"injecting_input", mInputSession.injecting.load()}, {"injecting_look", mInputSession.injectingLook.load() != 0},
+            {"cleanup_pending", mInputSession.controlCleanupPending.load()}, {"held_mask", mInputSession.controlHeldMask.load()}};
         auto const recovery = mTickRecovery.snapshot();
         out["tick_recovery"] = {{"recovery_id", recovery.id}, {"active", recovery.phase != TickRecovery::Phase::Running},
             {"phase", recovery.phase == TickRecovery::Phase::Running ? "running"
@@ -437,9 +438,9 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["world_entry"]     = mWorld.entryStatus();
         out["recording"]       = mLegacyStream.active();
         out["tick"]                  = mTick.load();
-        out["macro_playing"]         = mMacroPlayback.active();
-        out["macro_index"]           = mMacroPlayback.index();
-        out["macro_recording"]       = mMacroRecording.active();
+        out["macro_playing"]         = mMacroSession.playback.active();
+        out["macro_index"]           = mMacroSession.playback.index();
+        out["macro_recording"]       = mMacroSession.recording.active();
         out["queue_dropped"]   = mQueueDropped.load();
         out["pipe_write_timeouts"] = mPipeWriteTimeouts.load();
         out["pipe_write_timeout_ms"] = PipeChannel::DefaultTimeoutMs;

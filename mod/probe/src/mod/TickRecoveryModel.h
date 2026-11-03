@@ -10,7 +10,7 @@ namespace probe::detail {
 
 enum class TickPhase : unsigned { Pre, Post };
 inline char const* tickPhaseName(TickPhase phase) { return phase == TickPhase::Pre ? "tick_pre" : "tick_post"; }
-enum class TickErrorTest { None, Standard, Unknown, LongMessage, InvalidMessage };
+enum class TickErrorTest { None, Standard, Unknown, LongMessage, InvalidMessage, ClientRead };
 
 struct TickFailure {
     std::uint64_t id = 0, tick = 0;

@@ -31,6 +31,37 @@ bool WorldSession::menuReadyOnClient() const {
         && game.canStartLocalServer() && game.getServerInstance() == nullptr;
 }
 
+nlohmann::json WorldSession::menuDiagnosticsOnClient() const {
+    bool present = false, localPlayer = false, leaveDone = false, clientLeaveDone = false;
+    bool canStart = false, serverInstance = false;
+    std::string screen;
+    try {
+        bool const readOk = guardedGameRead([&] {
+            auto client = ll::service::getClientInstance();
+            if (!client) return;
+            present = true;
+            auto& game = client->getMinecraftGame();
+            screen = client->getScreenName();
+            localPlayer = client->getLocalPlayer() != nullptr;
+            leaveDone = game.isLeaveGameDone();
+            clientLeaveDone = client->isLeaveGameDone();
+            canStart = game.canStartLocalServer();
+            serverInstance = game.getServerInstance() != nullptr;
+        });
+        if (!readOk || !present) return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+    return {
+        {"screen", screen},
+        {"local_player", localPlayer},
+        {"leave_done", leaveDone},
+        {"client_leave_done", clientLeaveDone},
+        {"can_start", canStart},
+        {"server_instance", serverInstance},
+    };
+}
+
 void WorldSession::probeEntryOnClient(std::uint64_t id) {
     auto const state = mEntry.snapshot();
     if (state.id != id || state.phase == WorldEntryModel::Phase::Idle) return;
@@ -251,9 +282,20 @@ void WorldSession::leaveOnClient() {
         return;
     }
     auto const previous = mPhase.exchange(Phase::Leaving);
+    auto const leaveId = mLeaveSerial.fetch_add(1) + 1;
+    mLeaveCompleted.store(0);
+    mLeaveRequest.store(leaveId);
     try {
-        client->getMinecraftGame().requestLeaveGame(true, true);
-        mOwner.enqueue(R"({"event":"leave_world_result","ok":true})");
+        bool const requested = guardedGameRead([&] {
+            client->getMinecraftGame().requestLeaveGame(true, true);
+        });
+        if (!requested) {
+            mPhase = previous;
+            mOwner.enqueue(nlohmann::json{{"event", "leave_world_result"}, {"ok", false},
+                                          {"reason", "fault"}, {"leave_id", leaveId}}.dump());
+            return;
+        }
+        mOwner.enqueue(nlohmann::json{{"event", "leave_world_result"}, {"ok", true}, {"leave_id", leaveId}}.dump());
     } catch (std::exception const& e) {
         mPhase = previous;
         mOwner.enqueue(
@@ -262,6 +304,7 @@ void WorldSession::leaveOnClient() {
                 {"ok",      false               },
                 {"reason",  "exception"         },
                 {"message", e.what()            },
+                {"leave_id", leaveId             },
         }
                 .dump()
         );
@@ -287,6 +330,10 @@ void WorldSession::listOnClient() {
             {"entry", entryStatus()},
             {"worlds", nlohmann::json::array()}
         };
+        out["leave_request"] = mLeaveRequest.load();
+        out["leave_completed"] = mLeaveCompleted.load();
+        out["menu"] = menuDiagnosticsOnClient();
+        if (out["menu"].is_object()) out["menu"]["world_list_available"] = true;
         for (auto const& summary : list) {
             out["worlds"].push_back({
                 {"id",         std::string{summary.mId}                  },

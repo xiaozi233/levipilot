@@ -12,11 +12,11 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         }
         auto const mode = j.value("mode", std::string{});
         if (mode == "off") {
-            for (auto& test : mControlTests) test = ControlTest::None;
+            for (auto& test : mInputSession.controlTests) test = ControlTest::None;
             enqueue(R"({"event":"control_test_armed"})");
             return true;
         }
-        if (!mAllowInputInject.load() || !mWorld.inWorld()) {
+        if (!mInputSession.allowInject.load() || !mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"input_test_unavailable"})");
             return true;
         }
@@ -30,7 +30,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         auto const operation = j.value("operation", std::string{});
         for (unsigned i = 0; i < ControlDiagnostics::Operations; ++i) {
             if (operation != controlOpName(static_cast<ControlOp>(i))) continue;
-            mControlTests[i] = test;
+            mInputSession.controlTests[i] = test;
             enqueue(R"({"event":"control_test_armed"})");
             return true;
         }
@@ -51,7 +51,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         auto const target = j.value("target", std::string{});
         if (target == "screen") queueUiQuery({UiOperation::Screen, 0, test});
         else if (target == "text" || target == "key") {
-            if (!mAllowInputInject.load() || !mWorld.inWorld()) {
+            if (!mInputSession.allowInject.load() || !mWorld.inWorld()) {
                 enqueue(R"({"event":"error","reason":"input_test_unavailable"})");
             } else if (target == "text") queueTextInput("selftest", test);
             else if (test == CaptureTest::Deferred) enqueue(R"({"event":"error","reason":"bad_test_mode"})");
@@ -72,7 +72,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return true;
         }
-        if (!mAllowInputInject.load(std::memory_order_relaxed)) {
+        if (!mInputSession.allowInject.load(std::memory_order_relaxed)) {
             enqueue(
                 R"({"event":"error","reason":"input_inject_disabled","hint":"set allow_input_inject=true"})"
             );
@@ -84,7 +84,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         }
     }
     if (cmd == "text_input") {
-        if (!mAllowInputInject.load(std::memory_order_relaxed)) {
+        if (!mInputSession.allowInject.load(std::memory_order_relaxed)) {
             enqueue(R"({"event":"error","reason":"input_inject_disabled"})");
             return true;
         }
@@ -135,7 +135,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 {"down",   down             },
                 {"repeat", repeat           },
                 {"via",    via              },
-                {"events", mKeyEventCount.load()},
+                {"events", mInputSession.keyEventCount.load()},
             }
                 .dump()
         );
@@ -198,7 +198,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         item.hasPos = j.contains("x") || j.contains("y");
         item.x      = clampShort(j.value("x", 0));
         item.y      = clampShort(j.value("y", 0));
-        std::uint64_t const before = mMouseEventCount.load(std::memory_order_relaxed);
+        std::uint64_t const before = mInputSession.mouseEventCount.load(std::memory_order_relaxed);
         auto const inputId = queueInputInjection(item);
         if (!inputId) {
             enqueue(R"({"event":"error","reason":"inject_queue_full"})");
@@ -217,7 +217,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 {"dx",            dx                   },
                 {"dy",            dy                   },
                 {"count_before",  before               },
-                {"injected_total", mMouseInjected.load()},
+                {"injected_total", mInputSession.mouseInjected.load()},
             }
                 .dump()
         );
@@ -226,13 +226,13 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
     if (cmd == "mouse") {
         nlohmann::json out;
         out["event"]       = "mouse";
-        out["count"]       = mMouseEventCount.load();
-        out["last_action"] = mMouseLastAction.load();
-        out["last_data"]   = mMouseLastData.load();
-        out["left"]        = mMouseLeft.load();
-        out["right"]       = mMouseRight.load();
+        out["count"]       = mInputSession.mouseEventCount.load();
+        out["last_action"] = mInputSession.mouseLastAction.load();
+        out["last_data"]   = mInputSession.mouseLastData.load();
+        out["left"]        = mInputSession.mouseLeft.load();
+        out["right"]       = mInputSession.mouseRight.load();
         out["counts"]      = nlohmann::json::array();
-        for (auto const& count : mMouseActionCounts) {
+        for (auto const& count : mInputSession.mouseActionCounts) {
             out["counts"].push_back(count.load());
         }
         enqueue(out.dump());
@@ -326,9 +326,9 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "input_cfg") {
-        mInputSource.store(j.value("source", -1));
-        mInputController.store(j.value("controller", 0));
-        mInputFocus.store(j.value("focus", 0));
+        mInputSession.inputSource.store(j.value("source", -1));
+        mInputSession.inputController.store(j.value("controller", 0));
+        mInputSession.inputFocus.store(j.value("focus", 0));
         if (j.contains("mode")) {
             int const mode = j.value("mode", 0);
             if (mode != 0 && !j.value("force", false)) {
@@ -339,8 +339,8 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 }.dump());
                 return true;
             }
-            mInputMode.store(static_cast<ControlInputMode>(mode));
-            mResetInputButtons.store(true, std::memory_order_release);
+            mInputSession.inputMode.store(static_cast<ControlInputMode>(mode));
+            mInputSession.resetInputButtons.store(true, std::memory_order_release);
         }
         if (j.contains("jump_impulse")) {
             int const impulse = std::clamp(j.value("jump_impulse", 0), 0, 3);
@@ -352,7 +352,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 }.dump());
                 return true;
             }
-            mJumpImpulseMode.store(static_cast<JumpImpulse>(impulse));
+            mInputSession.jumpImpulseMode.store(static_cast<JumpImpulse>(impulse));
         }
         enqueue(R"({"event":"input_cfg_ok"})");
         return true;
@@ -362,7 +362,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         // run; injected events keep working. Does not need allow_input_inject
         // because it only removes input.
         bool const on = j.value("on", true);
-        mHardwareInputLocked.store(on, std::memory_order_relaxed);
+        mInputSession.hardwareLocked.store(on, std::memory_order_relaxed);
         enqueue(nlohmann::json{{"event", "input_lock_set"}, {"on", on}}.dump());
         return true;
     }

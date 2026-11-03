@@ -62,6 +62,7 @@ private:
     bool replyEntryBusy();
     void probeEntryOnClient(std::uint64_t id);
     bool menuReadyOnClient() const;
+    nlohmann::json menuDiagnosticsOnClient() const;
     [[nodiscard]] char const* phaseName() const;
 
     ProbeMod&                                                   mOwner;
@@ -80,6 +81,9 @@ private:
     std::atomic<std::uint64_t>                                  mEntryUnsafeUntil{0};
     std::atomic<int>                                            mSignInWaitMs{15000};
     std::atomic<std::uint64_t>                                  mEpoch{0};
+    std::atomic<std::uint64_t>                                  mLeaveSerial{0};
+    std::atomic<std::uint64_t>                                  mLeaveRequest{0};
+    std::atomic<std::uint64_t>                                  mLeaveCompleted{0};
     std::atomic<std::shared_ptr<ll::data::CancellableCallback>> mSignInRetry;
     std::atomic<std::shared_ptr<ll::data::CancellableCallback>> mAutoRetry;
     ll::event::ListenerPtr mStartJoinListener, mJoinListener, mExitListener, mCancelListener;

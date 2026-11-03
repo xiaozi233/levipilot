@@ -59,43 +59,43 @@ bool ProbeMod::refreshBindings(bool releaseOnChange) {
         next.jump    = read(kBindingNames[5], 32); // Space
         next.sprint  = read(kBindingNames[6], 0);  // 0 = unassigned
 
-        bool const changed = !mBindingsValid || next.forward != mBindings.forward
-                          || next.back != mBindings.back || next.left != mBindings.left
-                          || next.right != mBindings.right || next.sneak != mBindings.sneak
-                          || next.jump != mBindings.jump || next.sprint != mBindings.sprint;
+        bool const changed = !mInputSession.bindingsValid || next.forward != mInputSession.bindings.forward
+                          || next.back != mInputSession.bindings.back || next.left != mInputSession.bindings.left
+                          || next.right != mInputSession.bindings.right || next.sneak != mInputSession.bindings.sneak
+                          || next.jump != mInputSession.bindings.jump || next.sprint != mInputSession.bindings.sprint;
         if (changed && releaseOnChange && !releaseRealInput()) return false;
-        mBindings      = next;
-        mBindingsValid = true;
-        mBindingsTick  = mTick.load(std::memory_order_relaxed);
+        mInputSession.bindings      = next;
+        mInputSession.bindingsValid = true;
+        mInputSession.bindingsTick  = mTick.load(std::memory_order_relaxed);
         return true;
     });
 }
 
 void ProbeMod::publishHeldInput() {
     std::uint32_t mask = 0;
-    for (unsigned i = 0; i < KeyCount; ++i) if (mHeldKeys[i]) mask |= 1u << i;
-    if (mHeldLmb) mask |= 1u << 7;
-    if (mHeldRmb) mask |= 1u << 8;
-    mControlHeldMask.store(mask);
+    for (unsigned i = 0; i < KeyCount; ++i) if (mInputSession.heldKeys[i]) mask |= 1u << i;
+    if (mInputSession.heldLmb) mask |= 1u << 7;
+    if (mInputSession.heldRmb) mask |= 1u << 8;
+    mInputSession.controlHeldMask.store(mask);
 }
 
 bool ProbeMod::releaseRealInput() {
     bool      released        = true;
     int const codes[KeyCount] = {
-        mBindings.forward,
-        mBindings.back,
-        mBindings.left,
-        mBindings.right,
-        mBindings.sneak,
-        mBindings.jump,
-        mBindings.sprint,
+        mInputSession.bindings.forward,
+        mInputSession.bindings.back,
+        mInputSession.bindings.left,
+        mInputSession.bindings.right,
+        mInputSession.bindings.sneak,
+        mInputSession.bindings.jump,
+        mInputSession.bindings.sprint,
     };
-    InjectionScope injecting(mInjectingInput);
+    InjectionScope injecting(mInputSession.injecting);
     for (size_t i = 0; i < KeyCount; ++i) {
-        if (!mHeldKeys[i] || codes[i] == 0) {
+        if (!mInputSession.heldKeys[i] || codes[i] == 0) {
             continue;
         }
-        if (!trackedInputEdge(mHeldKeys[i], false, [&] {
+        if (!trackedInputEdge(mInputSession.heldKeys[i], false, [&] {
                 return guardedControl(ControlOp::KeyUp, [&] { return hidKeyEdge(codes[i], false, true) == nullptr; });
             })) released = false;
     }
@@ -108,10 +108,10 @@ bool ProbeMod::releaseRealInput() {
             });
         });
     };
-    if (!releaseMouse(1, mHeldLmb)) released = false;
-    if (!releaseMouse(2, mHeldRmb)) released = false;
-    if (released) mSprintTapPhase = 0;
-    mControlCleanupPending = !released;
+    if (!releaseMouse(1, mInputSession.heldLmb)) released = false;
+    if (!releaseMouse(2, mInputSession.heldRmb)) released = false;
+    if (released) mInputSession.sprintTapPhase = 0;
+    mInputSession.controlCleanupPending = !released;
     publishHeldInput();
     return released;
 }
@@ -119,7 +119,7 @@ bool ProbeMod::releaseRealInput() {
 bool ProbeMod::performClick(LocalPlayer& player, int button) {
     ClickResult result;
     result.button   = button;
-    mInjectingClick = true;
+    mInputSession.injectingClick = true;
     try {
         if (!guardedGameRead([&] {
                 injectCaptureFault(mClickCaptureTest.exchange(CaptureTest::None));
@@ -157,7 +157,7 @@ bool ProbeMod::performClick(LocalPlayer& player, int button) {
     } catch (...) {
         result.error = "click_failed";
     }
-    mInjectingClick = false;
+    mInputSession.injectingClick = false;
     if (!mClickResults.push(result)) mClickResultsLost.fetch_add(1, std::memory_order_relaxed);
     return result.error == nullptr;
 }
@@ -194,7 +194,7 @@ void ProbeMod::drainClicks() {
 void ProbeMod::drainControlDiagnostics() {
     for (unsigned i = 0; i < ControlDiagnostics::Operations; ++i) {
         auto const op = static_cast<ControlOp>(i);
-        auto const counts = mControlDiagnostics.take(op);
+        auto const counts = mInputSession.controlDiagnostics.take(op);
         if (!(counts[0] || counts[1] || counts[2])) continue;
         enqueue(nlohmann::json{{"event", "control_error"}, {"operation", controlOpName(op)},
             {"faults", counts[0]}, {"failures", counts[1]}, {"unavailable", counts[2]}}.dump());
@@ -203,25 +203,25 @@ void ProbeMod::drainControlDiagnostics() {
 
 bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
     // Finish uncertain releases before admitting another desired state.
-    if (mControlCleanupPending.load() && !releaseRealInput()) return false;
+    if (mInputSession.controlCleanupPending.load() && !releaseRealInput()) return false;
     std::uint64_t const tick = mTick.load(std::memory_order_relaxed);
-    if (!mBindingsValid || tick - mBindingsTick >= kBindRefreshTicks) {
-        if (!refreshBindings(true)) { mControlCleanupPending = true; return false; }
+    if (!mInputSession.bindingsValid || tick - mInputSession.bindingsTick >= kBindRefreshTicks) {
+        if (!refreshBindings(true)) { mInputSession.controlCleanupPending = true; return false; }
     }
 
     // If the guest has a sprint key (currently often R), press it. If sprint is
     // unassigned, reproduce the vanilla double-tap-forward gesture instead.
-    bool const sprintBound     = mBindings.sprint != 0;
+    bool const sprintBound     = mInputSession.bindings.sprint != 0;
     bool const sprintRequested = state.sprint && state.forward > 0.0f;
     if (!sprintBound && sprintRequested) {
-        if (mSprintTapPhase == 0) {
-            mSprintTapPhase = mHeldKeys[KeyForward] ? 2 : 1;
+        if (mInputSession.sprintTapPhase == 0) {
+            mInputSession.sprintTapPhase = mInputSession.heldKeys[KeyForward] ? 2 : 1;
         }
     } else {
-        mSprintTapPhase = 0;
+        mInputSession.sprintTapPhase = 0;
     }
     bool const wantW = state.forward > 0.0f
-                    && (!sprintRequested || !sprintBound || mSprintTapPhase != 2);
+                    && (!sprintRequested || !sprintBound || mInputSession.sprintTapPhase != 2);
 
     bool const want[KeyCount] = {
         wantW,
@@ -233,33 +233,33 @@ bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
         sprintBound && sprintRequested,
     };
     int const codes[KeyCount] = {
-        mBindings.forward,
-        mBindings.back,
-        mBindings.left,
-        mBindings.right,
-        mBindings.sneak,
-        mBindings.jump,
-        mBindings.sprint,
+        mInputSession.bindings.forward,
+        mInputSession.bindings.back,
+        mInputSession.bindings.left,
+        mInputSession.bindings.right,
+        mInputSession.bindings.sneak,
+        mInputSession.bindings.jump,
+        mInputSession.bindings.sprint,
     };
     bool applied = true;
-    InjectionScope injecting(mInjectingInput);
+    InjectionScope injecting(mInputSession.injecting);
     for (size_t i = 0; i < KeyCount; ++i) {
-        if (mHeldKeys[i] == want[i] || codes[i] == 0) {
+        if (mInputSession.heldKeys[i] == want[i] || codes[i] == 0) {
             continue;
         }
         // Hardware is the origin a physical keyboard produces. The injection
         // guard above keeps input_lock from dropping our own edge.
-        if (i == KeyJump && want[i]) mJumpEdgeThisTick = true;
-        if (!trackedInputEdge(mHeldKeys[i], want[i], [&] {
+        if (i == KeyJump && want[i]) mInputSession.jumpEdgeThisTick = true;
+        if (!trackedInputEdge(mInputSession.heldKeys[i], want[i], [&] {
                 return guardedControl(want[i] ? ControlOp::KeyDown : ControlOp::KeyUp,
                     [&] { return hidKeyEdge(codes[i], want[i], true) == nullptr; });
             })) { applied = false; break; }
     }
     if (!sprintBound && sprintRequested) {
-        if (mSprintTapPhase == 1) {
-            mSprintTapPhase = 2; // next tick release forward
-        } else if (mSprintTapPhase == 2) {
-            mSprintTapPhase = 3; // next tick press forward and latch sprint
+        if (mInputSession.sprintTapPhase == 1) {
+            mInputSession.sprintTapPhase = 2; // next tick release forward
+        } else if (mInputSession.sprintTapPhase == 2) {
+            mInputSession.sprintTapPhase = 3; // next tick press forward and latch sprint
         }
     }
 
@@ -268,14 +268,14 @@ bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
             return guardedControl(down ? ControlOp::MouseDown : ControlOp::MouseUp, [&] {
                 auto& device = Mouse::_instance();
                 device.feed(static_cast<char>(action), down ? 1 : 0, device._x, device._y, 0, 0, false);
-                mMouseInjected.fetch_add(1, std::memory_order_relaxed);
+                mInputSession.mouseInjected.fetch_add(1, std::memory_order_relaxed);
                 return true;
             });
         });
     };
-    if (applied) applied = button(1, state.lmb, mHeldLmb);
-    if (applied) applied = button(2, state.rmb, mHeldRmb);
-    mControlCleanupPending = !applied;
+    if (applied) applied = button(1, state.lmb, mInputSession.heldLmb);
+    if (applied) applied = button(2, state.rmb, mInputSession.heldRmb);
+    mInputSession.controlCleanupPending = !applied;
     publishHeldInput();
     return applied;
 }
@@ -284,8 +284,8 @@ bool ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
     // Default path: physical key edges only. Legacy flag/queue/handler/impulse
     // modes exist only for reproducing old measurements and require an explicit
     // input_cfg force.
-    if (mInputMode.load(std::memory_order_relaxed) == ControlInputMode::Hardware
-        && mJumpImpulseMode.load(std::memory_order_relaxed) == JumpImpulse::None) {
+    if (mInputSession.inputMode.load(std::memory_order_relaxed) == ControlInputMode::Hardware
+        && mInputSession.jumpImpulseMode.load(std::memory_order_relaxed) == JumpImpulse::None) {
         return applyRealInput(player, state);
     }
     if (!releaseRealInput()) return false;
@@ -295,23 +295,23 @@ bool ProbeMod::applyControls(ClientInstance& client, LocalPlayer& player, Contro
 bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state) {
 
     if (state.active) {
-        mInjected = true;
+        mInputSession.injected = true;
         ClientMoveInputHandler::_updateClientMoveVector(state.strafe, state.forward, FocusImpact::Neutral, client);
-    } else if (mInjected) {
+    } else if (mInputSession.injected) {
         ClientMoveInputHandler::_updateClientMoveVector(0.0f, 0.0f, FocusImpact::Neutral, client);
-        mInjected = false;
+        mInputSession.injected = false;
     }
 
     bool const engaged  = state.active;
     bool const jumpNow  = engaged && state.jump;
-    bool const jumpEdge = jumpNow && !mPrevJump;
+    bool const jumpEdge = jumpNow && !mInputSession.prevJump;
     if (jumpEdge) {
-        mJumpEdgeThisTick = true;
+        mInputSession.jumpEdgeThisTick = true;
     }
-    auto const mode = mInputMode.load();
+    auto const mode = mInputSession.inputMode.load();
 
-    if (hasInputMode(mode, ControlInputMode::DirectFlags) && (engaged || mInputActive)) {
-        if (engaged) mInputActive = true; // Retain cleanup intent across a partial SDK call.
+    if (hasInputMode(mode, ControlInputMode::DirectFlags) && (engaged || mInputSession.inputActive)) {
+        if (engaged) mInputSession.inputActive = true; // Retain cleanup intent across a partial SDK call.
         // Directly maintain the local MoveInputComponent flags. Only touch them
         // while our own control is active; otherwise we would overwrite real
         // keyboard/mouse input every tick (this is what broke manual jump/fly).
@@ -324,7 +324,7 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
             stateFlags.set(MoveInputStateSneakDown, engaged && state.sneak);
             stateFlags.set(MoveInputStateSprintDown, engaged && state.sprint);
             stateFlags.set(MoveInputStateJumpDown, jumpNow);
-            stateFlags.set(24, !jumpNow && mPrevJump); // JumpInputWasReleased
+            stateFlags.set(24, !jumpNow && mInputSession.prevJump); // JumpInputWasReleased
             stateFlags.set(25, jumpEdge);              // JumpInputWasPressed
             stateFlags.set(26, jumpNow);               // JumpInputCurrentlyDown
         }
@@ -333,7 +333,7 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
         } else {
             player.setSneaking(false);
         }
-        mInputActive = engaged;
+        mInputSession.inputActive = engaged;
     }
 
     if (hasInputMode(mode, ControlInputMode::Queue)) {
@@ -346,22 +346,22 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
                 // ground (measured 2026-10-25: modes 2/4 + sprint=true + forward=0
                 // produced a 0.42 arc), which contaminated sprint experiments.
                 if (i == 4 && hasInputMode(mode, ControlInputMode::DirectFlags)) {
-                    mButtonStates[i] = false;
+                    mInputSession.buttonStates[i] = false;
                     continue;
                 }
-                if (buttons[i] != mButtonStates[i]) {
-                    if (buttons[i]) mButtonStates[i] = true;
+                if (buttons[i] != mInputSession.buttonStates[i]) {
+                    if (buttons[i]) mInputSession.buttonStates[i] = true;
                     queue->enqueueButton(
                         ActionIds[i],
                         buttons[i] ? ButtonState::Down : ButtonState::Up,
                         false,
-                        static_cast<FocusImpact>(mInputFocus.load()),
-                        mInputController.load(),
+                        static_cast<FocusImpact>(mInputSession.inputFocus.load()),
+                        mInputSession.inputController.load(),
                         false,
                         0.0f,
-                        mInputSource.load()
+                        mInputSession.inputSource.load()
                     );
-                    mButtonStates[i] = buttons[i];
+                    mInputSession.buttonStates[i] = buttons[i];
                 }
             }
         }
@@ -373,13 +373,13 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
                 {false, false, false, false, state.sprint, state.sneak, state.jump, state.rmb, state.lmb};
             for (size_t i = 4; i < 9; ++i) {
                 if (i == 4 && hasInputMode(mode, ControlInputMode::DirectFlags)) {
-                    mHandlerStates[i] = false;
+                    mInputSession.handlerStates[i] = false;
                     continue;
                 }
-                if (buttons[i] != mHandlerStates[i]) {
-                    if (buttons[i]) mHandlerStates[i] = true;
+                if (buttons[i] != mInputSession.handlerStates[i]) {
+                    if (buttons[i]) mInputSession.handlerStates[i] = true;
                     invokeButtonHandlers(*handler, buttons[i], ActionIds[i], client);
-                    mHandlerStates[i] = buttons[i];
+                    mInputSession.handlerStates[i] = buttons[i];
                 }
             }
         }
@@ -389,7 +389,7 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
     // could delay the first three position samples. This historical result
     // does not apply to default Hardware HID, which never enters this branch.
     if (jumpNow && player.isOnGround()) {
-        auto const impulse = mJumpImpulseMode.load(std::memory_order_relaxed);
+        auto const impulse = mInputSession.jumpImpulseMode.load(std::memory_order_relaxed);
         if (hasJumpImpulse(impulse, JumpImpulse::FromGround)) {
             player.jumpFromGround();
         }
@@ -399,21 +399,21 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
     }
 
     if (hasInputMode(mode, ControlInputMode::ToggleFallback)) {
-        if (state.sprint != mPrevSprint) {
-            mPrevSprint = state.sprint;
+        if (state.sprint != mInputSession.prevSprint) {
+            mInputSession.prevSprint = state.sprint;
             if (player.isSprinting() != state.sprint) {
                 ClientMoveInputHandler::_toggleClientSprint(FocusImpact::Neutral, client);
             }
         }
-        if (state.sneak != mPrevSneak) {
-            mPrevSneak = state.sneak;
+        if (state.sneak != mInputSession.prevSneak) {
+            mInputSession.prevSneak = state.sneak;
             player.setSneaking(state.sneak);
         }
     }
 
-    mPrevJump   = jumpNow;
-    mPrevSprint = state.sprint;
-    mPrevSneak  = state.sneak;
+    mInputSession.prevJump   = jumpNow;
+    mInputSession.prevSprint = state.sprint;
+    mInputSession.prevSneak  = state.sneak;
 
     if (state.yawDelta != 0.0f || state.pitchDelta != 0.0f) {
         return applyTurnDelta(player, Vec2{state.pitchDelta, state.yawDelta});
@@ -446,17 +446,17 @@ bool ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, Macro
     if (eventLevel) {
         return applyMacroTickEvents(player, tick);
     }
-    if (tick.rmb != mPrevMacroRmb) {
+    if (tick.rmb != mInputSession.prevMacroRmb) {
         if (tick.rmb) {
             if (!performClick(player, 2)) return false;
         }
-        mPrevMacroRmb = tick.rmb;
+        mInputSession.prevMacroRmb = tick.rmb;
     }
-    if (tick.lmb != mPrevMacroLmb) {
+    if (tick.lmb != mInputSession.prevMacroLmb) {
         if (tick.lmb) {
             if (!performClick(player, 1)) return false;
         }
-        mPrevMacroLmb = tick.lmb;
+        mInputSession.prevMacroLmb = tick.lmb;
     }
 
     ControlState state;
@@ -471,7 +471,7 @@ bool ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, Macro
     state.active     = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak || tick.jump;
     state.yawDelta   = tick.yaw;
     state.pitchDelta = tick.pitch;
-    if (mInputMode.load() == ControlInputMode::Hardware && mJumpImpulseMode.load() == JumpImpulse::None) {
+    if (mInputSession.inputMode.load() == ControlInputMode::Hardware && mInputSession.jumpImpulseMode.load() == JumpImpulse::None) {
         bool const applied = applyRealInput(player, state);
         return applied && ((tick.yaw == 0.0f && tick.pitch == 0.0f)
                            || applyTurnDelta(player, Vec2{tick.pitch, tick.yaw}));
@@ -481,7 +481,7 @@ bool ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, Macro
 
 
 void ProbeMod::latchActionClicks(LocalPlayer& player) {
-    if (mInjectingClick.load(std::memory_order_relaxed)) {
+    if (mInputSession.injectingClick.load(std::memory_order_relaxed)) {
         return;
     }
     guardedControl(ControlOp::Actions, [&] {
@@ -496,14 +496,14 @@ void ProbeMod::latchActionClicks(LocalPlayer& player) {
         // otherwise mining would keep the LMB column true for the whole hold.
         bool const lmb = bits.test(0) || bits.test(26) || bits.test(27) || bits.test(31);
         bool const rmb = bits.test(25) || bits.test(28) || bits.test(37);
-        if (lmb && !mPrevActionLmb) {
-            mMouseLeftLatch = true;
+        if (lmb && !mInputSession.prevActionLmb) {
+            mInputSession.mouseLeftLatch = true;
         }
-        if (rmb && !mPrevActionRmb) {
-            mMouseRightLatch = true;
+        if (rmb && !mInputSession.prevActionRmb) {
+            mInputSession.mouseRightLatch = true;
         }
-        mPrevActionLmb = lmb;
-        mPrevActionRmb = rmb;
+        mInputSession.prevActionLmb = lmb;
+        mInputSession.prevActionRmb = rmb;
         return true;
     });
 }

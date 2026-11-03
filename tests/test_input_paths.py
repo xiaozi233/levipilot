@@ -17,8 +17,9 @@ class PhysicalInputContractTests(unittest.TestCase):
         self.assertIn("inputMode{ControlInputMode::Hardware}", session)
         self.assertIn("jumpImpulseMode{JumpImpulse::None}", session)
         self.assertIn("mInputSession", header)
-        self.assertIn("mSprintTapPhase", header)
+        self.assertIn("int sprintTapPhase = 0;", session)
         self.assertIn("applyRealInput", header)
+        self.assertNotIn("std::atomic_bool& mHardwareInputLocked", header)
 
     def test_real_input_uses_hardware_hid_keys(self) -> None:
         source = (ROOT / "mod/probe/src/mod/Input.cpp").read_text(encoding="utf-8")
@@ -27,7 +28,7 @@ class PhysicalInputContractTests(unittest.TestCase):
         self.assertIn("getKeymappingByAction", source)
         self.assertIn('"key.sprint"', source)
         self.assertIn("refreshBindings", source)
-        self.assertIn("mBindings.sprint", source)
+        self.assertIn("mInputSession.bindings.sprint", source)
 
     def test_legacy_modes_require_force(self) -> None:
         source = (ROOT / "mod/probe/src/mod/CommandInput.cpp").read_text(encoding="utf-8")

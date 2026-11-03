@@ -6,9 +6,9 @@ using namespace probe::detail;
 namespace probe {
 
 void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
-    mMacroRecording.tick([&](MacroRecordSession::Sample& sample) {
+    mMacroSession.recording.tick([&](MacroRecordSession::Sample& sample) {
         return guardedGameRead([&] {
-            injectCaptureFault(mMacroRecordTest.exchange(CaptureTest::None));
+            injectCaptureFault(mMacroSession.recordTest.exchange(CaptureTest::None));
             auto const in  = readInput(client);
             auto const rot = player.getRotation();
             auto&      row = sample.buttons;
@@ -21,8 +21,8 @@ void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
             row.jump       = in.jump;
             // Always consume a latch, even while the corresponding button is
             // held, so releasing a held click cannot replay an old press.
-            row.rmb      = consumeMacroClick(mMouseRight, mMouseRightLatch);
-            row.lmb      = consumeMacroClick(mMouseLeft, mMouseLeftLatch);
+            row.rmb      = consumeMacroClick(mInputSession.mouseRight, mInputSession.mouseRightLatch);
+            row.lmb      = consumeMacroClick(mInputSession.mouseLeft, mInputSession.mouseLeftLatch);
             sample.yaw   = rot.y;
             sample.pitch = rot.x;
         });
@@ -30,8 +30,8 @@ void ProbeMod::recordMacroTick(ClientInstance& client, LocalPlayer& player) {
 }
 
 void ProbeMod::drainMacroRecordingLocked() {
-    if (mMacroRecordWorldLeft.exchange(false)) mMacroRecording.stop(MacroRecordEnd::WorldLeft);
-    if (auto done = mMacroRecording.takeCompletion()) {
+    if (mMacroSession.recordWorldLeft.exchange(false)) mMacroSession.recording.stop(MacroRecordEnd::WorldLeft);
+    if (auto done = mMacroSession.recording.takeCompletion()) {
         if (done->reason == MacroRecordEnd::Client) return; // Save is its normal completion receipt.
         enqueue(
             nlohmann::json{
@@ -46,12 +46,12 @@ void ProbeMod::drainMacroRecordingLocked() {
 }
 
 void ProbeMod::drainMacroRecording() {
-    std::lock_guard lock(mMacroSessionMutex);
+    std::lock_guard lock(mMacroSession.mutex);
     drainMacroRecordingLocked();
 }
 
 void ProbeMod::drainMacroPlaybackLocked(bool wait) {
-    auto const errors = mMacroPlayback.takeReleaseErrors();
+    auto const errors = mMacroSession.playback.takeReleaseErrors();
     if (errors.fault || errors.cpp)
         enqueue(
             nlohmann::json{
@@ -60,13 +60,13 @@ void ProbeMod::drainMacroPlaybackLocked(bool wait) {
                 {"exceptions", errors.cpp                }
         }.dump()
         );
-    if (auto done = mMacroPlayback.takeCompletion(wait)) {
+    if (auto done = mMacroSession.playback.takeCompletion(wait)) {
         // These cancellations already have their command/task receipt.
         if (done->ok() && done->reason != MacroEnd::End) return;
         enqueue(
             nlohmann::json{
                 {"event",  "macro_done"              },
-                {"name",   mMacroPlayback.name()     },
+                {"name",   mMacroSession.playback.name()     },
                 {"reason", macroEndName(done->reason)},
                 {"index",  done->index               },
                 {"run_id", done->runId               },
@@ -77,35 +77,36 @@ void ProbeMod::drainMacroPlaybackLocked(bool wait) {
 }
 
 void ProbeMod::drainMacroPlayback() {
-    std::lock_guard lock(mMacroSessionMutex);
+    std::lock_guard lock(mMacroSession.mutex);
     drainMacroPlaybackLocked();
 }
 
 void ProbeMod::releaseMacroIfRequested() {
-    mMacroPlayback.releaseRequested([&] {
+    mMacroSession.playback.releaseRequested([&] {
         bool released = false;
         return guardedGameRead([&] {
-                   injectCaptureFault(mMacroReleaseTest.exchange(CaptureTest::None));
+                   injectCaptureFault(mMacroSession.releaseTest.exchange(CaptureTest::None));
                    released = releaseMacroInputs();
                })
             && released;
     });
     // SEH can bypass injection guards inside game APIs. Restore the harness
     // flags after returning through the local boundary, including failed releases.
-    mInjectingInput = false;
-    mInjectingClick = false;
+    mInputSession.injecting = false;
+    mInputSession.injectingClick = false;
 }
 
 void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
-    mMacroPlayback.tick(
+    mMacroSession.playback.tick(
         [&](MacroTick const& row, bool eventLevel, bool first) {
             if (first) {
-                mPrevSprint = mPrevSneak = mPrevMacroRmb = mPrevMacroLmb = false;
-                mInjected                                                = false;
+                mInputSession.prevSprint = mInputSession.prevSneak = false;
+                mInputSession.prevMacroRmb = mInputSession.prevMacroLmb = false;
+                mInputSession.injected = false;
             }
             bool applied = false;
             return guardedGameRead([&] {
-                       injectCaptureFault(mMacroPlaybackTest.exchange(CaptureTest::None));
+                       injectCaptureFault(mMacroSession.playbackTest.exchange(CaptureTest::None));
                        applied = applyMacroTick(client, player, row, eventLevel);
                    })
                 && applied;
@@ -113,14 +114,14 @@ void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
         [&] {
             bool released = false;
             return guardedGameRead([&] {
-                       injectCaptureFault(mMacroReleaseTest.exchange(CaptureTest::None));
+                       injectCaptureFault(mMacroSession.releaseTest.exchange(CaptureTest::None));
                        released = releaseMacroInputs();
                    })
                 && released;
         }
     );
-    mInjectingInput = false;
-    mInjectingClick = false;
+    mInputSession.injecting = false;
+    mInputSession.injectingClick = false;
 }
 
 std::filesystem::path ProbeMod::macroDir() const { return getSelf().getModDir() / "macros"; }
@@ -146,11 +147,11 @@ bool ProbeMod::loadMacroFrom(std::string const& path, std::string const& name, s
     }
 
     auto            loadedName = name.empty() ? file.stem().string() : name;
-    std::lock_guard lock(mMacroSessionMutex);
-    stopped = mMacroPlayback.active();
-    mMacroPlayback.stop(MacroEnd::Loaded);
+    std::lock_guard lock(mMacroSession.mutex);
+    stopped = mMacroSession.playback.active();
+    mMacroSession.playback.stop(MacroEnd::Loaded);
     drainMacroPlaybackLocked(true);
-    mMacroPlayback.load(std::move(macro), std::move(loadedName));
+    mMacroSession.playback.load(std::move(macro), std::move(loadedName));
     return true;
 }
 

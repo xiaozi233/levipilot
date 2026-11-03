@@ -177,13 +177,13 @@ void ProbeMod::captureState(
         }
         refreshBindings(false);
         out.bindings = {
-            mBindings.forward,
-            mBindings.back,
-            mBindings.left,
-            mBindings.right,
-            mBindings.sneak,
-            mBindings.jump,
-            mBindings.sprint
+            mInputSession.bindings.forward,
+            mInputSession.bindings.back,
+            mInputSession.bindings.left,
+            mInputSession.bindings.right,
+            mInputSession.bindings.sneak,
+            mInputSession.bindings.jump,
+            mInputSession.bindings.sprint
         };
         captureItem(player.getSelectedItem(), out.item, out.truncated);
         out.itemUseTicks = player.getItemUseDuration();

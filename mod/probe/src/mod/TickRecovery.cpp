@@ -22,7 +22,8 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
 
     bool released = releaseRealInput();
     if (!releaseInputEvents()) released = false;
-    if (mInputMode.load() != ControlInputMode::Hardware || mJumpImpulseMode.load() != JumpImpulse::None) {
+    if (mInputSession.inputMode.load() != ControlInputMode::Hardware
+        || mInputSession.jumpImpulseMode.load() != JumpImpulse::None) {
         if (!guardedControl(ControlOp::Legacy, [&] {
                 auto client = ll::service::getClientInstance();
                 return client && client->getLocalPlayer() == &player
@@ -30,7 +31,7 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
             })) released = false;
     }
     releaseMacroIfRequested();
-    if (mMacroPlayback.releasePending() || mControlCleanupPending.load()) released = false;
+    if (mMacroSession.playback.releasePending() || mInputSession.controlCleanupPending.load()) released = false;
     if (state.phase != TickRecovery::Phase::Prepared || !released) return true;
 
     // Recovery must never use readRequests()'s old fallback. Cold cleanup
@@ -39,9 +40,9 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
     RequestBlock requests;
     if (!mRequests.read(requests)) return true;
     mLastRequests = requests;
-    mSeenInputSeq = requests.inputSeq;
-    mSeenJumpSeq = requests.jumpSeq;
-    mSeenLookSeq = requests.lookSeq;
+    mInputSession.seenInputSeq = requests.inputSeq;
+    mInputSession.seenJumpSeq = requests.jumpSeq;
+    mInputSession.seenLookSeq = requests.lookSeq;
     mInputSession.resetButtons();
     mTickRecovery.finish(state.id, released, true);
     return true; // Resume on the following tick, with a new command only.
@@ -92,9 +93,12 @@ void ProbeMod::drainInternalErrors() {
         enqueue(nlohmann::json{{"event", "tick_error_diagnostic"}, {"reason", "buffer_full"}, {"lost", lost}}.dump());
 }
 
-void ProbeMod::injectTickError(TickPhase phase) {
+void ProbeMod::injectTickError(TickPhase phase, bool clientRead) {
     if (!mRunning.load() || !mWorld.inWorld() || !hooksAllowed()) return;
-    auto const test = mTickErrorTests[static_cast<unsigned>(phase)].exchange(TickErrorTest::None);
+    auto& pending = mTickErrorTests[static_cast<unsigned>(phase)];
+    if ((pending.load() == TickErrorTest::ClientRead) != clientRead) return;
+    auto const test = pending.exchange(TickErrorTest::None);
+    if (test == TickErrorTest::ClientRead) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
     if (test == TickErrorTest::Standard) throw std::runtime_error("selftest tick recovery");
     if (test == TickErrorTest::Unknown) throw 1;
     if (test == TickErrorTest::InvalidMessage) {

@@ -309,8 +309,8 @@ void ProbeMod::serverLoop() {
             // lock_input is scoped to a client session: the moment the script
             // is gone (disconnect, crash, closed client) real input must come
             // back, or the person at the keyboard cannot even click Resume.
-            if (!connected && mHardwareInputLocked.load(std::memory_order_relaxed)) {
-                mHardwareInputLocked.store(false, std::memory_order_relaxed);
+            if (!connected && mInputSession.hardwareLocked.load(std::memory_order_relaxed)) {
+                mInputSession.hardwareLocked.store(false, std::memory_order_relaxed);
                 bootLog("input_lock: released (no client)");
             }
 
@@ -329,8 +329,8 @@ void ProbeMod::serverLoop() {
                 }
                 connected = true;
                 bootLog("pipe: client connected");
-                if (mLockInputOnConnect.load(std::memory_order_relaxed)) {
-                    mHardwareInputLocked.store(true, std::memory_order_relaxed);
+                if (mInputSession.lockOnConnect.load(std::memory_order_relaxed)) {
+                    mInputSession.hardwareLocked.store(true, std::memory_order_relaxed);
                     bootLog("input_lock: armed (client connected)");
                 }
                 // Do not drop rows accumulated while no client was attached:
@@ -439,7 +439,7 @@ void ProbeMod::serverLoop() {
         }
     }
 
-    mHardwareInputLocked.store(false, std::memory_order_relaxed);
+    mInputSession.hardwareLocked.store(false, std::memory_order_relaxed);
 }
 
 

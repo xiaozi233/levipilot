@@ -134,11 +134,11 @@ public:
     [[nodiscard]] bool allowTurnDelta() const;
     [[nodiscard]] bool hardwareInputLocked() const
     {
-        return mHardwareInputLocked.load(std::memory_order_relaxed);
+        return mInputSession.hardwareLocked.load(std::memory_order_relaxed);
     }
     [[nodiscard]] bool injectingInput() const
     {
-        return mInjectingInput.load(std::memory_order_relaxed);
+        return mInputSession.injecting.load(std::memory_order_relaxed);
     }
 
     // Called from the vectored exception handler for genuinely fatal faults
@@ -192,7 +192,7 @@ private:
     void reportInternalError(detail::TickPhase phase, char const* message) noexcept;
     void drainInternalErrors();
     bool recoverTickControls(LocalPlayer& player);
-    void injectTickError(detail::TickPhase phase);
+    void injectTickError(detail::TickPhase phase, bool clientRead);
 
     // Closed-loop tasks.
     bool          tickTask(ClientInstance& client, LocalPlayer& player);
@@ -416,77 +416,6 @@ private:
         int sprint  = 0;   // 0 = unassigned; use double-tap forward
     };
     detail::InputSession<ControlState, KeyBindings> mInputSession;
-    // Non-owning aliases into the single input owner. Their existing names keep
-    // the validated injection code unchanged; lifecycle resets go through the
-    // session methods rather than cross-TU field lists.
-    std::mutex& mInputEventMutex = mInputSession.eventMutex;
-    detail::InjectedEventQueue<>& mInputEvents = mInputSession.events;
-    std::uint64_t& mInputReplyGeneration = mInputSession.replyGeneration;
-    detail::UiCapture& mUiCapture = mInputSession.uiCapture;
-    detail::TextCapture& mTextCapture = mInputSession.textCapture;
-    std::atomic<std::uint64_t>& mInputTickSerial = mInputSession.tickSerial;
-    std::array<std::optional<InputInjection>, 264>& mHeldEvents = mInputSession.heldEvents;
-    std::uint64_t& mInputEventGeneration = mInputSession.eventGeneration;
-    std::atomic_bool& mAllowInputInject = mInputSession.allowInject;
-    std::atomic_bool& mInjectingInput = mInputSession.injecting;
-    std::atomic_bool& mHardwareInputLocked = mInputSession.hardwareLocked;
-    std::atomic_bool& mLockInputOnConnect = mInputSession.lockOnConnect;
-    std::atomic<std::uint64_t>& mInjectTurnUntilTick = mInputSession.injectTurnUntilTick;
-    std::atomic<std::uint64_t>& mKeyEventCount = mInputSession.keyEventCount;
-    std::atomic<std::uint64_t>& mKeyInjectedSeen = mInputSession.keyInjectedSeen;
-    std::atomic<std::int32_t>& mKeyLastCode = mInputSession.keyLastCode;
-    std::atomic<std::int32_t>& mKeyLastAction = mInputSession.keyLastAction;
-    std::atomic<std::uint64_t>& mMouseInjected = mInputSession.mouseInjected;
-    detail::ControlDiagnostics& mControlDiagnostics = mInputSession.controlDiagnostics;
-    std::array<std::atomic<detail::ControlTest>, detail::ControlDiagnostics::Operations>& mControlTests =
-        mInputSession.controlTests;
-    std::atomic_bool& mControlCleanupPending = mInputSession.controlCleanupPending;
-    std::atomic<std::uint32_t>& mControlHeldMask = mInputSession.controlHeldMask;
-    std::uint32_t& mSeenInputSeq = mInputSession.seenInputSeq;
-    ControlState& mActiveInput = mInputSession.activeInput;
-    int& mActiveInputTicks = mInputSession.activeInputTicks;
-    std::uint32_t& mSeenJumpSeq = mInputSession.seenJumpSeq;
-    bool& mJumpRequestPending = mInputSession.jumpRequestPending;
-    std::uint32_t& mSeenLookSeq = mInputSession.seenLookSeq;
-    bool& mActiveLookRelative = mInputSession.activeLookRelative;
-    float& mActiveLookYaw = mInputSession.activeLookYaw;
-    float& mActiveLookPitch = mInputSession.activeLookPitch;
-    int& mActiveLookTicks = mInputSession.activeLookTicks;
-    bool& mPrevSprint = mInputSession.prevSprint;
-    bool& mPrevSneak = mInputSession.prevSneak;
-    bool& mInjected = mInputSession.injected;
-    bool& mInputActive = mInputSession.inputActive;
-    KeyBindings& mBindings = mInputSession.bindings;
-    bool& mBindingsValid = mInputSession.bindingsValid;
-    std::uint64_t& mBindingsTick = mInputSession.bindingsTick;
-    std::array<bool, 7>& mHeldKeys = mInputSession.heldKeys;
-    bool& mHeldLmb = mInputSession.heldLmb;
-    bool& mHeldRmb = mInputSession.heldRmb;
-    int& mSprintTapPhase = mInputSession.sprintTapPhase;
-    std::atomic_bool& mPrevJump = mInputSession.prevJump;
-    bool& mJumpEdgeThisTick = mInputSession.jumpEdgeThisTick;
-    bool& mPrevMacroRmb = mInputSession.prevMacroRmb;
-    bool& mPrevMacroLmb = mInputSession.prevMacroLmb;
-    std::atomic_bool& mMouseLeft = mInputSession.mouseLeft;
-    std::atomic_bool& mMouseRight = mInputSession.mouseRight;
-    std::atomic_bool& mMouseLeftLatch = mInputSession.mouseLeftLatch;
-    std::atomic_bool& mMouseRightLatch = mInputSession.mouseRightLatch;
-    std::atomic<std::uint64_t>& mMouseEventCount = mInputSession.mouseEventCount;
-    std::atomic<int>& mMouseLastAction = mInputSession.mouseLastAction;
-    std::atomic<int>& mMouseLastData = mInputSession.mouseLastData;
-    std::array<std::atomic<int>, 8>& mMouseActionCounts = mInputSession.mouseActionCounts;
-    std::atomic_bool& mInjectingClick = mInputSession.injectingClick;
-    std::atomic<std::uint32_t>& mInjectingLook = mInputSession.injectingLook;
-    std::atomic_bool& mPrevActionLmb = mInputSession.prevActionLmb;
-    std::atomic_bool& mPrevActionRmb = mInputSession.prevActionRmb;
-    std::array<bool, 9>& mButtonStates = mInputSession.buttonStates;
-    std::array<bool, 9>& mHandlerStates = mInputSession.handlerStates;
-    std::atomic_bool& mResetInputButtons = mInputSession.resetInputButtons;
-    std::atomic<int>& mInputSource = mInputSession.inputSource;
-    std::atomic<int>& mInputController = mInputSession.inputController;
-    std::atomic<int>& mInputFocus = mInputSession.inputFocus;
-    std::atomic<detail::ControlInputMode>& mInputMode = mInputSession.inputMode;
-    std::atomic<detail::JumpImpulse>& mJumpImpulseMode = mInputSession.jumpImpulseMode;
 
     // Written by enable()/config and read on the tick thread.
     std::atomic_bool mBackgroundGuard{true};
@@ -556,20 +485,11 @@ private:
     void capturePlayerIdentity(LocalPlayer& player);
 
     // MacroSession uniquely owns recording/playback state and the cold lock.
-    // These references are non-owning aliases retained to avoid churn in the
-    // established command/tick code; no second model or mutex exists here.
     detail::MacroSession mMacroSession;
-    detail::MacroPlayback& mMacroPlayback = mMacroSession.playback;
-    std::atomic<detail::CaptureTest>& mMacroPlaybackTest = mMacroSession.playbackTest;
-    std::atomic<detail::CaptureTest>& mMacroReleaseTest = mMacroSession.releaseTest;
-    bool                             applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
-    bool                             releaseMacroInputs();
-    detail::MacroRecordSession& mMacroRecording = mMacroSession.recording;
-    std::mutex& mMacroSessionMutex = mMacroSession.mutex;
-    std::atomic<detail::CaptureTest>& mMacroRecordTest = mMacroSession.recordTest;
-    std::atomic_bool& mMacroRecordWorldLeft = mMacroSession.recordWorldLeft;
-    void                             drainMacroRecording();
-    void                             drainMacroRecordingLocked();
+    bool applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
+    bool releaseMacroInputs();
+    void drainMacroRecording();
+    void drainMacroRecordingLocked();
 
     std::mutex              mQueueMutex;
     std::deque<std::string> mQueue;

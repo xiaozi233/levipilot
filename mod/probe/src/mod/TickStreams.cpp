@@ -122,7 +122,7 @@ void ProbeMod::captureLegacyTick(ClientInstance& client, LocalPlayer& player) {
             out.yaw         = finiteOrZero(rot.y);
             out.pitch       = finiteOrZero(rot.x);
             out.onGround    = player.isOnGround();
-            out.jumpEdge    = mJumpEdgeThisTick;
+            out.jumpEdge    = mInputSession.jumpEdgeThisTick;
             out.sprint      = player.isSprinting();
             out.sneak       = player.isSneaking();
             out.jump        = in.jump;

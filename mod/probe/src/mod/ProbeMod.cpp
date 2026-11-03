@@ -42,33 +42,33 @@ bool ProbeMod::enable() {
             // MouseAction: ActionMove=0, ActionLeft=1, ActionRight=2, DataDown=1.
             int const action = static_cast<int>(event.actionButtonId());
             int const data   = static_cast<int>(event.buttonData());
-            mMouseEventCount.fetch_add(1, std::memory_order_relaxed);
-            mMouseLastAction = action;
-            mMouseLastData   = data;
-            if (action >= 0 && action < static_cast<int>(mMouseActionCounts.size())) {
-                mMouseActionCounts[static_cast<size_t>(action)].fetch_add(1, std::memory_order_relaxed);
+            mInputSession.mouseEventCount.fetch_add(1, std::memory_order_relaxed);
+            mInputSession.mouseLastAction = action;
+            mInputSession.mouseLastData = data;
+            if (action >= 0 && action < static_cast<int>(mInputSession.mouseActionCounts.size())) {
+                mInputSession.mouseActionCounts[static_cast<size_t>(action)].fetch_add(1, std::memory_order_relaxed);
             }
 
             if (action == 1) {
-                mMouseLeft = data != 0;
+                mInputSession.mouseLeft = data != 0;
                 if (data != 0) {
-                    mMouseLeftLatch = true;
+                    mInputSession.mouseLeftLatch = true;
                 }
             } else if (action == 2) {
-                mMouseRight = data != 0;
+                mInputSession.mouseRight = data != 0;
                 if (data != 0) {
-                    mMouseRightLatch = true;
+                    mInputSession.mouseRightLatch = true;
                 }
             }
         });
 
     mKeyListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::input::KeyInputEvent>([this](auto& event) {
-            mKeyEventCount.fetch_add(1, std::memory_order_relaxed);
-            mKeyLastCode.store(event.keyCode(), std::memory_order_relaxed);
-            mKeyLastAction.store(static_cast<std::int32_t>(event.action()), std::memory_order_relaxed);
-            if (mInjectingInput.load(std::memory_order_relaxed)) {
-                mKeyInjectedSeen.fetch_add(1, std::memory_order_relaxed);
+            mInputSession.keyEventCount.fetch_add(1, std::memory_order_relaxed);
+            mInputSession.keyLastCode.store(event.keyCode(), std::memory_order_relaxed);
+            mInputSession.keyLastAction.store(static_cast<std::int32_t>(event.action()), std::memory_order_relaxed);
+            if (mInputSession.injecting.load(std::memory_order_relaxed)) {
+                mInputSession.keyInjectedSeen.fetch_add(1, std::memory_order_relaxed);
             }
         });
 
@@ -147,16 +147,14 @@ bool ProbeMod::disable() {
     mPoseEpoch.fetch_add(1);
     mMacroSession.stopAll(MacroEnd::Disabled, MacroRecordEnd::Disabled);
     {
-        std::lock_guard lock(mMacroSessionMutex);
+        std::lock_guard lock(mMacroSession.mutex);
         drainMacroRecordingLocked();
     }
-    // Input release must happen on the game tick. If a final tick is still
-    // delivered during shutdown, this request clears event-level keys before
-    // the mod leaves; it also makes the intent explicit for a later unload.
-
+    // Real input is unlocked below. Held injected edges still require the game
+    // tick for release; stopping the session does not prove they were released.
     packetCaptureStop();
     // Never leave the game with real input dropped after an unload.
-    mHardwareInputLocked = false;
+    mInputSession.hardwareLocked = false;
 
     if (mMouseListener) {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
@@ -228,12 +226,12 @@ void ProbeMod::loadAutoConfig() {
     mAllowWatch      = config.value("allow_watch", true);
     mAllowPacketCapture = config.value("allow_packet_capture", false);
     mAllowPacketInject  = config.value("allow_packet_inject", false);
-    mAllowInputInject = config.value("allow_input_inject", false);
+    mInputSession.allowInject = config.value("allow_input_inject", false);
     // Armed by serverLoop() when a client connects, not here: a lock held from
     // startup (previous script run, stale harness.json) makes the main menu
     // unclickable for the person at the keyboard.
-    mLockInputOnConnect  = config.value("lock_input", false);
-    mHardwareInputLocked = false;
+    mInputSession.lockOnConnect  = config.value("lock_input", false);
+    mInputSession.hardwareLocked = false;
     mAllowVersionMismatch = config.value("allow_version_mismatch", false);
     setAllowVersionMismatch(mAllowVersionMismatch.load());
     mWorld.setSignInWaitMs(std::clamp(config.value("signin_wait_ms", 15000), 0, 120000));
@@ -255,7 +253,7 @@ void ProbeMod::onPlayerTick(LocalPlayer& player) {
     // A bug in our own code must not take the game down with it.
     try {
         safeTickPre(player);
-        if (!mTickRecovery.active()) injectTickError(TickPhase::Pre);
+        if (!mTickRecovery.active()) injectTickError(TickPhase::Pre, false);
     } catch (std::exception const& e) {
         reportInternalError(TickPhase::Pre, e.what());
     } catch (...) {
@@ -268,9 +266,18 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
         return;
     }
-    mJumpEdgeThisTick = false;
-    auto client       = ll::service::getClientInstance();
-    if (!client || client->getLocalPlayer() != &player) {
+    mInputSession.jumpEdgeThisTick = false;
+    ClientInstance* client = nullptr;
+    bool current = false;
+    if (!guardedGameRead([&] {
+        injectTickError(TickPhase::Pre, true);
+        client = ll::service::getClientInstance();
+        current = client && client->getLocalPlayer() == &player;
+    })) {
+        reportInternalError(TickPhase::Pre, "client_player_read_fault");
+        return;
+    }
+    if (!current) {
         releaseRealInput();
         mWorld.observePlayer(false);
         return;
@@ -289,7 +296,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     // T9: one lock-free snapshot of movement/look requests per tick.
     RequestBlock const requests = readRequests();
 
-    if (mResetInputButtons.exchange(false, std::memory_order_acq_rel)) {
+    if (mInputSession.resetInputButtons.exchange(false, std::memory_order_acq_rel)) {
         mInputSession.resetButtons();
     }
 
@@ -306,7 +313,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         return;
     }
 
-    if (mMacroPlayback.active()) {
+    if (mMacroSession.playback.active()) {
         tickMacroPlayback(*client, player);
         return;
     }
@@ -364,27 +371,27 @@ void ProbeMod::registerCommands(CommandRegistry& registry) {
 void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests) {
     ControlState state;
     bool         apply = false;
-    if (requests.inputSeq != mSeenInputSeq) {
-        mSeenInputSeq     = requests.inputSeq;
-        mActiveInput      = requests.input;
-        mActiveInputTicks = requests.inputTicks;
+    if (requests.inputSeq != mInputSession.seenInputSeq) {
+        mInputSession.seenInputSeq     = requests.inputSeq;
+        mInputSession.activeInput      = requests.input;
+        mInputSession.activeInputTicks = requests.inputTicks;
     }
-    if (requests.jumpSeq != mSeenJumpSeq) {
-        mSeenJumpSeq        = requests.jumpSeq;
-        mJumpRequestPending = !requests.jumpCancel;
+    if (requests.jumpSeq != mInputSession.seenJumpSeq) {
+        mInputSession.seenJumpSeq        = requests.jumpSeq;
+        mInputSession.jumpRequestPending = !requests.jumpCancel;
     }
-    if (mActiveInputTicks != 0) {
-        state = mActiveInput;
+    if (mInputSession.activeInputTicks != 0) {
+        state = mInputSession.activeInput;
         apply = state.active || state.jump;
-        if (mActiveInputTicks > 0) {
-            --mActiveInputTicks;
-            if (mActiveInputTicks == 0) {
-                mActiveInput = ControlState{};
+        if (mInputSession.activeInputTicks > 0) {
+            --mInputSession.activeInputTicks;
+            if (mInputSession.activeInputTicks == 0) {
+                mInputSession.activeInput = ControlState{};
             }
         }
     }
-    if (mJumpRequestPending) {
-        mJumpRequestPending = false;
+    if (mInputSession.jumpRequestPending) {
+        mInputSession.jumpRequestPending = false;
         state.jump          = true;
         state.active        = true;
         apply               = true;
@@ -392,36 +399,36 @@ void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& play
     if (!applyControls(client, player, apply ? state : ControlState{})) {
         // This sequence is consumed. Do not silently replay an unbounded
         // desired state after an uncertain edge; a new request may restart it.
-        mActiveInput = ControlState{};
-        mActiveInputTicks = 0;
-        mJumpRequestPending = false;
+        mInputSession.activeInput = ControlState{};
+        mInputSession.activeInputTicks = 0;
+        mInputSession.jumpRequestPending = false;
     }
 }
 
 void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requests) {
     // Absolute look targets are applied after movement so the rotation matches the current tick.
-    if (requests.lookSeq != mSeenLookSeq) {
-        mSeenLookSeq        = requests.lookSeq;
-        mActiveLookRelative = requests.lookRelative;
-        mActiveLookYaw      = requests.lookYaw;
-        mActiveLookPitch    = requests.lookPitch;
-        mActiveLookTicks    = requests.lookTicks;
+    if (requests.lookSeq != mInputSession.seenLookSeq) {
+        mInputSession.seenLookSeq        = requests.lookSeq;
+        mInputSession.activeLookRelative = requests.lookRelative;
+        mInputSession.activeLookYaw      = requests.lookYaw;
+        mInputSession.activeLookPitch    = requests.lookPitch;
+        mInputSession.activeLookTicks    = requests.lookTicks;
     }
-    bool const lookActive = mActiveLookTicks != 0;
+    bool const lookActive = mInputSession.activeLookTicks != 0;
     if (lookActive) {
         Vec2 rot;
         if (!guardedControl(ControlOp::LookRead, [&] { rot = player.getRotation(); return true; })) {
-            mActiveLookTicks = 0;
+            mInputSession.activeLookTicks = 0;
             return;
         }
         // _applyTurnDelta uses the opposite pitch sign from ActorRotation.x.
-        float dy = mActiveLookRelative ? mActiveLookYaw : wrapDegrees(mActiveLookYaw - rot.y);
-        float dp = mActiveLookRelative ? -mActiveLookPitch : (rot.x - mActiveLookPitch);
-        if (mActiveLookTicks > 0) {
-            --mActiveLookTicks;
+        float dy = mInputSession.activeLookRelative ? mInputSession.activeLookYaw : wrapDegrees(mInputSession.activeLookYaw - rot.y);
+        float dp = mInputSession.activeLookRelative ? -mInputSession.activeLookPitch : (rot.x - mInputSession.activeLookPitch);
+        if (mInputSession.activeLookTicks > 0) {
+            --mInputSession.activeLookTicks;
         }
         if (std::fabs(dy) > 1.0e-5f || std::fabs(dp) > 1.0e-5f) {
-            if (!applyTurnDelta(player, Vec2{dp, dy})) mActiveLookTicks = 0;
+            if (!applyTurnDelta(player, Vec2{dp, dy})) mInputSession.activeLookTicks = 0;
         }
     }
 }
@@ -430,7 +437,7 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     std::uint64_t const postStart = qpcNow();
     try {
         safeTickPost(player);
-        if (!mTickRecovery.active()) injectTickError(TickPhase::Post);
+        if (!mTickRecovery.active()) injectTickError(TickPhase::Post, false);
     } catch (std::exception const& e) {
         reportInternalError(TickPhase::Post, e.what());
     } catch (...) {
@@ -451,10 +458,17 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
         return;
     }
-    auto client = ll::service::getClientInstance();
-    if (!client || client->getLocalPlayer() != &player) {
+    ClientInstance* client = nullptr;
+    bool current = false;
+    if (!guardedGameRead([&] {
+        injectTickError(TickPhase::Post, true);
+        client = ll::service::getClientInstance();
+        current = client && client->getLocalPlayer() == &player;
+    })) {
+        reportInternalError(TickPhase::Post, "client_player_read_fault");
         return;
     }
+    if (!current) return;
     updateFocusState();
     overheadBusyTick();
 
@@ -465,7 +479,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     mTickProbe.fetch_add(1, std::memory_order_relaxed);
     auto tickIndex = mTick.fetch_add(1, std::memory_order_relaxed) + 1;
     gWatchTick.store(tickIndex, std::memory_order_relaxed);
-    recordTick(player, *client, tickIndex, mJumpEdgeThisTick);
+    recordTick(player, *client, tickIndex, mInputSession.jumpEdgeThisTick);
     recordTickPose(player);
 
     latchActionClicks(player);
@@ -489,7 +503,7 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
 
     detail::hookTick(player);
 
-    if (mMacroRecording.active()) {
+    if (mMacroSession.recording.active()) {
         recordMacroTick(*client, player);
     }
 
@@ -553,22 +567,22 @@ bool ProbeMod::allowTurnDelta() const {
     if (!mRunning.load(std::memory_order_relaxed) || !mBackgroundGuard || !hooksAllowed()) {
         return true;
     }
-    if (mInjectingLook.load(std::memory_order_relaxed)) {
+    if (mInputSession.injectingLook.load(std::memory_order_relaxed)) {
         return true;
     }
-    std::uint64_t const until = mInjectTurnUntilTick.load(std::memory_order_relaxed);
+    std::uint64_t const until = mInputSession.injectTurnUntilTick.load(std::memory_order_relaxed);
     if (until != 0 && mTick.load(std::memory_order_relaxed) <= until) {
         return true;
     }
     // Scripts own the camera while the hardware input lock is on.
-    if (mHardwareInputLocked.load(std::memory_order_relaxed)) {
+    if (mInputSession.hardwareLocked.load(std::memory_order_relaxed)) {
         return false;
     }
     return detail::isGameForeground();
 }
 
 bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
-    InjectionCountScope injecting(mInjectingLook);
+    InjectionCountScope injecting(mInputSession.injectingLook);
     return guardedControl(ControlOp::Turn, [&] { player._applyTurnDelta(delta); return true; });
 }
 
@@ -736,7 +750,7 @@ static ll::memory::HookRegistrar<ProbeLocalPlayerTickHook> gPlayerTickHook;
 
 // Background raw mouse input still reaches the game; without this guard the
 // camera keeps turning while another window is focused. Our own look/task calls
-// set mInjectingLook and pass through.
+// set mInputSession.injectingLook and pass through.
 LL_TYPE_INSTANCE_HOOK(
     ProbeTurnDeltaHook,
     ll::memory::HookPriority::Normal,

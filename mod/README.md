@@ -537,7 +537,7 @@ LLVM22 完整 mod 构建通过；备份并安装新 DLL 后，`--mod-core-live-o
   攻击仍用 `click`/`attack_entity`。`action=move` 的 dx 能转向。
 - H1 常规身份 tap 只写定长记录，不调用 `Packet::write`。`serialize_ids` 是显式
   `sdk_hot_path_diagnostic`：在原投递上下文同步重序列化、可能分配；现在有硬预算
-  `serialize_budget_us`（默认 20000，0 不限），累计超预算后不再重序列化，改为记一条
+  `serialize_budget_us`（默认 1000000 即 1 秒，0 不限），累计超预算后不再重序列化，改为记一条
   `error=Budget` 并累加 `serialize_skipped`，`packet_stats` 同时给出
   `serialize_samples/us/max_us/skipped/budget_us`。
   不跨线程保留 `Packet*`，字节不是线上原帧。`packet_capture` 回执标明 `serialization/diagnostic`，

@@ -108,7 +108,9 @@ private:
     std::atomic<std::uint64_t>      mSerializeUs{0};
     std::atomic<std::uint64_t>      mSerializeMaxUs{0};
     std::atomic<std::uint64_t>      mSerializeSkipped{0};
-    std::atomic<std::uint64_t>      mSerializeBudgetUs{20000};
+    // 1 s covers every current capture window (40 ticks of PlayerAuthInput is
+    // ~35 ms of reserialization) while still bounding a runaway session.
+    std::atomic<std::uint64_t>      mSerializeBudgetUs{1000000};
     std::atomic<TestFault>          mTestFault{TestFault::None};
     // Stop closes callback entry before waiting, so it cannot miss a callback
     // paused between entry and an ordinary in-flight counter increment.

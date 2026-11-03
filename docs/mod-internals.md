@@ -801,7 +801,7 @@ SEH/C++ 故障发布无效身份；旧有效身份不会因新采样失败而继
   执行时间预算；常规身份采集不进入该路径。`Packet*` 不跨线程保留，结果是 SDK 重序列化字节，
   不是线上原帧。`packet_bytes` 增量返回 `source/captured_size/truncated`，旧 `size/hex/serialized`
   保持；定长记录、128 B 边界、重入与环读取由 `packet_tap_model` native 覆盖。
-- **重序列化预算（2026-11-03）**：`packet_capture` 新增 `serialize_budget_us`（默认 20000，
+- **重序列化预算（2026-11-03）**：`packet_capture` 新增 `serialize_budget_us`（默认 1000000 即 1 秒，
   0 表示不限，上限 600000），只作用于 `serialize_ids` 这条显式诊断。每次重序列化用 QPC 计时，
   累计超过预算后**不再调用 `Packet::write`**，改为发布一条 `error=Budget` 的字节记录并累加
   `serialize_skipped`。`packet_stats` 新增 `serialize_samples / serialize_us / serialize_max_us /

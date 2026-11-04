@@ -15,9 +15,13 @@
 
 | 范围 | 当前结果 | 覆盖重点 |
 | --- | --- | --- |
-| 完整离线 | **428/428** | Python、native 模型、CLI、协议与资源生命周期；新增闭包副本/析构顺序、排空竞争、热入口零分配，以及夹具首错/恢复和拒绝证据回归 |
-| 静态检查 | ruff check/format、mypy（111 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
-| 完整现场 `--require-complete` | **1100/1100**，0 fail、0 skip、0 required skip | 当前默认全套，含权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP`，此前 1107 项多出的 7 项为可选观察会话检查 |
+| 完整离线 | **438/438** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
+| 静态检查 | ruff check/format、mypy（115 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
+| 完整现场 `--require-complete` | **1169/1169**，0 fail、0 skip、0 required skip | 当前默认全套，含新增 69 项 SDK 边界与权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
+| SDK 局部边界 | **69/69** | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；注册与命令边界是调用前合成故障 |
+| 领域效果保留 | **126/126**；进入/退档 **35/35** | 夜视跨查询/聊天退档、宏播放、任务及世界进入恢复仍存在，结束只清理测试效果 |
+| 朝向/传送专项 | **45/45** | 保持 0.1° 容差与连续三个 tick；移除 state 快照之后的额外延迟 |
+| 有界查询/重连 | **8/8** | 四轮共 1040 次查询，约 24–25 次/秒，显式关闭并重连；仅本轮未复现失联 |
 | `lifecycle-prepare-only` | **10/10** | 持续/到期输入、未消费序号、事件持键、hook 恢复与姿态恢复 |
 | 受控空闲真实热重载 | **22/22 × 4**，0 fail、0 skip | 竞争专项内在同一 PID 反复完成受控重载；完整停用/启用日志、四 hook、tick、命令能力变化与恢复 |
 | 守望开启时的真实重载 | **25/25**，0 fail、0 skip | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止；generation 398→399 |
@@ -32,11 +36,23 @@
 这些结果只在对应代码、游戏版本和权限前提下有效。文档或后续代码变更需要按影响范围重跑，
 不能把这些数字解释成未来提交永久全绿。
 
-回调竞争入口：`py -3.11 driver/selftest.py --callback-drain-only --require-complete`，权限同
-真实热重载专项。最终日志为 `out/callback-resume-final-live2.log`；完整现场与离线分别为
-`out/callback-resume-full.log`、`out/callback-resume-final-offline.log`。加强拒绝用例前的
-127/129 失败日志保留在 `out/callback-resume-final-live.log`：重载后未重新采集模板，只有
-排队回执而未实际发送；最终夹具要求新模板与发送完成，未放宽卸载判据。
+主要入口：`py -3.11 driver/selftest.py --sdk-boundaries-only --require-complete`；
+回调竞争使用 `--callback-drain-only`，权限同真实热重载专项。
+最终完整现场、离线日志分别为 `out/final-engineering-full-delivery.log`、
+`out/final-engineering-offline-release.log`；SDK、效果与查询证据分别为
+`out/final-engineering-sdk-live.log`、`out/final-engineering-fixture-effects.log`、
+`out/final-engineering-entry-effect.log`、`out/final-engineering-query-soak.json`。
+本轮回调复验为 `out/final-engineering-callbacks.log`，最终配置与状态恢复报告为
+`out/final-engineering-integrity.json`。首次恢复时 yaw 差 0.0055°，保留在
+`out/final-engineering-integrity-first.json`；正常 `look` 校正后与原值一致，最终 17/17。
+其余专项若未列本轮日志，沿用原范围的既有验收，
+未当作本轮重新运行；200000 tick 长录制未重复执行。
+
+保留两轮未通过记录：`out/final-engineering-full.log` 为 1168/1169，启动回执缺少 dumps
+基线字段，已增量补齐；`out/final-engineering-full-final.log` 在朝向等待中断，角度正确但
+额外 sleep 增加漏采 tick 的机会。移除后专项与完整重跑通过，未放宽角度/连续 tick 判据。
+构建中遗漏的函数重命名
+引用已修正，最终产物构建日志为 `out/final-sdk-build4.log`。
 
 ## 仍未覆盖或未闭合
 

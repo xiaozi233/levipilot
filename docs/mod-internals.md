@@ -45,6 +45,22 @@ queue/handler 和冲量路径只在 `input_cfg force=true` 下用于 legacy 对�
 同一把锁的线程。`use` 的服务端等待从进入 `server_pending` 起有 5 秒预算，迟到回调重新核对
 ID 和截止时间；已经开始的 SDK 调用不能承诺抢占或回滚。
 
+客户端/服务端任务把服务实例查找、SDK 投递和任务执行分别收进局部异常边界，复用
+`guardedSdkCall`，同时处理 C++ 异常与受支持 SEH；捕获对象与回调 ticket 在原始 SEH frame
+之外持有。无实例仍返回 `no_app_platform/no_server_instance`，查找或投递故障返回
+`client_task_queue_failed/server_task_queue_failed`，执行故障走既有任务失败回调。失败处理器
+在执行边界外只调用一次，其自身故障只记录日志，避免重复终结。命令注册、注册事件取值、
+`/togglefly` 执行及错误输出同样有局部边界；注册失败不更新 registry 判重指针。
+
+`selftest_sdk` 在 `allow_selftest_stress` 下向 lookup/submit/run 注入 SEH 或 C++ 异常，
+现场检查唯一回执、任务所有权退休与后续任务恢复。注册故障在 SDK 调用前注入；
+`command_boundary` 是合成保护入口，真实 `/togglefly` 另以能力变化和恢复验收。
+这些检查不模拟 SDK 内部已经破坏的锁或内存，也不承诺失败后回滚部分游戏操作。
+
+领域夹具恢复位置用 `teleport` 保留效果；明确要求清效果的 reset 语义专项仍使用 `reset`。
+清理通过 `preserve_failure` 保留正在展开的首错。朝向同步仍要求 0.1° 内连续三个 tick；
+`state()` 已等待 tick 快照，等待循环不再叠加额外 sleep，以免人为漏掉下一采样 tick。
+
 ## 录制、宏与 spool
 
 legacy JSON 录制由 `LegacyStreamState` 统一持有流、冷锁、终结和世界退出状态。跑酷事件使用
@@ -127,8 +143,10 @@ owner、generation、origin 字段和完整 requestId（最多 512 字节），�
 覆盖完整捕获窗口的起点，歧义保持 `unknown`。
 
 `SendProbeHistory` 使用 `AtomicRing<SendProbeRecord,64>`。hook 只写定长原子载荷，导出先复制
-局部记录并只格式化 ready 行；未发布、放弃和已覆盖行不会冒充完整记录。异常 suspect 文件
-保留栈与前后长度，健康路径不格式化 JSON。
+局部记录并只格式化 ready 行；未发布、放弃和已覆盖行不会冒充完整记录。suspect 文件
+保留栈与前后长度。长度集合只是历史采样启发式，26 字节等未分类帧仍保留原样取证，
+不能仅凭落盘就断言坏包。自检检查计数单调、采集/停止与管道存活；旧检查名
+`send_probe_no_dumps` 仅保留为观察注记，不再把零 dump 当作包合法性的证明。
 
 游戏侧共享序列化缓冲的跨线程竞态属于外部限制。相关证据见
 [`notes/badpacket-setactordata-20261031.md`](notes/badpacket-setactordata-20261031.md)；

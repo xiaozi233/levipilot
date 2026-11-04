@@ -49,6 +49,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `selftest_callback` | 压力专项内部夹具：client/server/tick 一次性延迟 1–2000 ms、冷线程排空或 `action=clear`；入口为 `--callback-drain-only` |
 | `lifecycle_prepare` | `on`；检查自有工作并关闭/恢复普通请求准入；常驻 hook 保留至 disable 排空后移除；需压力权限 |
 | `send_probe` | 显式发送/序列化 suspect 取证，默认关闭，需 `allow_hook_va` 且在世界内 |
+| `selftest_sdk` | 需 `allow_selftest_stress`；`target=client/server/registration/command_boundary`、`phase=lookup/submit/run`、`mode=none/seh/cpp`；回 `sdk_test_result`，只用于局部故障恢复验收 |
 
 ### 记录与输入
 
@@ -192,6 +193,10 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 - `chat_send` 需要真实 77 模板；`status.command_template{ready,reason}` 是准入依据。
   `chat_sent.ok=true` 只表示发送调用完成。
 - 入站深拷贝切片没有帧长度前缀，`before_hex` 是邻接堆字节，不能猜成长度。
+- `send_probe` 的长度筛选只产生取证候选，dump 非零不等于发生坏包，零 dump 也不能证明
+  网络竞态已修复。真实违规以守望回调、解析结果和原字节联合判定。
+- 任务的实例查找、投递和执行，以及命令注册/`/togglefly` 有局部 C++/SEH 边界；不能保证
+  SDK 内部锁或内存损坏后仍可恢复，也不回滚已经部分完成的游戏操作。
 - `violation_watch`、`send_probe`、`memmove_probe` 和 `mem_arg` 都是默认关闭的显式诊断，
   可能改变时序；合成违规不等于自然 BadPacket。
 - 游戏侧共享序列化缓冲竞态是外部限制，harness 不补丁游戏网络栈。
@@ -214,7 +219,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 
 实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见
 [`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。当前基线为离线
-**428/428**、完整现场 **1100/1100**，只在对应代码与权限前提下有效。
+**438/438**、完整现场 **1169/1169**，只在对应代码与权限前提下有效。
 
 ## License
 

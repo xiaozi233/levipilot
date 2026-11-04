@@ -32,6 +32,7 @@ bool ProbeMod::load() {
 
 bool ProbeMod::enable() {
     bootLog("enable: enter tid=" + std::to_string(GetCurrentThreadId()));
+    gCallbacks.reopen();
     mQuiescing.store(false, std::memory_order_release);
     if (mRunning.exchange(true)) {
         bootLog("enable: already running");
@@ -61,6 +62,7 @@ bool ProbeMod::enable() {
 
     mMouseListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::input::MouseInputEvent>([this](auto& event) {
+            CallbackScope callback(gCallbacks, CallbackDomain::Event);
             // MouseAction: ActionMove=0, ActionLeft=1, ActionRight=2, DataDown=1.
             int const action = static_cast<int>(event.actionButtonId());
             int const data   = static_cast<int>(event.buttonData());
@@ -86,6 +88,7 @@ bool ProbeMod::enable() {
 
     mKeyListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::input::KeyInputEvent>([this](auto& event) {
+            CallbackScope callback(gCallbacks, CallbackDomain::Event);
             mInputSession.keyEventCount.fetch_add(1, std::memory_order_relaxed);
             mInputSession.keyLastCode.store(event.keyCode(), std::memory_order_relaxed);
             mInputSession.keyLastAction.store(static_cast<std::int32_t>(event.action()), std::memory_order_relaxed);
@@ -142,7 +145,10 @@ bool ProbeMod::enable() {
     // commands. The registry is rebuilt per world, hence the pointer guard.
     mServerCommandListener =
         ll::event::EventBus::getInstance().emplaceListener<ll::event::command::ServerCommandRegisterEvent>(
-            [this](auto& event) { registerCommands(event.commandRegistry()); }
+            [this](auto& event) {
+                CallbackScope callback(gCallbacks, CallbackDomain::Event);
+                registerCommands(event.commandRegistry());
+            }
         );
     // A reload inside an existing world does not fire the registration event
     // again. Rebind our overload on the server thread after LL disabled the old
@@ -162,25 +168,24 @@ bool ProbeMod::enable() {
     return true;
 }
 
-bool ProbeMod::stopLifecycleHooks() {
+bool ProbeMod::stopLifecycleHooks(bool suspendThreads) {
     // No short-circuit: one failure must not leave the other hooks installed.
-    bool const keyOk = setLifecycleKeyHook(false);
-    bool const mouseOk = setLifecycleMouseHook(false);
-    bool const playerOk = setLifecyclePlayerHook(false);
-    bool const turnOk = setLifecycleTurnHook(false);
+    bool const keyOk = setLifecycleKeyHook(false, suspendThreads);
+    bool const mouseOk = setLifecycleMouseHook(false, suspendThreads);
+    bool const playerOk = setLifecyclePlayerHook(false, suspendThreads);
+    bool const turnOk = setLifecycleTurnHook(false, suspendThreads);
     return keyOk && mouseOk && playerOk && turnOk;
 }
 
 bool ProbeMod::disable() {
-    if (!mRunning.exchange(false)) {
-        // A prior disable may have failed to remove a diagnostic hook. Do not
-        // turn a second disable into permission to unload its live callback.
-        bool const hooksStopped = stopLifecycleHooks();
-        return !violationWatchStats().value("active", true) && hooksStopped;
-    }
-    // Teardown itself is not a queued request, so it must not be refused by the
-    // quiesce gate it is about to establish for the next unload.
-    mQuiescing.store(false, std::memory_order_release);
+    std::unique_lock lifecycle(mDisableMutex, std::try_to_lock);
+    if (!lifecycle.owns_lock()) return false;
+    if (!mRunning.load()) return gCallbacks.closed() && gCallbacks.idle();
+    // No state is destroyed until every admitted callback has retired. A false
+    // return leaves LL's mod enabled; drainCallbacks restores all source state.
+    if (!drainCallbacks()) return false;
+    if (mCallbackTestThread.joinable()) mCallbackTestThread.join();
+    mRunning.store(false);
 
     auto const generation = mLifecycleGeneration.load();
     auto const disableId  = mDisableSerial.fetch_add(1) + 1;
@@ -412,6 +417,8 @@ void ProbeMod::registerCommands(CommandRegistry& registry) {
         );
         handle.overload().execute(
             [](CommandOrigin const& origin, CommandOutput& output) {
+                CallbackScope callback(gCallbacks, CallbackDomain::Command);
+                if (!callback.admitted()) { output.error("probe is quiescing"); return; }
                 auto* actor = origin.getEntity();
                 if (actor == nullptr || !actor->isPlayer()) {
                     output.error("togglefly: player origin required");
@@ -803,6 +810,9 @@ LL_TYPE_INSTANCE_HOOK(
     &LocalPlayer::$normalTick,
     void
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Tick);
+    if (!callback.admitted()) { origin(); return; }
+    ::probe::ProbeMod::getInstance().callbackTestDelay(::probe::detail::CallbackDomain::Tick);
     ::probe::ProbeMod::getInstance().onPlayerTick(*this);
     origin();
     ::probe::ProbeMod::getInstance().afterPlayerTick(*this);
@@ -810,10 +820,10 @@ LL_TYPE_INSTANCE_HOOK(
 
 namespace probe {
 
-bool ProbeMod::setLifecyclePlayerHook(bool on) {
+bool ProbeMod::setLifecyclePlayerHook(bool on, bool suspendThreads) {
     if (on) {
         if (mLifecyclePlayerHooked.load(std::memory_order_acquire)) return true;
-        int const status = ProbeLocalPlayerTickHook::hook();
+        int const status = ProbeLocalPlayerTickHook::hook(suspendThreads);
         if (status != 0) {
             bootLog("lifecycle: player hook restore failed status=" + std::to_string(status));
             return false;
@@ -822,7 +832,7 @@ bool ProbeMod::setLifecyclePlayerHook(bool on) {
         return true;
     }
     if (!mLifecyclePlayerHooked.exchange(false, std::memory_order_acq_rel)) return true;
-    if (!ProbeLocalPlayerTickHook::unhook()) {
+    if (!ProbeLocalPlayerTickHook::unhook(suspendThreads)) {
         mLifecyclePlayerHooked.store(true, std::memory_order_release);
         bootLog("lifecycle: player hook unhook failed");
         return false;
@@ -843,6 +853,7 @@ LL_TYPE_INSTANCE_HOOK(
     void,
     Vec2 const& delta
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Turn);
     auto& mod = ::probe::ProbeMod::getInstance();
     if (!mod.allowTurnDelta()) {
         return;
@@ -852,10 +863,10 @@ LL_TYPE_INSTANCE_HOOK(
 
 namespace probe {
 
-bool ProbeMod::setLifecycleTurnHook(bool on) {
+bool ProbeMod::setLifecycleTurnHook(bool on, bool suspendThreads) {
     if (on) {
         if (mLifecycleTurnHooked.load(std::memory_order_acquire)) return true;
-        int const status = ProbeTurnDeltaHook::hook();
+        int const status = ProbeTurnDeltaHook::hook(suspendThreads);
         if (status != 0) {
             bootLog("lifecycle: turn hook restore failed status=" + std::to_string(status));
             return false;
@@ -864,7 +875,7 @@ bool ProbeMod::setLifecycleTurnHook(bool on) {
         return true;
     }
     if (!mLifecycleTurnHooked.exchange(false, std::memory_order_acq_rel)) return true;
-    if (!ProbeTurnDeltaHook::unhook()) {
+    if (!ProbeTurnDeltaHook::unhook(suspendThreads)) {
         mLifecycleTurnHooked.store(true, std::memory_order_release);
         bootLog("lifecycle: turn hook unhook failed");
         return false;

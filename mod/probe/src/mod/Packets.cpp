@@ -95,6 +95,18 @@ void ProbeMod::sendCommandPacket(PacketInjectionQuery const& query, PacketInject
     std::optional<CommandRequestPacketPayload> payload;
     std::optional<CommandRequestPacket> packet;
     std::string requestId(query.origin.requestIdView());
+    if (mAllowSelftestStress.load()
+        && (mCallbackDelayMs[static_cast<unsigned>(CallbackDomain::Tick)].load() & (1u << 31))) {
+        // Hold the server BEFORE sending so the next real client tick can enter
+        // its delay before the server processes reload. Without this barrier a
+        // successful unload can precede the tick, which proves no overlap.
+        auto started = std::make_shared<std::atomic<int>>(0);
+        queueServerTask([started] { started->store(1); Sleep(300); },
+                        [started](char const*) { started->store(-1); });
+        auto const deadline = GetTickCount64() + 500;
+        while (started->load() == 0 && GetTickCount64() < deadline) Sleep(1);
+        if (started->load() != 1) { out.error = "callback_test_barrier_timeout"; return; }
+    }
     CommandInjectionScope injected; // Restores even after SEH/C++; never recapture our own send.
     if (!guardedGameRead([&] {
         applyPacketInjection(out,
@@ -132,6 +144,18 @@ void ProbeMod::sendCommandPacket(PacketInjectionQuery const& query, PacketInject
                 if (query.test == point) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
             });
     })) out.error = "packet_inject_fault";
+    if (!out.error && mAllowSelftestStress.load()) {
+        // Explicit race fixture, after the real send: keep the sending callback
+        // alive, arm the next real tick, or queue a server callback. It never
+        // changes the packet or invokes a loader from a DLL-owned thread.
+        for (auto domain : {CallbackDomain::Client, CallbackDomain::Server, CallbackDomain::Tick}) {
+            auto& delay = mCallbackDelayMs[static_cast<unsigned>(domain)];
+            if (!(delay.load() & (1u << 31))) continue;
+            delay.fetch_and(~(1u << 31));
+            if (domain == CallbackDomain::Client) callbackTestDelay(domain);
+            if (domain == CallbackDomain::Server) queueServerTask([this, domain] { callbackTestDelay(domain); });
+        }
+    }
 }
 
 void ProbeMod::drainPacketInjection() {

@@ -136,6 +136,9 @@ class ModModelTests(unittest.TestCase):
     def test_lifecycle_log_generations_and_disable_ids(self) -> None:
         self.run_native("lifecycle_model")
 
+    def test_callback_queue_ownership_drain_timeout_self_and_concurrency(self) -> None:
+        self.run_native("callback_lifecycle_model")
+
     def test_send_probe_concurrent_history_and_publication(self) -> None:
         self.run_native("send_probe_model")
 

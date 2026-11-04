@@ -135,7 +135,7 @@ class HotReloadTests(unittest.TestCase):
                 "on": on,
                 "ok": True,
                 "quiescing": not on,
-                "hooks": dict.fromkeys(("key", "mouse", "player", "turn"), on),
+                "hooks": dict.fromkeys(("key", "mouse", "player", "turn"), True),
             }
 
         client.request.side_effect = request
@@ -282,7 +282,7 @@ class HotReloadTests(unittest.TestCase):
             self.assertIn("hot_reload_command_sent", failed)
             client.connect.assert_not_called()
 
-    def test_hook_removal_failure_blocks_the_reload(self) -> None:
+    def test_preparation_failure_blocks_the_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
 
@@ -293,7 +293,7 @@ class HotReloadTests(unittest.TestCase):
                 return {
                     "event": expected,
                     "on": on,
-                    "ok": on,  # the removal side reports failure
+                    "ok": on,  # the prepare side reports failure
                     "hooks": {"key": True, "mouse": True, "player": True, "turn": True},
                 }
 
@@ -402,6 +402,25 @@ class HotReloadTests(unittest.TestCase):
             self.assertTrue(busy_seen)
             self.assertTrue(all(row.outcome == "pass" for row in checks.results))
 
+    def test_callback_counters_do_not_change_lifecycle_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client, _, _ = self.fixture(Path(directory))
+            previous = client.status.side_effect
+            serial = 0
+
+            def status() -> dict[str, object]:
+                nonlocal serial
+                serial += 1
+                result = previous()
+                result["lifecycle"]["callbacks"] = {"entered": serial}
+                return result
+
+            client.status.side_effect = status
+            checks = Checks()
+            with contextlib.redirect_stdout(io.StringIO()):
+                check_hot_reload(client, checks, report_path=Path(directory) / "report.json")
+            self.assertTrue(all(row.outcome == "pass" for row in checks.results))
+
     def test_restore_failure_still_closes_and_writes_the_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -415,7 +434,7 @@ class HotReloadTests(unittest.TestCase):
                     "event": expected,
                     "on": False,
                     "ok": True,
-                    "hooks": dict.fromkeys(("key", "mouse", "player", "turn"), False),
+                    "hooks": dict.fromkeys(("key", "mouse", "player", "turn"), True),
                 }
 
             client, _, _ = self.fixture(root)

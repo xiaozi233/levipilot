@@ -55,6 +55,7 @@ if str(ROOT) not in sys.path:
 
 from driver import selftest_diagnostics  # noqa: E402
 from driver.harness.lab import Builder, capture_disconnect_report, settle  # noqa: E402,F401
+from driver.selftest_callbacks import check_callback_drain  # noqa: E402
 from driver.selftest_core import (  # noqa: E402,F401
     check_block_identity,
     check_cli_compatibility,
@@ -173,6 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep", action="store_true", help="do not remove the test entity")
     parser.add_argument("--radius", type=float, default=10.0)
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--callback-drain-only",
+        action="store_true",
+        help="delay client/server/tick callbacks, test timeout rollback and real reloads",
+    )
     modes.add_argument(
         "--lifecycle-prepare-only",
         action="store_true",
@@ -476,6 +482,7 @@ def run_live(
         or args.tick_recovery_world
         or args.hot_reload_only
         or args.lifecycle_prepare_only
+        or args.callback_drain_only
         or args.controls_only
         or args.player_identity_only
         or args.player_identity_world
@@ -521,6 +528,9 @@ def run_live(
                     check_hot_reload(client, checks, close_client=False)
             elif args.lifecycle_prepare_only:
                 check_lifecycle_prepare(client, checks)
+            elif args.callback_drain_only:
+                with observation.reload_gap():
+                    check_callback_drain(client, checks)
             elif args.teleport_only or args.teleport_world:
                 check_teleport(client, checks, args.teleport_world)
             elif args.controls_only:
@@ -575,6 +585,8 @@ def run_live(
                 if args.hot_reload_only
                 else "lifecycle_prepare_error"
                 if args.lifecycle_prepare_only
+                else "callback_drain_error"
+                if args.callback_drain_only
                 else "teleport_error"
                 if args.teleport_only or args.teleport_world
                 else "controls_error"

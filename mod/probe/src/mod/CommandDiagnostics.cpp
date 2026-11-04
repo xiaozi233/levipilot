@@ -6,6 +6,57 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_callback") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})"); return true;
+        }
+        auto const action = j.value("action", std::string{"delay"});
+        if (action == "clear") {
+            for (auto& delay : mCallbackDelayMs) delay = 0;
+            enqueue(R"({"event":"callback_test_cleared"})"); return true;
+        }
+        if (action == "drain") {
+            if (mCallbackTestActive.exchange(true)) {
+                enqueue(R"({"event":"error","reason":"callback_test_active"})"); return true;
+            }
+            if (mCallbackTestThread.joinable()) mCallbackTestThread.join();
+            auto const timeout = std::clamp(j.value("timeout_ms", 100), 1, 1500);
+            try {
+                mCallbackTestThread = std::thread([this, timeout] {
+                    nlohmann::json result{{"event", "callback_drain_test"}};
+                    bool const quiescing = mQuiescing.exchange(true);
+                    bool const closed = gCallbacks.close();
+                    try {
+                        result["ok"] = closed && gCallbacks.wait(std::chrono::milliseconds(timeout), [] { return true; });
+                        result["callbacks"] = callbackStatus();
+                    } catch (...) { result["ok"] = false; }
+                    if (closed) gCallbacks.reopen();
+                    mQuiescing = quiescing;
+                    result["reopened"] = !gCallbacks.closed();
+                    mCallbackTestActive = false;
+                    try { enqueue(result.dump()); } catch (...) {}
+                });
+            } catch (...) { mCallbackTestActive = false; throw; }
+            return true;
+        }
+        auto const domain = j.value("domain", std::string{});
+        auto const ms = j.value("delay_ms", 0);
+        if ((action != "delay" && action != "after_send") || ms < 1 || ms > 2000 || (domain != "client" && domain != "server" && domain != "tick")) {
+            enqueue(R"({"event":"error","reason":"bad_callback_test"})"); return true;
+        }
+        auto const d = domain == "client" ? CallbackDomain::Client : domain == "server" ? CallbackDomain::Server : CallbackDomain::Tick;
+        auto const i = static_cast<unsigned>(d);
+        if (mCallbackDelayMs[i].load() || mCallbackTestEntered[i].load() != mCallbackTestCompleted[i].load()) {
+            enqueue(R"({"event":"error","reason":"callback_test_active"})"); return true;
+        }
+        mCallbackDelayMs[i] = static_cast<unsigned>(ms) | (action == "after_send" ? 1u << 31 : 0);
+        if (action == "delay") {
+            if (d == CallbackDomain::Client) queueClientTask([this, d] { callbackTestDelay(d); });
+            if (d == CallbackDomain::Server) queueServerTask([this, d] { callbackTestDelay(d); });
+        }
+        enqueue(nlohmann::json{{"event", "callback_test_armed"}, {"domain", domain}, {"delay_ms", ms}}.dump());
+        return true;
+    }
     if (cmd == "selftest_tick_error") {
         if (!mAllowSelftestStress.load()) {
             enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
@@ -52,36 +103,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         if (!on) {
             // Unload contract: (1) refuse when anything is still in flight,
             // (2) stop admitting new work, (3) only then release the hooks.
-            auto const     tasks    = taskStatusJson();
-            RequestBlock req;
-            InputLifecycleSnapshot controls;
-            bool const requestReady = mRequests.read(req);
-            bool const snapshotReady = mInputSession.lifecycle.read(controls, mPoseEpoch.load());
-            bool const pending = !requestReady || !snapshotReady
-                              || controls.pending(req.inputSeq, req.jumpSeq, req.lookSeq);
-            nlohmann::json busy     = {
-                {"held_mask", mInputSession.controlHeldMask.load()},
-                {"injecting_input", mInputSession.injecting.load()},
-                {"injecting_look", mInputSession.injectingLook.load() != 0},
-                {"cleanup_pending", mInputSession.controlCleanupPending.load()},
-                {"snapshot_ready", snapshotReady},
-                {"requests_pending", pending},
-                {"movement_request", controls.inputTicks != 0},
-                {"look_request", controls.lookTicks != 0},
-                {"jump_pending", controls.jumpPending != 0},
-                {"held_events", controls.heldEvents},
-                {"events_pending", mInputSession.events.pending()},
-                {"macro_playing", mMacroSession.playback.active()},
-                {"macro_recording", mMacroSession.recording.active()},
-                {"record_active", recordActive()},
-                {"task", tasks.value("active", nlohmann::json())},
-                {"tick_recovery", mTickRecovery.active()},
-            };
-            bool const idle = busy["held_mask"] == 0 && !busy["injecting_input"] && !busy["injecting_look"]
-                           && !busy["cleanup_pending"] && !pending && !controls.active()
-                           && busy["events_pending"] == 0
-                           && !busy["macro_playing"] && !busy["macro_recording"] && !busy["record_active"]
-                           && busy["task"].is_null() && !busy["tick_recovery"];
+            auto const busy = lifecycleBusy();
+            bool const idle = busy["idle"].get<bool>();
             if (!idle) {
                 enqueue(
                     nlohmann::json{
@@ -96,13 +119,13 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             }
             mQuiescing.store(true, std::memory_order_release);
         }
-        // Every statically registered hook must be gone before the DLL is
-        // unloaded, so a restore attempt must cover all four even when an
-        // earlier one fails (no short-circuit).
-        bool const keyOk    = setLifecycleKeyHook(on);
-        bool const mouseOk  = setLifecycleMouseHook(on);
-        bool const playerOk = setLifecyclePlayerHook(on);
-        bool const turnOk   = setLifecycleTurnHook(on);
+        // Preparation closes protocol admission only. Keep callback sources
+        // attached until disable has drained existing work; early unhook here
+        // could invalidate an origin still executing on a game thread.
+        bool const keyOk    = setLifecycleKeyHook(true);
+        bool const mouseOk  = setLifecycleMouseHook(true);
+        bool const playerOk = setLifecyclePlayerHook(true);
+        bool const turnOk   = setLifecycleTurnHook(true);
         bool const allOk    = keyOk && mouseOk && playerOk && turnOk;
         if (!on && !allOk) {
             // A hook is still installed: lift the quiesce state so the session
@@ -522,6 +545,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                        {"player", mLifecyclePlayerHooked.load()},
                        {"turn", mLifecycleTurnHooked.load()}}}
         };
+        out["lifecycle"]["callbacks"] = callbackStatus();
         auto const identity = localPlayerIdentity();
         auto const identityFailures = mPlayerIdentity.failures();
         out["player_identity"]      = {

@@ -23,14 +23,14 @@ std::shared_ptr<ll::data::CancellableCallback> WorldSession::after(std::function
     auto const epoch = mEpoch.load(std::memory_order_acquire);
     // Delay in wall-clock time, then enqueue on the main thread. World-tick
     // delays cannot make progress while waiting for sign-in at the main menu.
-    return ll::thread::ThreadPoolExecutor::getDefault().executeAfter(
+    auto tracked = trackedCallback(gCallbacks, CallbackDomain::Delay,
         [this, epoch, task = std::move(task)] {
             mOwner.queueClientTask([this, epoch, task] {
                 if (mEpoch.load(std::memory_order_acquire) == epoch) task();
             });
-        },
-        std::chrono::milliseconds(milliseconds)
-    );
+        });
+    if (!tracked) return {};
+    return ll::thread::ThreadPoolExecutor::getDefault().executeAfter(std::move(*tracked), std::chrono::milliseconds(milliseconds));
 }
 
 void WorldSession::enter(std::string name, std::string id, int intent, bool force, EntryTest test) {
@@ -96,6 +96,7 @@ void WorldSession::start() {
     mEpoch.fetch_add(1);
     auto& bus          = ll::event::EventBus::getInstance();
     mStartJoinListener = bus.emplaceListener<ll::event::client::ClientStartJoinLevelEvent>([this](auto& event) {
+            CallbackScope callback(gCallbacks, CallbackDomain::Event);
         mOwner.mParkourGeneration.fetch_add(1, std::memory_order_release);
         // Manual UI starts share the same observation and terminal contract.
         if (mEntry.snapshot().phase == WorldEntryModel::Phase::Idle) mEntry.begin(GetTickCount64());
@@ -108,6 +109,7 @@ void WorldSession::start() {
         );
     });
     mJoinListener      = bus.emplaceListener<ll::event::client::ClientJoinLevelEvent>([this](auto& event) {
+            CallbackScope callback(gCallbacks, CallbackDomain::Event);
         if (mEntryTest.load() == EntryTest::MissingJoin
             && mEntry.snapshot().phase == WorldEntryModel::Phase::Starting) return;
         mInWorld = true;
@@ -122,6 +124,7 @@ void WorldSession::start() {
         settleEntry(true, "joined");
     });
     mExitListener      = bus.emplaceListener<ll::event::client::ClientExitLevelEvent>([this](auto&) {
+            CallbackScope callback(gCallbacks, CallbackDomain::Event);
         mInWorld = false;
         mOwner.mPoseEpoch.fetch_add(1);
         mOwner.mPoseTest = CaptureTest::None;
@@ -151,6 +154,7 @@ void WorldSession::start() {
         mOwner.mSpoolForce.store(true, std::memory_order_release);
     });
     mCancelListener    = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
+            CallbackScope callback(gCallbacks, CallbackDomain::Event);
         mPhase = Phase::Leaving;
         mOwner.enqueue(R"({"event":"world_join_cancelled"})");
         settleEntry(false, "cancelled");
@@ -161,31 +165,37 @@ void WorldSession::stop() {
     mEpoch.fetch_add(1);
     if (auto callback = mSignInRetry.exchange({})) callback->cancel();
     if (auto callback = mAutoRetry.exchange({})) callback->cancel();
-    if (mStartJoinListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientStartJoinLevelEvent>(
-            mStartJoinListener
-        );
-        mStartJoinListener.reset();
-    }
-    if (mJoinListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientJoinLevelEvent>(mJoinListener);
-        mJoinListener.reset();
-    }
-    if (mExitListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientExitLevelEvent>(mExitListener);
-        mExitListener.reset();
-    }
-    if (mCancelListener) {
-        ll::event::EventBus::getInstance().removeListener<ll::event::client::ClientCancelJoinLevelEvent>(
-            mCancelListener
-        );
-        mCancelListener.reset();
-    }
-
+    attachListeners(false);
+    mStartJoinListener.reset();
+    mJoinListener.reset();
+    mExitListener.reset();
+    mCancelListener.reset();
     mInWorld = false;
     mPhase   = Phase::Menu;
     mEntry.reset();
     mEntryProbeQueued = 0;
+}
+
+bool WorldSession::listenersReleased() const {
+    return mStartJoinListener.use_count() <= 1 && mJoinListener.use_count() <= 1
+        && mExitListener.use_count() <= 1 && mCancelListener.use_count() <= 1;
+}
+
+bool WorldSession::attachListeners(bool on) {
+    auto& bus = ll::event::EventBus::getInstance();
+    bool ok = true;
+    auto apply = [&](auto const& listener, auto const& eventId) {
+        if (!listener) return;
+        if (on) {
+            if (!bus.hasListener(listener->getId(), eventId)) bus.addListener(listener, eventId);
+        } else bus.removeListener(listener, eventId);
+        ok = (bus.hasListener(listener->getId(), eventId) == on) && ok;
+    };
+    apply(mStartJoinListener, ll::event::getEventId<ll::event::client::ClientStartJoinLevelEvent>);
+    apply(mJoinListener, ll::event::getEventId<ll::event::client::ClientJoinLevelEvent>);
+    apply(mExitListener, ll::event::getEventId<ll::event::client::ClientExitLevelEvent>);
+    apply(mCancelListener, ll::event::getEventId<ll::event::client::ClientCancelJoinLevelEvent>);
+    return ok;
 }
 
 void WorldSession::emitEntryCompletion(std::optional<WorldEntryModel::Completion> const& completion) {

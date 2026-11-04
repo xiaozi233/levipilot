@@ -246,23 +246,23 @@ void ProbeMod::queueServerTask(
             enqueue(error.dump());
         }
     };
-    auto server = ll::service::bedrock::getServerInstance();
-    if (!server) {
-        fail("no_server_instance");
-        return;
-    }
-    std::function<void()> task = [fn = std::move(fn), fail] {
+    auto tracked = detail::trackedCallback(detail::gCallbacks, detail::CallbackDomain::Server, [fn = std::move(fn), fail] {
         gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
         try {
-            if (!runGuardedServerTask(fn)) {
-                fail("server_task_failed", "seh");
-            }
+            if (!runGuardedServerTask(fn)) fail("server_task_failed", "seh");
         } catch (std::exception const& e) {
             fail("server_task_failed", e.what());
         } catch (...) {
             fail("server_task_failed");
         }
-    };
+    });
+    if (!tracked) { fail("quiescing"); return; }
+    auto server = ll::service::bedrock::getServerInstance();
+    if (!server) {
+        fail("no_server_instance");
+        return;
+    }
+    std::function<void()> task = std::move(*tracked);
     // The submission itself may fail during world teardown. Give an owning
     // task the same failure path as a callback fault, without leaking a second
     // uncorrelated protocol error or leaving its active slot occupied.

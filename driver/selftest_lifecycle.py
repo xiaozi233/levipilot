@@ -109,7 +109,7 @@ def check_lifecycle_prepare(client: ModClient, checks: Checks) -> None:
             "lifecycle_prepare_expired_requests",
             reply.get("ok") is True
             and reply.get("quiescing") is True
-            and _hooks_match(reply, False),
+            and _hooks_match(reply, True),
             str(reply),
         )
     finally:
@@ -166,8 +166,7 @@ def _capture_command_template(client: ModClient, timeout: float) -> dict[str, An
     ``chat_send`` reuses the last real CommandRequestPacket; nothing has been
     typed through the UI yet in a freshly started session, and the template is
     only captured while the send-side packet tap is active. This must happen
-    before ``lifecycle_prepare`` drops the tick hook, because every key we
-    inject afterwards would never be applied.
+    before ``lifecycle_prepare`` closes normal protocol admission.
     """
     status = client.status()
     before = int(status["command_template_attempts"])
@@ -228,7 +227,8 @@ def _hooks_match(reply: dict[str, Any], armed: bool) -> bool:
 
 def _lifecycle(status: dict[str, Any]) -> dict[str, Any]:
     value = status.get("lifecycle", {})
-    return value if isinstance(value, dict) else {}
+    # Callback counters change on every request; they are not lifecycle identity.
+    return {k: v for k, v in value.items() if k != "callbacks"} if isinstance(value, dict) else {}
 
 
 def _boot_delta(path: Path, offset: int) -> tuple[str, bool]:
@@ -441,7 +441,7 @@ def check_hot_reload(
             preparation.get("on") is False
             and preparation.get("ok") is True
             and preparation.get("quiescing") is True
-            and _hooks_match(preparation, False),
+            and _hooks_match(preparation, True),
             str(preparation),
         ):
             return
@@ -457,9 +457,8 @@ def check_hot_reload(
             "quiescing" in blocked_reason,
             blocked_reason or "state was served while quiesced",
         )
-        # The mod's tick hook drives every injected key, so input injection is
-        # gone once the hooks are prepared for unload. Submit the same
-        # CommandRequestPacket the chat UI sends instead of typing into it.
+        # Submit the real command packet through the explicit quiesce exemption.
+        # Callback sources remain attached until disable performs its drain.
         try:
             submitted = client.chat_send("/" + RELOAD_COMMAND, wait=True, timeout=10)
         except ModProtocolError as exc:
@@ -488,8 +487,8 @@ def check_hot_reload(
             initial_lifecycle.get("disable_id", 0)
         )
         if prepared and not generation_advanced:
-            # Nothing was reloaded, so the mod is still quiesced with its hooks
-            # removed. Lift that before probing it further; otherwise every
+            # Nothing was reloaded, so the mod may still be quiesced. Lift that
+            # before probing it further; otherwise every
             # later request fails for the wrong reason.
             prepared = False
             with contextlib.suppress(ModPipeError, ModTimeout, ModProtocolError):

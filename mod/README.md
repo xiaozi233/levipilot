@@ -46,7 +46,8 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `spool_flush` | 立即刷写内存中的 spool 记录 |
 | `selftest_av` / `selftest_crash` | 请求异常隔离 / 进程崩溃取证；后者需 `allow_crash_test=true` |
 | `selftest_busy` | tick 忙等自检，需 `allow_selftest_stress=true` |
-| `lifecycle_prepare` | `on`；卸载前检查自有在途工作、quiesce 并卸/复四个常驻 hook；需压力权限 |
+| `selftest_callback` | 压力专项内部夹具：client/server/tick 一次性延迟 1–2000 ms、冷线程排空或 `action=clear`；入口为 `--callback-drain-only` |
+| `lifecycle_prepare` | `on`；检查自有工作并关闭/恢复普通请求准入；常驻 hook 保留至 disable 排空后移除；需压力权限 |
 | `send_probe` | 显式发送/序列化 suspect 取证，默认关闭，需 `allow_hook_va` 且在世界内 |
 
 ### 记录与输入
@@ -201,7 +202,10 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 - 站稳、无输入/宏/录制/任务时，经 `lifecycle_prepare` 静默的真实 `/ll reload probe` 已验收。
   使用 `py -3.11 driver/selftest.py --hot-reload-only --require-complete`，需显式开启输入注入、
   压力检查、封包采集与注入。它检查同 PID 的代次、完整日志、hook、tick 和 `/togglefly`
-  实际效果并恢复能力；不证明任意在途回调或未经 prepare 的直接重载安全。
+  实际效果并恢复能力。卸载还跟踪排队任务的最后一份副本、执行中回调与 EventBus 发布快照；
+  回调线程内卸载、持键/任务忙、活跃诊断会话或排空超时会明确拒绝。现场竞争专项见验收文档。
+  `--callback-drain-only --require-complete` 另验证三种在途回调、超时恢复，以及未经 prepare
+  的持键/诊断拒绝；使用相同权限。它包含有界游戏线程延迟，只在测试存档运行。
 - 只支持 **1.26.51.01** 的实测结论。版本数据只放在 `docs/offsets/*.json` 与生成头；
   修改后必须运行 `py -3.11 driver/gen_profiles.py`。
 - `allow_version_mismatch` 只用于移植，不校验 profile，日常关闭。
@@ -210,7 +214,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 
 实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见
 [`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。当前基线为离线
-**422/422**、完整现场 **1100/1100**，只在对应代码与权限前提下有效。
+**428/428**、完整现场 **1100/1100**，只在对应代码与权限前提下有效。
 
 ## License
 

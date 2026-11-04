@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/ChatModel.h"
+#include "mod/CallbackLifecycleModel.h"
 #include "mod/EcsModel.h"
 #include "mod/EntityModel.h"
 #include "mod/FlightRequestState.h"
@@ -84,6 +85,8 @@ public:
     bool enable();
     bool disable();
     bool unload();
+    // Test delay is explicit stress-only, bounded, one-shot and allocation-free.
+    void callbackTestDelay(detail::CallbackDomain domain);
 
     // Small append-only diagnostics file in the mod directory. LeviLamina's own
     // log location depends on how the game was launched, so this is the one
@@ -103,10 +106,10 @@ public:
     void                                         tickInputInjection();
     bool                                         releaseInputEvents();
     char const*                                  hidKeyEdge(int code, bool down, bool hardware);
-    bool          setLifecycleKeyHook(bool on);
-    bool          setLifecycleMouseHook(bool on);
-    bool          setLifecyclePlayerHook(bool on);
-    bool          setLifecycleTurnHook(bool on);
+    bool          setLifecycleKeyHook(bool on, bool suspendThreads = true);
+    bool          setLifecycleMouseHook(bool on, bool suspendThreads = true);
+    bool          setLifecyclePlayerHook(bool on, bool suspendThreads = true);
+    bool          setLifecycleTurnHook(bool on, bool suspendThreads = true);
 
     // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
     // own owner; these forwarders keep the file-scope LL hooks unchanged.
@@ -131,7 +134,7 @@ public:
     // the Windows loader lock. These flags start at the actual unmapped state.
     std::atomic_bool       mLifecycleKeyHooked{false}, mLifecyclePlayerHooked{false};
     std::atomic_bool       mLifecycleMouseHooked{false}, mLifecycleTurnHooked{false};
-    bool stopLifecycleHooks();
+    bool stopLifecycleHooks(bool suspendThreads = true);
     // Set while quiesced for unload: no new work is admitted between the last
     // in-flight request and the moment the static hooks come off.
     std::atomic_bool mQuiescing{false};
@@ -335,6 +338,17 @@ private:
     std::thread            mServerThread;
 
     std::atomic_bool mRunning{false};
+    std::mutex mDisableMutex;
+    std::thread mCallbackTestThread;
+    std::atomic_bool mCallbackTestActive{false};
+    std::atomic<char const*> mUnloadRefusal{""};
+    std::array<std::atomic<unsigned>, detail::kCallbackDomains> mCallbackDelayMs{};
+    std::array<std::atomic<unsigned>, detail::kCallbackDomains> mCallbackTestEntered{}, mCallbackTestCompleted{};
+    nlohmann::json callbackStatus() const;
+    nlohmann::json lifecycleBusy();
+    bool drainCallbacks();
+    bool attachListeners(bool on);
+    bool listenersReleased() const;
     std::atomic<std::uint64_t> mLifecycleGeneration{0}, mDisableSerial{0};
     std::atomic<std::uint64_t> mLastTickMs{0};
     // QPC timestamps for the T9 overhead metric (tick thread only).

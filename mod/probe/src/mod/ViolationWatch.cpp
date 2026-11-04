@@ -147,6 +147,7 @@ std::string detourComposeRoute(
     std::string const& serverMessage,
     std::string const& serverName
 ) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     publishDisconnectScreen(reason, codeword, details);
     return reinterpret_cast<
         ComposeRouteFn>(gRouteOrigin)(reason, title, body, codeword, details, serverMessage, serverName);
@@ -164,6 +165,7 @@ void detourHandleViolation(
     unsigned char          senderSubId,
     unsigned int           packetSize
 ) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     if (response != 0) {
         inboundWatchFreeze();
     }
@@ -372,6 +374,11 @@ nlohmann::json violationWatchStats() {
     };
     inboundWatchStats(out);
     return out;
+}
+
+bool diagnosticCallbacksInstalled() {
+    return gInstalled.load() || gScreenInstalled.load() || inboundCallbacksInstalled() || sendCallbacksInstalled()
+        || !hookListJson()["hooks"].empty() || !watchListJson()["watches"].empty();
 }
 
 nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit) {

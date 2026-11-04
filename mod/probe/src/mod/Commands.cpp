@@ -34,6 +34,7 @@ bool ProbeMod::dispatchWithSeh(std::string const& line) {
 }
 
 void ProbeMod::handleLine(std::string const& line) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Request);
     std::lock_guard recovery(mTickRecoveryMutex);
     recordCommand(line);
     // Any structured exception raised while handling this command belongs to
@@ -70,6 +71,10 @@ void ProbeMod::dispatchLine(std::string const& line) {
     }
 
     auto cmd = j.value("cmd", std::string{});
+    if (gCallbacks.closed() && cmd != "status" && cmd != "ping") {
+        enqueue(R"({"event":"error","reason":"quiescing"})");
+        return;
+    }
     if (mTickRecovery.active() && blockedDuringTickRecovery(cmd)) {
         enqueue(R"({"event":"error","reason":"tick_recovering"})");
         return;

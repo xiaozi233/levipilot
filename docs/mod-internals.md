@@ -147,7 +147,35 @@ owner、generation、origin 字段和完整 requestId（最多 512 字节），�
 受控重载专项要求玩家站稳、无飞行和宏录制/播放，先拒绝不存在的 mod，再经
 `lifecycle_prepare` 静默、发送 `/ll reload probe`。成功需要同 PID 的新代次、旧 disable 与
 新 enable 日志、全部 hook 已安装、tick 前进及 `/togglefly` 能力变化与恢复。
-仅 prepare 成功或管道重连不构成验收；任意在途游戏回调的排空仍未证明。
+仅 prepare 成功或管道重连不构成验收。回调排空竞争专项以当前验收文档为准。
+
+`CallbackLifecycleModel.h` 统一跟踪 key/mouse/tick/turn、client/server/delay、EventBus、
+诊断 detour、VEH、游戏命令和管道请求。热侧是定长原子计数与 TLS 深度；计数涵盖 origin
+调用返回。队列准入位与所有权计数共用一个 CAS 字，任务闭包的所有副本共享 ticket；执行
+结束不提前退票，用户捕获先销毁，ticket 最后释放。EventBus 移除监听器后还要等待外部
+ListenerPtr 发布快照释放，不能只检查正在运行的 lambda。
+
+`disable` 先拒绝自身回调线程和自有活动输入/宏/任务，再关闭队列准入，以 1500 ms 总预算
+等待既有工作。移除七个监听器、四 hook 与 VEH 后，再等待所有权、入口计数和 DLL 返回
+栈退出，才清理任务/状态、停管道和 spool 并 join。卸四 hook 前，在同一次 LL 全局暂停中
+复查计数和线程指令位置，防止零计数与新入口竞态；当前仍位于 DLL 入口/返回指令时重试。
+返回栈检查只在冷侧，逐线程短暂暂停并
+用 Windows unwind 元数据检查，不读取游戏结构；无法完成检查就拒绝。超时恢复相同监听器、
+原 hook 安装状态与原准入，保留 running/代次和玩家状态。恢复失败单列
+`callback_rollback_failed`，不得报卸载成功。
+
+活跃诊断会话尚不能事务性恢复，因此在任何移除前以 `diagnostic_sources_active` 拒绝卸载；
+需要先显式停止 PacketTap、任意 VA hook、违规/入站/send probe 和 DR watch。所有诊断入口
+仍纳入计数，VEH 即使准入关闭也必须消费属于本模块的 DR trap。PacketTap/VEH 移除失败
+保留真实安装状态。违规守望的 stop 会同时移除它的解析/复制附加钩子。
+
+`status.lifecycle.callbacks` 提供 closed/refusal 与各领域 owned/running/entered/completed；
+owned 表示执行器持有的任务对象，可能已经执行完。`selftest_callback` 仅在压力权限开启时
+可用，延迟 client/server/tick 1–2000 ms，或在专用、可 join 的冷线程验证排空超时/重新准入。
+它不把测试等待误报成真实卸载。`--callback-drain-only` 结合该检查与真实重载、代次、持键
+拒绝和最终姿态/能力/输入恢复；该专项不会默认混入普通全套。持键和诊断拒绝走游戏聊天
+指令包，要求本次 boot 日志明确给出 busy/diagnostic_sources_active，避免由 callback_self
+或旧 refusal 假充覆盖。中途失败也逐项尝试清延迟、释放按键、恢复姿态和输入锁，保留首错。
 
 启用违规导出时，入口拥有最终连接关闭权。重载前将旧 DLL 的环与完整文本保存到观察事件的
 `checkpoint`，重载后依据 generation 变化将游标归零并重新武装。报告保留 `gap_begin/end`

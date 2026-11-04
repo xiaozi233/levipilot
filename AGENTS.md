@@ -110,8 +110,8 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
 - 客户端位置会被服务端覆盖；位置走服务端权威路径。朝向走命令通道，不能只改组件。
 - `enter_world` 必须等安全菜单；HBUI 不等于可进入。断开错误页同样可能是 HBUI，但
   `worlds.ready=false`；`world_state()` 的 `disconnect_error` 与 `exiting` 不得混淆。
-- `lifecycle_prepare` 只检查自有输入/任务/录制和已发布输入生命周期，不证明游戏线程内
-  任意在途回调已退出，也不证明真实 reload 可用。
+- `lifecycle_prepare` 检查自有输入/任务/录制并关闭普通请求准入，保留常驻 hook。实际
+  `disable` 用 CallbackLifecycle 排空；不得绕过 callback_self、busy、诊断会话或超时拒绝。
 - 主菜单、暂停菜单和某些对话框仍需桌面 UI；暂停菜单不响应注入 Esc/Enter。
 - tick 记录写 `<modDir>/spool-<pid>.jsonl`；崩溃取证由 VEH 写 crash 文件。请求级 AV 由
   `dispatchWithSeh` 转成 `internal_error`，不要把危险代码无保护地放进 tick。
@@ -159,13 +159,14 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
 
 ## 当前状态与维护
 
-当前基线为离线 **422/422**、完整现场 `--require-complete` **1100/1100**；另有生命周期
+当前基线为离线 **428/428**、完整现场 `--require-complete` **1100/1100**；另有生命周期
 准入 **10/10**、输入专项 **46/46**、200000 tick 长录制 **9/9**。这些数字对应其代码与权限
 前提，后续变更必须重新验证适用范围，不能永久当作“全绿”。
 
 经 prepare 的受控空闲真实热重载已通过，详见当前验收文档；不要在 DLL 静态构造/析构中装卸
-hook。仍未闭合：未经 prepare 或任意在途 tick 回调的卸载排空、HBUI 异常退档
-根因、游戏侧共享序列化缓冲竞态。高频查询后的管道失联只保留诊断，不添加未经验证的跨线程
+hook。在途回调排空竞争专项 **132/132**，包含真实重载、超时恢复、未经 prepare 的持键和
+活跃诊断拒绝；它不证明任意外部 SDK/第三方回调时序。HBUI 异常退档根因、游戏侧共享
+序列化缓冲竞态仍是独立边界。高频查询后的管道失联只保留诊断，不添加未经验证的跨线程
 句柄看门狗。
 
 写文档先读 [`skills/project-docs/SKILL.md`](skills/project-docs/SKILL.md)。文档只维护当前行为、

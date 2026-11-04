@@ -9,6 +9,7 @@ using namespace probe::detail;
 // freeze. No callback pointer or SDK string is retained beyond a fixed record.
 namespace probe::detail {
 namespace {
+std::uint64_t gLoopAddress = 0, gAssignAddress = 0, gDispatchAddress = 0;
 
 // The parse loop's entry gives the object whose member string carries the
 // packet bytes (its owner is *a1). Exporting that pointer lets a debug-register
@@ -34,6 +35,7 @@ std::atomic<std::uint64_t> gAssignCount{0};
 std::atomic<std::uint64_t> gAssignCalls{0};
 
 void detourLoopEntry(void* a1, void* a2) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     for (int spin = 0; spin < 200000; ++spin) {
         if (gLoopOrigin != nullptr) break;
         YieldProcessor();
@@ -254,6 +256,7 @@ void publishInbound(int argIndex, StreamProbe const& probe, StreamProbe const* p
 }
 
 void detourReadBoundary(void* a, void* b, void* c, void* d, void* e) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     for (int spin = 0; spin < 200000; ++spin) {
         if (gInboundOrigin != nullptr) break;
         YieldProcessor();
@@ -305,6 +308,7 @@ void detourReadBoundary(void* a, void* b, void* c, void* d, void* e) {
 }
 
 std::int64_t detourAssign(void* target, void* a2, void* a3, void* a4) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     std::int64_t result = 0;
     if (gAssignOrigin != nullptr) {
         result = reinterpret_cast<AssignFn>(gAssignOrigin)(target, a2, a3, a4);
@@ -341,6 +345,7 @@ std::int64_t detourAssign(void* target, void* a2, void* a3, void* a4) {
 }
 
 std::int64_t detourDispatch(void* a1, void* a2) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     // The layer above the string assign: record both arguments and, later on the
     // pipe thread, the first words of the second one -- if it carries a
     // {pointer, length} pair, that is where the packet length is decided.
@@ -373,12 +378,14 @@ void recordCopy(void* dst, void const* src, std::size_t length) {
 }
 
 void* detourMemmove(void* dst, void const* src, std::size_t length) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     recordCopy(dst, src, length);
     if (gMemmoveOrigin == nullptr) return dst;
     return reinterpret_cast<MemmoveFn>(gMemmoveOrigin)(dst, src, length);
 }
 
 void* detourMemcpy(void* dst, void const* src, std::size_t length) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     recordCopy(dst, src, length);
     if (gMemcpyOrigin == nullptr) return dst;
     return reinterpret_cast<MemmoveFn>(gMemcpyOrigin)(dst, src, length);
@@ -387,6 +394,11 @@ void* detourMemcpy(void* dst, void const* src, std::size_t length) {
 } // namespace
 
 void inboundWatchFreeze() { gInboundFrozen.store(true, std::memory_order_release); }
+
+bool inboundCallbacksInstalled() {
+    return gLoopInstalled.load() || gDispatchInstalled.load() || gAssignInstalled.load()
+        || gInboundInstalled.load() || gMemcpyInstalled.load() || gMemmoveInstalled.load();
+}
 
 void inboundWatchReset() { gInboundFrozen.store(false, std::memory_order_release); }
 
@@ -402,6 +414,7 @@ inboundWatchStart(std::uint64_t loopAddress, std::uint64_t assignAddress, std::u
             )
             == 0) {
             gLoopInstalled.store(true, std::memory_order_release);
+            gLoopAddress = loopAddress;
         } else {
             ProbeMod::getInstance().bootLog("violation watch: loop hook unavailable");
         }
@@ -417,6 +430,7 @@ inboundWatchStart(std::uint64_t loopAddress, std::uint64_t assignAddress, std::u
             )
             == 0) {
             gDispatchInstalled.store(true, std::memory_order_release);
+            gDispatchAddress = dispatchAddress;
         }
     }
     if (assignAddress != 0 && !gAssignInstalled.load(std::memory_order_acquire)
@@ -430,6 +444,7 @@ inboundWatchStart(std::uint64_t loopAddress, std::uint64_t assignAddress, std::u
             )
             == 0) {
             gAssignInstalled.store(true, std::memory_order_release);
+            gAssignAddress = assignAddress;
         } else {
             ProbeMod::getInstance().bootLog("violation watch: assign hook unavailable");
         }
@@ -468,9 +483,19 @@ nlohmann::json inboundWatchStop() {
         )) {
         gInboundInstalled.store(false, std::memory_order_release);
     }
+    auto remove = [](std::atomic_bool& installed, auto target, auto detour) {
+        if (installed.load() && ll::memory::unhook(ll::memory::toFuncPtr(target), ll::memory::toFuncPtr(detour), true))
+            installed.store(false, std::memory_order_release);
+    };
+    remove(gLoopInstalled, reinterpret_cast<ll::memory::FuncPtr>(gLoopAddress), &detourLoopEntry);
+    remove(gAssignInstalled, reinterpret_cast<ll::memory::FuncPtr>(gAssignAddress), &detourAssign);
+    remove(gDispatchInstalled, reinterpret_cast<ll::memory::FuncPtr>(gDispatchAddress), &detourDispatch);
+    remove(gMemmoveInstalled, &memmove, &detourMemmove);
+    remove(gMemcpyInstalled, &memcpy, &detourMemcpy);
+    gMemmoveEnabled.store(false);
     return nlohmann::json{
         {"inbound_before", before                                           },
-        {"inbound_hooked", gInboundInstalled.load(std::memory_order_acquire)},
+        {"inbound_hooked", inboundCallbacksInstalled()},
     };
 }
 

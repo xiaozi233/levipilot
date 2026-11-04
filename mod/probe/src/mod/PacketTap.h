@@ -44,6 +44,11 @@ public:
 
     nlohmann::json start(bool enable, nlohmann::json const& args);
     void           stop();
+    bool hooksInstalled() const {
+        if (mSendHooked.load() || mPeerHooked.load()) return true;
+        for (auto const& hooked : mRecvHooked) if (hooked.load()) return true;
+        return false;
+    }
     nlohmann::json status();
     nlohmann::json drain(std::uint64_t since, std::size_t limit);
     nlohmann::json bytesDrain(std::uint64_t since, std::size_t limit);

@@ -159,6 +159,11 @@ class ViolationObservation:
                 records=rows,
                 texts=texts if isinstance(texts, dict) else None,
             )
+            # Active diagnostic detours deliberately refuse unload. Retire the
+            # session before the gap, and rearm only after the new generation.
+            stopped = self.client.violation_watch(False)
+            if stopped.get("active") is not False:
+                raise ModPipeError(f"violation watch did not stop: {stopped}")
         except (ModPipeError, OSError, ValueError, KeyError) as exc:
             self.event("error", where="reload_checkpoint", error=str(exc))
             self.checks.check("violation_session_checkpoint", False, str(exc))

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mod/AtomicRing.h"
+#include "mod/CallbackLifecycleModel.h"
 #include "mod/LifecycleModel.h"
 #include "mod/SendProbeModel.h"
 #include "mod/ProbeMod.h"
@@ -328,7 +329,11 @@ extern std::atomic<std::uint32_t> gTickThreadId;
 extern std::atomic<std::uint32_t> gServerThreadId;
 
 void watchInit();
-void watchShutdown();
+bool watchShutdown();
+bool watchReady();
+bool diagnosticCallbacksInstalled();
+bool inboundCallbacksInstalled();
+bool sendCallbacksInstalled();
 nlohmann::json
 watchInstall(
     std::uint64_t      addr,

@@ -23,6 +23,7 @@ scenario DSL / LLM / shell
 | 模块 | 职责 |
 | --- | --- |
 | `ProbeMod.*`、`WorldSession.*` | 生命周期、tick 编排、世界事件与恢复 |
+| `CallbackLifecycleModel.h`、`CallbackLifecycle.cpp` | 回调准入、闭包所有权、入口计数、卸载排空与拒绝恢复 |
 | `Internal.*`、`ClientDispatch.cpp` | 统一内部入口、游戏平台主线程投递、局部 SEH/C++ 边界 |
 | `Input.cpp`、`InputEvents.cpp`、`InputSessionModel.h` | Hardware HID 移动/视角、事件/文本、held/latch、输入锁与统一清理 |
 | `InputLifecycleModel.h` | 游戏线程发布输入消费序号、剩余 tick 和事件持键的一致快照，供卸载准入冷读 |
@@ -76,7 +77,7 @@ scenario DSL / LLM / shell
 `InputLifecycleStore` 在 tick pre/post 发布同一份输入快照：世界代次、已消费 input/jump/look
 序号、实际剩余 tick、待起跳和事件持键。`lifecycle_prepare` 用冷侧最新邮箱与快照比较，拒绝
 未消费请求、持续 tick 和事件持键；已结束的有限请求不会因旧邮箱参数误报 busy。它只证明自有
-工作准入，不证明任意在途游戏回调已退出。
+工作准入；实际卸载另由统一 CallbackLifecycle 跟踪和排空回调。
 
 飞行由服务端写能力，客户端回读原生同步；`FlightAssertion` 只读观察 8 tick。实体攻击、飞行、
 命令、传送和背包默认按 UUID+epoch 解析玩家，显式完整玩家名仍可指定；不再做隐式名字兜底。
@@ -111,7 +112,8 @@ legacy JSON 录制和二进制记录是两套接口。前者使用 `LegacyStream
 世界进入有独立 `entry_id`、30 秒截止和安全菜单恢复；退档用 `leave_id` 关联，菜单快照只描述
 当时状态。HBUI 不等于安全菜单，不能凭 URL 放宽进入或保存门禁。
 
-`lifecycle_prepare off` 先拒绝自有在途工作，再进入 quiescing 并卸四个常驻 hook；失败恢复。
+`lifecycle_prepare off` 先拒绝自有在途工作，再进入 quiescing；保留四个 hook，直到实际
+`disable` 关闭队列准入、等待回调/所有权排空后移除。超时拒绝卸载并恢复原准入。
 hook 由显式 enable/disable 管理，避免在 DLL 静态构造/析构中暂停其他线程。受控空闲真实重载
 的验收见 `reliability-repairs.md`；不能用管道重连或 disable 日志
 代替成功证据。

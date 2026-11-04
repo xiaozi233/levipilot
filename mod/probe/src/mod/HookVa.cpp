@@ -170,6 +170,7 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
 
 template <int Slot>
 void detourSetJumpPendingScale(EntityContext& context, float scale) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     // F2: the patch is live before the origin is published; wait it out rather
     // than returning a fake result. The spin is bounded and install failure
     // sets ready before removing the patch.
@@ -201,6 +202,7 @@ ll::memory::FuncPtr typedDetour(std::size_t slot) {
 
 template <int Slot>
 std::uint64_t detourGeneric(std::uint64_t a, std::uint64_t b, std::uint64_t c, std::uint64_t d) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     waitReady(static_cast<std::size_t>(Slot));
     captureHit(static_cast<std::size_t>(Slot), a, b, c, d);
     GenericFn origin = gGenericOrigins[Slot].load(std::memory_order_acquire);

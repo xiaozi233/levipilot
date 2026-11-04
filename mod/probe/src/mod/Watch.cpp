@@ -275,6 +275,7 @@ void storeHit(int slot, CONTEXT& context) {
 }
 
 LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Veh);
     if (info == nullptr || info->ExceptionRecord == nullptr || info->ContextRecord == nullptr) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -345,10 +346,12 @@ void watchInit() {
     gVehHandle = AddVectoredExceptionHandler(1, &watchVeh);
 }
 
-void watchShutdown() {
-    watchRemoveAll();
+bool watchReady() { return gVehHandle != nullptr; }
+
+bool watchShutdown() {
+    if (!watchRemoveAll()) return false;
     if (gVehHandle != nullptr) {
-        RemoveVectoredExceptionHandler(gVehHandle);
+        if (!RemoveVectoredExceptionHandler(gVehHandle)) return false;
         gVehHandle = nullptr;
     }
     // Keep the allocation and sequence alive across mod reinitialization. A
@@ -356,6 +359,7 @@ void watchShutdown() {
     gTotalHits.store(0, std::memory_order_relaxed);
     gForeignHits.store(0, std::memory_order_relaxed);
     gInitialized.store(false, std::memory_order_release);
+    return true;
 }
 
 nlohmann::json watchInstall(

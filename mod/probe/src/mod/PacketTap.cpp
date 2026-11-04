@@ -11,6 +11,7 @@ LL_TYPE_INSTANCE_HOOK(
     void,
     Packet& packet
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketSent(packet);
     origin(packet);
 };
@@ -26,6 +27,7 @@ LL_TYPE_INSTANCE_HOOK(
     void,
     Player const& player
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToPlayer);
     origin(player);
 };
@@ -39,6 +41,7 @@ LL_TYPE_INSTANCE_HOOK(
     Actor const&               actor,
     optional_ref<Player const> except
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToActor);
     origin(actor, except);
 };
@@ -53,6 +56,7 @@ LL_TYPE_INSTANCE_HOOK(
     DimensionType              dimId,
     optional_ref<Player const> except
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToBlockPos);
     origin(pos, dimId, except);
 };
@@ -66,6 +70,7 @@ LL_TYPE_INSTANCE_HOOK(
     NetworkIdentifier const& id,
     SubClientId              subId
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToClientId);
     origin(id, subId);
 };
@@ -78,6 +83,7 @@ LL_TYPE_INSTANCE_HOOK(
     void,
     NetworkIdentifierWithSubId const& id
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToClientWithSubId);
     origin(id);
 };
@@ -89,6 +95,7 @@ LL_TYPE_INSTANCE_HOOK(
     static_cast<void (Packet::*)() const>(&Packet::sendToClients),
     void
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToClients);
     origin();
 };
@@ -102,6 +109,7 @@ LL_TYPE_INSTANCE_HOOK(
     NetworkIdentifier const& exceptId,
     SubClientId              exceptSubId
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(*this, ::probe::PacketTap::kRecvToClientsExcept);
     origin(exceptId, exceptSubId);
 };
@@ -120,6 +128,7 @@ LL_TYPE_INSTANCE_HOOK(
     Packet const&            packet,
     SubClientId              recipientSubId
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(packet, ::probe::PacketTap::kRecvLoopbackClient);
     origin(id, packet, recipientSubId);
 };
@@ -135,6 +144,7 @@ LL_TYPE_INSTANCE_HOOK(
     UserEntityIdentifierComponent const* user,
     Packet const&                        packet
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Diagnostic);
     ::probe::ProbeMod::getInstance().onPacketReceived(packet, ::probe::PacketTap::kRecvLoopbackClientUser);
     origin(user, packet);
 };
@@ -621,22 +631,22 @@ void PacketTap::stop() {
     mWriters.closeAndWait();
     mTestFault.store(TestFault::None);
     if (mSendHooked.exchange(false, std::memory_order_acq_rel)) {
-        ProbePacketSendHook::unhook();
+        if (!ProbePacketSendHook::unhook()) mSendHooked.store(true, std::memory_order_release);
     }
     auto release = [&](std::size_t anchor, auto const& unhookFn) {
         if (mRecvHooked[anchor].exchange(false, std::memory_order_acq_rel)) {
-            unhookFn();
+            if (!unhookFn()) mRecvHooked[anchor].store(true, std::memory_order_release);
         }
     };
-    release(kRecvToPlayer, [] { ProbePacketRecvToPlayerHook::unhook(); });
-    release(kRecvToActor, [] { ProbePacketRecvToActorHook::unhook(); });
-    release(kRecvToBlockPos, [] { ProbePacketRecvToBlockPosHook::unhook(); });
-    release(kRecvToClientId, [] { ProbePacketRecvToClientHook::unhook(); });
-    release(kRecvToClientWithSubId, [] { ProbePacketRecvToClientSubHook::unhook(); });
-    release(kRecvToClients, [] { ProbePacketRecvToClientsHook::unhook(); });
-    release(kRecvToClientsExcept, [] { ProbePacketRecvToClientsExceptHook::unhook(); });
-    release(kRecvLoopbackClient, [] { ProbePacketRecvLoopbackHook::unhook(); });
-    release(kRecvLoopbackClientUser, [] { ProbePacketRecvLoopbackUserHook::unhook(); });
+    release(kRecvToPlayer, [] { return ProbePacketRecvToPlayerHook::unhook(); });
+    release(kRecvToActor, [] { return ProbePacketRecvToActorHook::unhook(); });
+    release(kRecvToBlockPos, [] { return ProbePacketRecvToBlockPosHook::unhook(); });
+    release(kRecvToClientId, [] { return ProbePacketRecvToClientHook::unhook(); });
+    release(kRecvToClientWithSubId, [] { return ProbePacketRecvToClientSubHook::unhook(); });
+    release(kRecvToClients, [] { return ProbePacketRecvToClientsHook::unhook(); });
+    release(kRecvToClientsExcept, [] { return ProbePacketRecvToClientsExceptHook::unhook(); });
+    release(kRecvLoopbackClient, [] { return ProbePacketRecvLoopbackHook::unhook(); });
+    release(kRecvLoopbackClientUser, [] { return ProbePacketRecvLoopbackUserHook::unhook(); });
     mPeerHooked.store(false, std::memory_order_relaxed);
 }
 

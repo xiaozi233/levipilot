@@ -152,6 +152,7 @@ void writeSuspectFrame(void* str, std::uint32_t size) {
 }
 
 void detourSend(void* net, void* string, void* peer, void* flags) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     gSendHits.fetch_add(1, std::memory_order_relaxed);
     if (string != nullptr && plausiblePointer(reinterpret_cast<std::uint64_t>(string))) {
         auto const size   = *reinterpret_cast<std::uint32_t*>(reinterpret_cast<char*>(string) + 0x10);
@@ -233,6 +234,7 @@ void writeSerializeHit(void* netSystem, std::uint32_t before, std::uint32_t afte
 }
 
 std::uint64_t detourSerialize(void* netSystem, void* packet, void* peer, void* mode) {
+    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
     std::uint32_t const before = frameLength(netSystem);
     std::uint64_t       result = 0;
     if (gSerializeOrigin != nullptr) {
@@ -330,6 +332,8 @@ nlohmann::json sendProbeStop() {
 }
 
 } // namespace
+
+bool sendCallbacksInstalled() { return gSendInstalled.load() || gSerializeInstalled.load(); }
 
 nlohmann::json
 sendProbeJson(bool on, bool allowVa, bool inWorld, std::uint64_t address, std::uint64_t serializeAddress) {

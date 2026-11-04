@@ -278,6 +278,7 @@ LL_TYPE_INSTANCE_HOOK(
     int keyCode,
     Bedrock::Input::KeyboardEventProcessor::InputOrigin inputOrigin
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Key);
     auto& mod = ::probe::ProbeMod::getInstance();
     // Origin is the whole test: a real key press is Hardware. Scripted presses
     // that must reproduce one (double-space flight only reacts to the Hardware
@@ -307,6 +308,7 @@ LL_TYPE_INSTANCE_HOOK(
     short dy,
     bool  forceMotionlessPointer
 ) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Mouse);
     auto& mod = ::probe::ProbeMod::getInstance();
     if (mod.hardwareInputLocked() && !mod.injectingInput()) {
         return;
@@ -314,10 +316,10 @@ LL_TYPE_INSTANCE_HOOK(
     origin(actionButtonId, buttonData, x, y, dx, dy, forceMotionlessPointer);
 };
 
-bool ProbeMod::setLifecycleKeyHook(bool on) {
+bool ProbeMod::setLifecycleKeyHook(bool on, bool suspendThreads) {
     if (on) {
         if (mLifecycleKeyHooked.load(std::memory_order_acquire)) return true;
-        int const status = ProbeHardwareKeyHook::hook();
+        int const status = ProbeHardwareKeyHook::hook(suspendThreads);
         if (status != 0) {
             bootLog("lifecycle: key hook restore failed status=" + std::to_string(status));
             return false;
@@ -329,7 +331,7 @@ bool ProbeMod::setLifecycleKeyHook(bool on) {
     // The flag must follow the real teardown state: reporting "off" while the
     // detour is still installed would let the caller unload a DLL that is still
     // being called.
-    if (!ProbeHardwareKeyHook::unhook()) {
+    if (!ProbeHardwareKeyHook::unhook(suspendThreads)) {
         mLifecycleKeyHooked.store(true, std::memory_order_release);
         bootLog("lifecycle: key hook unhook failed");
         return false;
@@ -337,10 +339,10 @@ bool ProbeMod::setLifecycleKeyHook(bool on) {
     return true;
 }
 
-bool ProbeMod::setLifecycleMouseHook(bool on) {
+bool ProbeMod::setLifecycleMouseHook(bool on, bool suspendThreads) {
     if (on) {
         if (mLifecycleMouseHooked.load(std::memory_order_acquire)) return true;
-        int const status = ProbeHardwareMouseHook::hook();
+        int const status = ProbeHardwareMouseHook::hook(suspendThreads);
         if (status != 0) {
             bootLog("lifecycle: mouse hook restore failed status=" + std::to_string(status));
             return false;
@@ -349,7 +351,7 @@ bool ProbeMod::setLifecycleMouseHook(bool on) {
         return true;
     }
     if (!mLifecycleMouseHooked.exchange(false, std::memory_order_acq_rel)) return true;
-    if (!ProbeHardwareMouseHook::unhook()) {
+    if (!ProbeHardwareMouseHook::unhook(suspendThreads)) {
         mLifecycleMouseHooked.store(true, std::memory_order_release);
         bootLog("lifecycle: mouse hook unhook failed");
         return false;

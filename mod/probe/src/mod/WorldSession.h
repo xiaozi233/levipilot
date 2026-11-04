@@ -22,6 +22,8 @@ public:
     explicit WorldSession(ProbeMod& owner) : mOwner(owner) {}
     void start();
     void stop();
+    bool attachListeners(bool on);
+    bool listenersReleased() const;
     bool inWorld() const { return mInWorld.load(std::memory_order_relaxed) && mPhase.load() == Phase::Playing; }
     void observePlayer(bool present) {
         mInWorld.store(present, std::memory_order_relaxed);

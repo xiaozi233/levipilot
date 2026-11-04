@@ -91,7 +91,7 @@ def check_jump_motion(client: ModClient, checks: Checks, inject_enabled: bool) -
         modes.insert(0, "hid_hold")
     try:
         for mode in modes:
-            client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
             wait_ticks(client, 8)
             wait_still(client)
             client.record_bin_start(period=1)
@@ -142,12 +142,13 @@ def check_jump_motion(client: ModClient, checks: Checks, inject_enabled: bool) -
                 f"complete arcs compared={len(compared)} tolerance=0.0001 blocks",
             )
     finally:
-        if inject_enabled:
-            client.key_event(32, False, via="hid")
-        client.stop_move()
-        client.record_bin_stop()
-        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
-        wait_ticks(client, 8)
+        with preserve_failure(checks, "jump_motion"):
+            if inject_enabled:
+                client.key_event(32, False, via="hid")
+            client.stop_move()
+            client.record_bin_stop()
+            client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            wait_ticks(client, 8)
 
 
 def check_tick_safety(client: ModClient, checks: Checks, world: str | None = None) -> None:
@@ -920,15 +921,16 @@ def check_binary_capture(client: ModClient, checks: Checks, world: str | None = 
             rejected = client.request({"cmd": "record_start"}, "error")
             checks.check("binary_menu_rejected", rejected.get("reason") == "not_in_world")
         finally:
-            joined = client.enter_world_ready(world)
-            checks.check("binary_world_rejoin", joined.get("ok") is True, str(joined))
-            client.wait_in_world(timeout=60)
-            client.reset(
-                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-                yaw=float(original["yaw"]),
-                pitch=float(original["pitch"]),
-            )
-            checks.check("binary_world_settle", settle(client, on_ground=True)["ok"])
+            with preserve_failure(checks, "binary_capture"):
+                joined = client.enter_world_ready(world)
+                checks.check("binary_world_rejoin", joined.get("ok") is True, str(joined))
+                client.wait_in_world(timeout=60)
+                client.teleport(
+                    *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                    yaw=float(original["yaw"]),
+                    pitch=float(original["pitch"]),
+                )
+                checks.check("binary_world_settle", settle(client, on_ground=True)["ok"])
         with record_session(client) as recovered:
             wait_ticks(client, 4)
         checks.check(

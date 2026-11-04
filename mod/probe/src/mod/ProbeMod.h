@@ -46,6 +46,14 @@ class ClientInstance;
 class CommandRegistry;
 class Packet;
 class LocalPlayer;
+
+namespace probe::detail {
+enum class SdkTaskPhase { Lookup, Submit, Run };
+struct SdkTaskTest {
+    SdkTaskPhase phase = SdkTaskPhase::Run;
+    CaptureTest fault = CaptureTest::None;
+};
+}
 class Level;
 class Vec2;
 class Vec3;
@@ -187,7 +195,8 @@ private:
     void queueServerTask(
         std::function<void()>            fn,
         std::function<void(char const*)> onFailure              = {},
-        bool                             rejectQueueForSelftest = false
+        bool                             rejectQueueForSelftest = false,
+        detail::SdkTaskTest               test = {}
     );
 
     // Tick isolation: a bug in one of our hooks must not take the game down.
@@ -235,7 +244,7 @@ private:
         bool  clearEffects
     );
     void loadAutoConfig();
-    void registerCommands(CommandRegistry& registry);
+    bool registerCommands(CommandRegistry& registry, detail::CaptureTest test = detail::CaptureTest::None);
     [[nodiscard]] bool applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
     void updateFocusState();
 
@@ -327,7 +336,7 @@ private:
     ll::mod::NativeMod& mSelf;
     WorldSession mWorld{*this};
     PacketTap    mPackets;
-    bool queueClientTask(std::function<void()> task, std::function<void(char const*)> onFailure = {});
+    bool queueClientTask(std::function<void()> task, std::function<void(char const*)> onFailure = {}, detail::SdkTaskTest test = {});
 
     ll::event::ListenerPtr mMouseListener;
     ll::event::ListenerPtr mServerCommandListener;

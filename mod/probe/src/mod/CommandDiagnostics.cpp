@@ -6,6 +6,46 @@ using namespace probe::detail;
 namespace probe {
 
 bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json& j) {
+    if (cmd == "selftest_sdk") {
+        if (!mAllowSelftestStress.load()) {
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})"); return true;
+        }
+        auto const target = j.value("target", std::string{});
+        auto const phase = j.value("phase", std::string{"run"});
+        auto const mode = j.value("mode", std::string{"none"});
+        if ((target != "client" && target != "server" && target != "registration" && target != "command_boundary")
+            || (phase != "lookup" && phase != "submit" && phase != "run")
+            || (mode != "none" && mode != "seh" && mode != "cpp")) {
+            enqueue(R"({"event":"error","reason":"bad_sdk_test"})"); return true;
+        }
+        bootLog("selftest_sdk: target=" + target + " phase=" + phase + " mode=" + mode);
+        auto const fault = mode == "seh" ? CaptureTest::Fault : mode == "cpp" ? CaptureTest::Cpp : CaptureTest::None;
+        auto const stage = phase == "lookup" ? SdkTaskPhase::Lookup : phase == "submit" ? SdkTaskPhase::Submit : SdkTaskPhase::Run;
+        auto reply = [this, target, phase, mode](bool ok, char const* reason = "") {
+            enqueue(nlohmann::json{{"event", "sdk_test_result"}, {"target", target}, {"phase", phase},
+                                  {"mode", mode}, {"ok", ok}, {"reason", reason}}.dump());
+        };
+        if (target == "client" || target == "server") {
+            auto run = [reply] { reply(true); };
+            auto fail = [reply](char const* reason) { reply(false, reason); };
+            if (target == "client") queueClientTask(run, fail, {stage, fault});
+            else queueServerTask(run, fail, false, {stage, fault});
+        } else {
+            queueServerTask([this, target, fault, reply] {
+                if (target == "registration") {
+                    auto registry = ll::service::getCommandRegistry(false);
+                    if (!registry) { reply(false, "no_command_registry"); return; }
+                    reply(registerCommands(*registry, fault));
+                } else {
+                    // Synthetic boundary check only; the live suite separately
+                    // invokes the real /togglefly and verifies ability readback.
+                    CallbackScope callback(gCallbacks, CallbackDomain::Command);
+                    reply(guardedSdkCall([] {}, fault));
+                }
+            }, [reply](char const* reason) { reply(false, reason); });
+        }
+        return true;
+    }
     if (cmd == "selftest_callback") {
         if (!mAllowSelftestStress.load()) {
             enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})"); return true;

@@ -1230,13 +1230,14 @@ def check_macro_playback(client: ModClient, checks: Checks, world: str | None = 
             again = client.macro_run(event_level=True)
             checks.check("playback_world_recovery", done(again).get("ok") is True)
     finally:
-        client.macro_stop()
-        client.stop_move()
-        client.reset(
-            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-            yaw=float(original["yaw"]),
-            pitch=float(original["pitch"]),
-        )
-        wait_ticks(client, 5)
-        checks.check("playback_final_settle", settle(client, on_ground=True)["ok"])
-        path.unlink(missing_ok=True)
+        with preserve_failure(checks, "macro_playback"):
+            client.macro_stop()
+            client.stop_move()
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 5)
+            checks.check("playback_final_settle", settle(client, on_ground=True)["ok"])
+            path.unlink(missing_ok=True)

@@ -40,7 +40,7 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
     try:
         for source, payload in source_tasks:
             for target in ("place", "use"):
-                client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+                client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
                 wait_ticks(client, 5)
                 first = client.request(payload, f"{source}_started")
                 if target == "place":
@@ -128,10 +128,11 @@ def check_task_lifecycle(client: ModClient, checks: Checks) -> None:
         else:
             checks.skip("task_use_server_terminal", "no empty hotbar slot")
     finally:
-        client.task_stop()
-        client.select_slot(int(original["selected_slot"]))
-        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
-        wait_ticks(client, 5)
+        with preserve_failure(checks, "task_lifecycle"):
+            client.task_stop()
+            client.select_slot(int(original["selected_slot"]))
+            client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            wait_ticks(client, 5)
 
     for attempt in range(3):
         old_session = client._session
@@ -289,7 +290,7 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
         # a full turn and aligned starts through both movement entry points.
         for task in ("navigate", "route"):
             for yaw in (-53.17, 0.0, 90.0, 180.0):
-                client.reset(*pose, yaw=yaw, pitch=float(original["pitch"]))
+                client.teleport(*pose, yaw=yaw, pitch=float(original["pitch"]))
                 wait_ticks(client, 8)
                 if task == "navigate":
                     result = client.navigate(
@@ -319,7 +320,7 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
                 )
         # Navigation returns as soon as it reaches tolerance; release residual
         # movement and restore the fixture pose before testing item placement.
-        client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+        client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
         ready = settle(client, ticks=3, in_water=False)
         fresh_target = find_target()
         if not checks.check(
@@ -374,7 +375,7 @@ def check_task_operations(client: ModClient, checks: Checks) -> None:
             client.clear_item(slot)
             client.select_slot(int(original["selected_slot"]))
             client.command(f"gamemode {int(original['gamemode'])} @s")
-            client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
             wait_ticks(client, 8)
             checks.check(
                 "task_operations_restored",

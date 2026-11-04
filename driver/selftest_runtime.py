@@ -121,7 +121,8 @@ def wait_rotation(client: ModClient, yaw: float, pitch: float, timeout: float = 
                 f"rotation did not settle: yaw={state.get('yaw')} want={yaw}, "
                 f"pitch={state.get('pitch')} want={pitch}, matching_ticks={streak}/3"
             )
-        time.sleep(0.01)
+        # state() already waits for a fresh tick snapshot. An extra delay here
+        # can cross the next capture boundary and manufacture a sampling gap.
 
 
 def slot_item(snapshot: dict[str, Any], slot: int) -> dict[str, Any] | None:

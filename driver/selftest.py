@@ -116,6 +116,7 @@ from driver.selftest_runtime import (  # noqa: E402,F401
     wait_still,
     wait_ticks,
 )
+from driver.selftest_sdk import check_sdk_boundaries  # noqa: E402
 from driver.selftest_streams import (  # noqa: E402,F401
     check_binary_capture,
     check_jump_motion,
@@ -174,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keep", action="store_true", help="do not remove the test entity")
     parser.add_argument("--radius", type=float, default=10.0)
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--sdk-boundaries-only", action="store_true", help="SDK lookup/submit/run fault recovery"
+    )
     modes.add_argument(
         "--callback-drain-only",
         action="store_true",
@@ -447,6 +451,15 @@ def main(argv: list[str] | None = None) -> int:
 def run_live(
     client: ModClient, checks: Checks, args: argparse.Namespace, observation: ViolationObservation
 ) -> int:
+    if args.sdk_boundaries_only:
+        try:
+            check_sdk_boundaries(client, checks)
+        except WorldLost:
+            raise
+        except (ModPipeError, OSError, ValueError, KeyError) as exc:
+            checks.check("sdk_boundaries_error", False, str(exc))
+        return 0
+
     if args.diagnostic_export_only:
         try:
             check_diagnostic_export(client, checks)

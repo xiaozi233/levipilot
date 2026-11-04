@@ -10,7 +10,7 @@ from typing import Any
 
 from driver.harness.lab import settle
 from driver.selftest_runtime import wait_ticks
-from driver.selftest_support import Checks
+from driver.selftest_support import Checks, preserve_failure
 from driver.transport_mod import ModClient, ModTimeout
 
 
@@ -322,25 +322,27 @@ def check_query_lifecycle(client: ModClient, checks: Checks, world: str) -> None
             refused = client.request({"cmd": command}, "error")
             checks.check(f"query_lifecycle_menu_{command}", refused.get("reason") == "not_in_world")
     finally:
-        joined = client.enter_world_ready(world)
-        checks.check("query_lifecycle_rejoin", joined.get("ok") is True, str(joined))
-        client.wait_in_world(timeout=60)
-        client.reset(
-            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-            yaw=float(original["yaw"]),
-            pitch=float(original["pitch"]),
-        )
-        wait_ticks(client, 8)
-        recovered = client.scan(low, low, include_air=True)
-        checks.check("query_lifecycle_world_recovery", recovered.get("visited") == 1)
-        checks.check(
-            "query_lifecycle_entity_recovery", client.entities(limit=1).get("event") == "entities"
-        )
-        client.select_slot(int(original["selected_slot"]))
-        checks.check(
-            "query_lifecycle_slot_recovery",
-            client.wait_event("select_slot_done", 3).get("ok") is True,
-        )
+        with preserve_failure(checks, "query_lifecycle"):
+            joined = client.enter_world_ready(world)
+            checks.check("query_lifecycle_rejoin", joined.get("ok") is True, str(joined))
+            client.wait_in_world(timeout=60)
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 8)
+            recovered = client.scan(low, low, include_air=True)
+            checks.check("query_lifecycle_world_recovery", recovered.get("visited") == 1)
+            checks.check(
+                "query_lifecycle_entity_recovery",
+                client.entities(limit=1).get("event") == "entities",
+            )
+            client.select_slot(int(original["selected_slot"]))
+            checks.check(
+                "query_lifecycle_slot_recovery",
+                client.wait_event("select_slot_done", 3).get("ok") is True,
+            )
 
 
 def check_ecs_capture(client: ModClient, checks: Checks, world: str | None = None) -> None:

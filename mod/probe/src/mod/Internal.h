@@ -211,6 +211,26 @@ inline void injectCaptureFault(CaptureTest test) {
     if (test == CaptureTest::Cpp) throw std::runtime_error("selftest query capture");
 }
 
+// Cold SDK entry points share the same narrow SEH ownership as game reads.
+// Keep captures and callback tickets in the caller, outside the raw SEH frame.
+template <class Call>
+bool guardedSdkCall(Call const& call, CaptureTest test = CaptureTest::None, std::string* message = nullptr) {
+    try {
+        bool const ok = guardedGameRead([&] { injectCaptureFault(test); call(); });
+        if (!ok && message) *message = "seh";
+        return ok;
+    } catch (std::exception const& error) {
+        if (message) *message = error.what();
+    } catch (...) {
+        if (message) *message = "exception";
+    }
+    return false;
+}
+
+inline void injectSdkTaskFault(SdkTaskTest test, SdkTaskPhase phase) {
+    if (test.phase == phase) injectCaptureFault(test.fault);
+}
+
 inline constexpr wchar_t PipeName[] = L"\\\\.\\pipe\\mcbe-harness";
 inline constexpr DWORD   PipeBuffer = 1 << 16;
 

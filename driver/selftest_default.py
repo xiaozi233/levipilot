@@ -48,6 +48,7 @@ from driver.selftest_runtime import (
     wait_screen,
     wait_still,
 )
+from driver.selftest_sdk import check_sdk_boundaries
 from driver.selftest_streams import (
     check_binary_capture,
     check_jump_motion,
@@ -79,6 +80,7 @@ def check_default_suite(
     tap_dump = os.environ.get("LEVIPILOT_PACKET_DUMP") or None
     try:
         require_world(client, "selftest preflight")
+        check_sdk_boundaries(client, checks)
         # Scripts own the session: drop real hardware keys/mouse so a person at
         # the machine cannot perturb the run. Injected events still pass; use
         # `harness input-lock --off` (or input_lock(false)) to release.

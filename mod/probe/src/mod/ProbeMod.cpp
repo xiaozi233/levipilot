@@ -147,7 +147,9 @@ bool ProbeMod::enable() {
         ll::event::EventBus::getInstance().emplaceListener<ll::event::command::ServerCommandRegisterEvent>(
             [this](auto& event) {
                 CallbackScope callback(gCallbacks, CallbackDomain::Event);
-                registerCommands(event.commandRegistry());
+                if (!callback.admitted()) return;
+                if (!guardedSdkCall([&] { registerCommands(event.commandRegistry()); }))
+                    bootLog("command: registration event failed");
             }
         );
     // A reload inside an existing world does not fire the registration event
@@ -399,16 +401,14 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     consumeLookRequests(player, requests);
 }
 
-void ProbeMod::registerCommands(CommandRegistry& registry) {
+bool ProbeMod::registerCommands(CommandRegistry& registry, CaptureTest test) {
     // A real server command players can type in chat: /togglefly grants or
     // removes the MayFly ability (the double-space flight gate) in any mode
     // except spectator. NotCheat keeps it usable without enabling cheats.
     // Server-side only: the ability is server-authoritative, and a client-side
     // command would flip the client copy that the next sync overwrites.
-    if (mCommandRegistry == &registry) {
-        return;
-    }
-    try {
+    if (test == CaptureTest::None && mCommandRegistry == &registry) return true;
+    bool const registered = guardedSdkCall([&] {
         auto& handle = ll::command::CommandRegistrar::getServerInstance().getOrCreateCommand(
             "togglefly",
             "grant/remove double-space flight (non-spectator)",
@@ -416,35 +416,42 @@ void ProbeMod::registerCommands(CommandRegistry& registry) {
             CommandFlagValue::NotCheat
         );
         handle.overload().execute(
-            [](CommandOrigin const& origin, CommandOutput& output) {
+            [this](CommandOrigin const& origin, CommandOutput& output) {
                 CallbackScope callback(gCallbacks, CallbackDomain::Command);
-                if (!callback.admitted()) { output.error("probe is quiescing"); return; }
-                auto* actor = origin.getEntity();
-                if (actor == nullptr || !actor->isPlayer()) {
-                    output.error("togglefly: player origin required");
-                    return;
+                bool const ok = guardedSdkCall([&] {
+                    if (!callback.admitted()) { output.error("probe is quiescing"); return; }
+                    auto* actor = origin.getEntity();
+                    if (actor == nullptr || !actor->isPlayer()) {
+                        output.error("togglefly: player origin required");
+                        return;
+                    }
+                    auto& player = *static_cast<Player*>(actor);
+                    if (player.getPlayerGameType() == GameType::Spectator) {
+                        output.error("togglefly: 旁观模式不支持");
+                        return;
+                    }
+                    bool const current = player.getAbilities().getBool(AbilitiesIndex::MayFly);
+                    bool const target  = !current;
+                    player.setAbility(AbilitiesIndex::MayFly, target);
+                    if (!target) {
+                        player.setAbility(AbilitiesIndex::Flying, false);
+                    }
+                    output.success(
+                        target ? "双击空格切换飞行：已开启" : "双击空格切换飞行：已关闭"
+                    );
+                });
+                if (!ok) {
+                    bootLog("command: togglefly execution failed");
+                    // Output is another SDK call, with its own bounded guard.
+                    guardedSdkCall([&] { output.error("togglefly: internal error"); });
                 }
-                auto& player = *static_cast<Player*>(actor);
-                if (player.getPlayerGameType() == GameType::Spectator) {
-                    output.error("togglefly: 旁观模式不支持");
-                    return;
-                }
-                bool const current = player.getAbilities().getBool(AbilitiesIndex::MayFly);
-                bool const target  = !current;
-                player.setAbility(AbilitiesIndex::MayFly, target);
-                if (!target) {
-                    player.setAbility(AbilitiesIndex::Flying, false);
-                }
-                output.success(
-                    target ? "双击空格切换飞行：已开启" : "双击空格切换飞行：已关闭"
-                );
             }
         );
         mCommandRegistry = &registry;
         bootLog("command: registered togglefly");
-    } catch (...) {
-        bootLog("command: togglefly registration failed");
-    }
+    }, test);
+    if (!registered) bootLog("command: togglefly registration failed");
+    return registered;
 }
 
 void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests) {

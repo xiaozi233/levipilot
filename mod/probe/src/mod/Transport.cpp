@@ -4,22 +4,6 @@
 
 using namespace probe::detail;
 
-namespace {
-bool runServerTaskWithSeh(std::function<void()> const& task) {
-    __try {
-        task();
-        return true;
-    } __except (probe::detail::isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
-        return false;
-    }
-}
-
-bool runGuardedServerTask(std::function<void()> const& task) {
-    probe::detail::HandledSehScope sehOwner;
-    return runServerTaskWithSeh(task);
-}
-} // namespace
-
 namespace probe {
 
 void ProbeMod::enqueue(std::string line) {
@@ -232,11 +216,12 @@ void ProbeMod::bootLog(std::string const& text) {
 void ProbeMod::queueServerTask(
     std::function<void()>            fn,
     std::function<void(char const*)> onFailure,
-    bool                             rejectQueueForSelftest
+    bool                             rejectQueueForSelftest,
+    SdkTaskTest                       test
 ) {
     auto fail = [this, onFailure](char const* reason, char const* message = "") {
         if (onFailure) {
-            onFailure(reason);
+            if (!guardedSdkCall([&] { onFailure(reason); })) bootLog("server task: failure handler failed");
         } else {
             nlohmann::json error{
                 {"event",  "error"},
@@ -246,18 +231,18 @@ void ProbeMod::queueServerTask(
             enqueue(error.dump());
         }
     };
-    auto tracked = detail::trackedCallback(detail::gCallbacks, detail::CallbackDomain::Server, [fn = std::move(fn), fail] {
+    auto tracked = detail::trackedCallback(detail::gCallbacks, detail::CallbackDomain::Server, [fn = std::move(fn), fail, test] {
         gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
-        try {
-            if (!runGuardedServerTask(fn)) fail("server_task_failed", "seh");
-        } catch (std::exception const& e) {
-            fail("server_task_failed", e.what());
-        } catch (...) {
-            fail("server_task_failed");
-        }
+        std::string message;
+        if (!guardedSdkCall([&] { injectSdkTaskFault(test, SdkTaskPhase::Run); fn(); }, CaptureTest::None, &message))
+            fail("server_task_failed", message.c_str());
     });
     if (!tracked) { fail("quiescing"); return; }
-    auto server = ll::service::bedrock::getServerInstance();
+    decltype(ll::service::bedrock::getServerInstance()) server;
+    if (!guardedSdkCall([&] {
+        injectSdkTaskFault(test, SdkTaskPhase::Lookup);
+        server = ll::service::bedrock::getServerInstance();
+    })) { fail("server_task_queue_failed"); return; }
     if (!server) {
         fail("no_server_instance");
         return;
@@ -266,17 +251,13 @@ void ProbeMod::queueServerTask(
     // The submission itself may fail during world teardown. Give an owning
     // task the same failure path as a callback fault, without leaking a second
     // uncorrelated protocol error or leaving its active slot occupied.
-    std::function<void()> submit = [&] {
+    std::string message;
+    bool const submitted = guardedSdkCall([&] {
+        injectSdkTaskFault(test, SdkTaskPhase::Submit);
         if (rejectQueueForSelftest) throw std::runtime_error("selftest queue rejection");
         server->queueForServerThread(task);
-    };
-    try {
-        if (!runGuardedServerTask(submit)) fail("server_task_queue_failed", "seh");
-    } catch (std::exception const& e) {
-        fail("server_task_queue_failed", e.what());
-    } catch (...) {
-        fail("server_task_queue_failed");
-    }
+    }, CaptureTest::None, &message);
+    if (!submitted) fail("server_task_queue_failed", message.c_str());
 }
 
 void ProbeMod::serverLoop() {

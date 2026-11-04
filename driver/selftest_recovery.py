@@ -17,7 +17,7 @@ from driver.harness.lab import capture_disconnect_report
 from driver.harness.record import decode_dump
 from driver.harness.spool import read_spool
 from driver.selftest_runtime import ROOT, wait_ticks
-from driver.selftest_support import Checks
+from driver.selftest_support import Checks, preserve_failure
 from driver.transport_mod import ModClient, ModPipeError, ModTimeout
 
 
@@ -132,18 +132,19 @@ def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None
         checks.check("entry_missing_join_unique_terminal", no_duplicate(entry_id))
         checks.check("entry_missing_join_idle", client.status()["world_entry"]["phase"] == "idle")
     finally:
-        if not client.state().get("in_world"):
-            menu_ready()
-            joined = client.enter_world_ready(world)
-            checks.check("entry_lifecycle_restore_join", joined.get("ok") is True, str(joined))
-        client.wait_in_world(timeout=60)
-        client.reset(
-            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-            yaw=float(original["yaw"]),
-            pitch=float(original["pitch"]),
-        )
-        wait_ticks(client, 8)
-        checks.check("entry_lifecycle_world_recovery", client.state().get("in_world") is True)
+        with preserve_failure(checks, "entry_lifecycle"):
+            if not client.state().get("in_world"):
+                menu_ready()
+                joined = client.enter_world_ready(world)
+                checks.check("entry_lifecycle_restore_join", joined.get("ok") is True, str(joined))
+            client.wait_in_world(timeout=60)
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 8)
+            checks.check("entry_lifecycle_world_recovery", client.state().get("in_world") is True)
 
 
 def check_lifecycle_stress(
@@ -199,7 +200,7 @@ def check_lifecycle_stress(
                 joined = client.enter_world_ready(world)
                 checks.check(f"stress_{cycle}_world_join", joined.get("ok"))
                 client.wait_in_world(timeout=60)
-                client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+                client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
                 wait_ticks(client, 10)
             else:
                 # The server task remains owned while the client reconnects.
@@ -233,7 +234,7 @@ def check_lifecycle_stress(
             client.task_stop()
             client.macro_stop()
             client.watch_clear(all=True)
-            client.reset(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
+            client.teleport(*pose, yaw=float(original["yaw"]), pitch=float(original["pitch"]))
             wait_ticks(client, 10)
             checks.check(
                 "stress_cleanup",
@@ -557,14 +558,15 @@ def check_chat_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
     finally:
         # Both normal completion and a failed menu check must return the game
         # to the caller's test world; recovery errors remain visible.
-        joined = client.enter_world_ready(world)
-        checks.check("chat_lifecycle_rejoin", joined.get("ok") is True, str(joined))
-        client.wait_in_world(timeout=60)
-        client.reset(
-            *(float(original[f"feet_{axis}"]) for axis in "xyz"),
-            yaw=float(original["yaw"]),
-            pitch=float(original["pitch"]),
-        )
-        wait_ticks(client, 8)
-        result = client.chat_history(limit=1)
-        checks.check("chat_lifecycle_world_recovery", result.get("ok") is True, str(result))
+        with preserve_failure(checks, "chat_lifecycle"):
+            joined = client.enter_world_ready(world)
+            checks.check("chat_lifecycle_rejoin", joined.get("ok") is True, str(joined))
+            client.wait_in_world(timeout=60)
+            client.teleport(
+                *(float(original[f"feet_{axis}"]) for axis in "xyz"),
+                yaw=float(original["yaw"]),
+                pitch=float(original["pitch"]),
+            )
+            wait_ticks(client, 8)
+            result = client.chat_history(limit=1)
+            checks.check("chat_lifecycle_world_recovery", result.get("ok") is True, str(result))

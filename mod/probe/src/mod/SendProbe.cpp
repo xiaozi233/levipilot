@@ -10,12 +10,13 @@ namespace {
 
 // ---------------------------------------------------------------------------
 // Send-path suspect probe. `0x140D7CFC0(connection, std::string const&)` is the
-// enqueue; healthy traffic only carries 3/14/15/17/18/19/21/22/23/25/27/95-byte
-// frames, while every failing capture has carried something else (55 bytes: a
+// enqueue; previously observed traffic includes the sizes below. This is a
+// sampling heuristic, not a packet schema or validity check. One failure had a
+// different size (55 bytes: a
 // 6-byte foreign prefix glued in front of a whole 187 frame). The game sometimes
 // dies right after the violation and the in-memory rings die with it, so this
 // writes the hit to `<modDir>/suspect-<pid>.jsonl` at the moment it happens.
-// The dump only runs for lengths outside the healthy set, so the hot path stays
+// The dump only runs for lengths outside the observed set, so the hot path stays
 // a couple of loads and a compare in the normal case.
 // ---------------------------------------------------------------------------
 using SendProbeFn                       = void (*)(void*, void*, void*, void*);
@@ -26,7 +27,7 @@ std::atomic<std::uint64_t> gSendHits{0};
 std::atomic<std::uint64_t> gSendDumps{0};
 char                       gSuspectPath[512]{};
 
-bool healthySendSize(std::uint32_t size) {
+bool observedSendSize(std::uint32_t size) {
     switch (size) {
     case 3:
     case 14:
@@ -159,7 +160,7 @@ void detourSend(void* net, void* string, void* peer, void* flags) {
         auto const data   = *reinterpret_cast<std::uint8_t const**>(string);
         bool const uplink = plausiblePointer(reinterpret_cast<std::uint64_t>(data))
                          && *data == 0x90; // 0x90 0x01 frames vary 94..96 by content
-        if (size >= 24 && size <= 120 && !uplink && !healthySendSize(size)
+        if (size >= 24 && size <= 120 && !uplink && !observedSendSize(size)
             && gSendDumps.load(std::memory_order_relaxed) < 2000) {
             gSendDumps.fetch_add(1, std::memory_order_relaxed);
             writeSuspectFrame(string, size);
@@ -242,7 +243,7 @@ std::uint64_t detourSerialize(void* netSystem, void* packet, void* peer, void* m
     }
     std::uint32_t const after = frameLength(netSystem);
     pushSendRec(reinterpret_cast<std::uint64_t>(netSystem), before, after);
-    if (after >= 24 && after <= 120 && !healthySendSize(after)) {
+    if (after >= 24 && after <= 120 && !observedSendSize(after)) {
         writeSerializeHit(netSystem, before, after);
     }
     return result;
@@ -257,6 +258,7 @@ nlohmann::json sendProbeStart(std::uint64_t address, std::uint64_t serializeAddr
             {"event",   "send_probe"},
             {"active",  true        },
             {"already", true        },
+            {"dumps", gSendDumps.load(std::memory_order_relaxed)},
             {"history_records", gSendRing.head()}
         };
     }
@@ -297,7 +299,8 @@ nlohmann::json sendProbeStart(std::uint64_t address, std::uint64_t serializeAddr
         {"event",            "send_probe"   },
         {"active",           true           },
         {"path",             gSuspectPath   },
-        {"hits",             0              },
+        {"hits",             gSendHits.load(std::memory_order_relaxed)},
+        {"dumps",            gSendDumps.load(std::memory_order_relaxed)},
         {"serialize_hooked", serializeHooked},
         {"history_records", gSendRing.head()},
     };

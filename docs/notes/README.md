@@ -2,15 +2,16 @@
 
 本目录保留可复核的原始证据，不作为第二套 API 或当前状态文档。现行使用方式看
 `mod/README.md`，实现看 `docs/mod-internals.md`，未决范围看
-`docs/reliability-repairs.md`。
+`docs/reliability-repairs.md`。**按主题分类（结论正主 / 证据册 / 状态）见
+[`docs/README.md`](../README.md) 的「逆向成果（按主题）」一节**；本页只列本目录文件。
 
-| 文件 | 内容 |
-| --- | --- |
-| [`badpacket-setactordata-20261031.md`](badpacket-setactordata-20261031.md) | BadPacket 的入站切片、深拷贝、共享序列化缓冲竞态与撤回项 |
-| [`badpacket-187-20261101.md`](badpacket-187-20261101.md) | packet 187 的现场与后续调查边界 |
-| [`re-fluid-12651.md`](re-fluid-12651.md) | 流体、疾跑和泳姿的函数、偏移、公式及静态证据 |
-| [`tick-order-12651.md`](tick-order-12651.md) | ECS 调度顺序、注册链和调用栈证据 |
-| [`bounce-12651.md`](bounce-12651.md) | 黏液反弹覆盖高度、落差与逐 tick 证据 |
+| 文件 | 主题 | 内容 |
+| --- | --- | --- |
+| [`badpacket-setactordata-20261031.md`](badpacket-setactordata-20261031.md) | 网络与封包 | BadPacket 的入站切片、深拷贝、共享序列化缓冲竞态与撤回项 |
+| [`badpacket-187-20261101.md`](badpacket-187-20261101.md) | 网络与封包 | packet 187 的现场与后续调查边界 |
+| [`re-fluid-12651.md`](re-fluid-12651.md) | 流体与移动 | 流体、疾跑和泳姿的函数、偏移、公式及静态证据 |
+| [`tick-order-12651.md`](tick-order-12651.md) | tick 顺序与 ECS | ECS 调度顺序、注册链和调用栈证据 |
+| [`bounce-12651.md`](bounce-12651.md) | 黏液反弹 | 黏液反弹覆盖高度、落差与逐 tick 证据 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
 旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。

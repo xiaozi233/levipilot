@@ -86,3 +86,12 @@
 | **对正在打开的 IDA/idalib 进程 `taskkill /F`** | `.i64` 被写坏，之后无论 idalib 还是 `idat -A` 都报 `internal error 1228`，只能重建 | guard: 先 `idb_close(save=true)`；坏库改名 `.i64.corrupt`，用 `idat -A <exe>` 重建（本机约 1 小时） |
 | 在整库跑 `search_text` | 单 worker 队列被 listing 扫描堵死，后续全部超时 | guard: 用 `find_bytes`/`insn_query` 限 `segment/start/end/func`；堵了先 `idb_close` 再重开，别杀进程 |
 | 管道高频批量查询约 600 次后“连不上” | 只能重启游戏；跨线程 `CloseHandle` 会与阻塞 I/O 竞争 | guard: 分批 + 结束前 `close()`；**不做**看门狗，等待稳定复现 |
+
+## G. 流体取点与窗口焦点（2026-11-04）
+
+| 坑 | 后果 | 守卫 / 归属 |
+| --- | --- | --- |
+| 用 `/testforblock x y z water ["liquid_depth"=N]` 判液位 | 对 `liquid_depth` 的匹配不可靠：不同液位的格子都报 `=0`，据此得出“浅水无物理”的错误结论 | 读方块状态字：`blocks` 取 `addr`，`probe --addr <addr+288> --kind raw --len 2`，低字节即 `liquid_depth` |
+| `dev.py` 报 `could not focus the game window` | 世界 tick 可能暂停：`setblock`/`teleport`/方块回读都正常，但水不流、沙不落，容易误判“基岩不流动体” | guard: 实验前跑 `py -3.11 driver/dev.py focus`（已校验前台窗口，失败会返回非零） |
+| 只按 1 tick 的跳跃 + 轮询 `vy` 取峰值 | 采样错过顶点，同一格时而 0.42 时而 0.09，结论飘 | 按 5 tick 并取 1 s 内 `feet_y` 最大值：干地顶点约 1.25、水中约 0.6 |
+| 按视觉液深推液体判定 | 基岩只看格子里有没有流体，液位 0~7 结果一致 | 先读 `+288` 状态字定点，再用跳跃/加速对质；见 `docs/fluid-movement.md` §5 |

@@ -36,7 +36,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `ping` / `status` / `state` | 心跳、mod/生命周期状态、玩家快照 |
 | `chat_history` | `limit=1..64`；客户端保留的聊天快照，含截断标记 |
 | `mem_read` / `mem_write` | 进程内存读写；写需 `allow_write=true`，坏地址回 `bad_addr` |
-| `probe` | `kind=raw/block/legacy`；结构化 Block/Legacy 读取 |
+| `probe` | 需 `addr`（取自 `blocks` 回包的地址）+ `kind=raw/block/legacy`、`len=1..64`；`addr+288` 是方块状态字 |
 | `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | DR0–DR3 观察点；`depth=1..32`，`thread=all` 被拒绝 |
 | `hook_install` / `hook_rm` / `hook_list` / `hook_drain` | 符号或 VA hook；VA 需 `allow_hook_va`，可选 `mem_arg` 同步快照 |
 | `hook_call` | 调用已支持的导出符号；当前为 `MobJump::setJumpPendingScale` |
@@ -63,7 +63,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `mouse_event` | `move/left/right/middle/wheel/x1/x2/move_relative`；走 `MouseDevice::feed` |
 | `text_input` | 向当前输入框送字符；接受带 `input_id`，可等待 `text_input_done` |
 | `screen` / `buttons` / `mouse` / `input_cfg` | UI/输入诊断与 legacy 对照配置 |
-| `set` | `forward,strafe,sprint,sneak,jump,ticks`；默认合成当前绑定的 Hardware HID 按键 |
+| `set` | `forward,strafe` 是**数值** `-1..1`（布尔会回 `bad_param`）、另外 `sprint,sneak,jump,ticks`；默认合成当前绑定的 Hardware HID 按键 |
 | `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
 | `click` | `button=left/right,reach`；实际破坏/放置效果须回读 |
 | `select_slot` | `slot=0..8`；接受与 `select_slot_done` 分离 |
@@ -112,7 +112,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `navigate` | 走到 x,z；支持 `jump=auto/distance/edge/never` |
 | `jump_when` | `now/tick/distance/edge` 的 tick 内起跳 |
 | `route` | 最多 64 个路点，每段独立起跳策略和预算 |
-| `mine` / `place` / `use` | 破坏、放置和服务端物品使用 |
+| `mine` / `place` / `use` | 破坏、放置和服务端物品使用；`place` 的 `face` 为 0=下/1=上/2=-Z/3=+Z/4=-X/5=+X，且该面必须在玩家视线一侧，否则回 `face_not_visible` |
 | `task_status` / `task_stop` | 查询/取消唯一活动任务 |
 | `macro_load` / `macro_run` / `macro_stop` / `macro_status` / `macro_list` | macro 播放 |
 | `macro_rec_start` / `macro_rec_stop` / `macro_save` | macro 录制/保存，硬上限 200000 tick |
@@ -176,6 +176,8 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 - 查询、实体、ECS、飞行、传送和封包注入都有忙、截止、取消与旧代次隔离；已开始的 SDK
   调用不支持超时抢占或自动回滚。
 - `scan` 每 tick 最多 512 格，响应带起止 tick，不能当成同 tick 原子世界快照。
+- 读流体液位用 `blocks` 回包的 `addr` + `probe addr+288`（Python 客户端封装为
+  `liquid_depth`）；`/testforblock ... ["liquid_depth"=N]` 匹配不可靠，整池都会报 `=0`。
 
 ### 录制、宏与管道
 

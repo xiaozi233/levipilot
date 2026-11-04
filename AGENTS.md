@@ -18,6 +18,9 @@ py -3.11 driver/dev.py run --world "超平坦测试"
 # 断开错误页恢复：先落盘诊断，再回菜单/重进；不要凭 HBUI 推断保存状态
 py -3.11 driver/dev.py recover --world "超平坦测试"
 
+# 实验前把游戏窗口拉到前台；未聚焦时世界会暂停（水/岩浆/沙不更新）
+py -3.11 driver/dev.py focus
+
 # 无游戏检查
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests
@@ -134,6 +137,10 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
   `mouse_event` 的左右键不等于 `click`/`attack_entity`。
 - `reset` 清效果；普通 `teleport` 和 `checkpoint_load` 不清效果。共享传送请求必须显式设置
   `clearEffects`，不能沿用上次 reset 的值。
+- 液体液位读 `blocks` 回包的 `addr` + `probe addr+288`（客户端封装 `liquid_depth`）；
+  `/testforblock ... ["liquid_depth"=N]` 匹配不可靠，整池都会报 `=0`。
+- `dev.py` 报 `could not focus the game window` 时世界可能处于暂停：`setblock`/`teleport`/
+  方块回读都正常但水不流、沙不落，会被误判成“基岩不流动体”。先聚焦窗口再跑液体实验。
 
 ### 诊断、版本与逆向
 

@@ -6,6 +6,12 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..connection import PipeConnection
+from ..errors import ModProtocolError
+
+# Names that can appear for water/lava blocks (source and flowing variants).
+LIQUID_BLOCKS = frozenset(
+    {"minecraft:water", "minecraft:flowing_water", "minecraft:lava", "minecraft:flowing_lava"}
+)
 
 
 class QueryCommands(PipeConnection):
@@ -26,6 +32,33 @@ class QueryCommands(PipeConnection):
 
     def blocks(self, positions: Iterable[Iterable[float]]) -> dict[str, Any]:
         return self.request({"cmd": "blocks", "positions": [list(p) for p in positions]}, "blocks")
+
+    def _read_state_word(self, addr: int, length: int = 4) -> int:
+        reply = self.request(
+            {"cmd": "probe", "addr": int(addr) + 288, "kind": "raw", "len": int(length)},
+            "probe",
+        )
+        if not reply.get("ok"):
+            raise ModProtocolError(f"block_state_word: {reply.get('reason', reply)}")
+        return int.from_bytes(bytes(reply["vals"]["u8"][:length]), "little")
+
+    def block_state_word(self, pos: Iterable[float], *, length: int = 4) -> int:
+        """Read the block's packed state word (`Block+288`) as a little-endian int.
+
+        Use this instead of `/testforblock ... ["liquid_depth"=N]` to inspect a
+        liquid level: the command matches `liquid_depth` unreliably (a whole
+        pool reported `=0`), while `+288` carries the real value in its low
+        byte. `length` is capped at 8 by ``probe``.
+        """
+        row = self.blocks([pos])["blocks"][0]
+        return self._read_state_word(int(row["addr"]), length)
+
+    def liquid_depth(self, pos: Iterable[float]) -> int | None:
+        """Return the liquid level (`0` source .. `7` thinnest) or ``None`` for non-liquids."""
+        row = self.blocks([pos])["blocks"][0]
+        if row.get("name") not in LIQUID_BLOCKS:
+            return None
+        return self._read_state_word(int(row["addr"]), 2) & 0xFF
 
     def scan(
         self,

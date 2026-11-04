@@ -158,14 +158,85 @@ def kill_game(exe: Path | None = None, *, force: bool = False) -> None:
                 raise SystemExit(f"无法停止目标游戏进程 {pid}")
 
 
+def _appactivate(pid: int) -> bool:
+    """Ask the shell to activate the process window; Win32 foreground calls fail silently."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"$w=New-Object -ComObject WScript.Shell; if(-not $w.AppActivate({pid})){{exit 1}}",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _wait_foreground(user32, hwnd: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if int(user32.GetForegroundWindow() or 0) == int(hwnd):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _force_foreground(user32, hwnd: int, kernel32=None) -> None:
+    """SetForegroundWindow from the foreground thread's input queue.
+
+    Plain ``SetForegroundWindow`` from a background process is refused by the
+    foreground lock (and still returns a value that looks like success), so
+    attach to the current foreground thread first, which is the documented
+    workaround.
+    """
+    kernel32 = kernel32 or ctypes.WinDLL("kernel32")
+    foreground = user32.GetForegroundWindow()
+    foreground_thread = 0
+    if foreground:
+        foreground_thread = user32.GetWindowThreadProcessId(foreground, None)
+    current = kernel32.GetCurrentThreadId()
+    attached = False
+    if foreground_thread and foreground_thread != current:
+        attached = bool(user32.AttachThreadInput(current, foreground_thread, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current, foreground_thread, False)
+
+
+def _focus_with_fallback(user32, hwnd: int, pid: int, kernel32=None) -> bool:
+    """Foreground the window and report whether it *actually* became foreground."""
+    _force_foreground(user32, hwnd, kernel32)
+    if _wait_foreground(user32, hwnd, 0.6):
+        return True
+    # The shell's AppActivate path is the last resort when the input-queue
+    # attach is refused as well.
+    if not _appactivate(pid):
+        return False
+    return _wait_foreground(user32, hwnd, 1.5)
+
+
 def focus_game(pid: int, timeout: float = 15.0) -> bool:
-    """Bring the game window to the foreground.
+    """Bring the game window to the foreground and verify it took effect.
 
     A background-launched Minecraft keeps raw mouse capture; entering a world
-    while it is unfocused is what makes the cursor feel stuck. Focusing the
-    window before entering avoids that state.
+    while it is unfocused is what makes the cursor feel stuck, and the paused
+    world stops block ticks (fluids and falling sand look frozen while commands
+    and block reads still work). Only a verified foreground window counts: the
+    plain ``SetForegroundWindow`` call returns success even when Windows ignores
+    it.
     """
     user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     found: list[int] = []
 
@@ -183,11 +254,9 @@ def focus_game(pid: int, timeout: float = 15.0) -> bool:
         found.clear()
         user32.EnumWindows(callback_ref, 0)
         if found:
-            hwnd = found[0]
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            user32.BringWindowToTop(hwnd)
-            user32.SetForegroundWindow(hwnd)
-            return True
+            user32.ShowWindow(found[0], 9)  # SW_RESTORE
+            if _focus_with_fallback(user32, found[0], pid):
+                return True
         time.sleep(0.3)
     return False
 
@@ -425,10 +494,15 @@ def run(args: argparse.Namespace) -> int:
     log(f"starting {exe}")
     process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
     if not args.no_focus:
-        if focus_game(process.pid):
+        # The window can take tens of seconds to appear behind the splash; the
+        # wait ends as soon as a visible window shows up.
+        if focus_game(process.pid, timeout=60.0):
             log("game focused")
         else:
-            log("warning: could not focus the game window")
+            log(
+                "warning: could not focus the game window; a paused world stops block ticks "
+                "(water/lava/sand look frozen while commands still work)"
+            )
 
     client = ModClient(connect_timeout=90.0, timeout=20.0).connect()
     try:
@@ -456,8 +530,8 @@ def run(args: argparse.Namespace) -> int:
                 raise SystemExit(
                     f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}{hint}"
                 )
-            if not args.no_focus:
-                focus_game(process.pid, timeout=3.0)
+            if not args.no_focus and not focus_game(process.pid, timeout=3.0):
+                log("warning: game window is not foreground; block ticks may be paused")
             try:
                 log(f"signin: {client.signin()}")
             except (ModPipeError, ModTimeout) as exc:
@@ -534,6 +608,24 @@ def recover(args: argparse.Namespace) -> int:
     return subprocess.call(argv)
 
 
+def focus(args: argparse.Namespace) -> int:
+    """Focus the already-running game so block ticks (fluids, sand) keep running."""
+    exe = (
+        Path(args.exe).expanduser()
+        if args.exe
+        else Path(args.version_dir).expanduser() / "Minecraft.Windows.exe"
+    )
+    pids = game_pids(exe)
+    if not pids:
+        log(f"no running {exe.name}")
+        return 1
+    if focus_game(pids[0], timeout=args.timeout):
+        log(f"game focused (pid={pids[0]})")
+        return 0
+    log("could not focus the game window; the world may stay paused (no block ticks)")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -588,6 +680,12 @@ def main(argv: list[str] | None = None) -> int:
     stop_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     stop_parser.add_argument("--exe")
     stop_parser.add_argument("--force-stop", action="store_true")
+    focus_parser = sub.add_parser(
+        "focus", help="bring the running game window to the foreground (keeps block ticks alive)"
+    )
+    focus_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
+    focus_parser.add_argument("--exe")
+    focus_parser.add_argument("--timeout", type=float, default=15.0)
     worlds_parser = sub.add_parser("worlds", help="list cached worlds")
     worlds_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
     restore_parser = sub.add_parser(
@@ -631,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "restore-config":
             ok = restore_config(Path(args.version_dir).expanduser() / "mods" / "probe")
             return 0 if ok else 1
+        if args.command == "focus":
+            return focus(args)
         if args.command == "recover":
             return recover(args)
         return run(args)

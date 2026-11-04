@@ -270,5 +270,89 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--world") + 1], "test")
 
 
+class FocusTests(unittest.TestCase):
+    class _User32:
+        def __init__(self, foreground: int) -> None:
+            self.foreground = foreground
+            self.attached: list[tuple[int, int, bool]] = []
+
+        def BringWindowToTop(self, hwnd: int) -> None:
+            pass
+
+        def SetForegroundWindow(self, hwnd: int) -> int:
+            return 1
+
+        def GetForegroundWindow(self) -> int:
+            return self.foreground
+
+        def GetWindowThreadProcessId(self, hwnd: int, process_id) -> int:
+            return 42
+
+        def AttachThreadInput(self, first: int, second: int, attach: bool) -> int:
+            self.attached.append((first, second, bool(attach)))
+            return 1
+
+    class _Kernel32:
+        def GetCurrentThreadId(self) -> int:
+            return 7
+
+    def test_verified_foreground_does_not_call_the_shell(self) -> None:
+        user32 = self._User32(111)
+        with (
+            patch.object(dev, "_appactivate") as appactivate,
+            patch.object(dev.time, "sleep"),
+        ):
+            self.assertTrue(dev._focus_with_fallback(user32, 111, 9, self._Kernel32()))
+        appactivate.assert_not_called()
+        self.assertEqual(user32.attached, [(7, 42, True), (7, 42, False)])
+
+    def test_shell_fallback_is_used_when_the_plain_call_is_refused(self) -> None:
+        user32 = self._User32(0)
+
+        def activate(pid: int) -> bool:
+            user32.foreground = 111
+            return True
+
+        with (
+            patch.object(dev, "_appactivate", side_effect=activate) as appactivate,
+            patch.object(dev.time, "sleep"),
+        ):
+            self.assertTrue(dev._focus_with_fallback(user32, 111, 9, self._Kernel32()))
+        appactivate.assert_called_once_with(9)
+
+    def test_unverified_foreground_is_reported_as_failure(self) -> None:
+        user32 = self._User32(0)
+        with (
+            patch.object(dev, "_appactivate", return_value=True),
+            patch.object(dev.time, "sleep"),
+        ):
+            self.assertFalse(dev._focus_with_fallback(user32, 111, 9, self._Kernel32()))
+
+    def test_appactivate_failure_is_not_silent_success(self) -> None:
+        user32 = self._User32(0)
+        with (
+            patch.object(dev, "_appactivate", return_value=False),
+            patch.object(dev.time, "sleep"),
+        ):
+            self.assertFalse(dev._focus_with_fallback(user32, 111, 9, self._Kernel32()))
+
+
+class FocusCommandTests(unittest.TestCase):
+    def test_no_running_game_is_an_error_and_does_not_focus(self) -> None:
+        with (
+            patch.object(dev, "game_pids", return_value=[]),
+            patch.object(dev, "focus_game") as focus_game,
+        ):
+            self.assertEqual(dev.main(["focus"]), 1)
+        focus_game.assert_not_called()
+
+    def test_focus_reports_success_and_failure(self) -> None:
+        with patch.object(dev, "game_pids", return_value=[12]):
+            with patch.object(dev, "focus_game", return_value=True):
+                self.assertEqual(dev.main(["focus"]), 0)
+            with patch.object(dev, "focus_game", return_value=False):
+                self.assertEqual(dev.main(["focus"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

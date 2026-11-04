@@ -1,0 +1,10 @@
+{
+  "case": "liquid-effect-box-depth",
+  "version": "1.26.51.01",
+  "goal": "确认液体判定盒是否与流体液位/液面高度有关，纠正浅水无物理的旧结论",
+  "environment": "",
+  "current_round": 2,
+  "status": "open",
+  "created_at": "2026-11-04T09:01:25Z",
+  "updated_at": "2026-11-04T09:02:21Z"
+}

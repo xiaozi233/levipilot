@@ -1,5 +1,6 @@
 # 运行产物
 out/
+outputs/
 logs/
 *.jsonl
 !tests/fixtures/cli-baseline.jsonl

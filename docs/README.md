@@ -32,6 +32,7 @@
 | 主题 | 结论正主 | 证据与账本 | 状态 |
 | --- | --- | --- | --- |
 | 流体与液体运动（水/岩浆：竖直递推、水平阻力、流动推力、泳姿、入水判定） | [`fluid-movement.md`](fluid-movement.md)；[`fluid-wiki.md`](fluid-wiki.md) 是精简版 | [`notes/re-fluid-12651.md`](notes/re-fluid-12651.md)（函数/偏移/常量位模式）；`skills/bedrock-re/findings/1.26.51.01/cases/` 的 `lava-dim-fire-depth`、`liquid-blip`、`liquid-falling-push` | 有撤回项，引用需带最新口径 |
+| 鞘翅滑翔与烟花助推（每刻递推公式、创造 `+0.1` 微升、`0.6 × 0.6` 碰撞箱、撞墙、耐久） | [`elytra-wiki.md`](elytra-wiki.md) | 离线参考模型与运行期对照脚本位于 gitignored `out/` | 主公式与机制已完成运行期对质 |
 | 地面移动与疾跑顺序（E14 写位与水阻力谁先） | [`notes/tick-order-12651.md`](notes/tick-order-12651.md) | 同上证据册的疾跑小节；case `sprint-order-static` | 静态已证明顺序链 |
 | tick 内调度与 ECS 顺序（六步、系统注册链、调用栈） | [`notes/tick-order-12651.md`](notes/tick-order-12651.md) | 同文内的调用栈与注册链证据 | 结论成立，覆盖范围限该文列出的系统 |
 | 黏液块反弹与上层覆盖判定 | [`notes/bounce-12651.md`](notes/bounce-12651.md) | case `slime-bounce-coverage`（判据接自由落体积分） | 已闭合，含撤回项 |

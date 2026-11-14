@@ -11,12 +11,30 @@
 - 保存状态不确定时保留游戏进程；只有明确放弃未保存更改才允许 force-stop。
 - 原生模型中的零分配、并发和容量结论，不证明真实游戏中的性能或所有 SDK 边界安全。
 
-## 当前基线
+## 验收基线与后续局部验证
+
+下表完整离线与完整现场数字属于既有基线。可选 `watch_set sample=true` 增量修改后，
+已重新构建并正常保存重启，观察点现场 canary **26/26**，相关 Python 单测 **22/22**；
+ruff check/format 与 mypy 通过。覆盖 1/2/4/8 字节、变化值、QPC、tick 相位、默认关闭及撤销。
+证据为 `liquid-blip/probes/r14-042` 与 `out/liquid-blip-dynamic-review/watch-offline.log`；
+液体测量另见 [动态复核](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-raw-velocity-review.md)。
+随后执行观察点增量已构建并正常保存重启，准入/撤销现场 **11/11**（`r17-055`），相关
+Python 单测 **23/23**（`out/liquid-blip-dynamic-review/entry-watch-offline.log`）；ruff
+check/format 与 mypy 通过。六条件同步入口测量共 202 条，两侧实参与完整公式见
+[运算顺序动态对质](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-operation-order.md)。
+液体诊断的现场覆盖仍以这些专项为限，本轮未重跑完整现场；完整离线结果见下表，其执行记录
+独立于本轮液体实验。
+
+Python 观察游标与被动采集器的局部回归 **51/51**：覆盖 Harness 默认/显式游标、hook/watch
+交替安装、全局分页后过滤、分轴范围、部分安装失败、context 改变、首错/清理失败与丢失统计。
+运行范围为 `test_hooks`、`test_delta_watch`、`test_landing`、`test_scenario`，证据见
+`out/liquid-blip-engineering-tests.log`；ruff check/format、mypy 与账本/字段守卫通过。
+新 `driver.delta_watch` 尚未现场重采，这些回归不新增游戏机制或完整现场验收结论。
 
 | 范围 | 当前结果 | 覆盖重点 |
 | --- | --- | --- |
-| 完整离线 | **438/438** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
-| 静态检查 | ruff check/format、mypy（115 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
+| 完整离线 | **410/410** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
+| 静态检查 | ruff check/format、mypy（116 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
 | 完整现场 `--require-complete` | **1169/1169**，0 fail、0 skip、0 required skip | 当前默认全套，含新增 69 项 SDK 边界与权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
 | SDK 局部边界 | **69/69** | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；注册与命令边界是调用前合成故障 |
 | 领域效果保留 | **126/126**；进入/退档 **35/35** | 夜视跨查询/聊天退档、宏播放、任务及世界进入恢复仍存在，结束只清理测试效果 |

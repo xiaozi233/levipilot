@@ -130,9 +130,14 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
   `MayFly`；切换游戏模式会重置能力。
 - 实验先 `lab.settle(...)` 验证地面、静止、水中和 sprint 前提，不用裸 `sleep` 代替。
   `state.input.sprint` 可能锁存，走/跑对照前要明确清到 `input_sprint=False`。
-- `StateVectorComponent+0x18` 的原始字段不是 `state` 报告的速度：地表行走时约为
-  **0.546 × 实际位移**；后者来自 `Actor::getVelocity()`，实际速度仍以相邻 tick 位置差判定。
-  `pos.y` 是脚部，StateVector 中的眼睛高度为 **脚部 + 1.6200101**。
+- `StateVectorComponent+0x18/+0x1C/+0x20` 是 **`mPosDelta`（等待运动阶段应用的位移量，不保证是下一个世界 tick）**，不是速度：
+  地表行走时约为 **0.546 × 实际位移**（地面摩擦乘在上一拍位移上，`[推断]`）；`state` 报告的
+  速度来自 `Actor::getVelocity()`，等于已完成位移（`mPos − mPosPrev`），实际速度仍以相邻 tick
+  位置差判定。Liquid Blip 写的 `+0x1C` 就是这个 `mPosDelta.y`；已完成位移 / 待执行位移 /
+  录制 `vy`（=已完成位移）是三个量，不要混。
+  传送/场景的 `pos.y` 是脚部；StateVector/录制的 Y 是位置基准，本版本原地站蹲对照都为
+  **脚部 + 1.6200101**，不随头部回读一起降低。不要称为当前眼睛或镜头高度；`state.head_y`
+  与当前 AABB 需分别读取，蹲姿对照见 liquid-blip 的 `r20-066`。
 - `GameMode::interact` 在空物品上下文会崩；`interact_entity` 只做转向和注入使用按钮。
   `mouse_event` 的左右键不等于 `click`/`attack_entity`。
 - `reset` 清效果；普通 `teleport` 和 `checkpoint_load` 不清效果。共享传送请求必须显式设置
@@ -161,12 +166,15 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
   使用 `state.context`。
 - 不要对正在打开的 IDA/idalib 进程 `taskkill /F`。停止后端用 `idb_close(save=true)`；
   地址到函数用 `driver/pe_map.py`，IDA 客户端用 `driver/ida.py`。
+- `driver/ida.py` 报 `Failed to open database` 先跑 `driver/ida.py status`：2~5 秒就失败的
+  是开库锁冲突（另一个 worker 占着同一个 `.i64`），不是库损坏；冷开成功要 3~12 分钟。
+  `open_session`/`connect` 会先 adopt 同库的活会话，不会再开第二次。
 - 流体、tick 顺序和 BadPacket 的证据分别看 `docs/fluid-movement.md`、`docs/notes/` 与
   `skills/bedrock-re/`，不要把历史观测当成静态机制结论。
 
 ## 当前状态与维护
 
-当前基线为离线 **438/438**、完整现场 `--require-complete` **1169/1169**；另有生命周期
+当前基线为离线 **410/410**、完整现场 `--require-complete` **1169/1169**；另有生命周期
 准入 **10/10**、输入专项 **46/46**、200000 tick 长录制 **9/9**。这些数字对应其代码与权限
 前提，后续变更必须重新验证适用范围，不能永久当作“全绿”。
 

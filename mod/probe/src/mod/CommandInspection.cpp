@@ -113,6 +113,14 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             return true;
         }
         std::string const mode = j.value("mode", std::string{"w"});
+        if (mode != "w" && mode != "rw" && mode != "x") {
+            enqueue(R"({"event":"error","reason":"bad_mode"})");
+            return true;
+        }
+        if (mode == "x" && !mAllowHookVa.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"hook_va_disabled"})");
+            return true;
+        }
         std::string       thread = "tick";
         if (j.contains("thread")) {
             if (j["thread"].is_string()) {
@@ -132,7 +140,8 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             }
             depth = j["depth"].get<std::uint32_t>();
         }
-        enqueue(watchInstall(addr, size, mode == "rw", thread, tag, depth).dump());
+        enqueue(watchInstall(addr, size, mode == "rw", thread, tag, depth, j.value("sample", false),
+            mode == "x", j.value("snapshots", nlohmann::json::array())).dump());
         return true;
     }
     if (cmd == "watch_clear") {

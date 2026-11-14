@@ -1,0 +1,20 @@
+# command: py -3.11 out/comp_name.py 0xDE21C316 0xBAC1B3CF 0x1B5D5238 0xACD368EE 0x615CEE62 0x5E3CA211 0x752C8E04 0x4C8F7288 0xF95D258F 0xC67426F3 0x94154CCE 0x2BC1330
+# cwd: <repo>
+# started: 2026-11-09T17:09:42Z
+# exit: 0
+# --- stdout ---
+0xDE21C316 (3726754582): 'OffsetsComponent]' len=16 site=0x142411451
+0xBAC1B3CF (3133256655): 'AABBShapeComponent]' len=18 site=0x140228DD1
+0x1B5D5238 (459100728): 'StateVectorComponent]' len=20 site=0x14021FC91
+0xACD368EE (2899536110): 'VanillaOffsetComponent]' len=22 site=0x1428CD151
+0x615CEE62 (1633480290): 'AABBRelativeSizeUpdateComponent]' len=31 site=0x142412561
+0x5E3CA211 (1581031953): 'ActorSetPositionRequestComponent]' len=32 site=0x1428D2D21
+0x752C8E04 (1965854212): 'ShouldUpdateBoundingBoxRequestComponent]' len=39 site=0x14023E8A1
+0x4C8F7288 (1284469384): 'MoveRequestComponent]' len=20 site=0x141AA7E01
+0xF95D258F (4183631247): 'PlayerComponent]' len=15 site=0x140237941
+0xC67426F3 (3329500915): 'ActorDataFlagComponent]' len=22 site=0x140226991
+0x94154CCE (2484423886): 'ActorMovementTickNeededComponent]' len=32 site=0x141A8E571
+0x02BC1330 (45880112): 'MovementInterpolatorComponent]' len=29 site=0x141A950D1
+
+# --- stderr ---
+

@@ -1,0 +1,21 @@
+# command: py -3.11 out/liquid_blip_dynamic_review.py --runs slow-b,fast-lev --watch --geometry-samples --output out/liquid-blip-dynamic-review/r13
+# cwd: <repo>
+# started: 2026-11-09T13:58:32Z
+# exit: 1
+# --- stdout ---
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "out\liquid_blip_dynamic_review.py", line 427, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "out\liquid_blip_dynamic_review.py", line 371, in main
+    meta[name] = h.client.ecs_context(original["context"], component_id)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "driver\harness\commands\ecs.py", line 17, in ecs_context
+    return self.request(
+           ^^^^^^^^^^^^^
+  File "driver\harness\connection.py", line 383, in request
+    raise ModProtocolError(f"{message.get('cmd')}: {reply.get('reason', reply)}")
+driver.harness.errors.ModProtocolError: ecs_context: component_not_found
+

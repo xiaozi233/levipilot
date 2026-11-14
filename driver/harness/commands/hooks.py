@@ -13,7 +13,9 @@ def remember_ring_head(client: Any, kind: str, ident: int) -> None:
     Both rings live in the mod process, so draining from 0 replays rows left by
     earlier hooks — including hooks from previous experiments in the same
     process, with their own ``mem`` shapes. Remembering the head at install time
-    lets ``hook_drain()`` / ``watch_drain()`` default to "what this one saw".
+    avoids replaying older sessions by default. Hits before this extra request
+    are outside that default window; capture an explicit head before installing
+    when those earliest events matter. The head is a cursor, not an ID filter.
     """
     try:
         listing = client.hook_list() if kind == "hook" else client.watch_list()
@@ -22,17 +24,19 @@ def remember_ring_head(client: Any, kind: str, ident: int) -> None:
     head = listing.get("head")
     if isinstance(head, int):
         heads = client.__dict__.setdefault("_ring_heads", {})
-        heads[(kind, int(ident))] = head
-        client.__dict__["_last_ring"] = (kind, int(ident))
+        key = (kind, int(ident))
+        heads.pop(key, None)
+        heads[key] = head
 
 
 def ring_head(client: Any, kind: str, ident: int | None) -> int:
     """Head recorded for ``ident``, or for the last install of that kind."""
     heads = client.__dict__.get("_ring_heads") or {}
-    key = (kind, ident) if ident is not None else client.__dict__.get("_last_ring")
-    if isinstance(key, tuple) and key[0] == kind:
-        head = heads.get(key)
-        if isinstance(head, int):
+    if ident is not None:
+        head = heads.get((kind, ident))
+        return head if isinstance(head, int) else 0
+    for (cached_kind, _), head in reversed(heads.items()):
+        if cached_kind == kind and isinstance(head, int):
             return head
     return 0
 
@@ -106,10 +110,11 @@ class HookCommands(PipeConnection):
     ) -> dict[str, Any]:
         """Drain hook hits; by default starting at the last install's ring head.
 
-        ``since=None`` starts at that hook's install-time ring head, so the raw
-        ring (which is process-global) does not leak rows from earlier hooks.
+        ``since=None`` starts at the cached ring head read just after installing
+        (or 0 without a cached head). This excludes older rows, not other IDs.
         Pass an explicit ``since`` to page through the ring yourself; pass
-        ``hook_id`` to also filter the returned rows to one hook.
+        ``hook_id`` to also filter the returned rows to one hook. Filtering is
+        after global pagination: advance with ``next`` even for an empty page.
         """
         resolved = ring_head(self, "hook", hook_id) if since is None else int(since)
         reply = self.request(

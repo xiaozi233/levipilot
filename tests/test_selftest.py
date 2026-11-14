@@ -278,14 +278,6 @@ class InterruptedSelftestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             dump_packet_tap(client, str(Path(directory)))
 
-    def test_flight_cleanup_uses_effect_preserving_teleport(self):
-        source = Path("driver/selftest_input.py").read_text(encoding="utf-8")
-        body = source.split("def check_flight", 1)[1].split("def check_input_events", 1)[0]
-        self.assertNotIn("client.reset(", body)
-        self.assertIn("client.teleport(", body)
-        self.assertIn("effect_fixture.verify(client, checks, wait_ticks)", body)
-        self.assertIn("effect_fixture.verify_restored(restored, checks)", body)
-
     def test_flight_cleanup_preserves_first_error_and_type(self):
         for cause in (WorldLost("level vanished at tick 763"), ModTimeout("first request timeout")):
             with (
@@ -293,16 +285,30 @@ class InterruptedSelftestTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as directory,
             ):
                 client = Mock()
-                client.state.return_value = {"in_world": True, "gamemode": 0}
+                client.state.return_value = {
+                    "in_world": True,
+                    "gamemode": 0,
+                    "feet_x": 0.5,
+                    "feet_y": -49.0,
+                    "feet_z": 0.5,
+                    "yaw": 0.0,
+                    "pitch": 0.0,
+                    "mayfly": False,
+                    "flying": False,
+                }
                 client.status.return_value = {"spool": str(Path(directory) / "spool.jsonl")}
-                client.command.side_effect = [cause, ModPipeError("cleanup player unknown")]
+                client.command.side_effect = [cause, {"success": True}]
+                client.teleport.side_effect = ModPipeError("cleanup player unknown")
                 with (
+                    patch("driver.selftest_input.wait_ticks"),
                     contextlib.redirect_stdout(io.StringIO()),
                     self.assertRaises(type(cause)) as caught,
                 ):
                     check_flight(client, Checks())
                 self.assertIs(caught.exception, cause)
                 self.assertIn("cleanup player unknown", cause.__notes__[0])
+                client.teleport.assert_called_once_with(0.5, -49.0, 0.5, yaw=0.0, pitch=0.0)
+                client.reset.assert_not_called()
 
     def test_flight_dump_uses_absolute_path_and_consumes_its_receipt(self):
         with tempfile.TemporaryDirectory() as directory:

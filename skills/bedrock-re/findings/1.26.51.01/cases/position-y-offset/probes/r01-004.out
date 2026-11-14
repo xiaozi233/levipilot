@@ -1,0 +1,94 @@
+# command: py -3.11 out/posy_summary.py
+# cwd: <repo>
+# started: 2026-11-09T17:10:18Z
+# exit: 0
+# --- stdout ---
+{
+ "const_1_62001": {
+  "va": "0x14e6ae444",
+  "bytes": "7d 5c cf 3f",
+  "f32": 1.6200100183486938
+ },
+ "movss_sites": [
+  "0x1401dedcb",
+  "0x1401e62c6",
+  "0x1401ef173",
+  "0x1428a4b76",
+  "0x1428a4b86",
+  "0x1428a4c9d",
+  "0x1428a4cad"
+ ],
+ "set_height_offset_callers": [
+  "0x1401dedd3",
+  "0x1401e5bb5",
+  "0x1401e62d1",
+  "0x1401ef17b",
+  "0x14303af0b",
+  "0x14333bd9a",
+  "0x14333bf7d",
+  "0x143343420",
+  "0x143345319",
+  "0x143347bd6",
+  "0x14334a4f8",
+  "0x14334aad6",
+  "0x14334ed0d",
+  "0x1436774f3",
+  "0x14523dae3",
+  "0x148ba2132"
+ ],
+ "set_height_offset_with_1_62001": [
+  "0x1401dedd3",
+  "0x1401e62d1",
+  "0x1401ef17b"
+ ],
+ "functions": {
+  "@actor_offset_set_height_offset": {
+   "start": "0x14253cfd0",
+   "size": 228
+  },
+  "@actor_offset_set_aabb_relative_scaling": {
+   "start": "0x14253d810",
+   "size": 837
+  },
+  "@vanilla_offset_system_tick": {
+   "start": "0x1428a4d30",
+   "size": 871
+  },
+  "@vanilla_offset_system_worker": {
+   "start": "0x1428a4ab0",
+   "size": 261
+  },
+  "@update_bounding_box_system_register": {
+   "start": "0x1428a1610",
+   "size": 226
+  },
+  "@update_bounding_box_system_single_tick": {
+   "start": "0x1428b4e20",
+   "size": 2114
+  },
+  "@actor_set_pos_system_tick": {
+   "start": "0x14901db10",
+   "size": 12632
+  },
+  "@actor_set_pos_assert": {
+   "start": "0x14901d080",
+   "size": 852
+  },
+  "@get_attach_position_views": {
+   "start": "0x1428ccdc0",
+   "size": 285
+  }
+ },
+ "float32_model": {
+  "feet": -60.0,
+  "mHeightOffset_f32": 1.6200100183486938,
+  "position_y_f32": -58.37998962402344,
+  "difference_double": 1.6200103759765625,
+  "matches_measurement": true,
+  "if_constant_were_1_62f": 1.6199989318847656,
+  "if_computed_1p8x0p9_plus_1e-5": 1.6200098991394043
+ }
+}
+
+# --- stderr ---
+

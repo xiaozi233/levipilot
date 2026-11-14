@@ -1,0 +1,16 @@
+# command: py -3.11 out/swim_blip_live.py --desktop %USERPROFILE%/Desktop
+# cwd: <repo>
+# started: 2026-11-11T03:34:55Z
+# exit: 0
+# --- stdout ---
+RUN {"name": "control", "rows": 74, "state_samples": 36, "swimming_samples": 0, "entries": 68, "stores": 8, "record_lost": 0, "watch_lost": 0, "errors": []}
+SWIMMING swim-jump 2634 -49.59837341308594 349.44317626953125
+RUN {"name": "swim-jump", "rows": 106, "state_samples": 52, "swimming_samples": 15, "entries": 38, "stores": 4, "record_lost": 0, "watch_lost": 0, "errors": []}
+SWIMMING swim-pitch 2759 -49.575172424316406 349.44317626953125
+RUN {"name": "swim-pitch", "rows": 119, "state_samples": 64, "swimming_samples": 61, "entries": 96, "stores": 96, "record_lost": 0, "watch_lost": 0, "errors": []}
+SWIMMING swim-repeat 2900 -49.01051712036133 347.3900451660156
+RUN {"name": "swim-repeat", "rows": 105, "state_samples": 54, "swimming_samples": 15, "entries": 48, "stores": 8, "record_lost": 0, "watch_lost": 0, "errors": []}
+SAVED LeviPilot-swim-blip-20261111-113456 cleanup_errors []
+
+# --- stderr ---
+

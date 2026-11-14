@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 from ..commands import ModClient
 
@@ -42,6 +43,7 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         )
         return True
     if args.command == "watch-set":
+        sample_options: dict[str, Any] = {"sample": True} if args.sample else {}
         print(
             json.dumps(
                 client.watch_set(
@@ -50,6 +52,7 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                     mode=args.mode,
                     thread=args.thread,
                     tag=args.tag,
+                    **sample_options,
                 ),
                 ensure_ascii=False,
             )

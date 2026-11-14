@@ -229,7 +229,8 @@
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] 泳姿/竖直分支门；0.15/0.2 不是流体上浮"
+        "[代码] 泳姿/竖直分支门；0.15/0.2 不是流体上浮",
+        "[代码] 液体判定通过后 *(vy+0x1C) += 0.04（0x3D23D70A），首 tick 闩锁 0.028；过滤器含 MobIsJumpingFlagComponent"
       ]
     },
     "@modifier_recompute": {
@@ -246,14 +247,14 @@
     },
     "@swim_lambda": {
       "strategy": [
-        "callgraph:from:@swim_vertical_branch",
-        "lambda:swim_control"
+        "decompile:0x1490C0A00"
       ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
-      "evidence": [],
-      "note": "本版本未唯一锁定，禁止猜测"
+      "address": "0x1490C0A00",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] SWIMMING 时 vy += k*(tau - vy)，k∈{0.06,0.085,1.3}；函数内无跳跃/潜行输入分支"
+      ]
     },
     "@clip": {
       "strategy": [
@@ -429,14 +430,16 @@
       "strategy": [
         "live:StateVector+0x1C watch",
         "constant:0.3 not found as a direct store",
-        "candidate:0x148B618A0 vertical accel add"
+        "candidate:0x148B618A0 vertical accel add",
+        "superseded_by:@liquid_exit_blip"
       ],
       "address": null,
       "status": "unresolved",
       "confidence": "none",
       "evidence": [
         "[实测] 贴墙 + 水面附近 + Space 时 vy 0.34→0.3（2 深水池，probe r01-001）；无墙/深水/不跳跃不触发",
-        "[动态] StateVector+0x1C 观察点在弹跳 tick 命中 0x148B61995（sub_148B618A0 加）、0x1431EC3FB（sub_1431EC2A0 Vec3 拷贝）、重力/阻力写点，无直接 0.3 store；函数地址未定，禁止猜"
+        "[动态] 当时的 StateVector+0x1C 观察点未抓到 0.3 store，函数地址未定，禁止猜",
+        "[台账] 2026-11-11 复核：该名称是 R-F14 阶段的旧别名，指向的写入点已由 @liquid_exit_blip 0x1482A8D00 解析（同一函数、同一 0x1C 写点）。保留 unresolved 以免把历史记录改写成猜测；新代码请用 @liquid_exit_blip。"
       ]
     },
     "@sprint_tick_dispatch": {
@@ -776,6 +779,404 @@
       "confidence": "code",
       "evidence": [
         "[代码] 玩家 AABB 内缩 0.1(X/Z)/0.4(Y) 后以 6 float + 计数 6 交给 a1->vtable+0x40 求交；SubBBs 复用同一虚函数；无 liquid_depth 读取（docs/notes/re-fluid-12651.md §2.6）"
+      ]
+    },
+    "@liquid_exit_blip": {
+      "strategy": [
+        "constscan:mov [reg+1Ch],0.3f",
+        "decompile:0x1482a8d00",
+        "disasm:0x1482a8d2f..0x1482a8e79"
+      ],
+      "address": "0x1482a8d00",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] sub_1482A8D00(rcx=entity ctx 未用, rdx=6-float AABB, r8=MobTravelComponent, r9=StateVectorComponent, [rsp+0x20]=块源视图)：逐指令 `movss xmm0,[r8+14h]; subss xmm0,[r9+4]; addss xmm0,0.6f(0x14E6AE498 字节 9A 99 19 3F); addss xmm0,[r9+1Ch]` → 盒 = AABB + (mPosDelta.x, mPosBeforeMove.y−mPos.y+0.6+mPosDelta.y, mPosDelta.z)；min/max 后只构造一次（栈 [rbp+var_70]）。",
+        "[代码] 虚槽 +0x38 → 0x142D8A050（5 字节 `jmp sub_142D8A060` 叶跳，不在 .pdata）→ 预过滤；+0xA0 → 0x142D86DC0 收集碰撞 AABB。盒由两次调用共用，中间不重读组件。",
+        "[代码] 写点 0x1482A8E46 `mov dword ptr [rsi+1Ch], 3E99999Ah`，仅当 vector.begin==vector.end；StateVector+0x18/+0x1C/+0x20 是 SDK 的 mPosDelta（不是 VelX/Y/Z）。全 .text 只有两处该立即数写，另一处 0x14684BC0C 属别的系统且一次写三轴。",
+        "[台账] 2026-11-11 复核：与 Java 26.2 LivingEntity#jumpOutOfFluid 同构；旧别名 @liquid_blip 指向同一函数。"
+      ]
+    },
+    "@liquid_blip_system": {
+      "strategy": [
+        "xrefs:0x1482a8d00",
+        "decompile:0x1482ec8d0"
+      ],
+      "address": "0x1482ec8d0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] Bedrock 自己的系统名 ClimbOutOfLiquidSystem（注册器 sub_1482A8ED0 里嵌了 22 字符名字）。查询五个组件：AABBShapeComponent(0xBAC1B3CF) / MobTravelComponent(0x39CF8D64) / StateVectorComponent(0x1B5D5238) / LiquidTravelFlagComponent(0x3E7D1356) / HorizontalCollisionFlagComponent(0xD5EE0BD8)，另经 TLS 缓存单独取 LocalConstBlockSourceFactoryComponent(0xC695B914) 提供块源；函数内无任何输入位读取"
+      ]
+    },
+    "@liquid_blip_visitor": {
+      "strategy": [
+        "decompile:0x1482ec770"
+      ],
+      "address": "0x1482ec770",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 逐实体访问器：解析组件后经 guard_dispatch_icall_nop 间接调用，实参顺序 (ctx, AABBShapeComponent, MobTravelComponent, StateVectorComponent, 块源视图)；块源视图由 sub_142A44CB0(view, holder, entityId) 从 LocalConstBlockSourceFactoryComponent → Dimension+0x1D8 的 mChunkSource 经 sub_142D7CEC0 构造（vtable off_14E8554E0）"
+      ]
+    },
+    "@climb_out_of_liquid_register": {
+      "strategy": [
+        "xrefs:0x14ea1a900",
+        "decompile:0x1482a8ed0"
+      ],
+      "address": "0x1482a8ed0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 注册器：new 128 字节系统对象、vtable=off_14EA1A900，名字字面量 \"ClimbOutOfLiquidSystem\"(22)，再交给 regCtx+56 的 registrar（vtable+0x10）注册"
+      ]
+    },
+    "@climb_out_of_liquid_query": {
+      "strategy": [
+        "decompile:0x1482ec650"
+      ],
+      "address": "0x1482ec650",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 查询构建器：把五个组件 id 当立即数传给各自的取数组 helper——0xBAC1B3CF(AABBShapeComponent) / 0x39CF8D64(MobTravelComponent) / 0x1B5D5238(StateVectorComponent) / 0x3E7D1356(LiquidTravelFlagComponent) / 0xD5EE0BD8(HorizontalCollisionFlagComponent)；后两个是 flag 组件，只进实体过滤、不进回调实参，贴墙要求即来自 HorizontalCollisionFlagComponent"
+      ]
+    },
+    "@const_player_height_offset": {
+      "strategy": [
+        "bytes:7d 5c cf 3f",
+        "movss xrefs"
+      ],
+      "address": "0x14e6ae444",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] 整个 exe 中 float32 1.62001f（0x3FCF5C7D）只出现这一次（.rdata 0x14E6AE444），由 7 处 movss xmm,[rip+disp] 加载；其中 4 处紧接着调用 @actor_offset_set_height_offset。二进制里不存在 1.8*0.9+1e-5 的立即数形态（该式结果为 1 ULP 更低，且 7d 5c cf 3f 在 .text 无命中），因此 1.62001 是直接字面量而非算式结果。相邻 0x14E6AE49C = 1.8f（站立 AABB 高）。"
+      ]
+    },
+    "@const_player_aabb_sneak_height": {
+      "strategy": [
+        "bytes:52 b8 be 3f",
+        "registration:UpdateBoundingBoxes"
+      ],
+      "address": "0x14e83a408",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] 1.49f（0x3FBEB852）位于 .rdata 0x14E83A408，由 @update_bounding_box_system_register 在实验开关成立时装入系统对象 +8（SDK 的 UpdateBoundingBox::SystemImpl::mSneakHeight）；同一寄存器默认装 0x14E6AE49C 的 1.8f。与实测 AABB 高 1.7999992 / 1.4900017 对应。"
+      ]
+    },
+    "@actor_offset_set_height_offset": {
+      "strategy": [
+        "component id 0xDE21C316 xrefs",
+        "decompile:0x14253cfd0"
+      ],
+      "address": "0x14253cfd0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] sub_14253CFD0(ctx, float)：按组件 id 0xDE21C316（OffsetsComponent，68 字节）取实体组件，写 *(float*)(comp + (idx&0x7F)*68) = 入参，即 OffsetsComponent+0x00 = mHeightOffset。16 个调用点，其中 3 个传入 @const_player_height_offset 的 1.62001f（0x1401DEDD3 / 0x1401E62D1 / 0x1401EF17B，均经 IDA disasm refs 与 capstone 双向核对）。注意 sub_1401E58B0 内的第 4 处（0x1401E5BB5）实际传 0.2f（0x14E6AE454），反编译把它误印成 1.62001，已记勘误。"
+      ]
+    },
+    "@actor_offset_set_aabb_relative_scaling": {
+      "strategy": [
+        "component ids 0xDE21C316+0xBAC1B3CF+0x615CEE62",
+        "decompile:0x14253d810"
+      ],
+      "address": "0x14253d810",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] sub_14253D810(entity, headScalar, eyeScalar, breathingScalar, mouthScalar)：读 AABBShapeComponent(0xBAC1B3CF, 32 字节) 的 mBBDim（+24 宽 / +28 高）与 AABBRelativeSizeUpdateComponent(0x615CEE62, 48 字节) 的 4 个 optional<Vec2> 标量，写 OffsetsComponent 的 mHeadOffset(+8)/mEyeOffset(+0x20)/mMouthOffset(+0x2C)/mBreathingOffset(+0x38) = (0, mBBDim.y*scalar.y, mBBDim.x*scalar.x)。这是 AABB 尺寸→头部/眼睛偏移的桥。"
+      ]
+    },
+    "@vanilla_offset_system_tick": {
+      "strategy": [
+        "system name VanillaOffsetSystem::ClientSide/ServerSide",
+        "vtable 0x14E83AA30"
+      ],
+      "address": "0x1428a4d30",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 注册块 0x14681DA00..0x1468210B6 内 0x1468205F7 装 vtable 0x14E83AA30、+8 写 mIsClientSide，名字取 \"VanillaOffsetSystem::ClientSide\"/\"::ServerSide\"（0x146820612/0x146820619）。tick=0x1428A4D30：按 mIsClientSide 选 worker（0x1428A4AA0 / 0x1428A4BB0），并先按实验开关选 0.125f(0x3E000000) 或 0.375f(0x3EC00000) 作为参数。"
+      ]
+    },
+    "@vanilla_offset_system_worker": {
+      "strategy": [
+        "callee of @vanilla_offset_system_tick",
+        "decompile:0x1428a4ab0"
+      ],
+      "address": "0x1428a4ab0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 261 字节，(rcx=out /*VanillaOffsetComponent 36B*/, rdx=inY* /*Offsets.mHeightOffset*/, r8=flags*, r9/r10=两个 {storage,entity} 对, xmm3=alpha)：K 四分支——arg6 对命中(PlayerIsSleepingFlagComponent 0xB13F037A) → 0.4f(0x14E602290)；*flags & 2 → 1.62001f(0x14E6AE444) − alpha；arg5 对命中(IsHorizontalPoseFlagComponent 0x2430E499) → 0.2f(0x14E6AE454)；否则 1.62001f。写 mCurrentOffset(+0)=mPreviousOffset(+0xC)=(0, *inY − K, 0)、mClimbingOffset.z(+0x14)=0。",
+        "[代码] IDA 反编译（重建库）复核一致：v14=0.40000001 / 1.62001−a7 / 0.2 / 1.62001，早前记录的 {0.22222199, 20.0, 20.0−alpha} 是 16 字节块首常量假象（见 r13-029 勘误与 pitfalls §H）。",
+        "[代码] 调用是间接的：内层派发器 0x1428CDBB0 读全局指针 0x14F0FBAA8（指向 0x14E585660 的 5 字节 `jmp rax` 桩），rax 由 0x1428CDCA8 从 [ctx+0x10] 载入，即 worker 函数指针由视图对象携带；tick(0x1428A4D30) 与派发器里都搜不到 0x1428A4AB0/0x1428A4BC0 的直接引用。"
+      ]
+    },
+    "@update_bounding_box_system_register": {
+      "strategy": [
+        "system name UpdateBoundingBoxes",
+        "vtable 0x14E83A610"
+      ],
+      "address": "0x1428a1610",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 注册函数：new 16 字节系统对象，vtable=0x14E83A610，+8 写 mSneakHeight（默认 @const_player_aabb_sneak_height 附近的 1.8f，实验开关成立时取 1.49f），+0xC 写 mIsClientSide，名字 \"UpdateBoundingBoxes\"(19)。对应 SDK 的 UpdateBoundingBox::SystemImpl。"
+      ]
+    },
+    "@update_bounding_box_system_single_tick": {
+      "strategy": [
+        "vtable 0x14E83A610 slot +0x30",
+        "decompile:0x1428b4e20"
+      ],
+      "address": "0x1428b4e20",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 单实体 worker：读 ShouldUpdateBoundingBoxRequestComponent(0x752C8E04, 12 字节 = {float,float,bool}) 的请求宽/高并回写、置位，再取 56/32/12/24 字节组件与 AABBShapeComponent(32) 交给 sub_14289A870（21 KB，另见 @update_bounding_box_common_set_size）。SDK 声明该系统写 AABBShapeComponent/ActorDataBoundingBoxComponent/DepenetrationComponent/OffsetsComponent。"
+      ]
+    },
+    "@actor_set_pos_system_tick": {
+      "strategy": [
+        "system name ActorSetPosSystem",
+        "vtable 0x14EA500E0"
+      ],
+      "address": "0x14901db10",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 注册块 0x14682D3C0..0x146831DB6 内 0x14682D7F7 装 vtable 0x14EA500E0，名字 \"ActorSetPosSystem\"(17)。tick=0x14901DB10（2729 条指令）：逐实体取 OffsetsComponent/AABBShapeComponent/StateVectorComponent 与 ActorSetPositionRequestComponent(0x5E3CA211, 12 字节)，对 StateVector 的 mPosPrev(+0xC)/mPosDelta(+0x18) 做 mPos + request ± k*(mPosDelta-mPosPrev) 插值，mPos(+0x00) 不在本函数写入；非法位置时经 @actor_set_pos_assert 报 \"Invalid position '%s' cannot set position on entity!\"。"
+      ]
+    },
+    "@actor_set_pos_assert": {
+      "strategy": [
+        "string ActorSetPosSystemImpl::_tickActorUpdatePositionAndAABBSystem2",
+        "decompile:0x14901d080"
+      ],
+      "address": "0x14901d080",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 失败分支辅助函数，引用名字串 \"ActorSetPosSystemImpl::_tickActorUpdatePositionAndAABBSystem2\"(46) 与 \"Invalid position '%s' cannot set position on entity!\"，被 @actor_set_pos_system_tick 多处调用。"
+      ]
+    },
+    "@get_attach_position_views": {
+      "strategy": [
+        "component ids 0xACD368EE+0xDE21C316",
+        "decompile:0x1428ccdc0"
+      ],
+      "address": "0x1428ccdc0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 惰性视图构造：VanillaOffsetComponent(0xACD368EE) + OffsetsComponent(0xDE21C316) + ActorDataFlagComponent(0xC67426F3) + PlayerComponent(0xF95D258F) + ActorMovementTickNeededComponent(0x94154CCE)。对应 SDK 的 GetAttachPositionViews，即 Actor::getHeadPos()→getAttachPos(Head)→GetAttachPositionUtility::_getBaseAttachPoint 的视图侧。"
+      ]
+    },
+    "@finalize_move_system_tick": {
+      "strategy": [
+        "registration name FinalizeMoveSystem",
+        "vtable 0x14E98AF80"
+      ],
+      "address": "0x1463db520",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 注册块 0x14681B7D3 装 vtable 0x14E98AF80（+0x28 槽=0x1463DB480 thunk，+0x30 槽=0x1463DB520），名字 \"FinalizeMoveSystem\"(18) 装在 vtable 之后（0x14681B7EB）。singleTick 0x1463DB520 按 AABBShapeComponent(0xBAC1B3CF,32)/MoveRequestComponent(0x4C8F7288,152)/OffsetsComponent(0xDE21C316,68)/StateVectorComponent(0x1B5D5238,36) 建视图，逐实体调 @finalize_move_worker。注意：0x14EB40AE0 不是本系统的 vtable（那是名字装在 vtable 之后时的错位配对），其 tick 0x14C622020 用 MoveRequest+StateVector+WalkDistComponent(0xCF59BFCF)+OnGroundFlagComponent(0xC29078A0)，属于另一个“是否在移动”类系统。"
+      ]
+    },
+    "@finalize_move_worker": {
+      "strategy": [
+        "callee of @finalize_move_system_tick",
+        "capstone: 0x1463b39a0"
+      ],
+      "address": "0x1463b39a0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] sub_1463B39A0(StateVector* rcx, AABBShape* rdx, MoveRequest* r8, Offsets* r9, ctx, extra)：xmm3=0.5f(0x14E5C6370)；mPos.x=(AABB.min.x+AABB.max.x)*0.5；**mPos.y=Offsets.mHeightOffset(+0x00)+AABB.min.y**；mPos.z=(AABB.min.z+AABB.max.z)*0.5；分别写 StateVector+0x00/+0x04/+0x08，随后做 NaN/inf 校验，失败时经 0x1420419F0 报 assert \"2 _move_ecs\"。之后用 MoveRequest 的 mPreCollisionSpeed(+0x30) 减 mSpeed(+0x3C) 求碰撞导致的速度差。本函数不写 mPosPrev/mPosDelta（那由 @actor_set_pos_system_tick 维护）。这就是 feet_y + mHeightOffset 的写入点：AABB.min.y 即脚 Y，mHeightOffset 由 @actor_offset_set_height_offset 写入 1.62001f。"
+      ]
+    },
+    "@mob_travel_component": {
+      "strategy": [
+        "component id 0x39CF8D64 cache-init",
+        "SDK refs MobTravelComponent.h"
+      ],
+      "address": "0x1428e2f50",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] id 0x39CF8D64，名字 \"MobTravelComponent\"(18)，TLS 缓存初始化点 0x1428E2F81。SDK refs/levilamina-26.51.7/src/mc/entity/components/MobTravelComponent.h 布局：mLocalMovementVelocity+0x00(Vec3)、mMovementSpeed+0x0C、**mPosBeforeMove+0x10(Vec3，即 +0x14 是它的 Y)**、mFriction+0x1C、mSlowdown+0x20、mDoesVerticalFriction+0x24、mDoesGroundFriction+0x25。液体退出检测里的 comp40[+0x14] 因此是**移动前位置基准 Y**，与实测“等于 StateVector+0x10(previousY)”一致。"
+      ]
+    },
+    "@command_selector_get_feet_pos": {
+      "strategy": [
+        "runtime: LL 符号表槽 -> 混淆跳板链 -> 计算式跳转 -> 游戏 exe RVA",
+        "decompile:0x1449d2c40"
+      ],
+      "address": "0x1449d2c40",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] CommandSelectorBase::getFeetPos(int version, Actor const&) 静态 VA 0x1449D2C40，150 字节。两条路径按 version 分流（cmp edx,0x16=22 与 cmp edx,0xa=10）：① version>22（=SelectorDistanceFilteredAndRelativeRotationFix，Latest=52）走新路：out.x/out.z 取 StateVectorComponent（Actor+0x218）的 mPos.x/mPos.z，**out.y 取 AABBShapeComponent（Actor+0x220）的 mAABB.min.y**；若实体带 PassengerComponent（id 0x98E40C0E，助手 0x1419F2FC0 返回载具 Actor*），则 out.y = max(载具 AABB.min.y, 自身 AABB.min.y)。函数全程不读 OffsetsComponent/mHeightOffset。② version<=22 走老路：以 alpha=(version>=10?1.0f:0.0f) 调 0x1419F8180（getAttachPos 路径，location=0=Feet）。定位方式：LeviLamina.dll 符号缓存槽 base+0x425698 → 混淆跳板 0x255E60430C0 → 0x255E90FA000 →偏移链 0x21e/0x174/0x61a/0x818/0x76e/0x20/0x6c4/0x96c/0x41c/0xca → 0x255E90FA372 的 xchg [rsp],rax; ret 计算式跳转 → 运行期 0x7FF6921F2C58 → RVA 0x49D2C58 → 静态 0x1449D2C40（字节逐一相符）。"
+      ]
+    },
+    "@attach_position_utility": {
+      "strategy": [
+        "call site of CommandSelectorBase::getFeetPos legacy branch",
+        "capstone: 0x1419f8180"
+      ],
+      "address": "0x1419f8180",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 1452 字节，入口 (rcx=Actor, rdx=Vec3* out, r8d=AttachLocation, xmm3=alpha)；getFeetPos(version≤22) 在 0x1449D2C62-0x1449D2C6B 以 rcx=actor/rdx=out/r8d=0(Feet)/xmm3=(version≥10?1.0f:0.0f) 调用它。location-1 无符号 >1（即非 {1,2}）时走组件视图路，否则直接算 AABB 中心（[actor+0x220] 的 min+max 乘 0.5）后跳公共尾。组件视图路：先用 0x151D51160 的 magic static 取 GetAttachPositionViewsComponent(0x7CDC45B4) 在 [actor+8] 注册表里的 storage 作门控（失败则改查 PassengerComponent(0x98E40C0E)，乘坐态也放行），再取 Offsets(0xDE21C316,68)/36 字节组件，用 StateVector+0x00(mPos) 与 +0x0C(prev) 按 alpha 线性插值出 tmp，最后调 @attach_position_location_dispatch。"
+      ]
+    },
+    "@attach_position_location_dispatch": {
+      "strategy": [
+        "callee of @attach_position_utility",
+        "capstone: 0x14326f470"
+      ],
+      "address": "0x14326f470",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 714 字节，(rcx=out, edx=location, r8=&interp, r9=AABBShape, 栈=Offsets 等)；cmp edx,8; ja 默认；跳表 0x14E873EB0 九项：0=Feet、1/2=AABB 中心、3=Head、4..8 其它挂点。**location 0(Feet)=(interp.x, interp.y − Offsets[+0x00], interp.z)**，Offsets[+0] 即 mHeightOffset（见 @actor_offset_set_height_offset 的写点）；location 3(Head) 取 Offsets+0x08 的 Vec3；location 4 取 Offsets+0x08 与 +0x14 两个 Vec3 相加。alpha=1.0 时 interp==mPos，故老路 Feet.y == mPos.y − mHeightOffset，与新路（version>22）AABB.min.y 数值等价。"
+      ]
+    },
+    "@get_attach_position_views_component": {
+      "strategy": [
+        "type hash 0x7cdc45b4 cache-init",
+        "capstone: 0x141aa8930"
+      ],
+      "address": "0x141aa8930",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] id/hash 0x7CDC45B4，pretty_function 名字 \"GetAttachPositionViewsComponent\"，TLS/magic static 缓存初始化点 0x141AA8961（缓存体在 0x151D51160，hash 字段 0x151D51164）。@attach_position_utility 读该缓存体的 hash 作注册表检索键，即“实体是否带 attach-position 视图缓存”。"
+      ]
+    },
+    "@is_horizontal_pose_flag_component": {
+      "strategy": [
+        "type hash 0x2430e499 cache-init / assure-storage",
+        "capstone: 0x1428a8c20"
+      ],
+      "address": "0x1428a8c20",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] hash 0x2430E499，pretty_function 名字 \"IsHorizontalPoseFlagComponent\"，缓存初始化点 0x1428A8E91（缓存体 0x151DB05A0）。0x1428A8C20 是该类型的 assure-storage：在 [reg+0x48]/[reg+0x50] 桶、[reg+0x68] dense、[reg+0x70] end 的 32 字节条目表里按 hash 找 storage，找不到就按 0x60 字节惰性新建。VanillaOffset worker 用它拿 {storage, entity} 对，命中时 K=0.2f。"
+      ]
+    },
+    "@vanilla_offset_worker_client": {
+      "strategy": [
+        "sibling of @vanilla_offset_system_worker",
+        "global fn ptr 0x14F0FBAA8"
+      ],
+      "address": "0x1428a4bc0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 与 @vanilla_offset_system_worker(0x1428A4AB0) 同形：同样读 0.4f(0x14E602290)/0.2f(0x14E6AE454)/1.62001f(0x14E6AE444) 四个常量、同样写 VanillaOffsetComponent 的 mCurrentOffset(+0)/mPreviousOffset(+0xC)/mClimbingOffset.z(+0x14)。",
+        "[代码] 调用是间接的：内层派发器 0x1428CDBB0 在 0x1428CDC7E 读全局指针 0x14F0FBAA8，该指针指向 0x14E585660 的 5 字节 `jmp rax` 桩；rax 由 0x1428CDCA8 从 [r13]（r13=[ctx+0x10]）载入，即 worker 函数指针由视图/上下文对象携带，不是全局开关。tick(0x1428A4D30) 与两个派发器里都搜不到 0x1428A4AB0/0x1428A4BC0 的直接引用，选入口的绑定点在视图构造侧（未静态定位）。"
+      ]
+    },
+    "@travel_type_sensing_system_register": {
+      "strategy": [
+        "registration name TravelTypeSensingSystem",
+        "capstone: 0x1468260d1"
+      ],
+      "address": "0x146822800",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 系统注册大函数 [0x146822800,0x146829404) 内 0x1468260B9 lea rcx,[0x14EA520B0]（vtable）、0x1468260C0 mov [rax],rcx 装表，0x1468260D1 lea rax,[0x14EC3530A]（名字 \"TravelTypeSensingSystem\"）、0x1468260DF mov qword [rbp+0x1468],0x17（名字长 23，与字符串一致），随后 0x1468260F4 call 0x1490DC610、0x146826108 call 0x1466567E0 完成注册。",
+        "[常量] vtable 0x14EA520B0 的 +0x38..+0x70 依次嵌入 13 个组件 hash，最后一个是 **0x3E7D1356 = LiquidTravelFlagComponent**（+0x70，随后 +0x78 为 0 收尾）；已辨认的邻居：0xC29078A0=OnGroundFlagComponent、0xBAC1B3CF=AABBShapeComponent、0xC67426F3=ActorDataFlagComponent。",
+        "[SDK] refs/levilamina-26.51.7/src/mc/entity/systems/TravelTypeSensingSystem.h：ModType = EntityModifier<AirTravelFlag, GlidingTravelFlag, GroundTravelFlag, LavaTravelFlag, WaterTravelFlag, PlayerFlyingTravel, **LiquidTravelFlag**>，ViewType = StrictEntityContext + Include<MobTravelComponent> + Optional<MovementAbilities/WasInWater/OnGround/ImmuneToLavaDrag> + AABBShape + SubBBs + ActorDataFlag。"
+      ]
+    },
+    "@travel_type_sensing_system_tick": {
+      "strategy": [
+        "vtable 0x14EA520B0 slot +0x28",
+        "capstone: 0x1490dd9e0"
+      ],
+      "address": "0x1490dd9e0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] vtable 0x14EA520B0 的 +0x28 槽 = 0x1490DD9E0（带栈 cookie 的真函数，不是 thunk）；同一 0x1490xxxxx 区间的 0x1490DC7A0 / 0x1490DDD80 引用 LiquidTravelFlagComponent(0x3E7D1356) （经 storage getter sub_146860C50 与类型链表），即本系统的 flag 维护助手。",
+        "[SDK] doTravelTypeSensingSystem 的最后一个参数就是上面那个 EntityModifier——**LiquidTravelFlagComponent（空 struct）由本系统每 tick 增删**，与 Water/Lava 等行进标签同批维护。"
+      ]
+    },
+    "@attach_position_views_builder": {
+      "strategy": [
+        "callee of sub_14326FEE0",
+        "capstone: 0x14326ffd0"
+      ],
+      "address": "0x14326ffd0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 反编译：sub_14326FFD0(out, entityCtx, registry, ...) 先用 sub_14022A5C0 取实体上下文并校验 [reg+352] 与目标实体，然后取 hash 0x16178F0A 的组件（乘坐链，找不到就惰性新建并缓存到 [ctx+8]）并**递归调用自己**；递归出口（LABEL_24）按 alpha 线性插值 StateVectorComponent：x=lerp([+0x00],[+0x0C],alpha)、y=lerp([+0x04],[+0x10],alpha)、z=lerp([+0x08],[+0x14],alpha)，元素步长 9 个 float（36 字节，与 StateVectorComponent 的 size 一致）。",
+        "[代码] 与 @attach_position_utility 里 capstone 读到的 tmp=lerp(prev,mPos,alpha) 完全一致（prev 即 StateVector+0x0C 那个 Vec3），双向验证了插值基准。"
+      ]
+    },
+    "@attach_position_views_worker": {
+      "strategy": [
+        "callee of sub_14326FEE0",
+        "capstone: 0x14326f740"
+      ],
+      "address": "0x14326f740",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 反编译：sub_14326F740(out, entityCtx, views, location, &interp) 先校验 （views 的 [views+344] 指向对象的 +352 必须等于 entityCtx[1]，再过 sub_14328AB00 / sub_141E175A0 两道检查），通过后用 5 个助手从 views 的 +344/+408/+432/+456 槽取组件指针（其中 +456 那个的首个 float 当偏航角），**调用 @attach_position_location_dispatch(out, location, &interp, ...)**，成功则置 out[12]=1，否则置 0。",
+        "[代码] 也就是说 sub_14326FEE0（乘坐态/门控失败那条路）与 @attach_position_utility 的主路最终都汇到同一个九路 location 跳表——Feet(0) 一律是 interp.y − Offsets[+0x00]。"
+      ]
+    },
+    "@liquid_blip_box_prefilter": {
+      "strategy": [
+        "块源视图 vtable off_14E8554E0 +0x38",
+        "既有证据 r22-075：0x142d8a060（r24 纠正地址多写一位的笔误，未新增静态定位）"
+      ],
+      "address": "0x142d8a060",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] [0x142D8A060,0x142D8A215) 437 字节：把 AABB 按 floor/ceil 换成整点块区间，逐格 mov rax,[rsi]; mov rax,[rax+0x28]（块源 vtable+0x28=getBlock）；call 0x14F0FBAA8（→0x14E585660 的 jmp rax 桩）；mov rax,[rax+0x68]（Block::mLegacy）；mov rax,[rax+0x28]（BlockLegacy::mMaterial）；cmp byte ptr [rax+2],0（**Material::mLiquid**）；jne → al=1 返回「盒内有液体块」。",
+        "[SDK] BlockType.h：+0x28=mMaterial（vtable+mDescriptionId(32B) 之后）；Material.h：+0x02=mLiquid。虚槽交叉验证：BlockType vtable+0x38=addAABBs（+0xA0 收集器 sub_142D86DC0 正是这么调的）、+0x40=getOutline。",
+        "[代码] 同一字节模式 48 8B 40 68 / 48 8B 40 28 / 80 78 02 00 全 .text 51 处、22 个函数共用；IDA 反编译 0x14204E840 显示「液体 → result=0（不构成障碍）」，与预过滤的「液体 → 障碍」互为印证。",
+        "[代码] vtable off_14E8554E0 的 +0x38 槽 = 0x142D8A050，该地址只有一条 `jmp sub_142D8A060`（叶跳，不在 .pdata）；真实体仍是 0x142D8A060，两个地址不冲突。",
+        "[代码] 枚举语义：x/y/z 均按 [floor(min), ceil(max)) 整格枚举；盒底恰在液格顶面（min.y=-46.0 对液格 -47）时 floor 从 -46 开始，不枚举液格 → 预过滤通过。这是 gap≥0 含零边界的静态来源。"
+      ]
+    },
+    "@render_rotation_component": {
+      "strategy": [
+        "type hash 0xd15944e2 cache-init",
+        "capstone: 0x142544c00"
+      ],
+      "address": "0x142544c00",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] hash 0xD15944E2，缓存初始化点 0x142544C34（lea rax,[0x14ECF1F5A]=\"RenderRotationComponent]\"）；storage getter sub_1425449C0 被 @attach_position_views_builder(sub_14326FFD0) 以 sub_1425449C0(reg+48, 0xD15944E2) 调用——挂点位置依赖渲染朝向，所以头/眼挂点要读它。"
+      ]
+    },
+    "@vehicle_component": {
+      "strategy": [
+        "type hash 0x161f61ea cache-init",
+        "capstone: 0x14022b560"
+      ],
+      "address": "0x14022b560",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] hash 0x161F61EA，缓存初始化点 0x14022B594（lea rax,[0x14ECFCC70]=\"VehicleComponent]\"）；storage 由 sub_14022AD30(reg+48, 0x161F61EA) 惰性取出并缓存到 [ctx+8]，@attach_position_views_builder 拿到它就**递归调用自身**——即乘坐链：实体→载具→载具的载具。"
       ]
     }
   }

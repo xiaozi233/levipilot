@@ -1,0 +1,27 @@
+# command: py -3.11 out/locate_delta_writers2.py
+# cwd: <repo>
+# started: 2026-11-10T12:40:47Z
+# exit: 0
+# --- stdout ---
+module_base 0x7ff68d820000 sv 0x2565713eb80 head 5975 feet -60.0
+== mPosDelta.xz: 261 hits, 9 sites
+   0x7ff690a09ffb -> static 0x1431e9ffb n=47 func=0x1431e9ea0 tid=[32784]
+   0x7ff69062d290 -> static 0x142e0d290 n=46 func=- tid=[32784]
+   0x7ff6906117f5 -> static 0x142df17f5 n=46 func=- tid=[32784]
+   0x7ff69060217f -> static 0x142de217f n=33 func=0x142de2010 tid=[32784]
+   0x7ff696381989 -> static 0x148b61989 n=30 func=0x148b618a0 tid=[32784]
+   0x7ff696381995 -> static 0x148b61995 n=30 func=0x148b618a0 tid=[32784]
+   0x7ff6954f7167 -> static 0x147cd7167 n=13 func=- tid=[32784]
+   0x7ff690619fa4 -> static 0x142df9fa4 n=13 func=0x142df9da0 tid=[32784]
+   0x7ff696e0940c -> static 0x1495e940c n=3 func=0x1495e9200 tid=[32784]
+== mPosDelta.y: 229 hits, 6 sites
+   0x7ff690a09ffb -> static 0x1431e9ffb n=58 func=0x1431e9ea0 tid=[32784]
+   0x7ff69062d290 -> static 0x142e0d290 n=57 func=- tid=[32784]
+   0x7ff6906117f5 -> static 0x142df17f5 n=57 func=- tid=[32784]
+   0x7ff696381995 -> static 0x148b61995 n=30 func=0x148b618a0 tid=[32784]
+   0x7ff6954f7167 -> static 0x147cd7167 n=24 func=- tid=[32784]
+   0x7ff696e0940c -> static 0x1495e940c n=3 func=0x1495e9200 tid=[32784]
+cleared; tick 502455
+
+# --- stderr ---
+

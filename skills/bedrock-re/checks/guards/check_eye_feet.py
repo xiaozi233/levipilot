@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Doc-drift guard: pos.y is feet; the recorded y is eyes (feet + 1.6200101)."""
+"""Guard the feet/recorded-position offset, distinct from the current head height."""
 
 from __future__ import annotations
 

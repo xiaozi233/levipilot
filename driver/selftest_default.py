@@ -964,6 +964,35 @@ def check_default_suite(
             bool(hits) and all(len(hit.get("stack", [])) <= 8 for hit in hits),
             f"hits={len(hits)}",
         )
+        sample_base = int(client.watch_list().get("head", 0))
+        sampled = client.watch_set(probe_addr, size=4, mode="w", depth=1, sample=True)
+        try:
+            wait_ticks(client, 5)
+            sample_dump = client.watch_drain(sample_base, watch_id=int(sampled["id"]))
+        finally:
+            client.watch_clear(int(sampled["id"]))
+        sample_hits = sample_dump.get("hits", [])
+        checks.check(
+            "watch_sample_bytes",
+            bool(sample_hits)
+            and all(h.get("value_ok") and len(h.get("value_hex", "")) == 8 for h in sample_hits),
+        )
+        sample_values = [
+            int.from_bytes(bytes.fromhex(h["value_hex"]), "little")
+            for h in sample_hits
+            if h.get("value_ok")
+        ]
+        checks.check(
+            "watch_sample_tick_values",
+            len(set(sample_values)) >= 2 and sample_values == sorted(sample_values),
+            str(sample_values),
+        )
+        checks.check(
+            "watch_sample_qpc",
+            sample_dump.get("qpc_frequency", 0) > 0
+            and bool(sample_hits)
+            and all(h.get("qpc", 0) > 0 for h in sample_hits),
+        )
         deep_base = int(client.watch_list().get("head", 0))
         deep = client.watch_set(probe_addr, size=8, mode="w", tag="deep_probe", depth=20)
         checks.check(

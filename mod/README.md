@@ -37,7 +37,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `chat_history` | `limit=1..64`；客户端保留的聊天快照，含截断标记 |
 | `mem_read` / `mem_write` | 进程内存读写；写需 `allow_write=true`，坏地址回 `bad_addr` |
 | `probe` | 需 `addr`（取自 `blocks` 回包的地址）+ `kind=raw/block/legacy`、`len=1..64`；`addr+288` 是方块状态字 |
-| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | DR0–DR3 观察点；`depth=1..32`，`thread=all` 被拒绝 |
+| `watch_set` / `watch_clear` / `watch_list` / `watch_drain` | DR0–DR3；`depth=1..32`，拒绝 `thread=all`；`sample=true` 记录字节/QPC；`mode=x,size=1` 为执行前观察（另需 `allow_hook_va`），可配 `snapshots=[{reg:"rdx",size:32},…]`（最多三项，rcx/rdx/r8/r9 指向的 1..64 字节） |
 | `hook_install` / `hook_rm` / `hook_list` / `hook_drain` | 符号或 VA hook；VA 需 `allow_hook_va`，可选 `mem_arg` 同步快照 |
 | `hook_call` | 调用已支持的导出符号；当前为 `MobJump::setJumpPendingScale` |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、取消任务和输入，不杀进程 |
@@ -50,6 +50,16 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `lifecycle_prepare` | `on`；检查自有工作并关闭/恢复普通请求准入；常驻 hook 保留至 disable 排空后移除；需压力权限 |
 | `send_probe` | 显式发送/序列化 suspect 取证，默认关闭，需 `allow_hook_va` 且在世界内 |
 | `selftest_sdk` | 需 `allow_selftest_stress`；`target=client/server/registration/command_boundary`、`phase=lookup/submit/run`、`mode=none/seh/cpp`；回 `sdk_test_result`，只用于局部故障恢复验收 |
+
+Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安装后缓存的 head
+读取；显式 `since=0` 则读取仍保留的旧行。`watch_id` / `hook_id` 只在全局分页后过滤，空页
+仍须用 `next` 继续，并检查 `lost`。原始 JSON 命令省略 `since` 仍为 0。需要覆盖安装最初命中
+时须在安装前自行读取 head；完整语义见[内部实现](../docs/mod-internals.md#内存观察点与-hook)。
+
+被动逐轴采集可用 `py -3.11 -m driver.delta_watch --ticks 80 --output out/delta-writes.jsonl`，
+要求兼容 profile、世界内玩家与三个空闲 DR 槽。分别观察 `mPosDelta` 三轴各 4 字节，工具不
+移动玩家、不分析指令，只清理自己安装的观察点。输出保留全局原始分页、丢失计数与清理错误；
+丢失或失败不会标为完整。该工具目前只完成离线回归，尚未现场重采。
 
 ### 记录与输入
 
@@ -123,10 +133,11 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 
 ## `state` 与事件字段
 
-关键字段：`x,y,z`（眼睛）、`feet_*`、`head_*`、`vx/vy/vz`、`yaw/pitch`、
+关键字段：`x,y,z`（位置基准，实测脚部 + 1.6200101）、`feet_*`、`head_*`、`vx/vy/vz`、`yaw/pitch`、
 `on_ground`、`sprinting/sneaking/swimming/flying/mayfly/in_water/alive`、
 `health/max_health`、`hunger/saturation/exhaustion`、`xp_level/xp_progress`、
 `gamemode/dimension/name/uuid/selected_slot/item`、`block_*`、`effects`、`input` 和 `bindings`。
+`x,y,z` 与 `feet_*` 的 1.62001 差写自 `OffsetsComponent.mHeightOffset`，不随蹲姿变化。
 
 跑酷事件不需要 `start`：`player_landed`、`player_hurt`、`player_died`。legacy `start`
 的 tick 另有 `in_air/jump_edge/block_below/block_feet/block_head`。
@@ -221,7 +232,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 
 实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见
 [`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。当前基线为离线
-**438/438**、完整现场 **1169/1169**，只在对应代码与权限前提下有效。
+**410/410**、完整现场 **1169/1169**，只在对应代码与权限前提下有效。
 
 ## License
 

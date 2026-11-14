@@ -48,6 +48,24 @@ def now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def scrub_paths(text: str) -> str:
+    """Drop workspace and user-profile paths from captured probe output.
+
+    Probe `.out` files live in a public repo and `lint_public` rejects these
+    patterns, so a failing probe's traceback must not carry them.
+    """
+    if not text:
+        return text
+    roots = [str(ROOT), str(ROOT.resolve()), str(Path.home())]
+    for root in roots:
+        if not root:
+            continue
+        for separator in ("\\", "/"):
+            text = text.replace(root + separator, "")
+            text = text.replace(root, "")
+    return text
+
+
 def case_dir(findings_root: Path, version: str, case: str) -> Path:
     return findings_root / version / "cases" / case
 
@@ -236,13 +254,30 @@ def generate_resume(findings_root: Path, version: str, case: str) -> Path:
     data = read_case(findings_root, version, case)
     records = read_journal(findings_root, version, case)
     path = case_dir(findings_root, version, case) / "resume.md"
+    # A claim that some erratum withdraws must not keep sitting under
+    # "Confirmed"/"Open" as if it were still current: annotate it where it is
+    # kept, and drop it from the open list (the erratum itself carries the
+    # retained part, if any).
+    retracted_by: dict[str, list[str]] = {}
+    for item in records:
+        target = item.get("erratum_of")
+        if target and item.get("kind") == "erratum":
+            retracted_by.setdefault(str(target), []).append(str(item.get("id")))
+    by_id = {str(item.get("id")): item for item in records}
     confirmed = [item for item in records if item.get("result") == "confirmed"]
     open_items = [
         item
         for item in records
-        if item.get("result") in {"inconclusive", "live-only"} and item.get("kind") != "probe"
+        if item.get("result") in {"inconclusive", "live-only"}
+        and item.get("kind") != "probe"
+        and str(item.get("id")) not in retracted_by
     ]
     pending = pending_probes(records)
+    # A retracted claim must stay visible in the resume: dropping it leaves the
+    # superseded wording under "Open / pending" as if it were still live.
+    retracted = [
+        item for item in records if item.get("kind") == "erratum" or item.get("result") == "refuted"
+    ]
     lines = [
         f"# resume: {case}",
         "",
@@ -258,9 +293,11 @@ def generate_resume(findings_root: Path, version: str, case: str) -> Path:
     ]
     if confirmed:
         for item in confirmed[-12:]:
+            superseded = retracted_by.get(str(item.get("id")))
+            note = f"（见 {', '.join(superseded)} 勘误）" if superseded else ""
             lines.append(
                 f"- {item.get('id')}: {item.get('hypothesis', '')} "
-                f"[{item.get('evidence_tier')}; {item.get('static_closure', '')}]"
+                f"[{item.get('evidence_tier')}; {item.get('static_closure', '')}]{note}"
             )
     else:
         lines.append("- none")
@@ -275,6 +312,18 @@ def generate_resume(findings_root: Path, version: str, case: str) -> Path:
         lines.append("Pending probes:")
         for probe in pending:
             lines.append(f"- {probe.get('id')}: {(probe.get('probe') or {}).get('scope', '')}")
+    if retracted:
+        lines += ["", "## Retracted / errata", ""]
+        for item in retracted[-10:]:
+            target = item.get("erratum_of") or "-"
+            original = by_id.get(str(target)) or {}
+            base = (
+                f"- {item.get('id')} (erratum of {target}): {item.get('hypothesis', '')} "
+                f"[{item.get('result')}]"
+            )
+            if original.get("hypothesis"):
+                base += f" — 原命题: {original.get('hypothesis', '')}"
+            lines.append(base)
     next_actions = [item.get("next") for item in records if item.get("next")]
     lines += ["", "## Next actions", ""]
     if next_actions:
@@ -465,6 +514,10 @@ def probe(args: argparse.Namespace) -> int:
     except subprocess.TimeoutExpired as exc:
         stdout = str(exc.stdout or "")
         stderr = str(exc.stderr or "") + f"\n[landing] timeout after {args.timeout}s\n"
+    # Probe .out files are committed to a public repo, so a traceback from a failed
+    # run would otherwise publish the workspace path (lint_public rejects it).
+    stdout = scrub_paths(stdout)
+    stderr = scrub_paths(stderr)
     out_path = directory / "probes" / f"{ident}.out"
     out_path.write_text(
         "\n".join(

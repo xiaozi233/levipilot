@@ -361,7 +361,10 @@ watchInstall(
     bool               readWrite,
     std::string const& thread,
     std::string const& tag,
-    std::uint32_t      depth
+    std::uint32_t      depth,
+    bool               sample = false,
+    bool               execute = false,
+    nlohmann::json const& snapshots = nlohmann::json::array()
 );
 nlohmann::json watchRemove(int id);
 bool           watchRemoveAll();

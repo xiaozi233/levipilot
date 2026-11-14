@@ -1,0 +1,15 @@
+# command: py -3.11 out/liquid_blip_travel_preflight.py
+# cwd: <repo>
+# started: 2026-11-09T14:55:04Z
+# exit: 0
+# --- stdout ---
+GEOMETRY {"blocks": {"blocks": [{"addr": 2563627819984, "name": "minecraft:stone", "x": 354, "y": -49, "z": 303}, {"addr": 2563785532112, "name": "minecraft:water", "x": 354, "y": -48, "z": 303}, {"addr": 2563785532112, "name": "minecraft:water", "x": 354, "y": -47, "z": 303}, {"addr": 2563791965536, "name": "minecraft:air", "x": 354, "y": -46, "z": 303}, {"addr": 2563627819984, "name": "minecraft:stone", "x": 354, "y": -48, "z": 299}, {"addr": 2563627819984, "name": "minecraft:stone", "x": 354, "y": -47, "z": 299}, {"addr": 2563627819984, "name": "minecraft:stone", "x": 354, "y": -38, "z": 299}], "event": "blocks", "truncated": false}, "depths": {"-48": 0, "-47": 0}}
+{"tick": 50153, "feet_y": -47.61677551269531, "in_water": true, "client": {"error": "ecs_context: component_not_found"}, "server": {"error": "ecs_component: component_not_found"}}
+{"tick": 50158, "feet_y": -47.73049545288086, "in_water": true, "client": {"error": "ecs_context: component_not_found"}, "server": {"error": "ecs_component: component_not_found"}}
+{"tick": 50164, "feet_y": -47.87643814086914, "in_water": true, "client": {"error": "ecs_context: component_not_found"}, "server": {"error": "ecs_component: component_not_found"}}
+{"tick": 50169, "feet_y": -48.0, "in_water": true, "client": {"error": "ecs_context: component_not_found"}, "server": {"error": "ecs_component: component_not_found"}}
+{"tick": 50174, "feet_y": -48.0, "in_water": true, "client": {"error": "ecs_context: component_not_found"}, "server": {"error": "ecs_component: component_not_found"}}
+{"tick": 50180, "feet_y": -48.0, "in_water": true, "client": {"error": "ecs_context: component_not_found"}, "server": {"error": "ecs_component: component_not_found"}}
+
+# --- stderr ---
+

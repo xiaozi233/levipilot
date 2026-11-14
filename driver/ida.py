@@ -244,13 +244,43 @@ def store_cache(url: str, database: str, path: Path) -> None:
     )
 
 
+def _session_path(session: dict[str, Any]) -> str:
+    return str(session.get("input_path") or session.get("filename") or "")
+
+
+def live_session(mcp: Mcp, i64: Path) -> str | None:
+    """Return the id of a live session for `i64`, opening nothing.
+
+    The supervisor respawns its worker on its own, so the cached id goes
+    stale while the database stays open. Adopting the live session keeps the
+    driver from issuing a second `idb_open`: the database lock rejects that
+    within seconds and the supervisor logs `Failed to open database`, which
+    reads exactly like a broken `.i64`.
+    """
+    cached = load_cache(mcp.url)
+    sessions = [s for s in mcp.list_sessions() if s.get("session_id")]
+    for session in sessions:
+        if str(session["session_id"]) == cached:
+            return str(session["session_id"])
+    # `input_path` is the absolute path we asked for; some builds report only
+    # the file name, which is ambiguous across versions, so fall back to that
+    # only when a single session is up.
+    exact = [s for s in sessions if _session_path(s) == str(i64)]
+    matches = exact or (sessions if len(sessions) == 1 else [])
+    if not matches:
+        return None
+    idle = [s for s in matches if not s.get("busy")] or matches
+    database = str(idle[0]["session_id"])
+    store_cache(mcp.url, database, i64)
+    return database
+
+
 def open_session(mcp: Mcp, i64: Path, *, wait: float = 900.0) -> str:
     """Open the database and return the session id, tolerating a dropped reply."""
-    cached = load_cache(mcp.url)
-    for session in mcp.list_sessions():
-        if session.get("session_id") and session.get("session_id") == cached:
-            print(f"reusing session {cached}", file=sys.stderr)
-            return cached
+    adopted = live_session(mcp, i64)
+    if adopted:
+        print(f"reusing session {adopted}", file=sys.stderr)
+        return adopted
     try:
         mcp.call("idb_open", input_path=str(i64), timeout=60.0)
     except (IdaError, urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -274,13 +304,13 @@ def connect(*, open_if_needed: bool = True, wait: float = 900.0) -> tuple[Mcp, s
     if not endpoint_alive(mcp.url):
         raise IdaError("IDA MCP endpoint is down; run `py -3.11 driver/ida.py start` first")
     mcp.initialize(timeout=30.0)
-    cached = load_cache(mcp.url)
-    sessions = {s.get("session_id") for s in mcp.list_sessions()}
-    if cached and cached in sessions and mcp.session_healthy(cached):
-        return mcp, cached
+    i64 = default_i64()
+    session = live_session(mcp, i64)
+    if session and mcp.session_healthy(session):
+        return mcp, session
     if not open_if_needed:
         raise IdaError("no live session; run `py -3.11 driver/ida.py open`")
-    return mcp, open_session(mcp, default_i64(), wait=wait)
+    return mcp, open_session(mcp, i64, wait=wait)
 
 
 def call(tool: str, **arguments: Any) -> Any:

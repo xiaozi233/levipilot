@@ -1,0 +1,9 @@
+# command: py -3.11 out/liquid_entry_watch_canary.py
+# cwd: <repo>
+# started: 2026-11-09T15:05:30Z
+# exit: 0
+# --- stdout ---
+{"passed": 11, "total": 11, "checks": {"size": true, "snapshot_count": true, "register": true, "too_large": true, "negative": true, "sample_required": true, "mode": true, "snapshots": true, "tick_progress": true, "clear": true, "no_watches": true}}
+
+# --- stderr ---
+

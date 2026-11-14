@@ -21,7 +21,7 @@ py -3.11 driver/parkour.py attempts --macro route1 \
 
 | 字段 | 含义 |
 | --- | --- |
-| `x/y/z` | 眼睛位置 |
+| `x/y/z` | 位置基准（`Actor::getPosition()`）；实测为**脚部 + 1.6200101**，不是随姿态变化的头部/镜头高度 |
 | `vx/vy/vz` | `Actor::getVelocity()` 的参考值；实际位移以相邻 tick 位置差为准 |
 | `yaw/pitch` | 朝向 |
 | `on_ground` / `in_air` | 地面状态 |
@@ -31,7 +31,9 @@ py -3.11 driver/parkour.py attempts --macro route1 \
 | `w/a/s/d/sprint/sneak/jump` | 输入状态 |
 | `health` | 血量 |
 
-`block_*` 按脚部计算，不要直接与眼睛的绝对 `y` 混用；报告中的高度比较应保持同一坐标口径。
+`block_*` 按脚部计算，不要直接与 `x/y/z` 的绝对 `y` 混用；报告中的高度比较应保持同一坐标口径。
+`x/y/z` 与脚部相差的 1.62001 写自 `OffsetsComponent.mHeightOffset`（常量 `1.62001f`，
+`.rdata 0x14E6AE444`），蹲姿只改 AABB 与 `head_*`，不改这个基准。
 
 ## 跳跃分析与对比
 

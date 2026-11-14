@@ -143,7 +143,7 @@ with ModClient() as client:
 
 ## 4. 记录字段与常用判据
 
-- `RecordEntry`：`tick/x/y/z`（y 是眼睛；`feet_y` 是脚）、`vx/vy/vz`、`yaw/pitch`、`flags`、
+- `RecordEntry`：`tick/x/y/z`（y 是玩家位置基准；`feet_y` 是脚）、`vx/vy/vz`、`yaw/pitch`、`flags`、
   `block_below/feet/head`（方块名 FNV-1a 32）。
 - 位：`on_ground/in_air/jump_edge/sprint/sneak/action_sprint/输入 W A S D Jump/
   block_oob/in_water/in_lava`。
@@ -151,7 +151,9 @@ with ModClient() as client:
   地面也实测比值 1.0）。别把它和 `mem_read` 读到的 `StateVectorComponent+0x18` 混：
   后者是另一个内部字段，地面约是位移的 0.546 倍（位移 0.2159 → 字段 0.1179，
   且站着时 vy 仍留着 −0.0784）。
-- `pos.y` 是**脚部**；`RecordEntry` 的 `y` 是眼睛，关系是脚部 + 1.6200101。
+- 传送/场景的 `pos.y` 是**脚部**；`RecordEntry` 的 `y` 是位置基准，本版本原地站立/蹲姿
+  对照均为脚部 + 1.6200101，不等同于随姿态变化的 `state.head_y`，更不能直接当渲染镜头高度。
+  AABB 高度也会随蹲姿变化，液体检测不能固定使用站立高度；原始对照见 liquid-blip 的 `r20-066`。
 - `pitch` 正 = 低头。
 
 ## 5. 结论落地

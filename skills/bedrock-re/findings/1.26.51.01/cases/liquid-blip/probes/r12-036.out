@@ -1,0 +1,37 @@
+# command: py -3.11 out/liquid_blip_dynamic_review.py --runs standing,slow-a
+# cwd: <repo>
+# started: 2026-11-09T13:51:42Z
+# exit: 0
+# --- stdout ---
+IDENTITY {"pid": 36896, "tick_address": 140727222222864, "client": {"address": 2012839217760, "component_id": 459100728, "context": 2012839198232, "count": 1, "entity": 11, "event": "ecs_context", "index": 0, "partial": false, "registry": 2010283600736, "scope": "client", "size": 36, "skipped": [], "truncated": false, "visited": 0}, "server": {"address": 2013534787840, "component_id": 459100728, "event": "ecs_component", "hex": "0040b1431c8569c2662696430040b1431c8569c266269643000000002e90a0bd00000000", "len": 36, "name": "StateVector", "ok": true, "partial": false, "runtime_id": 1, "scope": "server", "skipped": [], "stride": 0, "truncated": false, "visited": 0}, "registries": {"event": "ecs_registries", "partial": false, "registries": [{"components": 502, "entity": 11, "registry": 2010283600736, "scope": "client"}], "scope": "client", "skipped": [], "truncated": false, "visited": 502}, "server_entity": {"actor": 2013537120400, "components": 142, "context": 2013537120408, "entity": 1, "event": "ecs_entity", "partial": false, "registry": 2013141178896, "runtime_id": 1, "scope": "server", "skipped": [], "truncated": false, "type": "minecraft:player", "visited": 499}, "original": {"alive": true, "bindings": {"back": 83, "forward": 87, "jump": 32, "left": 65, "right": 68, "sneak": 16, "sprint": 82}, "block_above": "minecraft:air", "block_below": "minecraft:grass_block", "block_feet": "minecraft:air", "block_head": "minecraft:air", "context": 2012839198232, "dimension": 0, "effects": [], "event": "state", "exhaustion": 1.9362096786499023, "feet_x": 354.5, "feet_y": -60.0, "feet_z": 300.29998779296875, "flying": false, "gamemode": 0, "head_x": 354.5, "head_y": -58.37998962402344, "head_z": 300.29998779296875, "health": 20.0, "hunger": 20.0, "in_water": false, "in_world": true, "input": {"a": false, "action_sprint": false, "d": false, "jump": false, "locked": false, "move_x": 0.0, "move_y": 0.0, "s": false, "sneak": false, "sprint": false, "w": false}, "item_use_ticks": 0, "max_health": 20.0, "mayfly": false, "ok": true, "on_ground": true, "partial": false, "pitch": -4.547393798828125, "runtime_id": 1, "sample_us": 107, "saturation": 0.0, "selected_slot": 5, "sneaking": false, "sprinting": false, "swimming": false, "tick": 10396, "truncated": false, "vx": 0.0, "vy": 0.0, "vz": 0.0, "x": 354.5, "xp_level": 0.0, "xp_progress": 0.0, "y": -58.37998962402344, "yaw": -179.8701934814453, "z": 300.29998779296875}, "tick_counter_check": {"status": 10422, "state": 10424}}
+GEOMETRY {"blocks": {"blocks": [{"addr": 2013945006608, "name": "minecraft:stone", "x": 354, "y": -49, "z": 303}, {"addr": 2013959178192, "name": "minecraft:water", "x": 354, "y": -48, "z": 303}, {"addr": 2013959178192, "name": "minecraft:water", "x": 354, "y": -47, "z": 303}, {"addr": 2013965476032, "name": "minecraft:air", "x": 354, "y": -46, "z": 303}, {"addr": 2013945006608, "name": "minecraft:stone", "x": 354, "y": -48, "z": 299}, {"addr": 2013945006608, "name": "minecraft:stone", "x": 354, "y": -47, "z": 299}, {"addr": 2013945006608, "name": "minecraft:stone", "x": 354, "y": -38, "z": 299}], "event": "blocks", "truncated": false}, "depths": {"-48": 0, "-47": 0}}
+RUN {"label": "standing", "record_rows": 21, "blips": [], "api_hz": 3.498811672350664, "rpm_hz": 81.34737138215293, "paired_ticks": 21, "rpm_errors": []}
+tick feet_y actual_vy raw_client raw_server delta ratio first_raw n
+10512 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10513 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10514 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10515 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10516 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10517 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10518 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10519 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10520 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10521 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10522 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10523 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10524 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10525 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10526 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 4
+10527 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 3
+10528 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10529 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 3
+10530 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10531 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 5
+10532 -48.0000000 0.0000000 -0.0050000 -0.0050000 -0.0050000 undefined -0.0050000 3
+RUN {"label": "slow-a", "record_rows": 54, "blips": [10578, 10579], "api_hz": 3.581589540956146, "rpm_hz": 82.01840048789575, "paired_ticks": 1, "rpm_errors": []}
+tick feet_y actual_vy raw_client raw_server delta ratio first_raw n
+10566 -46.8925171 0.0277443 0.0277552 0.0277561 0.0000109 1.0003921 0.0277552 1
+RESTORED {"alive": true, "bindings": {"back": 83, "forward": 87, "jump": 32, "left": 65, "right": 68, "sneak": 16, "sprint": 82}, "block_above": "minecraft:air", "block_below": "minecraft:grass_block", "block_feet": "minecraft:air", "block_head": "minecraft:air", "context": 2012839198232, "dimension": 0, "effects": [], "event": "state", "exhaustion": 1.9364099502563477, "feet_x": 354.5, "feet_y": -60.0, "feet_z": 300.29998779296875, "flying": false, "gamemode": 0, "head_x": 354.5, "head_y": -58.37998962402344, "head_z": 300.29998779296875, "health": 20.0, "hunger": 20.0, "in_water": false, "in_world": true, "input": {"a": false, "action_sprint": false, "d": false, "jump": false, "locked": false, "move_x": 0.0, "move_y": 0.0, "s": false, "sneak": false, "sprint": false, "w": false}, "item_use_ticks": 0, "max_health": 20.0, "mayfly": false, "ok": true, "on_ground": false, "partial": false, "pitch": -4.5428466796875, "runtime_id": 1, "sample_us": 117, "saturation": 0.0, "selected_slot": 5, "sneaking": false, "sprinting": false, "swimming": false, "tick": 10613, "truncated": false, "vx": 0.0, "vy": 0.0, "vz": 0.0, "x": 354.5, "xp_level": 0.0, "xp_progress": 0.0, "y": -58.37998962402344, "yaw": -179.87371826171875, "z": 300.29998779296875} errors []
+
+# --- stderr ---
+

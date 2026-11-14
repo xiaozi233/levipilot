@@ -1,0 +1,9 @@
+# command: py -3.11 out/analyze_liquid_blip_review.py
+# cwd: <repo>
+# started: 2026-11-09T14:31:35Z
+# exit: 0
+# --- stdout ---
+{"report": "skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-raw-velocity-review.md", "data": "skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-raw-velocity-review.json", "runs": {"standing": {"first_trigger_tick": null, "previous_read_tick": null, "model": null}, "slow-a": {"first_trigger_tick": 928, "previous_read_tick": 927, "model": {"a": 0.64, "b": 0.01, "n": 19, "max_abs_residual": 1.1774897575381194e-06}}, "slow-b": {"first_trigger_tick": 1094, "previous_read_tick": 1093, "model": {"a": 0.64, "b": 0.01, "n": 14, "max_abs_residual": 1.1765956878656558e-06}}, "jump-a": {"first_trigger_tick": 1237, "previous_read_tick": 1236, "model": {"a": 0.8, "b": -0.005, "n": 11, "max_abs_residual": 1.2424588203413522e-06}}, "jump-b": {"first_trigger_tick": 1359, "previous_read_tick": 1358, "model": {"a": 0.8, "b": -0.005, "n": 9, "max_abs_residual": 1.373589038844436e-06}}, "sink-a": {"first_trigger_tick": null, "previous_read_tick": null, "model": {"a": 0.8, "b": -0.005, "n": 20, "max_abs_residual": 1.4890730381002248e-06}}, "sink-b": {"first_trigger_tick": null, "previous_read_tick": null, "model": {"a": 0.8, "b": -0.005, "n": 21, "max_abs_residual": 1.4890730381002248e-06}}, "fast-lev": {"first_trigger_tick": 1633, "previous_read_tick": 1632, "model": {"a": 0.64, "b": 0.03, "n": 5, "max_abs_residual": 9.903311729425601e-07}}}}
+
+# --- stderr ---
+

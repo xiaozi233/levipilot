@@ -82,12 +82,13 @@ $$V_{y,t} = d \cdot V_{y,t-1} + g + 0.04$$
 
 | 流体 | 按住跳跃时的净常数项（$g + 0.04$） | 上浮终端速度 $V_{y,\infty}$ | 达到稳态耗时 |
 | --- | --- | --- | --- |
-| **水**（含游泳态） | $-0.005 + 0.04 = \mathbf{+0.035}$ | **$+0.175$ 格/tick（$3.5$ 格/s）** | 约 $24\text{ tick}$ |
+| **水**（未进游泳态） | $-0.005 + 0.04 = \mathbf{+0.035}$ | **$+0.175$ 格/tick（$3.5$ 格/s）** | 约 $24\text{ tick}$ |
+| **水**（游泳态） | 泳姿关掉 $-0.005$；每 tick $0.8\,V_y + 0.04$ | **$+0.200$ 格/tick（实测 `0.1985 ~ 0.1998`）** | 约 $25\text{ tick}$ |
 | **岩浆** | $-0.02 + 0.04 = \mathbf{+0.02}$ | **$+0.04$ 格/tick（$0.8$ 格/s）** | 约 $12\text{ tick}$ |
 
 要点说明：
 
-- **不挑视角与泳姿**：按住跳跃上浮不需要抬头看天；在游泳姿态下按住空格，上浮终速同样是 $+0.175$ 格/tick。在岩浆中，按住跳跃键是唯一的常规上浮手段。
+- **不挑视角**：按住跳跃上浮不需要抬头看天。**游泳态与普通水中不同**：泳姿下按住空格实测终速 **$+0.200$**（重力 $-0.005$ 已被泳姿关掉），比普通涉水的 $+0.175$ 快；旧记录“游泳态同为 $+0.175$”与本次不符，已按 2026-11-05 复核改写。岩浆中按住跳跃键是唯一的常规上浮手段。
 - **刚按键的 `2 ~ 4` tick 响应延迟**：刚落水或刚按下空格时，通常要过 `2 ~ 4` tick 才会出现第一次 `+0.04` 增量（源于按键输入队列及气/液状态切换延迟，并非按键失效）。
 - **比 Java 版上浮更快**：Java 版在乘以水阻力 $0.8$ **之前**先加 $+0.04$，因此水中上浮终速只有 $+0.135$ 格/tick（$2.7$ 格/s）；基岩版在阻力**之后**加 $+0.04$，上浮速度高出约 $30\%$。
 
@@ -189,6 +190,25 @@ $$V_{y,\infty} = \frac{k \, \tau}{0.2 + 0.8 k} \approx \begin{cases}
 - 当**头部仍浸没在水中**（头部位置存在水/方块）时，抬头会正常走平滑公式向上游动。
 - 当**头部已经露出水面**（头部位置无方块遮挡）且视角**抬头（$\tau > 0$）、非飞行**时，引擎不会继续向上加速，而是直接将 **$V_y$ 强制置为 `0`**，避免玩家像海豚一样一直冲出水面。
 
+**水平方向不受泳姿影响**：游泳姿态只接管竖直速度（关掉 $-0.005$ 的流体重力，改由俯仰角驱动），水平速度仍走 §4.1 的水公式。由于游泳态必须由**疾跑**触发，水平阻力固定取疾跑分支 $\rho = 0.9$：
+
+$$V_{H,t} = 0.9\,V_{H,t-1} + 0.0196 \;\Rightarrow\; V_{H,\infty} = \frac{0.0196}{1-0.9} = \mathbf{0.196}\ \text{格/tick}$$
+
+实测（`1.26.51.01`，3 格深水池，前进 + 疾跑）：约 20 tick 内 $V_H$ 从 `0.13` 爬到 **`0.194`** 并稳定，与公式一致；泳姿本身不额外加速。深海行者、海豚的恩惠等仍按 §4.2 的阻力插值与倍率分支处理。1 格深的浅水只测到 `0.12 ~ 0.17`，是因为上下浮动导致疾跑断续，而不是水平公式不同。
+
+**跳跃键与潜行键：泳姿下的额外升降**。游泳姿态并不封死按键通道，竖直速度上还会再叠一个 ±0.04 的固定项（实测，`1.26.51.01`，14 格深水池，俯仰 0）：
+
+| 按住 | 每 tick 额外项 | 实测终端 $V_y$ | 表现 |
+| --- | --- | --- | --- |
+| **跳跃** | $+0.04$ | **$+0.1998$**（两次 `0.1985 / 0.1986`） | 稳定上浮，泳姿标志保持 |
+| **潜行** | $-0.04$ | **$-0.1515$** | 稳定下潜到池底 |
+| 跳跃 + 潜行 | $+0.04-0.04$ | **$0$** | 相互抵消，悬停 |
+| 都不按（俯仰 0） | — | $0$ | 踩水悬停 |
+
+对照组（**未进泳姿**的普通水中）：跳跃 $0.04-0.005 \Rightarrow$ 实测 **$+0.1744$**；潜行 $-0.04-0.005 \Rightarrow$ 实测 **$-0.2227$**（终端 $-0.225$）。
+
+证据等级：跳跃是 `[代码]`——R-F10 `sub_1495EA890` 在液体判定通过时把 `0.04`（`0x3D23D70A`）加到 $V_y$，首 tick 用 `0.028` 闩锁，且过滤器含 `MobIsJumpingFlagComponent`；泳姿 lambda `sub_1490C0A00` 里**没有**跳跃/潜行分支。**潜行项的写入点尚未静态定位**（`-0.04` 常量 `0xBD23D70A` 的 16 个引用函数都与液体判定无关），目前只有 `[实测]`；泳姿下 $-0.1515$ 与 $-0.04/(0.2+0.8k)$ 的 $k=0.06$ 分支（$-0.161$）接近，说明该项与俯仰平滑叠加，具体顺序待闭。
+
 ---
 
 ## 六、流动推力：水平水流与瀑布下压
@@ -233,11 +253,112 @@ $$\vec{V}_t \mathrel{+}= k_f \cdot \hat{u}, \qquad k_f = \begin{cases} 0.014 & \
 
 当玩家在靠近液面的位置贴着岸边方块时，游戏提供了辅助跃出水面的弹跳机制（跑酷常称 Water Blip / Liquid Blip）：
 
-- **触发条件（基岩版实测）**：
-  1. 玩家正处于流体物理中，且**按住跳跃键**；
-  2. **水平方向正紧贴墙面发生水平碰撞**（注意：水阻力很大，若离墙稍远起步，速度可能在撞墙前就衰减完而无法触发，必须真正贴住墙面）；
-  3. 将玩家原本 `[0.6, 1.8, 0.6]` 的完整碰撞箱（非内缩盒）沿当前预测位移再**向上抬高 `0.6` 格**后，该空间内**既没有固体碰撞，也不含任何液体**（即靠近液面且头顶无遮挡）。
-- **触发效果**：满足条件的那一拍，向上弹跳速度 `0.3` 会与水中跳跃的 `+0.04` 叠加，使 $V_y$ 达到 **`0.34` 格/tick**、下一拍变为 **`0.30` 格/tick**（约 $6$ 格/s），直接将玩家弹离水面跃上岸边。此外，早期 Java 1.8.9 存在“朝东/朝南贴墙无法触发”的浮点取整问题；基岩版实测**北向与东向贴墙均可稳定触发**，未复现该问题（南向与西向尚未单独实测）。*(注：该机制的触发条件与数值已由多组实测对照确认，底层具体写入指令位置仍待静态锁定。)*
+- **触发条件（基岩版实测 + 静态双向闭合）**：
+  1. **水平方向正紧贴墙面发生水平碰撞**（硬条件；静态上是系统查询里的 `HorizontalCollisionFlagComponent`——没有水平碰撞时整条链根本不跑。注意水阻力很大，若离墙稍远起步，速度可能在撞墙前就衰减完而无法触发，必须真正贴住墙面；2026-11-09 的 2×2 复测证明：靠墙但不接触、或不贴墙而 $V_y>0$ 扫过同样高度，都不触发）；
+  2. 玩家处于液体行进态（静态上对应 `LiquidTravelFlagComponent`）；
+  3. 把玩家完整碰撞箱按下述**完整公式**平移后，空间内既无任何碰撞 AABB（液体块本身不产出
+     碰撞形状，所以液体由预过滤单独判），也无液体块。竖直偏移不能简写为 `0.6 + 录制 vy`，
+     还包括移动前后的位置差；上升/下落对照不能单独证明存在 `V_y>0` 的硬门。
+- **触发效果**：检测通过时把待执行位移的 y（`StateVectorComponent.mPosDelta.y`，+0x1C）写成
+  `0.3`；若随后水跳再加 `0.04`，下一次实际移动可为 **`0.34` 格/tick**，再观察到
+  **`0.30` 格/tick**（约 $6$ 格/s）。不按跳跃的悬浮对照直接出现 `0.3`。写入时刻与位移录制行
+  属于不同相位，不能按同一 tick 标签混用。此外，早期 Java 1.8.9 存在“朝东/朝南贴墙无法触发”的
+  浮点取整问题；基岩版实测**北向与东向贴墙均可稳定触发**，未复现该问题（南向与西向尚未单独实测）。
+  *(注：写入函数与调用链已静态定位：`sub_1482A8D00`（`docs/notes/re-fluid-12651.md` R-F16）——
+  探针盒 = 玩家完整 AABB 平移 `(mPosDelta.x, mPosBeforeMove.y − mPos.y + 0.6 + mPosDelta.y, mPosDelta.z)`；
+  盒内出现**液体块**（块源视图 vtable `off_14E8554E0`+0x38 → `0x142D8A050` 的 5 字节 `jmp` 桩 →
+  `sub_142D8A060`：`Block→[+0x68](mLegacy)→[+0x28](mMaterial)→byte[+2]`=`Material::mLiquid`，
+  非 0 即判障碍）或盒内块追加出任何碰撞 AABB（同 vtable +0xA0 → `sub_142D86DC0`）则跳过，
+  否则把 `StateVector+0x1C` 写成 `0.3f`；块源视图由 `sub_142A44CB0` 每实体从
+  `Dimension::mChunkSource` 构造，系统 `sub_1482EC8D0`（Bedrock 名 `ClimbOutOfLiquidSystem`）
+  经访问器 `sub_1482EC770` 逐实体派发，查询五个组件
+  `AABBShapeComponent`/`MobTravelComponent`/`StateVectorComponent`/`LiquidTravelFlagComponent`/
+  `HorizontalCollisionFlagComponent`。函数体内不读任何输入位；触发条件（水平碰撞 + 液体行进 +
+  探针盒自由）已全部定位到具体组件与虚槽。`+0x1C` 是 `mPosDelta.y`，不是 `Vy`。)*
+
+**公式里的位置与速度各是哪一拍？** [实测 live-only]
+
+| 项 | 检测入口的值 | 与普通回读的关系 |
+| --- | --- | --- |
+| `PositionY` | StateVector 的移动后位置基准 Y | 本轮为 `feet_y + 1.6200104`，不是随蹲姿变化的头部/镜头 Y |
+| `mPosBeforeMove.y`（`comp40[+0x14]`） | 本次移动前的同类位置基准 Y | 本轮与 StateVector 保存的 previous Y 完全相同 |
+| `V_y`（实为 `mPosDelta.y`，+0x1C） | 阻力、重力或悬浮等更新后的**待执行位移** | 与本拍已发生的位移/录制 vy 不同；录制 vy 是已完成位移 |
+| AABB 底 | 移动后脚 Y | 本轮与配对录制 `feet_y` 相同 |
+
+站立—蹲下—起身的原地对照中，脚 Y 与 `PositionY` 均不变；头部回读会降低，AABB 高度从约
+`1.80` 变为 `1.49`。因此不能把 `PositionY` 简称“当前眼睛高度”，也不能因蹲下镜头降低就给
+位置项减去同样的数。探针用的完整 AABB 会随姿态改变；本轮未测蹲姿液体检测入口与触发阈值。
+原始值见 [蹲姿对照](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/r20-066.out)。
+
+**`feet_y + 1.6200104` 的来源（静态闭合，2026-11-10）**：偏移写进 `OffsetsComponent`（id `0xDE21C316`，68 字节）的 `mHeightOffset`（+0x00），写入者 `sub_14253CFD0`（`docs/roles/1.26.51.01.json` 的 `@actor_offset_set_height_offset`）。常量是整个 exe 里唯一的 float32 字面量 `1.62001f`（`.rdata 0x14E6AE444`，字节 `7d 5c cf 3f`），由 7 处 `movss` 加载，其中 3 处紧接该写入者；`1.8×0.9+1e-5` 的 float32 结果低 1 ULP，与实测常量不同，可排除。实测尾差 `1.6200103759765625` 是世界坐标 float32 加法的量化：`float32(feet)+float32(1.62001)` 再双精度相减即得，114/114 客户端配对样本逐位吻合。头部/脚部 API 不改写该字段：`getHeadPos()`/`getFeetPos()` 走 `GetAttachPositionUtility::_getBaseAttachPoint`，在读取期用 `mPos`+`OffsetsComponent`+`VanillaOffsetComponent` 现算，所以蹲姿时 `head_y` 变而 `PositionY` 不变。
+
+**`mPos.y` 的写入点（2026-11-10 补）**：`FinalizeMoveSystem`（vtable `0x14E98AF80`，singleTick `0x1463DB520`）的单实体 worker `sub_1463B39A0` 写 `StateVector.mPos = (AABB 中心 x, AABB.min.y + mHeightOffset, AABB 中心 z)`——x/z 取 `(min+max)*0.5f`，y 取 **AABB 底 + 高度偏移**。也就是说碰撞箱（脚部）才是主坐标，`mPos.y` 由它加上 `mHeightOffset` 派生；同函数只写 `mPos`，`mPosPrev`/`mPosDelta` 由 `ActorSetPosSystem`（`@actor_set_pos_system_tick`）维护。液体检测里 `comp40[+0x14]` 经 SDK 定义确认是 `MobTravelComponent.mPosBeforeMove.y`（id `0x39CF8D64`），即移动前的位置基准，与 `StateVector+0x10` 同源，所以 `dy` 的位置差不受 1.62 影响。
+
+**反向也闭环了**：`sub_144373F30`（取 StateVector+ActorRotation+AABBShape+Offsets）与同构的 `sub_1443744B0`（把 ActorRotation 换成 HasTeleportedFlag）都在用 `AABB.mBBDim.x*0.5f` 作半宽、`AABB.mBBDim.y` 作高，按 `AABB.min = (pos.x−hw, pos.y−mHeightOffset, pos.z−hw)`、`AABB.max = (…, pos.y−mHeightOffset+height, …)` 重建碰撞箱——正是上面写入式的逆运算。两侧共用同一个 `mHeightOffset`，`feet ↔ position` 的往返因此完整。
+
+**`VanillaOffsetSystem` 做什么（2026-11-10 补，capstone 逐指令）**：tick `0x1428A4D30` 建五组件视图（VanillaOffset + Offsets + ActorDataFlag + Player + ActorMovementTickNeeded）后，由内层派发器 `0x1428CDBB0` 调 worker。调用是间接的：`0x1428CDC7E` 读全局指针 `0x14F0FBAA8`，它指向 `0x14E585660` 的 5 字节 `jmp rax` 桩，`rax` 再由 `0x1428CDCA8` 从视图对象（`[ctx+0x10]` 指向的结构）里载入——worker 函数指针由视图携带，tick 与派发器里都搜不到两个 worker 入口的直接引用。两个同形实现 `0x1428A4AB0`/`0x1428A4BC0` 常量与写法完全一致。worker 每 tick 写 `VanillaOffsetComponent`：`mCurrentOffset(+0) = mPreviousOffset(+0xC) = (0, Offsets.mHeightOffset − K, 0)`、`mClimbingOffset.z(+0x14) = 0`，其中
+
+| 条件 | K | 含义 |
+| --- | --- | --- |
+| 实体带 `PlayerIsSleepingFlagComponent`（hash `0xB13F037A`） | `0.4f`（`.rdata 0x14E602290`） | 睡觉态镜头基准 |
+| 标志字节 `& 2` | `1.62001f − alpha` | alpha 由 tick 按实验开关取 `0.125f`/`0.375f` |
+| 实体带 `IsHorizontalPoseFlagComponent`（hash `0x2430E499`） | `0.2f`（`.rdata 0x14E6AE454`，小实体/爬姿同一档） | 水平姿态 |
+| 其余 | `1.62001f`（`.rdata 0x14E6AE444`） | 站立玩家，偏移恒为 0 |
+
+也就是说 `VanillaOffsetComponent` 只是**镜头偏移的平滑量**，不参与 `feet/head` 的几何计算；读数侧的 `mHeightOffset` 仍以 `OffsetsComponent+0x00` 为准。（早前记录的 `K ∈ {0.22222199, 20.0}` 是反编译把 16 字节块首常量当成真实值：`0.22222199` 全库只存在于 `0x14E602280`，即 `0.4f` 所在块的首元素，且没有任何指令引用它。）
+
+**`getFeetPos()` 的函数体（2026-11-10 定位，`@command_selector_get_feet_pos` = 0x1449D2C40，150 字节）**：`CommandSelectorBase::getFeetPos(int version, Actor const&)` 按 version 分两条路（`cmp edx,0x16`=22 与 `cmp edx,0xa`=10）：
+
+| version | 路径 | feet 的计算 |
+| --- | --- | --- |
+| > 22（`SelectorDistanceFilteredAndRelativeRotationFix`，`Latest`=52） | 新路 | `x/z` 整块拷 `StateVector.mPos`（Actor+0x218 → StateVectorComponent → mPos），**`y` 单独覆盖为 `AABBShapeComponent`（Actor+0x220）的 `mAABB.min.y`**；实体带 `PassengerComponent`（id `0x98E40C0E`）时 `y = max(载具 AABB.min.y, 自身 AABB.min.y)` |
+| ≤ 22 | 老路 | 以 `alpha = (version>=10 ? 1.0f : 0.0f)` 调 `0x1419F8180`（`@attach_position_utility`，即 `getAttachPos(ActorLocation::Feet, alpha)` 的工具函数体），详见下段 |
+
+因此 `feet.x == position.x`、`feet.z == position.z` 逐位相同（同一次 qword 拷贝），只有 `y` 换成 AABB 底——实测 `feet=(354.5, −60.0, 300.29998779296875)` 对 `position=(354.5, −58.37998962402344, 300.29998779296875)` 正是这个形状。**新路（version>22）不读 `OffsetsComponent`/`mHeightOffset`**：`BuiltInActorComponents`（Actor+0x218，32 字节）只有 StateVector/AABBShape/ActorRotation/WalkAnimation 四个指针，`mPos.y − mHeightOffset` 恒等于 `AABB.min.y` 是别处维持的关系，不是这里做减法。
+
+**老路（version ≤ 22）的函数体（2026-11-10 补，capstone 逐指令）**：`0x1419F8180`（1452 字节，`@attach_position_utility`）收 `(rcx=Actor, rdx=Vec3* out, r8d=AttachLocation, xmm3=alpha)`：
+
+1. `lea eax,[rdi-1]; cmp eax,1; ja` —— location 属于 `{1,2}` 时直接算 `[Actor+0x220]`（AABBShapeComponent）的 min/max 中心后返回；
+2. 其余 location 先取 `GetAttachPositionViewsComponent`（hash `0x7CDC45B4`，缓存体 `0x151D51160`）在 `[Actor+8]` 注册表里的 storage 作门控——实体没带该组件时改查 `PassengerComponent`（`0x98E40C0E`），乘坐态也放行；
+3. 门控通过后取 `OffsetsComponent`（`0xDE21C316`，68 字节）与另一个 36 字节组件，用 `StateVector+0x00`(mPos) 与 `+0x0C`(prev) 按 alpha 线性插值出 `interp`，再调 `0x14326F470`（`@attach_position_location_dispatch`，714 字节）；
+4. `0x14326F470` 是 `cmp edx,8; ja 默认` 加跳表 `0x14E873EB0` 的九路分派（SDK `ActorLocation`：`Feet=0 … Head=3 … Mouth=8`）。**location 0(Feet) = `(interp.x, interp.y − Offsets[+0x00], interp.z)`**，即从插值位置里减掉 `mHeightOffset`；location 3(Head) 取 `Offsets+0x08` 的 Vec3、location 4 取 `Offsets+0x08` 与 `+0x14` 两个 Vec3 相加，之后统一走 `0x14326F620` 的偏航旋转尾再加回 `interp`。
+
+因为 `getFeetPos` 老路传的 `alpha` 在 version ≥ 10 时是 `1.0f`，`interp` 逐位等于 `mPos`，所以**老路 `feet.y == mPos.y − mHeightOffset`，与新路 `AABB.min.y` 数值等价**——1.62 偏移在读写两侧都是同一个 `OffsetsComponent::mHeightOffset(+0x00)`：写侧 `@finalize_move_worker` 做 `mPos.y = AABB.min.y + mHeightOffset`，读侧老路做减法、新路直接取 AABB 底。
+
+定位手段（IDA 不可用时的替代路径，已记入 `references/pitfalls.md`）：LeviLamina.dll 的符号缓存槽 `base+0x425698` → 只读映射区里的混淆跳板 `0x255E60430C0` → `0x255E90FA000` → 一串 `mov rax,<off>; jmp resolver` 偏移链（0x21e→0x174→0x61a→0x818→0x76e→0x20→0x6c4→0x96c→0x41c→0xca）→ 链尾 `xchg [rsp],rax; ret` 的**计算式跳转**（`rol64(qword^0x780d48c0,32)^0x8548fcfd`）→ 运行期 `0x7FF6921F2C58` → RVA `0x49D2C58` → 静态 `0x1449D2C40`。入口用 harness 执行断点验证：`rdx=0x34`、`r8`=actor、`rcx`=sret、调用方 probe.dll。
+
+令 `v_move = PositionY_after − PositionY_before`（也就是 `mPos − mPosPrev`），`v_det` 为检测入口读到的
+`mPosDelta.y`，则
+
+```text
+dy = (PositionY_before - PositionY_after) + 0.6 + v_det
+   = 0.6 + v_det - v_move
+box_min_y = feet_y_after + dy
+```
+
+所以是**移动前 Y 被保存 → 位置/AABB 已移动 → 速度经阻力等更新 → 检测读取完整公式 →
+必要时覆写 0.3 → 随后发生下一次移动**。这是本轮同线程数值轨迹，不新增所有 ECS pass 的静态调度结论。
+慢升终端 `v_det≈v_move≈0.02778`，净偏移约 `0.6`；水中起跳时
+`v_det≈0.8×v_move−0.005`，如 `v_move=0.153884888`、`v_det=0.118108362`，
+净偏移只有 **`0.5642235`**。不能把两种状态都套成固定 `0.6`，也不能遗漏位置差再加一次实际速度。
+
+这也更正了旧的“液面上方还需 0.02～0.05”解释：慢升一组未触发/触发的旧推算 gap
+`+0.012979/+0.040758`，补全后变为 **`−0.014801/+0.012978`**，已跨过零；不是另有
+已证实的固定偏置。早期水池的 202 条入口未覆盖零边界；独立水/岩浆复测有 **1004 条两侧入口**，
+其中 **98 条写点入口 = 49 个 (窗口, tick) 事件 × 两侧**，写点独立重复上限是 13 个窗口。
+在这些入口中，完整 `gap≥0` 与写点一致（0 个反例、观察环 lost=0），其中 4 条重建 gap 恰为 float32 的 0
+且均触发。此结果支持当前源液池的包含零边界，不推广到任意流体形状或蹲姿。
+原始入口三组件、逐 tick 表及各轮缺采边界见
+[运算顺序动态对质](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-operation-order.md)与
+[独立复测及勘误](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-recheck.md)。
+
+**`gap≥0` 含零的静态来源（2026-11-11）**：预过滤 `0x142D8A060` 把盒按整格
+`[floor(min), ceil(max))` 枚举（三个轴都一样），每格只问 `Material::mLiquid`。盒底恰好等于
+液格顶面时（`min.y = -46.0`，液格在 `-47`），`floor(-46.0) = -46`，枚举从液面那一格开始，
+**不包含液格**，于是预过滤通过——零边界是 `floor` 枚举的必然，不是拟合出来的固定阈值。
+实测也吻合：最近阴性 `gap=-0.00305`，最小阳性 `gap=0.0`（4 条，全部触发）。
+该枚举规则按整格判定，不读液位/流体高度，所以源、流动、下落液体在预过滤眼里一样。
+适用范围仍限于当前整格源液池、站立姿态与已测几何。
 
 此外，在**深水**中（抬高 `0.6` 格仍在水中，尚不满足出水弹跳条件）按住前进抵住墙面时，玩家会先短暂悬停数拍（$V_y = 0$），随后以约 **$+0.17$ 格/tick** 沿墙自动上浮，直至接近水面。
 
@@ -246,6 +367,16 @@ $$\vec{V}_t \mathrel{+}= k_f \cdot \hat{u}, \qquad k_f = \begin{cases} 0.014 & \
 1. **岩浆不分“浅浆 / 深浆”**：Java 版按实际液面高度区分深浅，在岩浆深度 $\le 0.4$ 格时会走竖直阻力 $0.8$ 的“浅浆分支”（终速 $-0.125$）；而基岩版的流体判定不看液深，且岩浆阻力代码本身**不存在浅浆分支**（无条件对三轴速度乘以 `0.5`），因此无论踩在薄层岩浆边缘还是沉在深浆池底，永远统一遵循 $V_{y,t} = 0.5\,V_{y,t-1} - 0.02$（终速 $-0.04$）。
 2. **抗火药水不改变移速**：抗火（Fire Resistance）仅免疫火焰与岩浆伤害，有无抗火时的速度序列完全一致。
 3. **下界岩浆“流得更快更远”，但“推人不加力”**：在下界中，岩浆每向外流一格衰减层数只加 `1`（`0 → 1 → … → 7`，最远蔓延 `7` 格，每 `10` tick 更新一次），比主世界（每格加 `2` 即 `0 → 2 → 4 → 6`，最远 `3` 格，每 `30` tick 更新）快得多；但基岩版计算实体推力时不读取维度参数，下界与主世界的岩浆推力系数同为 **`0.0035`**，顺流漂流稳态同为 **`0.007` 格/tick**。
+4. **岩浆同样触发“出水贴墙弹跳”**：`MobMovementClimbOutOfLiquid` 的过滤器是泛液体标签
+   `LiquidTravelFlagComponent`，预过滤检查盒内液体块，随后收集碰撞 AABB；机制和完整公式见 §7.1。
+   独立实测从液面下 **0.35、0.6、0.8、1.0、1.8 格**持续 W+Space 均触发；0.6 格两次重复、
+   1.0 格悬浮 II 两次重复也触发。未装观察点的 0.6/1.8 格对照同样出现 `0.34→0.30`，
+   无墙对照无触发（该窗口最大 vy 约 `0.04`）。**起始深度会影响到达阈值带所需时间，不能当作
+   “≥0.6 格永不触发”的硬门**。早期 `r21-072` 原始记录其实已含 0.6 格起跳成功，不能再称其全阴性。
+   离开液体、无悬浮效果时实测 `0.30→0.215599→0.132889→0.051830`，匹配的是
+   **空气递推 `v_next=0.98×(v−0.08)`**，不是乘 `0.8`。这段相同的出液轨迹不表示水和岩浆中的
+   阻力相同。逐次窗口、入口数值和仍未覆盖的边界见
+   [独立复测](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-recheck.md)。
 
 ### 7.3 与其他方块的叠加关系
 
@@ -263,7 +394,7 @@ $$\vec{V}_t \mathrel{+}= k_f \cdot \hat{u}, \qquad k_f = \begin{cases} 0.014 & \
 | --- | --- | --- | --- |
 | **流体判定与浅水表现** | 现代版判定盒仅内缩 `0.001`，按实际液面高度记录浸没深度并在浅水缩放推力（1.8.9 同样按整格判水） | 判定盒内缩 `0.1`（X/Z）/ `0.4`（Y），直接与 **`1×1×1` 流体方格**求交，不看液面高度 | 基岩版扩散末端的极浅薄水与满格水源**同样减速、同样有浮力与全额推力**；上浮至距水格顶面 `0.4` 格内则会提前脱离流体 |
 | **水中按住空格上浮** | 先加 `0.04` 再乘阻力 $\Rightarrow$ 终速 **$+0.135$** | 先乘阻力再加 `0.04` $\Rightarrow$ 终速 **$+0.175$** | 基岩版水中按空格上浮快约 **$30\%$** |
-| **出水贴墙弹跳（Liquid Blip）** | 贴墙满足空间条件即触发，**无需按跳跃**；现代版 `0.3` 覆盖 `0.04`（1.8.9 朝东南失效） | **必须按住跳跃键**才触发；首拍叠加为 **`0.34 -> 0.30`**（已测北/东向有效，南/西未单独复测） | 基岩版贴岸上墙必须配合跳跃键 |
+| **出水贴墙弹跳（Liquid Blip）** | 贴墙 + `horizontalCollision` + 偏移盒自由即触发；现代版 `0.3` 覆盖 `0.04`（1.8.9 朝东南失效） | **水平碰撞 + 液体行进态 + 完整探针盒自由**；无独立 $V_y>0$ 门；可能出现 **`0.34 -> 0.30`**（已测北/东，南/西未单独复测） | 不要求按跳跃；检测用更新后的 `mPosDelta.y`，并保留移动前后位置差，不能直接代入录制 vy |
 | **多格水流推力合成** | 现代版对玩家接触的多格流向取**平均值** | 求和后**重新归一化为单位向量**再乘 `0.014` | 弱流或交界处基岩版推力保持满额 `0.014` |
 | **浅层岩浆下沉** | 液高 $\le 0.4$ 走浅浆分支（竖直阻力 $0.8$，终速 $-0.125$） | **判定不看液深，且无浅浆分支**，统一三轴 $\times 0.5$（终速 $-0.04$） | 基岩版岩浆物理在任何深度完全统一 |
 | **下界岩浆推力** | 下界推力翻 **3 倍**（`0.007` vs 主世界 `0.00233`） | 主世界与下界恒为 **`0.0035`** | 下界岩浆只扩散更快，推人速度不变 |

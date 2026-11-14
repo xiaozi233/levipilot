@@ -122,5 +122,75 @@ class OpenSessionTests(unittest.TestCase):
                 ida.CACHE, ida.LOG = original_cache, original_log
 
 
+class _LiveStub:
+    """Stands in for Mcp with a fixed set of already-open sessions."""
+
+    url = "http://stub/mcp"
+
+    def __init__(self, sessions: list[dict[str, Any]]) -> None:
+        self.sessions = sessions
+        self.calls: list[str] = []
+
+    def call(self, name: str, timeout: float | None = None, **arguments: Any) -> Any:
+        self.calls.append(name)
+        if name == "idb_open":
+            raise ida.IdaError("Failed to open database")
+        return {}
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        return [dict(session) for session in self.sessions]
+
+
+class LiveSessionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        original = ida.CACHE
+        ida.CACHE = Path(self._directory.name) / "session.json"
+        self.addCleanup(setattr, ida, "CACHE", original)
+
+    def test_adopts_the_live_session_instead_of_opening_a_second_one(self) -> None:
+        i64 = Path("D:/versions/1.26.51.01/Minecraft.Windows.exe.i64")
+        stub = _LiveStub([{"session_id": "s1", "input_path": str(i64), "busy": False}])
+        database = ida.open_session(stub, i64, wait=0.0)  # type: ignore[arg-type]
+        self.assertEqual(database, "s1")
+        self.assertNotIn("idb_open", stub.calls)
+        self.assertEqual(ida.load_cache(stub.url), "s1")
+
+    def test_prefers_the_cached_session_when_it_is_still_up(self) -> None:
+        i64 = Path("db.i64")
+        ida.store_cache(_LiveStub.url, "s2", i64)
+        stub = _LiveStub(
+            [
+                {"session_id": "s1", "input_path": str(i64)},
+                {"session_id": "s2", "input_path": str(i64)},
+            ]
+        )
+        self.assertEqual(ida.live_session(stub, i64), "s2")  # type: ignore[arg-type]
+
+    def test_a_session_for_another_database_is_not_adopted(self) -> None:
+        stub = _LiveStub(
+            [
+                {"session_id": "s1", "input_path": "D:/a/Minecraft.Windows.exe.i64"},
+                {"session_id": "s2", "input_path": "D:/b/Minecraft.Windows.exe.i64"},
+            ]
+        )
+        self.assertIsNone(ida.live_session(stub, Path("D:/c/Minecraft.Windows.exe.i64")))
+
+    def test_a_busy_session_is_skipped_when_another_one_is_free(self) -> None:
+        i64 = Path("db.i64")
+        stub = _LiveStub(
+            [
+                {"session_id": "s1", "input_path": str(i64), "busy": True},
+                {"session_id": "s2", "input_path": str(i64), "busy": False},
+            ]
+        )
+        self.assertEqual(ida.live_session(stub, i64), "s2")  # type: ignore[arg-type]
+
+    def test_a_lone_session_without_a_path_is_adopted(self) -> None:
+        stub = _LiveStub([{"session_id": "s1", "worker_pid": 1}])
+        self.assertEqual(ida.live_session(stub, Path("db.i64")), "s1")  # type: ignore[arg-type]
+
+
 if __name__ == "__main__":
     unittest.main()

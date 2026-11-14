@@ -1,0 +1,47 @@
+# command: py -3.11 out/posy_scan.py
+# cwd: <repo>
+# started: 2026-11-09T17:09:34Z
+# exit: 0
+# --- stdout ---
+exe 311251456 bytes, image_base 0x140000000
+  .text    va=0x1000 raw=0x400 size=0xE5A5C00
+  .rdata   va=0xE5A7000 raw=0xE5A6000 size=0x3232C00
+  .data    va=0x117DA000 raw=0x117D8C00 size=0x52A000
+  .pdata   va=0x12038000 raw=0x11D02C00 size=0xACF000
+  .tls     va=0x12B07000 raw=0x127D1C00 size=0x2E00
+  .xbld    va=0x12B0A000 raw=0x127D4A00 size=0x200
+  .rsrc    va=0x12B0B000 raw=0x127D4C00 size=0x4A00
+  .reloc   va=0x12B10000 raw=0x127D9600 size=0xF0A00
+  .nimp    va=0x12C01000 raw=0x128CA000 size=0xA888
+  .levildr va=0x12C0C000 raw=0x128D4A00 size=0x800
+1.62001f  hits=1 first=['0x14e6ae444']
+1.62f     hits=4 first=['0x14240a08f', '0x1460762b7', '0x14607647b', '0x146076667']
+0.9f      hits=64 first=['0x1401cc3c6', '0x140fbf2e7', '0x141d775a3', '0x141e592d1', '0x141f05a4f', '0x141f7e22d']
+1e-5f     hits=2 first=['0x14b72cfcd', '0x14e77ba30']
+1.8f      hits=50 first=['0x1401cc32f', '0x1401dc759', '0x1401e62bb', '0x14022900b', '0x1416b5a3b', '0x14173ad69']
+1.49f     hits=3 first=['0x1401dc78f', '0x148fe9b9b', '0x14e83a408']
+0.31f     hits=8 first=['0x1460763c0', '0x14e94282c', '0x14e979358', '0x14e9793c8', '0x14e979614', '0x14e979c4c']
+0.6f      hits=64 first=['0x1401e62b7', '0x14092629d', '0x1409262f3', '0x1409263a4', '0x140926f9f', '0x140926ff5']
+1.5f      hits=64 first=['0x140985b5a', '0x141159187', '0x1411596e9', '0x142058d8f', '0x142079b99', '0x14207ee89']
+0.1f      hits=64 first=['0x1401cfeb8', '0x1401f0722', '0x1404c2139', '0x1406fd96e', '0x140763e23', '0x1408f2aad']
+ActorSetPosSystem                1 ['0x14ec33813']
+UpdateBoundingBox                0 []
+VanillaOffsetSystem              0 []
+FinalizeMoveSystem               1 ['0x14ec3557a']
+StateVectorComponent             0 []
+OffsetsComponent                 0 []
+ActorOffset                      0 []
+getFeetPos                       0 []
+getHeadPos                       0 []
+mHeightOffset                    0 []
+mHeadOffset                      0 []
+mEyeOffset                       0 []
+ClimbOutOfLiquidSystem           1 ['0x14ec35ecb']
+PlayerBoundingBoxStateUpdate     0 []
+VanillaOffset                    0 []
+ActorSetPositionRequest          0 []
+ShouldUpdateBoundingBox          0 []
+wrote out\posy-scan.json
+
+# --- stderr ---
+

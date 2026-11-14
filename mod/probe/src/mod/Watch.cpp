@@ -18,6 +18,22 @@ constexpr std::size_t kRingCapacity = 1u << 16;
 // of these slots are actually filled (default keeps the old 8).
 constexpr std::size_t kMaxFrames     = 32;
 constexpr std::size_t kDefaultFrames = 8;
+constexpr std::size_t kSnapshotCount = 3;
+constexpr std::size_t kSnapshotBytes = 64;
+
+struct SnapshotSpec {
+    std::uint32_t reg = 0;
+    std::uint32_t size = 0;
+};
+
+struct SnapshotValue {
+    SnapshotSpec spec{};
+    std::uint64_t address = 0;
+    bool ok = false;
+    std::uint8_t bytes[kSnapshotBytes]{};
+};
+
+constexpr char const* kArgumentRegisters[] = {"rcx", "rdx", "r8", "r9"};
 
 struct Watch {
     std::atomic_bool           used{false};
@@ -27,6 +43,10 @@ struct Watch {
     std::uint32_t              size      = 1;
     std::uint32_t              depth     = static_cast<std::uint32_t>(kDefaultFrames);
     bool                       readWrite = false;
+    bool                       sample = false;
+    bool                       execute = false;
+    std::uint32_t              snapshotCount = 0;
+    SnapshotSpec               snapshots[kSnapshotCount]{};
     int                        slot      = -1;
     std::string                tag;
 
@@ -81,6 +101,13 @@ struct HitRecord {
     std::uint32_t              frameCount = 0;
     std::uint32_t              pad        = 0;
     std::uint64_t              frames[kMaxFrames]{};
+    std::uint64_t              qpc = 0;
+    std::uint64_t              value = 0;
+    std::uint32_t              valueSize = 0;
+    bool                       valueOk = false;
+    bool                       execute = false;
+    std::uint32_t              snapshotCount = 0;
+    SnapshotValue              snapshots[kSnapshotCount]{};
 };
 
 std::unique_ptr<Watch>              gWatches[kSlotCount];
@@ -119,7 +146,7 @@ std::uint64_t* debugRegister(CONTEXT& context, int slot) {
     }
 }
 
-void applySlot(CONTEXT& context, int slot, std::uint64_t addr, std::uint32_t size, bool readWrite, bool enable) {
+void applySlot(CONTEXT& context, int slot, std::uint64_t addr, std::uint32_t size, bool readWrite, bool enable, bool execute = false) {
     *debugRegister(context, slot) = enable ? addr : 0;
 
     std::uint64_t const shift = 16 + static_cast<std::uint64_t>(slot) * 4;
@@ -127,8 +154,8 @@ void applySlot(CONTEXT& context, int slot, std::uint64_t addr, std::uint32_t siz
     context.Dr7 &= ~(0x3ull << (static_cast<std::uint64_t>(slot) * 2));
     if (enable) {
         context.Dr7 |= 1ull << (static_cast<std::uint64_t>(slot) * 2); // local enable
-        context.Dr7 |= (readWrite ? 0b11ull : 0b01ull) << shift;       // RW: rw or write
-        context.Dr7 |= lengthBits(size) << (shift + 2);                // LEN
+        context.Dr7 |= (execute ? 0ull : readWrite ? 0b11ull : 0b01ull) << shift;
+        if (!execute) context.Dr7 |= lengthBits(size) << (shift + 2);
     }
 }
 
@@ -138,6 +165,7 @@ bool installOnThread(
     std::uint64_t addr,
     std::uint32_t size,
     bool          readWrite,
+    bool          execute,
     std::string&  error
 ) {
     HANDLE const thread = OpenThread(
@@ -174,7 +202,7 @@ bool installOnThread(
         }
     }
     if (ok) {
-        applySlot(context, slot, addr, size, readWrite, true);
+        applySlot(context, slot, addr, size, readWrite, true, execute);
         ok = SetThreadContext(thread, &context) != FALSE;
         if (!ok) {
             error = "set_context_failed";
@@ -262,6 +290,31 @@ void storeHit(int slot, CONTEXT& context) {
     record.tid     = GetCurrentThreadId();
     record.tick    = gWatchTick.load(std::memory_order_relaxed);
     record.rip     = context.Rip;
+    record.execute = gWatches[slot] && gWatches[slot]->execute;
+    if (gWatches[slot] && gWatches[slot]->sample) {
+        auto const& watch = *gWatches[slot];
+        record.qpc = qpcNow();
+        record.valueSize = watch.execute ? 0 : watch.size;
+        SIZE_T copied = 0;
+        // Kernel-side copy avoids issuing a user-mode load against our own
+        // rw debug register from inside its VEH. Fixed storage, opt-in only.
+        record.valueOk = !watch.execute && ReadProcessMemory(
+            GetCurrentProcess(), reinterpret_cast<LPCVOID>(watch.addr),
+            &record.value, watch.size, &copied
+        ) != FALSE && copied == watch.size;
+        std::uint64_t const args[] = {context.Rcx, context.Rdx, context.R8, context.R9};
+        record.snapshotCount = watch.snapshotCount;
+        for (std::uint32_t i = 0; i < watch.snapshotCount; ++i) {
+            auto& value = record.snapshots[i];
+            value.spec = watch.snapshots[i];
+            value.address = args[value.spec.reg];
+            copied = 0;
+            value.ok = ReadProcessMemory(
+                GetCurrentProcess(), reinterpret_cast<LPCVOID>(value.address),
+                value.bytes, value.spec.size, &copied
+            ) != FALSE && copied == value.spec.size;
+        }
+    }
     std::size_t const depth =
         gWatches[slot] ? static_cast<std::size_t>(gWatches[slot]->depth) : kDefaultFrames;
     record.frameCount = static_cast<std::uint32_t>(
@@ -311,6 +364,9 @@ LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
         }
         if (ours) {
             storeHit(slot, context);
+            // Execution breakpoints fault before the instruction. RF lets
+            // that instruction execute once without immediately retrapping.
+            if (gWatches[slot]->execute) context.EFlags |= 0x10000u;
         } else {
             // A single-step on a thread we did not arm: another tool (or a DR
             // left behind by a previous owner) is using this slot. Consume the
@@ -368,7 +424,10 @@ nlohmann::json watchInstall(
     bool               readWrite,
     std::string const& thread,
     std::string const& tag,
-    std::uint32_t      depth
+    std::uint32_t      depth,
+    bool               sample,
+    bool               execute,
+    nlohmann::json const& snapshots
 ) {
     watchInit();
     if (size != 1 && size != 2 && size != 4 && size != 8) {
@@ -377,9 +436,24 @@ nlohmann::json watchInstall(
     if (depth < 1 || depth > kMaxFrames) {
         return errorJson("bad_depth");
     }
+    if (execute && size != 1) return errorJson("execute_size_one");
+    if (!snapshots.is_array() || snapshots.size() > kSnapshotCount
+        || (!snapshots.empty() && (!execute || !sample))) return errorJson("bad_snapshots");
+    SnapshotSpec specs[kSnapshotCount]{};
+    for (std::size_t i = 0; i < snapshots.size(); ++i) {
+        auto const& spec = snapshots[i];
+        if (!spec.is_object() || !spec.contains("reg") || !spec["reg"].is_string()
+            || !spec.contains("size") || !spec["size"].is_number_unsigned()) return errorJson("bad_snapshots");
+        auto reg = spec["reg"].get<std::string>();
+        std::uint32_t index = 0;
+        while (index < 4 && reg != kArgumentRegisters[index]) ++index;
+        auto length = spec["size"].get<std::uint64_t>();
+        if (index == 4 || length < 1 || length > kSnapshotBytes) return errorJson("bad_snapshots");
+        specs[i] = {index, static_cast<std::uint32_t>(length)};
+    }
     // DR watchpoints work on read-only pages too; only a write watch needs a
     // writable target.
-    if (!(readWrite ? readableRange(addr, size) : writableRange(addr, size))) {
+    if (!(execute ? hookAddressExecutable(addr) : readWrite ? readableRange(addr, size) : writableRange(addr, size))) {
         return errorJson("bad_addr");
     }
     if (size > 1 && (addr % size) != 0) {
@@ -443,6 +517,10 @@ nlohmann::json watchInstall(
     watch.size     = size;
     watch.depth    = depth;
     watch.readWrite = readWrite;
+    watch.sample    = sample;
+    watch.execute   = execute;
+    watch.snapshotCount = static_cast<std::uint32_t>(snapshots.size());
+    std::copy_n(specs, kSnapshotCount, watch.snapshots);
     watch.slot     = slot;
     watch.tag      = tag;
     watch.hits.store(0, std::memory_order_relaxed);
@@ -454,7 +532,7 @@ nlohmann::json watchInstall(
 
     std::string error;
     for (DWORD tid : targets) {
-        if (installOnThread(tid, slot, addr, size, readWrite, error)) {
+        if (installOnThread(tid, slot, addr, size, readWrite, execute, error)) {
             watch.armThread(tid);
         } else if (thread == "tick") {
             // A watch requested for the tick thread must not silently apply to
@@ -481,9 +559,17 @@ nlohmann::json watchInstall(
     out["slot"]    = slot;
     out["addr"]    = addr;
     out["size"]    = size;
-    out["mode"]    = readWrite ? "rw" : "w";
+    out["mode"]    = execute ? "x" : readWrite ? "rw" : "w";
+    if (execute) out["snapshots"] = snapshots;
     out["tag"]     = tag;
     out["depth"]   = depth;
+    out["sample"]  = sample;
+    if (execute) {
+        char audit[160]{};
+        std::snprintf(audit, sizeof(audit), "watch: execute addr=0x%llx snapshots=%u",
+            static_cast<unsigned long long>(addr), watch.snapshotCount);
+        ProbeMod::getInstance().bootLog(audit);
+    }
     out["threads"] = nlohmann::json::array();
     for (DWORD tid : watch.armedList()) {
         out["threads"].push_back(tid);
@@ -560,7 +646,8 @@ nlohmann::json watchListJson() {
         row["slot"] = slot;
         row["addr"] = watch->addr;
         row["size"] = watch->size;
-        row["mode"] = watch->readWrite ? "rw" : "w";
+        row["mode"] = watch->execute ? "x" : watch->readWrite ? "rw" : "w";
+        row["sample"] = watch->sample;
         row["tag"]  = watch->tag;
         row["hits"] = watch->hits.load(std::memory_order_relaxed);
         row["threads"] = nlohmann::json::array();
@@ -629,9 +716,29 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
             {"rip",   record.rip                       },
             {"stack", nlohmann::json::array()          },
         };
+        if (record.execute) {
+            row["rip_semantics"] = "current_instruction";
+            row["qpc"] = record.qpc;
+            row["snapshots"] = nlohmann::json::array();
+            for (std::uint32_t i = 0; i < record.snapshotCount; ++i) {
+                auto const& value = record.snapshots[i];
+                nlohmann::json snapshot = {{"reg", kArgumentRegisters[value.spec.reg]},
+                    {"address", value.address}, {"size", value.spec.size}, {"ok", value.ok}};
+                if (value.ok) snapshot["hex"] = hexEncode(value.bytes, value.spec.size);
+                row["snapshots"].push_back(std::move(snapshot));
+            }
+        }
+        if (record.valueSize) {
+            row["qpc"] = record.qpc;
+            row["value_ok"] = record.valueOk;
+            row["value_size"] = record.valueSize;
+            if (record.valueOk) row["value_hex"] = hexEncode(
+                reinterpret_cast<std::uint8_t const*>(&record.value), record.valueSize
+            );
+        }
         // F7: data breakpoints trap after the store. Give the caller the bytes
         // right before rip so the writing instruction can be decoded offline.
-        if (record.rip >= 16) {
+        if (!record.execute && record.rip >= 16) {
             std::array<std::uint8_t, 16> code{};
             if (readMemory(record.rip - 16, code.data(), code.size())) {
                 row["code_hex"] = hexEncode(code.data(), code.size());
@@ -652,6 +759,14 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
     out["head"]  = head;
     out["lost"]  = lost;
     out["rip_semantics"] = "next_instruction";
+    if (std::any_of(hits.begin(), hits.end(), [](auto const& hit) { return hit.contains("snapshots"); })) {
+        out["rip_semantics"] = "per_hit";
+        for (auto& hit : hits) if (!hit.contains("rip_semantics")) hit["rip_semantics"] = "next_instruction";
+    }
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    out["qpc_frequency"] = frequency.QuadPart;
+    out["value_semantics"] = "memory_after_instruction_not_atomic_with_other_threads";
     out["hits"]  = std::move(hits);
     return out;
 }

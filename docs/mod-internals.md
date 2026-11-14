@@ -6,8 +6,11 @@
 
 ## 状态、查询与身份
 
-- `state.x/y/z` 是 LocalPlayer 眼睛位置，`feet_*` 是脚部，眼睛高度为 **脚部 + 1.6200101**；
-  `head_*` 按头部计算。
+- `state.x/y/z` 来自 LocalPlayer 的位置基准，`feet_*` 是脚部；本版本原地站蹲实测 Y 偏移约
+  **脚部 + 1.6200101**，不是随姿态变化的头部/镜头高度。`head_*` 单独来自 `getHeadPos()`；
+  该偏移来自 `OffsetsComponent.mHeightOffset`，由 `ActorOffset::setHeightOffset` 写入常量
+  `1.62001f`（`.rdata 0x14E6AE444`，全 exe 唯一），尾差是 float32 加法量化，见
+  [position-y-offset 账本](../skills/bedrock-re/findings/1.26.51.01/cases/position-y-offset/resume.md)。
 - `state.vx/vy/vz` 来自 `Actor::getVelocity()`，不是 `StateVectorComponent+0x18` 的原始字段；
   后者在地表行走时约为 **0.546 × 实际位移**。实际移动速度仍以相邻 tick 位置差为准。
 - `state` 的方块读取失败以 `partial/warnings` 标记，不把缺字段当成完整成功。文本和槽位
@@ -85,8 +88,24 @@ spool 每 100 ms 或 64 KB 刷盘，单文件超过 64 MiB 轮转。连接重放
 - DR0–DR3 共四个观察点。只有装过 DR 的线程会进入命中环，其他线程事件计入 `foreign_hits`。
   `rip` 是触发后的下一条指令，`code_hex` 为其前 16 字节；`depth` 控制返回地址数量。
   `thread="all"` 被拒绝，玩家 StateVector 观察使用 `thread="both"`。
+  `sample=true` 默认关闭；开启时 VEH 用一次固定长度的 `ReadProcessMemory` 读取被观察的
+  1/2/4/8 字节，记录 `qpc/value_ok/value_size/value_hex`，drain 返回 `qpc_frequency`。
+  值是触发指令执行后读到的内存，不是冻结的寄存器操作数，也不与其他线程原子同步。
+  这是显式诊断成本：每次命中增加一次 QPC 和内核内存读取，未开启时不执行这两项。
+  `mode=x,size=1` 使用 DR 执行断点，须额外开启 `allow_hook_va`，安装写审计日志。
+  `sample=true` 时可指定最多三个 `snapshots`（寄存器 rcx/rdx/r8/r9、长度 1..64）；
+  VEH 在当前指令执行前以定长内核拷贝记录参数指向的数据，再设置 RF 恢复执行。
+  它不调用目标函数、不改参数；每行 `rip_semantics=current_instruction`，与数据观察点的
+  `next_instruction` 分开。混合导出时顶层为 `per_hit`，以每行标记为准。执行观察不读取代码字节。
+  多份快照只对当前线程暂停期间成立，不与其他线程原子同步；每命中另加至多三次内核读取，
+  命中环为此预留固定存储，未请求快照时不读取这些内存。
 - 通用 VA detour 只保留四个整数参数寄存器；XMM、向量返回、隐藏返回指针和更多参数必须使用
   typed detour。VA 校验只覆盖可执行页，不证明指令边界。
+- hook/watch 命中环是进程级共享环。原始 JSON 命令省略 `since` 时从 0 读；Python
+  `ModClient` 与 `Harness` 省略或传 `None` 时，使用指定 ID（未指定则该类最近一次安装）
+  **安装后额外查询**所缓存的 head，缓存缺失时仍从 0 读。默认值只选择起点，不自动过滤 ID。
+  需要覆盖安装最初的命中时，应在安装前显式读取 head 并传入 `since`。ID 过滤发生在全局分页
+  之后，空的过滤结果也必须按 `next` 翻页；保留 `lost`，不能把缺采当成未命中。
 - `hook_call` 是独占请求，2 秒截止、重连取消；成功只表示调用完成。`mem_arg` 在 detour 内
   同步复制短命缓冲，之后对同一地址 `mem_read` 不能替代这份快照。
 - `panic` 可卸 hook、清观察点并取消任务/输入，但不杀进程。静态 origin 槽按 SDK 生命周期保留，

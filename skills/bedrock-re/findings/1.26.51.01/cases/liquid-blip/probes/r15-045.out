@@ -1,0 +1,9 @@
+# command: py -3.11 out/liquid_blip_final_integrity.py
+# cwd: <repo>
+# started: 2026-11-09T14:30:10Z
+# exit: 0
+# --- stdout ---
+{"checks": {"world": true, "survival": true, "flight_off": true, "effects": true, "pose": true, "health": true, "stationary": true, "no_watches": true, "no_recording": true, "input_unlocked": true, "input_released": true, "test_pool_removed": true, "dll_matches": true}, "passed": 13, "total": 13, "pid": [36012], "built_dll_sha256": "2ddedc71087f1d5dc18896fbf24ccde3143643926e317ba0beab02b02850f234"}
+
+# --- stderr ---
+

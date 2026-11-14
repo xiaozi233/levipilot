@@ -1,0 +1,28 @@
+# command: py -3.11 out/liquid-blip-recheck.py
+# cwd: <repo>
+# started: 2026-11-10T11:18:12Z
+# exit: 0
+# --- stdout ---
+GEOMETRY water {"-48": 0, "-47": 0}
+RUN {"name": "W-standing", "record_rows": 24, "entries": 0, "writes": 0, "gap_mismatches": 0, "client_entries": 0, "server_entries": 0, "record_blips": [], "max_vy": 0.0, "max_feet": -60.0}
+RUN {"name": "W-slow-a", "record_rows": 69, "entries": 2, "writes": 0, "gap_mismatches": 0, "client_entries": 1, "server_entries": 1, "record_blips": [], "max_vy": 0.045368194580078125, "max_feet": -44.70456314086914}
+RUN {"name": "W-slow-b", "record_rows": 66, "entries": 26, "writes": 4, "gap_mismatches": 0, "client_entries": 13, "server_entries": 13, "record_blips": [408111, 408112], "max_vy": 0.2999992370605469, "max_feet": -42.83589553833008}
+RUN {"name": "W-jump-a", "record_rows": 55, "entries": 62, "writes": 8, "gap_mismatches": 0, "client_entries": 31, "server_entries": 31, "record_blips": [408200, 408229], "max_vy": 0.3400001525878906, "max_feet": -45.40584945678711}
+RUN {"name": "W-jump-b", "record_rows": 56, "entries": 60, "writes": 8, "gap_mismatches": 0, "client_entries": 30, "server_entries": 30, "record_blips": [408277, 408301], "max_vy": 0.3400001525878906, "max_feet": -45.47592544555664}
+RUN {"name": "W-sink", "record_rows": 29, "entries": 46, "writes": 0, "gap_mismatches": 0, "client_entries": 23, "server_entries": 23, "record_blips": [], "max_vy": -0.02080535888671875, "max_feet": -46.966773986816406}
+RUN {"name": "W-lev-nowall", "record_rows": 33, "entries": 0, "writes": 0, "gap_mismatches": 0, "client_entries": 0, "server_entries": 0, "record_blips": [], "max_vy": 0.038722991943359375, "max_feet": -46.23038864135742}
+GEOMETRY lava {"-48": 0, "-47": 0}
+RUN {"name": "L-jump-035", "record_rows": 65, "entries": 90, "writes": 8, "gap_mismatches": 0, "client_entries": 45, "server_entries": 45, "record_blips": [408519, 408560], "max_vy": 0.3400001525878906, "max_feet": -45.4985466003418}
+RUN {"name": "L-jump-060-a", "record_rows": 70, "entries": 92, "writes": 8, "gap_mismatches": 0, "client_entries": 46, "server_entries": 46, "record_blips": [408609, 408636], "max_vy": 0.3400001525878906, "max_feet": -45.50360870361328}
+RUN {"name": "L-jump-080", "record_rows": 81, "entries": 106, "writes": 12, "gap_mismatches": 2, "client_entries": 53, "server_entries": 53, "record_blips": [408706, 408733, 408760], "max_vy": 0.3400001525878906, "max_feet": -45.4875602722168}
+RUN {"name": "L-jump-100", "record_rows": 91, "entries": 114, "writes": 12, "gap_mismatches": 2, "client_entries": 57, "server_entries": 57, "record_blips": [408813, 408840, 408867], "max_vy": 0.3400001525878906, "max_feet": -45.4875602722168}
+RUN {"name": "L-jump-180", "record_rows": 115, "entries": 162, "writes": 12, "gap_mismatches": 0, "client_entries": 81, "server_entries": 81, "record_blips": [408943, 408970, 408997], "max_vy": 0.3400001525878906, "max_feet": -45.487545013427734}
+RUN {"name": "L-levII-100-a", "record_rows": 135, "entries": 20, "writes": 4, "gap_mismatches": 0, "client_entries": 10, "server_entries": 10, "record_blips": [409058, 409059], "max_vy": 0.2999992370605469, "max_feet": -34.23060607910156}
+RUN {"name": "L-jump-nowall", "record_rows": 30, "entries": 0, "writes": 0, "gap_mismatches": 0, "client_entries": 0, "server_entries": 0, "record_blips": [], "max_vy": 0.039997100830078125, "max_feet": -46.39999771118164}
+RUN {"name": "L-sink", "record_rows": 29, "entries": 46, "writes": 0, "gap_mismatches": 0, "client_entries": 23, "server_entries": 23, "record_blips": [], "max_vy": -0.0396881103515625, "max_feet": -46.74031066894531}
+RUN {"name": "L-jump-060-b", "record_rows": 71, "entries": 92, "writes": 10, "gap_mismatches": 0, "client_entries": 46, "server_entries": 46, "record_blips": [409326, 409353, 409379], "max_vy": 0.3400001525878906, "max_feet": -45.50358200073242}
+RUN {"name": "L-levII-100-b", "record_rows": 137, "entries": 22, "writes": 4, "gap_mismatches": 0, "client_entries": 11, "server_entries": 11, "record_blips": [409422, 409423], "max_vy": 0.2999992370605469, "max_feet": -34.236854553222656}
+RESTORED {"cleanup_errors": [], "state": {"alive": true, "bindings": {"back": 83, "forward": 87, "jump": 32, "left": 65, "right": 68, "sneak": 16, "sprint": 82}, "block_above": "minecraft:air", "block_below": "minecraft:grass_block", "block_feet": "minecraft:air", "block_head": "minecraft:air", "context": 2569851346744, "dimension": 0, "effects": [], "event": "state", "exhaustion": 2.2448480129241943, "feet_x": 354.5, "feet_y": -60.0, "feet_z": 300.29998779296875, "flying": false, "gamemode": 0, "head_x": 354.5, "head_y": -58.37998962402344, "head_z": 300.29998779296875, "health": 20.0, "hunger": 20.0, "in_water": false, "in_world": true, "input": {"a": false, "action_sprint": false, "d": false, "jump": false, "locked": false, "move_x": 0.0, "move_y": 0.0, "s": false, "sneak": false, "sprint": false, "w": false}, "item_use_ticks": 0, "max_health": 20.0, "mayfly": false, "ok": true, "on_ground": true, "partial": false, "pitch": 0.0, "runtime_id": 1, "sample_us": 101, "saturation": 0.0, "selected_slot": 5, "sneaking": false, "sprinting": false, "swimming": false, "tick": 409566, "truncated": false, "vx": 0.0, "vy": 0.0, "vz": 0.0, "x": 354.5, "xp_level": 0.0, "xp_progress": 0.0, "y": -58.37998962402344, "yaw": -180.0, "z": 300.29998779296875}, "watches": {"dropped": 0, "event": "watch_list", "foreign_hits": 0, "head": 4500, "hits": 4500, "watches": []}, "area_restored": true, "background_tick_delta": 16}
+
+# --- stderr ---
+

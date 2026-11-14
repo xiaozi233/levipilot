@@ -90,6 +90,12 @@ class CliCompatibilityTests(unittest.TestCase):
             # argparse repeats the command list under "positional arguments:".
             text = re.sub(r"^  (\{[^}]*\})$", collapse_positional, text, flags=re.MULTILINE)
             text = re.sub(r"(choose from )((?:'[^']*'(?:, )?)+)", clean_choices, text)
+            # --sample intentionally extends watch-set's usage. Preserve all
+            # old command results; the opt-in call is checked separately.
+            if "usage: harness watch-set" in text:
+                text = text.replace("{w,rw,x}", "{w,rw}")
+                text = text.replace(" [--sample]", "")
+                text = re.sub(r"^  --sample +[^\n]*\n", "", text, flags=re.MULTILINE)
             result[stream] = text
         return result
 
@@ -99,6 +105,12 @@ class CliCompatibilityTests(unittest.TestCase):
         self.assertEqual(result["calls"][1], ["chat_history", [5], {}])
         help_result = invoke_cli(cli, ["--help"])
         self.assertIn("read retained client chat messages", help_result["stdout"])
+
+    def test_watch_sample_extension(self) -> None:
+        result = invoke_cli(cli, ["watch-set", "0x2000", "--sample"])
+        self.assertEqual(result["code"], 0)
+        self.assertTrue(result["calls"][1][2]["sample"])
+        self.assertIn("--sample", invoke_cli(cli, ["watch-set", "--help"])["stdout"])
 
     def test_input_cfg_jump_impulse_guard(self) -> None:
         ok = invoke_cli(cli, ["input-cfg", "--jump-impulse", "0"])

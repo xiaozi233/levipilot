@@ -47,14 +47,30 @@ ZCode 的 `ida-pro-mcp` 不是直连 IDA，而是启动一个**长驻的 stdio �
   已撤回）。2026-10-30 就是这样把 `.i64` 写坏的：之后 64 KB exe、7 MB dll、原始 311 MB
   exe 都能正常打开，唯独该 `.i64` 在 idalib 和 `idat -A` 下都报
   `FATAL ERROR: Oops! internal error 1228 occurred.`。删 `.id0/.id1/.nam/.til` 重新解包
-  也没用。恢复只有一条路：
+  也没用。恢复只有一条路（2026-11-10 用同样流程重建过一遍，全程约 2 小时）：
 
   ```bash
-  # 坏库改名留证，再从 exe 重建（本机 311 MB 的 exe，单核约 1 小时）
-  idat.exe -A -Lout/ida_rebuild.log "%APPDATA%\levilauncher.exeersions\<版本>\Minecraft.Windows.exe"
+  # 坏库改名留证，再从 exe 重建（本机 311 MB 的 exe，单核约 1 小时；内存峰值 5 GB 上下）
+  idat.exe -A -c -Lout/ida_rebuild.log "%APPDATA%\levilauncher.exe\versions\<版本>\Minecraft.Windows.exe"
+  # 重建完是「解包态」：只有 .id0/.id1/.id2/.nam/.til，没有 .i64，idalib 用不了。
+  # 再把 role 名字回填并打包（脚本见 out/apply_roles.py 与 out/pack_db.py）：
+  IDA_ROLES_JSON=docs/roles/1.26.51.01.json \
+    idat.exe -A -Lout/ida_pack.log \
+      -S"out/apply_roles.py" -S"out/pack_db.py" \
+      "%APPDATA%\levilauncher.exe\versions\<版本>\Minecraft.Windows.exe"
   ```
 
-  要停后端就用 `idb_close(save=true)`，或让它自己空闲回收。
+  两个坑：① `-A` 单独跑完不会生成 `.i64`，必须再跑一次并用 `ida_loader.save_database()`
+  存到 `.i64` 路径（`-P` 在已有解包库上不生效，因为没改动时 IDA 干脆不保存）；
+  ② `-S"脚本 参数"` 在 IDA 9.4 里 `ARGV` 是空的，参数要走环境变量（`IDA_ROLES_JSON`）。
+  每次 idalib 打开打包后的 `.i64`，都会在同目录重新生成/占用 `.id0/.id1/.nam`，
+  换库或搬库前必须先 `idb_close`，否则 `mv` 报 `Device or resource busy`。
+
+  要停后端就用 `idb_close(save=true)`，或让它自己空闲回收。`idb_close` 后磁盘上会同时留下
+  打包的 `.i64` 和这次打开生成的解包副本（`.id0/.id1/.id2/.nam/.til`）；确认
+  `idb_list` 为空、worker 已退出后，把解包副本删掉，只保留压缩的 `.i64`
+  （本版本约 5.91 GB），下次打开会按需再生成。收工顺序：`idb_close(save=true)` → 删副本 →
+  停 supervisor；supervisor 控制台进程不响应普通 `taskkill`，确认库已关后才可用 `/F`。
 
 - **不要在整库上跑 `search_text`**（按 listing 逐条渲染）：在几百 MB 的 `.text` 上一次
   扫描就能把单 worker 的队列堵死。用 `find_bytes` / `insn_query` 并限定

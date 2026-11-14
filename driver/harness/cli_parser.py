@@ -127,9 +127,12 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     watch_set = sub.add_parser("watch-set", help="install a hardware watchpoint")
     watch_set.add_argument("addr")
     watch_set.add_argument("--size", type=int, default=4, choices=[1, 2, 4, 8])
-    watch_set.add_argument("--mode", default="w", choices=["w", "rw"])
+    watch_set.add_argument("--mode", default="w", choices=["w", "rw", "x"])
     watch_set.add_argument("--thread", default="tick")
     watch_set.add_argument("--tag", default="")
+    watch_set.add_argument(
+        "--sample", action="store_true", help="capture watched data bytes or execution QPC"
+    )
 
     watch_clear = sub.add_parser("watch-clear")
     watch_clear.add_argument("--id", type=int)

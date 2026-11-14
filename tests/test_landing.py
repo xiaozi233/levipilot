@@ -79,6 +79,41 @@ class LandingTests(unittest.TestCase):
             )
             self.assertTrue((case_dir / "report.md").exists())
 
+    def test_a_retracted_claim_stays_visible_in_the_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(begin(root), 0)
+            self.assertEqual(probe(root), 0)
+            claims = write_claims(
+                root,
+                [
+                    {
+                        "hypothesis": "the gate is the jump key",
+                        "result": "live-only",
+                        "evidence_tier": "live",
+                        "evidence": "[实测] no blip while the jump key is held down",
+                    },
+                    {
+                        "hypothesis": "the gate is vy, not the jump key",
+                        "result": "refuted",
+                        "evidence_tier": "live",
+                        "evidence": "[实测] levitation without jump still triggers it",
+                        "erratum_of": "r01-002",
+                    },
+                ],
+            )
+            self.assertEqual(run_landing(root, "claim", "--case", "demo", "--file", str(claims)), 0)
+            self.assertEqual(run_landing(root, "end", "--case", "demo"), 0)
+            resume = (root / "1.26.51.01" / "cases" / "demo" / "resume.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Retracted / errata", resume)
+            self.assertIn("erratum of r01-002", resume)
+            # the withdrawn wording may only live under the erratum, never under Open
+            head, _, retracted_part = resume.partition("## Retracted / errata")
+            self.assertNotIn("the gate is the jump key", head)
+            self.assertIn("原命题: the gate is the jump key", retracted_part)
+
     def test_confirmed_with_dynamic_only_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -272,3 +307,23 @@ class SkillChecksTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScrubPathsTests(unittest.TestCase):
+    def test_workspace_and_profile_paths_are_dropped(self) -> None:
+        home = str(Path.home())
+        text = "\n".join(
+            [
+                'File "' + str(landing.ROOT) + '\\driver\\x.py", line 1',
+                "site-packages at " + home + "\\AppData\\Roaming\\x",
+                "plain line",
+            ]
+        )
+        out = landing.scrub_paths(text)
+        self.assertNotIn("mcbe-harness", out)
+        self.assertNotIn("Users" + "\\", out)
+        self.assertIn("driver\\x.py", out)
+        self.assertIn("plain line", out)
+
+    def test_empty_text_is_untouched(self) -> None:
+        self.assertEqual(landing.scrub_paths(""), "")

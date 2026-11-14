@@ -389,6 +389,9 @@ vy = (*(int*)(comp + 32) + 1) * 0.01f + vy;            // 0x142DE585A  +32 是�
 
 ### 2.13 R-F14 液体退出弹跳（Liquid Blip，2026-10-28）
 
+> 历史调查原文：此节“写点未锁定”及输入侧候选已由下方 R-F16 取代，不是当前未决项。
+> 旧有限窗口的深水阴性也不能推导初始深度禁区；当前机制与独立复测见 R-F16。
+
 用户 1.12.2/1.8.9 文章里的 water blip：离开液体时若水平方向发生碰撞、且把碰撞箱沿
 预测速度上抬 0.6 后既无固体也无液体，则 $v_y := 0.3$。
 
@@ -414,6 +417,108 @@ vy = (*(int*)(comp + 32) + 1) * 0.01f + vy;            // 0x142DE585A  +32 是�
   没有直接的 `0.3` store；`sub_1495EA890` 内也只有 0.028/0.04。0.3 很可能来自移动输入
   的竖直分量（由 `sub_148B618A0` 加进速度），待用 `MoveInput` 侧地址复测。
   账本 `findings/1.26.51.01/cases/liquid-blip`。
+
+### 2.16 R-F16 液体退出弹跳（Liquid Blip）——`ClimbOutOfLiquidSystem`（2026-11-09，已全闭合）
+
+`[代码]` 全 exe 只有两处 `mov dword ptr [reg+0x1C], 0.3f`：`0x14684BC0C`、`0x1482A8E46`。
+后者所在函数 `sub_1482A8D00`（`0x1482A8D00..0x1482A8E80`，0x180 B）就是 blip 的写入点。
+所属系统在注册器 `sub_1482A8ED0` 里有名字字面量：**`ClimbOutOfLiquidSystem`**（22 字符）。
+
+```c
+__int64 __fastcall sub_1482A8D00(__int64 a1 /*ctx, 函数体内未解引用*/, float *a2 /*AABBShapeComponent*/,
+                                 __int64 a3 /*MobTravelComponent*/, float *a4 /*StateVectorComponent*/,
+                                 __int64 a5 /*块源视图*/)
+{
+  v6 = a4[6];                       // mPosDelta.x (+0x18)
+  v7 = a4[8];                       // mPosDelta.z (+0x20)
+  v8 = (*(float *)(a3 + 20) - a4[1]) + 0.60000002f + a4[7];
+                                    // mPosBeforeMove.y - mPos.y + 0.6 + mPosDelta.y(+0x1C)
+  box = { fminf/fmaxf(AABB[i] + (v6, v8, v7)) };        // 探针盒（6 float min/max），只构造一次
+  if ( (*(...)(*(_QWORD *)a5 + 56))(a1, &box) )  return 0;   // vtable+0x38 盒内块预过滤
+  (*(...)(*(_QWORD *)a5 + 160))(a1, &vec, &box, 1);          // vtable+0xA0 盒内块 AABB 收集
+  if ( vec.begin == vec.end )                                 // 收集为空
+      a4[7] = 0.30000001f;                                    // StateVector.mPosDelta.y = 0.3
+}
+```
+
+`+0x18/+0x1C/+0x20` 是 SDK 的 `StateVectorComponent::mPosDelta`（等待后续运动应用阶段使用的位移量；不保证是下一个世界 tick），不是速度：
+`Actor::getPosDelta()` 返回它，`FinalizeMove` 只写 `mPos`，水跳 `0x1495EACF1` 对同一字段
+`addss`。所以 R-F16 旧稿里的 `VelX/VelY/VelZ` 是历史命名，偏移没错、语义要按 `mPosDelta` 读。
+
+**系统与查询（`sub_1482EC8D0` + 查询构建器 `sub_1482EC650`）**：
+
+| 组件 | id | 元素宽 | 作用 |
+| --- | --- | --- | --- |
+| `AABBShapeComponent` | `0xBAC1B3CF` | 32 | 回调 a2，探针盒的底子 |
+| `MobTravelComponent` | `0x39CF8D64` | 40 | 回调 a3，提供 `+0x14`（与 PositionY 相抵的那一项） |
+| `StateVectorComponent` | `0x1B5D5238` | 36 | 回调 a4，写入目标 `+0x1C`=`mPosDelta.y` |
+| `LiquidTravelFlagComponent` | `0x3E7D1356` | — | 只进过滤：玩家处于液体行进态 |
+| `HorizontalCollisionFlagComponent` | `0xD5EE0BD8` | — | **只进过滤：水平碰撞 ⇒ 贴墙要求** |
+| `LocalConstBlockSourceFactoryComponent` | `0xC695B914` | — | 经 TLS 缓存单独取，造出块源视图（回调 a5） |
+
+- 组件名的拿法：每个 id 在全 exe 里只有一处 `mov [reg+4], imm32`（TLS 缓存初始化），
+  反编译那六个函数即可读到 `{id, 名字, 长度}`；`StateVectorComponent` 与
+  `docs/offsets/1.26.51.01.json` 的 `components.StateVector`（id `459100728`）互为验证。
+- 派发链：系统把 `sub_1482A8D00` 装进回调包 `{&fn, &holder, view, &ctx}`；访问器
+  `sub_1482EC770` 每实体先 `sub_142A44CB0(view, &holder, entityId)` 填块源视图，再
+  `guard_dispatch_icall_nop(ctx, AABBShape, MobTravel, StateVector, holder+8)` 调回调。
+- **块源视图**（第 5 参）：`sub_142A44CB0` 用 `view->vtable+0x30` 取实体 Dimension，读
+  `Dimension+0x1D8(472)` 的 `mChunkSource`（断言串
+  `ChunkSource &Dimension::getChunkSource() const`，来源
+  `handheld/src/common/world/level/dimension/Dimension.cpp:1195`），经
+  `sub_142D7CEC0(holder+8, cs[+32], cs[+40], cs, 0,0,0,0)` 构造，vtable = `off_14E8554E0`；
+  `holder+384` 是构造标志，末尾按标志析构。该类未开 RTTI（vtable−8 的 COL 指针为 0）。
+- **两个虚槽都是盒内块查询，与 Java `isFree = noCollision && !containsAnyLiquid` 同构**：
+  - `+0x38` 槽 → `0x142D8A050`（5 字节 `jmp sub_142D8A060` 叶跳，不在 `.pdata`，所以
+    `driver/pe_map.py` 只把它当 `.text` 地址）→ 真实体 `sub_142D8A060(this, AABB)`：按
+    `[floor(min), ceil(max))` 把 AABB 换成整点块区间逐块扫，任一块
+    `*(BYTE*)(*(QWORD*)(*(QWORD*)(block+104)+40)+2)` 非 0 就返回 1（跳过 blip）——廉价预过滤。
+    半开枚举的后果：盒底恰好等于液格顶面时不会枚举到液格，`gap=0` 通过是静态必然。
+  - `+0xA0` 槽 → `sub_142D86DC0(this, &vector, AABB, true)`：先用对象 +56/+58（建造高度，
+    构造时取自 `cs[100]`/`cs[101]`）夹盒，再逐块调
+    `BlockLegacy->vtable+0x38(legacy, block, this, pos, box, &vector)`，把 24 字节 AABB
+    追加进 vector；blip 只在 vector 为空时写 0.3。液体块没有碰撞形状，`addAABBs` 不产出盒，
+    所以液体必须靠 `+0x38` 预过滤单独挡——两条查询互补。
+  - 全 `.text` 只有两处 `mov dword ptr [reg+0x1C], 0.3f`：`0x1482A8E46`（本 worker）与
+    `0x14684BC0C`（另一系统，一次写 `+0x18/+0x1C/+0x20` 三轴，不在本调用链上）。
+- **调度位置（2026-11-11 补）**：注册器 `0x1482A8ED0` 只有一个代码调用者 `0x1468265CA`，
+  在移动注册大函数 `sub_146822800` 内；同一函数里更早的注册点依次是 sprint/input 组
+  (`0x1468230DA`)、`MobTravelUpdateSpeedsSystem`(`0x146826032`)、`WaterTravelSystem`
+  (`0x1468261C6`)、`LavaTravelSystem`(`0x146826260`)、`WaterMoveSystem`(`0x14682629C`) 与
+  `0x142DE***` drag 组（`0x14682658B..0x1468265BB`）。若集合按注册追加、正序遍历
+  （`tick-order-12651` §8），同一 pass 内 blip 晚于 travel/move——与实测“先移动、再更新
+  mPosDelta、再检测”一致。**未决**：这些系统是否同属一个类别掩码仍受 `tick-order-12651`
+  §0 的 pass 矛盾约束，本结论只到“同一注册函数内的调用顺序”。
+  注册链上游 `sub_1468353C0 → sub_14682D3C0 → sub_146822800` 有两个独立入口
+  （`sub_1467F0940`、`sub_14683E2F0`），与两侧各有系统表一致；实测两侧线程也各自命中。
+- **触发条件（静态 + 实测双向闭合）**：
+  1. 实体带 `HorizontalCollisionFlagComponent`（水平碰撞，即贴墙）——系统查询过滤，
+    没有水平碰撞时整条链根本不跑；
+  2. 实体带 `LiquidTravelFlagComponent`（液体行进态）；
+  3. 探针盒内没有液体块（`Material::mLiquid` 预过滤）、也没有碰撞 AABB。必须保留完整竖直项
+     `mPosBeforeMove.y−mPos.y+0.6+mPosDelta.y`；后续动态入口三组件快照显示，本轮
+     `MobTravelY` 等于本次移动前 Y，`PositionY` 为移动后 Y，净偏移是
+     `0.6+入口mPosDelta.y−本次位移`，不是一律 `0.6+mPosDelta.y`，也不是一律 0.6。
+     旧 r09-030/r09-031 依高度带推出位置项约为零的判断撤回；旧盒底 0.02~0.05 正偏差由遗漏位置项解释。
+     入口实参、重建盒及写点对照见
+     [动态运算顺序对质](../../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-operation-order.md)，
+     此项是实测 live-only，不新增函数/调度的静态证明。
+  4. 满足则 `StateVector.mPosDelta.y = 0.3`（与水跳的 `+0.04` 叠加成首拍 `0.34`）。
+- **跳跃键不是条件**：levitation 不按跳跃也可触发（r05-011）。worker 体只有两个分支
+  （预过滤返回、vector 为空），查询与访问器里也没有速度符号判断——这是“没有独立 `vy>0` 门”
+  的完整作用域；不能从上升/下落样本单独推出正速度硬门，也不能反过来说“任意下沉都能触发”
+  （触发样本里最负的 `mPosDelta.y` 只有 `-1.95e-5`）。r02-006 的输入门解释已撤回。
+- `MobTravelComponent+0x14` 已由现有 SDK 定义核对为 `mPosBeforeMove.y`；其完整写入链本轮未新增静态定位。动态上早期 202 条
+  入口均等于 StateVector 保存的移动前 Y，已推翻‘位置差≈0’。它与移动后 Y 相减的意义见上述公式。
+  另外下落重新入水的第一拍也不触发（query flag 尚未建立），`LiquidTravelFlagComponent`
+  的建立延迟未单独测。
+- **独立动态复测及勘误**：水/岩浆共 1004 条入口实参按完整公式重建，`gap≥0` 与同线程
+  `0.3` 写点无反例、lost=0，含 4 条 float32 gap=0 的触发样本。岩浆从液面下 0.6～1.8 格
+  起跳仍触发，不能以初始深度设禁区；出液后无悬浮的 `0.30→0.2156→0.1329→0.0518`
+  匹配空气递推。此项仅为实测 live-only，未新增静态逆向，原始记录见
+  [r24 独立复测](../../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-recheck.md)。
+- 定位手段：`driver/pe_map.py` + capstone 读 exe 首轮定位；IDA 9.4 冷开 `.i64`（约 7 分钟）后
+  `decompile` / `find_bytes`（按 `C7 ?? 04 <id>` 指令模式反查组件名）定型。
 
 ### 2.14 R-F15 维度 / 抗火 / 岩浆深度（2026-10-28）
 

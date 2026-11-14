@@ -6,6 +6,7 @@ from typing import Any
 
 from driver.harness.commands.hooks import HookCommands
 from driver.harness.commands.watch import WatchCommands
+from driver.harness.facade import Harness
 from driver.harness.hooks import HookHit, decode_hook_hits, float_from_bits
 
 
@@ -91,10 +92,6 @@ class HookDecodeTests(unittest.TestCase):
         self.assertEqual(decode_hook_hits({"event": "tick"}), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class _RingStub(HookCommands, WatchCommands):  # type: ignore[misc]
     """Records requests and replays canned replies."""
 
@@ -153,10 +150,79 @@ class RingHeadTests(unittest.TestCase):
         self.assertEqual(client.sent[-1]["since"], 42)
         self.assertEqual(out["hits"], [{"watch": 3}])
 
+    def test_watch_value_sampling_is_opt_in(self) -> None:
+        client = self._stub()
+        client.watch_set(0x2000)
+        self.assertNotIn("sample", client.sent[0])
+        client.watch_set(0x2000, sample=True)
+        self.assertTrue(client.sent[2]["sample"])
+
+    def test_execution_watch_forwards_entry_snapshot_specs(self) -> None:
+        client = self._stub()
+        specs = [{"reg": "r8", "size": 40}]
+        client.watch_set(0x2000, size=1, mode="x", sample=True, snapshots=specs)
+        self.assertEqual(client.sent[0]["snapshots"], specs)
+        self.assertEqual(client.sent[0]["mode"], "x")
+
     def test_drain_without_install_replays_from_zero(self) -> None:
         client = self._stub()
         client.hook_drain()
         self.assertEqual(client.sent[-1]["since"], 0)
+
+    def test_facade_preserves_default_and_explicit_cursors(self) -> None:
+        for kind, head in (("hook", 500), ("watch", 42)):
+            with self.subTest(kind=kind):
+                client = self._stub()
+                harness = Harness.__new__(Harness)
+                harness.client = client
+                if kind == "hook":
+                    harness.hook_install(va=0x140000000)
+                else:
+                    harness.watch_set(0x2000)
+                drain = getattr(harness, f"{kind}_drain")
+                drain()
+                self.assertEqual(client.sent[-1]["since"], head)
+                drain(0)
+                self.assertEqual(client.sent[-1]["since"], 0)
+                drain(head + 9, limit=12)
+                self.assertEqual(client.sent[-1]["since"], head + 9)
+                self.assertEqual(client.sent[-1]["limit"], 12)
+
+    def test_facade_selects_head_for_requested_id(self) -> None:
+        for kind, ident, head in (("hook", 7, 500), ("watch", 3, 42)):
+            with self.subTest(kind=kind):
+                client = self._stub()
+                harness = Harness.__new__(Harness)
+                harness.client = client
+                if kind == "hook":
+                    harness.hook_install(va=0x140000000)
+                    client.replies["hook_install"]["id"] = 8
+                    client.replies["hook_list"]["head"] = 900
+                    harness.hook_install(va=0x140000100)
+                else:
+                    harness.watch_set(0x2000)
+                    client.replies["watch_set"]["id"] = 4
+                    client.replies["watch_list"]["head"] = 900
+                    harness.watch_set(0x3000)
+                out = getattr(harness, f"{kind}_drain")(**{f"{kind}_id": ident})
+                self.assertEqual(client.sent[-1]["since"], head)
+                self.assertEqual(out["hits"], [{kind: ident}])
+
+    def test_interleaved_installs_keep_each_ring_default(self) -> None:
+        client = self._stub()
+        harness = Harness.__new__(Harness)
+        harness.client = client
+        harness.hook_install(va=0x140000000)
+        harness.watch_set(0x2000)
+        harness.hook_drain()
+        self.assertEqual(client.sent[-1]["since"], 500)
+        client.replies["hook_install"]["id"] = 8
+        client.replies["hook_list"]["head"] = 900
+        harness.hook_install(va=0x140000100)
+        harness.watch_drain()
+        self.assertEqual(client.sent[-1]["since"], 42)
+        harness.hook_drain()
+        self.assertEqual(client.sent[-1]["since"], 900)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ class Harness:
     def watch_clear(self, watch_id: int | None = None, **kwargs: Any) -> dict[str, Any]:
         return self.client.watch_clear(watch_id, **kwargs)
 
-    def watch_drain(self, since: int = 0, **kwargs: Any) -> dict[str, Any]:
+    def watch_drain(self, since: int | None = None, **kwargs: Any) -> dict[str, Any]:
         return self.client.watch_drain(since, **kwargs)
 
     def hook_install(self, symbol: str | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -86,7 +86,7 @@ class Harness:
     def hook_list(self) -> dict[str, Any]:
         return self.client.hook_list()
 
-    def hook_drain(self, since: int = 0, **kwargs: Any) -> dict[str, Any]:
+    def hook_drain(self, since: int | None = None, **kwargs: Any) -> dict[str, Any]:
         return self.client.hook_drain(since, **kwargs)
 
     def hook_call(self, symbol: str, scale: float = 1.0) -> dict[str, Any]:

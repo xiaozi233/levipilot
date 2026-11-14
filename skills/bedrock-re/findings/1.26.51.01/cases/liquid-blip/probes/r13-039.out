@@ -1,0 +1,16 @@
+# command: py -3.11 out/liquid_blip_dynamic_review.py --runs slow-b,fast-lev --watch --geometry-samples --output out/liquid-blip-dynamic-review/r13-trace
+# cwd: <repo>
+# started: 2026-11-09T14:00:06Z
+# exit: 1
+# --- stdout ---
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "out\liquid_blip_dynamic_review.py", line 430, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "out\liquid_blip_dynamic_review.py", line 378, in main
+    meta["module_base"] = h.client.diagnose()["module_base"]
+                          ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+KeyError: 'module_base'
+

@@ -1,0 +1,10 @@
+{
+  "case": "swim-jump-sneak",
+  "version": "1.26.51.01",
+  "goal": "确认泳姿下跳跃/潜行对竖直速度的额外项与终速",
+  "environment": "",
+  "current_round": 2,
+  "status": "open",
+  "created_at": "2026-11-04T16:16:56Z",
+  "updated_at": "2026-11-04T16:16:56Z"
+}

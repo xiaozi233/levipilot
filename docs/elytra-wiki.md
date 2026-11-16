@@ -4,7 +4,7 @@
 
 > **单位与符号约定**：全文速度单位均为 **格/刻**（$1\text{ 秒} = 20\text{ 刻}$），角度以**度（$^\circ$）**为单位。规定视角俯仰角 $\theta$ **低头俯冲为正、抬头爬升为负**（玩家视角输入范围被钳位在 $[-89.9^\circ, +89.9^\circ]$）。下标 $t$ 表示当前刻最终值，$0$ 表示本刻初始输入值（即上一刻结束时的速度）。
 >
-> 若需 `1.26.51.01` 逆向地址（VA）、反编译符号、分级证据标签与逐 tick 实测误差账本，见 [`elytra-movement.md`](elytra-movement.md)。
+> 若需 `1.26.51.01` 逆向地址（VA）、反编译符号、精确单精度（`float32`）字面量与组件字段对照、分级证据标签及逐 tick 实测误差账本，见 [`elytra-movement.md`](elytra-movement.md)。
 
 ---
 
@@ -215,3 +215,210 @@ $$\text{Damage} = \bigl(V_{H,\text{pre}} - V_{H,\text{post}}\bigr) \times 10 - 3
 - **耐久（Unbreaking）附魔**：穿戴附有等级 $L$ 耐久附魔的鞘翅时，每次触发损耗判定实际扣除耐久的概率为：
   $$P = \frac{1}{L + 1}$$
   即无附魔与耐久 I、II、III 的单次扣点概率依次为 **$100\%$、$50\%$、$33.3\%$、$25\%$**，无附魔满耐久鞘翅可持续滑翔 $431 \times 20 = 8620$ 刻（`431` 秒），耐久 III 下数学期望滑翔时间约为 `1724` 秒（约 `28.7` 分钟）。
+
+---
+
+## 与 Java 版的主要差别（对照 `JE 1.12.2` 与 `JE 26.1.2`）
+
+基岩版（`1.26.51.01`）的滑翔核心公式沿自早期的 Java 版（如 `JE 1.12.2`），但在**浮点精度、缓降、起停操作、烟花实现、摔落重置与撞墙伤害结算**上，与现代 Java 版（如 `JE 26.1.2`）存在多处关键差异：
+
+| 机制维度 | 基岩版（`1.26.51.01`） | Java 版（`JE 1.12.2` / `JE 26.1.2`） |
+| --- | --- | --- |
+| **浮点精度与查表** | 全程 32 位 `float`；`tableSin`/`tableCos` 用 `float32` 系数 `10430.378f`（65536 项）；保留 `min(1, \|look\| / 0.4)` 乘子 | 速度全程 64 位 `double`；`JE 1.12.2` 查表同为 `10430.378f` 且保留 `/ 0.4`；`JE 26.1.2` 升力因子改用原生双精度 `Math.cos(leanAngle)` 并移除 `/ 0.4`，其余查表用双精度系数 `10430.378350470453` |
+| **视角采样与除零保护** | 视线 `look` 对 `(yaw, prevYaw)` / `(pitch, prevPitch)` 做 `wrapAngle360` 插值（实测有 1-tick 观测延迟），而 `cosPitch`/`pitch < 0`/`sinPitch` 读未插值 `pitchDeg`；`pitch < 0` 分支不检查 `horizLookSq > 0`（靠 `[-89.9°, +89.9°]` 钳位） | 视线与俯仰角均直接读取当前角度，无历史插值与未插值混用；`JE 1.12.2` 爬升分支同样无 `lookHorLength > 0` 检查，**`JE 26.1.2` 已补上 `lookHorLength > 0.0` 防护** |
+| **重力来源与缓降** | 滑翔重力写死 `-0.08f` / 缓降 `-0.01f`；**无论上升还是下落全程取 `-0.01f`**；空中已带缓降时无法按跳跃起飞（须先滑翔后再施缓降） | `JE 26.1.2` 调用 `getEffectiveGravity()` 读重力属性（默认 `0.08`），**仅 `vel.y <= 0` 下落时**带缓降才夹到 `<= 0.01`（抬头上升期仍承受全额重力）；空中带缓降仍可起飞 |
+| **起停条件与创造微升** | 进入与收缩碰撞箱不校验几何适应空间（`0.834` 格净空可起飞，可穿 `1` 格高通道）；**生存模式空中再按跳跃会主动收翅**；创造模式相关能力位（`0x04`，不读 `MayFly`）满 `11` 刻起按住跳跃每刻在物理前 `vel.y += 0.1f` | `JE 26.1.2` 在 `Player.updatePlayerPose()` 中调用 `canPlayerFitWithinBlocksAndEntitiesWhen` 按姿态碰撞箱（`FALL_FLYING` / `SWIMMING` 均为 `0.6 × 0.6`）校验空间；空中再按跳跃不收翅（仅落地、骑乘、可攀爬方块、飘浮或滑翔器损坏时停止）；无创造 `+0.1` 微升 |
+| **烟花火箭助推** | 烟花实体仅做视觉跟随、不施加推力；助推在 `GlideMoveSystem` 中依 `MovementEffects` 倒计时结算（客户端先 `20` 刻预测，再同步服务端随机时长），**连放不会叠加多发推力**，且拒绝短时长覆盖 | `FireworkRocketEntity.tick()` 直接给绑定玩家叠加助推速度；若同时绑定多枚烟花，**多枚火箭会各自施加推力形成叠加**，也没有“短时长防降级”概念 |
+| **摔落距离重置** | 当 `vel.y > -0.5f` 时**无条件**写 `fallDistance = 1.0f`（与 `JE 1.12.2` 一致） | `JE 26.1.2`（`Entity.checkFallDistanceAccumulation`）仅当 `vel.y > -0.5` **且 `fallDistance > 1.0`** 时才压回 `1.0` |
+| **撞墙伤害结算** | `(V_H_pre - V_H_post) * 10 - 3` 后**按 `floorf` 向下取整**扣整数点生命值 | `JE 1.12.2` 与 `JE 26.1.2` 直接将浮点 `dmg` 传入 `hurt` 结算，**保留小数生命值伤害** |
+| **耐久消耗与槽位** | 固定检查胸甲槽（slot 1），在 `FallFlyTicks % 20 == 19` 时判定 1 次 `1 / (L + 1)` 扣点 | `JE 26.1.2` 支持任意携带 `GLIDER` 组件的有效槽位，在 `(fallFlyTicks + 1) % 20 == 0` 时随机抽一个槽位扣 `1` 耐久，并每 `10` tick 触发 `ELYTRA_GLIDE` 事件 |
+
+---
+
+## 等价伪代码参考（基岩版 `1.26.51.01`）
+
+下面将基岩版 `1.26.51.01` 的底层实现整理为易读的 C++ 风格伪代码，编号严格对应前文**“滑翔运动”第 1～6 步**。其中略去了底层内存偏移、汇编寄存器与冗长的 IEEE-754 尾数（如把 `-0.0799999982f` 简记为 `-0.08f`）；若需用于逐比特浮点对质或查证 VA 地址，请参阅 [`elytra-movement.md`](elytra-movement.md) 第八节。
+
+### 1. 状态结构与正弦查找表
+
+```cpp
+struct Vec3 {
+    float x, y, z;
+};
+
+struct ElytraState {
+    // 核心物理量（全流程以 32 位单精度 float 计算）
+    Vec3 vel;            // 对应 StateVectorComponent::mPosDelta（本刻待应用位移，非上刻 mPos - mPosPrev）
+    float fallDistance;  // 累计摔落距离
+    float yawDeg,   prevYawDeg;    // 当前与上一刻偏航角（度）
+    float pitchDeg, prevPitchDeg;  // 当前与上一刻俯仰角（度：低头 > 0，抬头 < 0）
+
+    // 状态与计时
+    bool isGliding;
+    bool hasSlowFalling;          // 是否激活缓降效果
+    bool hasCreativeLiftAbility;  // 创造模式相关能力位（与 MayFly 无关）
+    uint32_t fallFlyTicks;        // 连续滑翔刻数（退出滑翔立即归零）
+    int32_t boostTicksLeft;       // 烟花助推剩余刻数（0 = 未生效，-1 = 无限时长）
+};
+
+// 基岩版正弦查找表：启动时以 sinf(float(i) / 10430.378f) 填充 65536 项
+extern float SIN_TABLE[65536];
+
+constexpr float PI_F       = 3.1415927f;
+constexpr float DEG_TO_RAD = 0.017453292f;
+constexpr float LUT_SCALE  = 10430.378f;
+
+inline float tableSin(float rad) {
+    return SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(rad * LUT_SCALE))];
+}
+
+inline float tableCos(float rad) {
+    // 在 float32 下先 +16384.0f 再截断；极大角度时舍入进位会产生“大半角”偏差
+    return SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(rad * LUT_SCALE + 16384.0f))];
+}
+
+// 360° 最短包角（仅用于抑制跨 ±180° 跳变；当前位置插值权重 α = 1）
+inline float wrapAngle360(float deg, float prevDeg) {
+    float r = std::fmodf((deg - prevDeg) + 180.0f, 360.0f);
+    if (r < 0.0f) r += 360.0f;
+    return (r - 180.0f) + prevDeg;
+}
+
+// 视线向量公式沿自早期方块逻辑：走 (-π - yaw) 与 (-pitch) 查表，且不做三维模长归一化
+inline Vec3 calcLookVectorLUT(float yawDeg, float pitchDeg) {
+    float yawArg   = -PI_F - yawDeg * DEG_TO_RAD;
+    float pitchArg = -pitchDeg * DEG_TO_RAD;
+    float negCosP  = -tableCos(pitchArg);
+    return {
+        tableSin(yawArg) * negCosP,
+        tableSin(pitchArg),
+        tableCos(yawArg) * negCosP
+    };
+}
+```
+
+### 2. 起滑前输入注入（创造模式按住空格微升）
+
+```cpp
+// 在每刻“滑翔物理 stepGlidePhysics”之前执行
+void stepGlideInput(ElytraState& s, bool holdingJump) {
+    if (!s.isGliding) {
+        s.fallFlyTicks = 0;
+        return;
+    }
+
+    // 仅创造能力位（不读 MayFly）且连续滑翔满 11 刻后，按住跳跃每刻预叠 +0.1 升力
+    if (holdingJump && s.hasCreativeLiftAbility && s.fallFlyTicks >= 11) {
+        s.vel.y += 0.1f;
+    }
+    s.fallFlyTicks += 1;
+}
+```
+
+### 3. 每刻滑翔物理主流程（`1`～`6` 步）
+
+```cpp
+void stepGlidePhysics(ElytraState& s) {
+    // [0] 摔落距离重置与视角采样
+    if (s.vel.y > -0.5f) {
+        s.fallDistance = 1.0f; // 只要垂速大于 -0.5 就无条件写 1.0（与 Java 1.21+ 不同）
+    }
+
+    // 三维视线对历史角度做 360° 包角插值，而俯仰因子直接读未插值的当前 pitchDeg
+    float yawInterp   = wrapAngle360(s.yawDeg,   s.prevYawDeg);
+    float pitchInterp = wrapAngle360(s.pitchDeg, s.prevPitchDeg);
+    Vec3 look = calcLookVectorLUT(yawInterp, pitchInterp);
+
+    float pitchRad  = s.pitchDeg * DEG_TO_RAD;
+    float cosPitch  = tableCos(pitchRad);
+    float lookLen3d = std::sqrtf(look.x * look.x + look.y * look.y + look.z * look.z);
+    float d3        = std::fminf(1.0f, lookLen3d / 0.4f) * cosPitch * cosPitch;
+
+    // 提前采样修改前的初始水平速率：供第 [3] 步爬升消耗与第 [4] 步转向对齐复用
+    float initialHorizSpeed = std::sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z);
+
+    float horizLookSq  = look.x * look.x + look.z * look.z;
+    float horizLookLen = std::sqrtf(horizLookSq);
+
+    // [1] 重力与机翼升力抵消（带有缓降时全程 g = -0.01f，不区分升降方向）
+    float gravity = s.hasSlowFalling ? -0.01f : -0.08f;
+    s.vel.y += (1.0f - 0.75f * d3) * gravity;
+
+    // [2] 下坠速度转化为水平推进
+    if (horizLookSq > 0.0f && s.vel.y < 0.0f) {
+        float lift = d3 * (-0.1f * s.vel.y);
+        s.vel.x += (look.x / horizLookLen) * lift;
+        s.vel.y += lift;
+        s.vel.z += (look.z / horizLookLen) * lift;
+    }
+
+    // [3] 抬头爬升（pitch < 0）：消耗初始水平速率，换取 3.2 倍垂直抬升
+    // 注：与早期 Java 版相同，此处未再检查 horizLookSq > 0，靠视角钳位 [-89.9°, +89.9°] 避开除零
+    if (pitchRad < 0.0f) {
+        float sinPitch = tableSin(pitchRad);
+        float climb    = (-sinPitch) * initialHorizSpeed * 0.04f;
+        s.vel.x -= (look.x / horizLookLen) * climb;
+        s.vel.y += 3.2f * climb;
+        s.vel.z -= (look.z / horizLookLen) * climb;
+    }
+
+    // [4] 水平转向对齐：按 10% 将当前水平速度拉向“以 initialHorizSpeed 为速率的视线水平方向”
+    if (horizLookSq > 0.0f) {
+        float targetVx = (look.x / horizLookLen) * initialHorizSpeed;
+        float targetVz = (look.z / horizLookLen) * initialHorizSpeed;
+        s.vel.x += (targetVx - s.vel.x) * 0.1f;
+        s.vel.z += (targetVz - s.vel.z) * 0.1f;
+    }
+
+    // [5] 烟花助推（若助推有效，直接以未归一化的 LUT 视线 look 推向不动点 1.7 * look）
+    // 注：基岩版烟花火箭实体本身只做位置/速度跟随，不负责施加速度；助推在空气阻力之前完成
+    if (s.boostTicksLeft != 0) {
+        s.vel.x += 0.1f * look.x + 0.5f * (1.5f * look.x - s.vel.x);
+        s.vel.y += 0.1f * look.y + 0.5f * (1.5f * look.y - s.vel.y);
+        s.vel.z += 0.1f * look.z + 0.5f * (1.5f * look.z - s.vel.z);
+    }
+
+    // [6] 空气阻力衰减并写回本刻最终速度
+    s.vel.x *= 0.99f;
+    s.vel.y *= 0.98f;
+    s.vel.z *= 0.99f;
+}
+```
+
+### 4. 烟花助推时长、防短覆盖、撞墙伤害与耐久
+
+```cpp
+// 服务端生成烟花助推时长（客户端按下瞬间先在本地写固定 20 tick 预测，随后被服务端覆盖）
+int32_t calcFireworkBoostDuration(bool hasFlightTag, int flightLevel, Random& rng) {
+    int base = hasFlightTag ? 10 * (flightLevel + 1) : 10;
+    return base + rng.nextInt(6) + rng.nextInt(7); // 含两个随机项 U(0,5) + U(0,6)
+}
+
+// 短时长防降级保护：避免连放烟花时较短的新时长截断正在生效的更长助推
+void applyBoostDuration(int32_t& curTicksLeft, int32_t newTicks) {
+    if (newTicks != curTicksLeft) {
+        if (curTicksLeft == -1) return;                     // 当前为无限时长：跳过
+        if (newTicks != -1 && newTicks < curTicksLeft) return; // 新时长更短：跳过
+    }
+    curTicksLeft = newTicks;
+}
+
+// 撞墙动能伤害：与 Java 版保留小数伤害不同，基岩版实测按 floor 向下取整扣整数血量
+int calcGlidingCrashDamage(float preHorizSpeed, float postHorizSpeed, bool isInvulnerable) {
+    if (isInvulnerable) return 0;
+    float dmg = (preHorizSpeed - postHorizSpeed) * 10.0f - 3.0f;
+    return (dmg > 0.0f) ? static_cast<int>(std::floorf(dmg)) : 0; // dmg > 4 播大摔落音效
+}
+
+// 鞘翅耐久可用阈值与每 20 tick 消耗规则
+constexpr int ELYTRA_MAX_DAMAGE = 432;
+
+inline bool canElytraGlide(int damage) {
+    return damage < ELYTRA_MAX_DAMAGE - 1; // damage >= 431（仅剩 1 点）不可再滑翔
+}
+
+inline bool shouldDamageElytraThisTick(uint32_t fallFlyTicks, int unbreakingLevel, Random& rng) {
+    if (fallFlyTicks % 20 != 19) return false;       // 滑翔满第 20, 40, 60... tick 判定一次
+    return rng.nextInt(unbreakingLevel + 1) == 0;    // 扣点概率 = 1 / (L + 1)
+}
+```

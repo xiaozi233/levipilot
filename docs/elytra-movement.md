@@ -286,6 +286,162 @@ $$
 
 ---
 
+## 八、等价 C++ 代码还原（基于 `1.26.51.01` 静态反汇编）
+
+以下伪代码按 `1.26.51.01`（`Minecraft.Windows.exe`）实际指令顺序与单精度 `.rdata` 常量整理；其中 `mPosDelta` 均指 `StateVectorComponent::mPosDelta`（等待运动阶段应用的位移增量，而非上拍已发生的 `mPos - mPosPrev`）。`SIN_TABLE`（`0x151d6973c`）的建表与截断特性另见 [`notes/sin-table-12651.md`](notes/sin-table-12651.md)。
+
+### 1. 查找表与角度包裹辅助（内联逻辑）
+
+```cpp
+// SIN_TABLE[65536] 位于 0x151d6973c，由 0x142647070 以 sinf(float(i) / 10430.378f) 填充
+extern float SIN_TABLE[65536];
+
+inline float wrapAngleDiff360(float deg, float prevDeg) {
+    // 0x146667b85..0x146667c59: 正余数包角 fmodf((deg - prev) + 180, 360) - 180 + prev
+    float r = std::fmodf((deg - prevDeg) + 180.0f, 360.0f);
+    if (r < 0.0f) r += 360.0f;
+    return (r - 180.0f) + prevDeg;
+}
+```
+
+### 2. `GlideInputSystem`（`0x146820216` → `0x1466568f0`，在物理前运行）
+
+```cpp
+void glideInputTick(Vec3& mPosDelta, uint32_t& fallFlyTicks,
+                    bool isGliding, bool holdJump, uint8_t abilitiesByte4) {
+    if (!isGliding) { // (*(r8 + 4) & 1) == 0
+        fallFlyTicks = 0;
+        return;
+    }
+    // MovementAbilitiesComponent+4 的 bit 2 (0x04) 且 FallFlyTicks >= 11；不读 MayFly (bit 1)
+    bool canLift = ((abilitiesByte4 >> 2) & 1) != 0;
+    if (holdJump && canLift && fallFlyTicks >= 11) {
+        mPosDelta.y += 0.1f; // 0x14e6ae460 = 0.100000001f
+    }
+    fallFlyTicks += 1;
+}
+```
+
+### 3. `GlideMoveSystem` 核心步进（`sub_146667B10` @ `0x146826333`）
+
+```cpp
+void glideMoveTick(Vec3& mPosDelta,
+                   float& fallDistance,
+                   float yawDeg,   float yawPrevDeg,
+                   float pitchDeg, float pitchPrevDeg,
+                   bool hasSlowFalling, // MobEffect 槽 >= 28 且第 27 槽有效
+                   bool hasGlideBoost)  // MovementEffects 第 0 槽有效 (slot0 + 12 != -1)
+{
+    // [0] fallDistance 重置与视线采样
+    if (mPosDelta.y > -0.5f) {
+        fallDistance = 1.0f;
+    }
+
+    float yawInterpDeg   = wrapAngleDiff360(yawDeg,   yawPrevDeg);
+    float pitchInterpDeg = wrapAngleDiff360(pitchDeg, pitchPrevDeg);
+
+    // 视线向量走 -π - yawInterp 与 -pitchInterp 查 SIN_TABLE（不除三维模长）
+    float baseYaw   = (-3.14159274f - yawInterpDeg * 0.0174532924f) * 10430.3779f;
+    float basePitch = (-pitchInterpDeg * 0.0174532924f) * 10430.3779f;
+
+    float cosNegPitch = -SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(basePitch + 16384.0f))];
+    float lx = SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(baseYaw))] * cosNegPitch;
+    float ly = SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(basePitch))];
+    float lz = SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(baseYaw + 16384.0f))] * cosNegPitch;
+
+    // 俯仰因子直接读未插值的 pitchDeg
+    float pRad    = pitchDeg * 0.0174532924f;
+    float pIdxBase = pRad * 10430.3779f;
+    float cosP    = SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(pIdxBase + 16384.0f))];
+
+    float lhSq  = lx * lx + lz * lz;
+    float len3d = std::sqrtf(lx * lx + ly * ly + lz * lz);
+    float d3    = std::fminf(1.0f, len3d / 0.400000006f) * cosP * cosP;
+
+    // [1..2] 早采样初始水平速度平方、判定重力 g、施加升力抵消
+    float vx = mPosDelta.x, vy = mPosDelta.y, vz = mPosDelta.z;
+    float vh0Sq = vx * vx + vz * vz;
+    float g     = hasSlowFalling ? -0.00999999978f : -0.0799999982f;
+    float lh    = std::sqrtf(lhSq);
+
+    vy -= (0.75f * d3 - 1.0f) * g; // 等价于 vy += (1.0f - 0.75f * d3) * g
+
+    // [3] 下坠动能转入水平前进
+    if (lhSq > 0.0f && vy < 0.0f) {
+        float lift = d3 * (-0.100000001f * vy);
+        vx += (lx / lh) * lift;
+        vy += lift;
+        vz += (lz / lh) * lift;
+    }
+
+    // [4] 抬头爬升将水平速度转为 3.2 倍抬升（使用早采样的 vh0Sq；注：二进制此处未再判 lh > 0）
+    float vh0 = std::sqrtf(vh0Sq);
+    if (pRad < 0.0f) {
+        float sinP = SIN_TABLE[static_cast<uint16_t>(static_cast<int32_t>(pIdxBase))];
+        float climb = sinP * vh0 * (-0.0399999991f);
+        vx -= (climb * lx) / lh;
+        vy += 3.20000005f * climb;
+        vz -= (climb * lz) / lh;
+    }
+
+    // [5] 水平转向对齐（10% 拉向以 vh0 为速率的水平视线方向）
+    if (lhSq > 0.0f) {
+        vx += ((lx / lh) * vh0 - vx) * 0.100000001f;
+        vz += ((lz / lh) * vh0 - vz) * 0.100000001f;
+    }
+
+    // [6] 烟花助推 GLIDE_BOOST（直接用未除三维 len3d 的 LUT 向量 l）
+    if (hasGlideBoost) {
+        vx += 0.100000001f * lx + 0.5f * (1.5f * lx - vx);
+        vy += 0.100000001f * ly + 0.5f * (1.5f * ly - vy);
+        vz += 0.100000001f * lz + 0.5f * (1.5f * lz - vz);
+    }
+
+    // [7] 空气阻尼写回 StateVectorComponent::mPosDelta
+    mPosDelta.x = vx * 0.99000001f;
+    mPosDelta.y = vy * 0.980000019f;
+    mPosDelta.z = vz * 0.99000001f;
+}
+```
+
+### 4. 烟花助推时长、短覆盖保护、撞墙伤害与耐久（`1.26.51.01`）
+
+```cpp
+// 烟花随机寿命 (0x143345f30): lifeTime = 10 * Flight + 10 + U(0,5) + U(0,6)
+int computeFireworkBoostDurationServer(bool hasFlightTag, int flight, Random& rng) {
+    int base = hasFlightTag ? (10 * flight + 10) : 10;
+    return base + rng.nextInt(6) + rng.nextInt(7); // 客户端本地先写固定 20 tick 预测
+}
+
+// MovementEffects 写入防降级守卫 (0x142fe8990): 短时长或无限时长不被覆盖
+bool shouldApplyGlideBoostOverwrite(int32_t curDur, int32_t newDur) {
+    if (newDur != curDur) {
+        if (curDur == -1) return false;                  // 当前无限时长，跳过
+        if (newDur != -1 && newDur < curDur) return false; // 新时长更短，跳过
+    }
+    return true;
+}
+
+// 撞墙伤害计算 (0x146656960 / HurtSystem): 碰撞后 mPosDelta 实测为 0
+int computeGlidingCollisionDamage(const Vec3& preDelta, const Vec3& postDelta, bool invuln) {
+    if (invuln) return 0;
+    float preH  = std::sqrtf(preDelta.x  * preDelta.x  + preDelta.z  * preDelta.z);
+    float postH = std::sqrtf(postDelta.x * postDelta.x + postDelta.z * postDelta.z);
+    float dmg   = (preH - postH) * 10.0f - 3.0f;
+    return (dmg > 0.0f) ? static_cast<int>(std::floorf(dmg)) : 0; // dmg > 4 播音效 24，否则 25
+}
+
+// 鞘翅耐久可用与每 20 tick 消耗规则 (0x1424cd6a0 / 0x1424c22f0 / 0x14207c9b0 / 0x1424c2220)
+constexpr int ELYTRA_MAX_DAMAGE = 27 * 16; // 432
+inline bool isElytraUsable(int damage) { return damage < ELYTRA_MAX_DAMAGE - 1; } // 431 不可飞
+inline bool shouldTickElytraDurability(uint32_t fallFlyTicks, int unbreakingLevel, Random& rng) {
+    if (fallFlyTicks % 20 != 19) return false;
+    return rng.nextInt(unbreakingLevel + 1) == 0; // P = 1 / (L + 1)
+}
+```
+
+---
+
 ## 参考地址索引（`1.26.51.01` `Minecraft.Windows.exe.i64`）
 
 | 模块 / 机制 | 验证 VA 地址（本轮静态核查） |

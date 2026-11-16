@@ -32,10 +32,11 @@
 | 主题 | 结论正主 | 证据与账本 | 状态 |
 | --- | --- | --- | --- |
 | 流体与液体运动（水/岩浆：竖直递推、水平阻力、流动推力、泳姿、入水判定） | [`fluid-movement.md`](fluid-movement.md)；[`fluid-wiki.md`](fluid-wiki.md) 是精简版 | [`notes/re-fluid-12651.md`](notes/re-fluid-12651.md)（函数/偏移/常量位模式）；`skills/bedrock-re/findings/1.26.51.01/cases/` 的 `lava-dim-fire-depth`、`liquid-blip`、`liquid-falling-push` | 有撤回项，引用需带最新口径 |
-| 鞘翅滑翔与烟花助推（每刻递推公式、创造 `+0.1` 微升、`0.6 × 0.6` 碰撞箱、撞墙、耐久） | [`elytra-movement.md`](elytra-movement.md)；[`elytra-wiki.md`](elytra-wiki.md) 是精简版 | 离线参考模型与运行期对照脚本位于 gitignored `out/` | 主公式与机制已完成运行期对质 |
+| 鞘翅滑翔与烟花助推（每刻递推公式、等价 C++ 还原、创造 `+0.1` 微升、`0.6 × 0.6` 碰撞箱、撞墙、耐久） | [`elytra-movement.md`](elytra-movement.md)；[`elytra-wiki.md`](elytra-wiki.md) 是精简、JE 差异对比与可读伪代码版 | 离线参考模型与运行期对照脚本位于 gitignored `out/` | 主公式与机制已完成运行期对质 |
 | 地面移动与疾跑顺序（E14 写位与水阻力谁先） | [`notes/tick-order-12651.md`](notes/tick-order-12651.md) | 同上证据册的疾跑小节；case `sprint-order-static` | 静态已证明顺序链 |
 | tick 内调度与 ECS 顺序（六步、系统注册链、调用栈） | [`notes/tick-order-12651.md`](notes/tick-order-12651.md) | 同文内的调用栈与注册链证据 | 结论成立，覆盖范围限该文列出的系统 |
 | 黏液块反弹与上层覆盖判定 | [`notes/bounce-12651.md`](notes/bounce-12651.md) | case `slime-bounce-coverage`（判据接自由落体积分） | 已闭合，含撤回项 |
+| 正弦表、`sinf`/`cosf` 分工、加速系统筛选与半角可达性（`SIN_TABLE` `269` 处/`193` 条目、Pattern A/B 大小半角、`TickUpdatePlayerFromCamera` `fmodf` 锁死与 `PlayerAuthInputPacket`） | [`notes/sin-table-12651.md`](notes/sin-table-12651.md)；[`angles-wiki.md`](angles-wiki.md) 是通俗版 | 纯静态反汇编 + 全 `float32` 数值推算（鞘翅与游泳实机见 [`elytra-movement.md`](elytra-movement.md) 与 [`notes/re-fluid-12651.md`](notes/re-fluid-12651.md)） | 静态与全 `float32` 极值明确；突刺/激流/疾跑跳与自定义 `mRot` 发包实机拟合未做 |
 | 网络与封包（入站切片、无帧长度前缀、共享序列化缓冲竞态、BadPacket 90/187） | [`notes/badpacket-setactordata-20261031.md`](notes/badpacket-setactordata-20261031.md) | [`notes/badpacket-187-20261101.md`](notes/badpacket-187-20261101.md)；实现侧见 [`mod-internals.md`](mod-internals.md) 的 H1/PacketTap | 竞态已确认、属游戏侧，harness 不打补丁 |
 | 跑酷数据采集与分析（工具，不是机制结论） | [`parkour.md`](parkour.md) | `scenarios/`、`driver/` 的录制与分析脚本 | 工具可用 |
 | 逆向方法与工具链 | [`reverse-engineering.md`](reverse-engineering.md)；[`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md) | [`../skills/bedrock-re/`](../skills/bedrock-re/)（SKILL、methods、experiments、pitfalls、x64dbg） | 现行方法 |

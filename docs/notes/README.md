@@ -12,6 +12,7 @@
 | [`re-fluid-12651.md`](re-fluid-12651.md) | 流体与移动 | 流体、疾跑和泳姿的函数、偏移、公式及静态证据 |
 | [`tick-order-12651.md`](tick-order-12651.md) | tick 顺序与 ECS | ECS 调度顺序、注册链和调用栈证据 |
 | [`bounce-12651.md`](bounce-12651.md) | 黏液反弹 | 黏液反弹覆盖高度、落差与逐 tick 证据 |
+| [`sin-table-12651.md`](sin-table-12651.md) | 正弦表与三角函数 | `65536` 项 `SIN_TABLE` 建表/查表、`269` 处/`193` 条目分工与加速筛选（Pattern A/B）、大小半角极值（`5898195°`/`-5898375°`）及客户端 `fmodf` 锁死与包级透传 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
 旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。

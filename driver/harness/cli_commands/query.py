@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 from ..commands import ModClient
 
@@ -31,6 +32,16 @@ COMMANDS = frozenset(
         "ecs-component",
     }
 )
+
+
+def _item_options(args: argparse.Namespace) -> dict[str, Any]:
+    """Forward optional item flags only when passed so baseline calls stay intact."""
+    extra: dict[str, Any] = {}
+    if args.damage is not None:
+        extra["damage"] = args.damage
+    if args.flight is not None:
+        extra["flight"] = args.flight
+    return extra
 
 
 def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
@@ -72,7 +83,7 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
     if args.command == "give":
         print(
             json.dumps(
-                client.give(args.item, count=args.count, aux=args.aux),
+                client.give(args.item, count=args.count, aux=args.aux, **_item_options(args)),
                 ensure_ascii=False,
             )
         )
@@ -94,6 +105,7 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                     count=args.count,
                     aux=args.aux,
                     container=args.container,
+                    **_item_options(args),
                 ),
                 ensure_ascii=False,
             )
@@ -123,7 +135,8 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         print(json.dumps(client.look_at_entity(args.runtime_id), ensure_ascii=False))
         return True
     if args.command == "ecs-registries":
-        print(json.dumps(client.ecs_registries(), ensure_ascii=False, indent=2))
+        extra = {"scope": args.scope} if args.scope is not None else {}
+        print(json.dumps(client.ecs_registries(**extra), ensure_ascii=False, indent=2))
         return True
     if args.command == "ecs-entity":
         print(json.dumps(client.ecs_entity(args.runtime_id), ensure_ascii=False, indent=2))

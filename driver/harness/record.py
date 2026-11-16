@@ -8,6 +8,7 @@ module keeps the struct layout and flag bits in one place.
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 from typing import Any
@@ -36,6 +37,13 @@ assert struct.calcsize(ENTRY_FORMAT) == ENTRY_SIZE
 
 @dataclass(frozen=True)
 class RecordEntry:
+    """One 64-byte tick sample from the mod's binary ring.
+
+    ``vx, vy, vz`` are ``Actor::getVelocity()`` (completed per-tick displacement
+    ``mPos - mPosPrev``), not pending ``StateVectorComponent::mPosDelta``
+    (``state["pos_delta_x/y/z"]``).
+    """
+
     tick: int
     x: float
     y: float
@@ -104,6 +112,25 @@ class RecordEntry:
     @property
     def health(self) -> float:
         return self.health_milli / 1000.0
+
+    @property
+    def completed_delta(self) -> tuple[float, float, float]:
+        """Completed per-tick displacement ``(vx, vy, vz)`` from ``Actor::getVelocity()``.
+
+        In Minecraft Bedrock, ``Actor::getVelocity()`` returns ``mPos - mPosPrev``
+        (completed displacement), which is distinct from ``StateVectorComponent::mPosDelta``
+        (pending pre-motion delta exposed as ``state["pos_delta_x/y/z"]``).
+        """
+        return (self.vx, self.vy, self.vz)
+
+    @property
+    def horizontal_speed(self) -> float:
+        """Completed horizontal speed ``hypot(vx, vz)`` from ``mPos - mPosPrev``.
+
+        Computed from ``vx`` and ``vz`` (``Actor::getVelocity()``), distinct from
+        pending ``StateVectorComponent::mPosDelta`` (``state["pos_delta_x/y/z"]``).
+        """
+        return math.hypot(self.vx, self.vz)
 
     def to_dict(self) -> dict[str, Any]:
         return {

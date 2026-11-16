@@ -96,6 +96,26 @@ class CliCompatibilityTests(unittest.TestCase):
                 text = text.replace("{w,rw,x}", "{w,rw}")
                 text = text.replace(" [--sample]", "")
                 text = re.sub(r"^  --sample +[^\n]*\n", "", text, flags=re.MULTILINE)
+            if "usage: harness give" in text:
+                text = text.replace(
+                    " [--damage DAMAGE]\n                    [--flight FLIGHT]\n                    ",
+                    " ",
+                )
+                text = text.replace("  --damage DAMAGE\n  --flight FLIGHT\n", "")
+                text = text.replace("  -h, --help       show this", "  -h, --help     show this")
+            if "usage: harness set-item" in text:
+                text = text.replace(
+                    "\n                        [--damage DAMAGE] [--flight FLIGHT]", ""
+                )
+                text = text.replace("  --damage DAMAGE\n  --flight FLIGHT\n", "")
+            if "usage: harness ecs-registries" in text:
+                text = text.replace(" [--scope {client,server,all}]", "")
+                text = text.replace("  --scope {client,server,all}\n", "")
+                text = text.replace("  -h, --help            show this", "  -h, --help  show this")
+            if "usage: harness reset" in text:
+                text = text.replace(" [--no-wait-teleport]\n                     ", " ")
+                text = re.sub(r"^  --no-wait-teleport +[^\n]*\n", "", text, flags=re.MULTILINE)
+                text = text.replace("  -h, --help          show this", "  -h, --help     show this")
             result[stream] = text
         return result
 
@@ -232,6 +252,89 @@ class CliCompatibilityTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_reset_no_wait_teleport_wiring(self) -> None:
+        default = invoke_cli(cli, ["reset", "1", "2", "3"])
+        self.assertEqual(default["code"], 0)
+        self.assertEqual(
+            default["calls"][1],
+            ["reset", [1.0, 2.0, 3.0], {"yaw": None, "pitch": None}],
+        )
+
+        no_wait = invoke_cli(cli, ["reset", "1", "2", "3", "--no-wait-teleport"])
+        self.assertEqual(no_wait["code"], 0)
+        self.assertEqual(
+            no_wait["calls"][1],
+            ["reset", [1.0, 2.0, 3.0], {"yaw": None, "pitch": None, "wait_teleport": False}],
+        )
+        self.assertIn("--no-wait-teleport", invoke_cli(cli, ["reset", "--help"])["stdout"])
+
+    def test_give_and_set_item_damage_flight_wiring(self) -> None:
+        given = invoke_cli(
+            cli,
+            [
+                "give",
+                "minecraft:firework_rocket",
+                "--count",
+                "16",
+                "--damage",
+                "1",
+                "--flight",
+                "3",
+            ],
+        )
+        self.assertEqual(given["code"], 0)
+        self.assertEqual(
+            given["calls"][1],
+            [
+                "give",
+                ["minecraft:firework_rocket"],
+                {"count": 16, "aux": 0, "damage": 1, "flight": 3},
+            ],
+        )
+
+        placed = invoke_cli(
+            cli,
+            [
+                "set-item",
+                "2",
+                "minecraft:elytra",
+                "--container",
+                "armor",
+                "--damage",
+                "42",
+                "--flight",
+                "2",
+            ],
+        )
+        self.assertEqual(placed["code"], 0)
+        self.assertEqual(
+            placed["calls"][1],
+            [
+                "set_item",
+                [2, "minecraft:elytra"],
+                {"count": 1, "aux": 0, "container": "armor", "damage": 42, "flight": 2},
+            ],
+        )
+        for cmd in ("give", "set-item"):
+            help_text = invoke_cli(cli, [cmd, "--help"])["stdout"]
+            self.assertIn("--damage", help_text)
+            self.assertIn("--flight", help_text)
+
+    def test_ecs_registries_scope_wiring(self) -> None:
+        default = invoke_cli(cli, ["ecs-registries"])
+        self.assertEqual(default["code"], 0)
+        self.assertEqual(default["calls"][1], ["ecs_registries", [], {}])
+
+        for scope in ("client", "server", "all"):
+            with self.subTest(scope=scope):
+                scoped = invoke_cli(cli, ["ecs-registries", "--scope", scope])
+                self.assertEqual(scoped["code"], 0)
+                self.assertEqual(scoped["calls"][1], ["ecs_registries", [], {"scope": scope}])
+
+        invalid = invoke_cli(cli, ["ecs-registries", "--scope", "invalid"])
+        self.assertEqual(invalid["exception"], ["SystemExit", "2"])
+        self.assertIn("--scope", invoke_cli(cli, ["ecs-registries", "--help"])["stdout"])
 
     def test_every_parser_command_has_a_handler(self) -> None:
         # The parser definition and the dispatch registry must stay in sync;

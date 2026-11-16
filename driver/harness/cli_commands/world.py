@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 from ..commands import ModClient
 
@@ -84,6 +85,11 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         print(json.dumps(client.teleport(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch)))
         return True
     if args.command == "reset":
-        print(json.dumps(client.reset(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch)))
+        extra: dict[str, Any] = {"wait_teleport": False} if args.no_wait_teleport else {}
+        print(
+            json.dumps(
+                client.reset(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch, **extra)
+            )
+        )
         return True
     return False

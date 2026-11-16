@@ -8,8 +8,13 @@ from ..connection import PipeConnection
 
 
 class EcsCommands(PipeConnection):
-    def ecs_registries(self, timeout: float | None = None) -> dict[str, Any]:
-        return self.request({"cmd": "ecs_registries"}, "ecs_registries", timeout=timeout)
+    def ecs_registries(
+        self, timeout: float | None = None, *, scope: str | None = None
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {"cmd": "ecs_registries"}
+        if scope is not None:
+            message["scope"] = scope
+        return self.request(message, "ecs_registries", timeout=timeout)
 
     def ecs_context(
         self, context: int | str, component_id: int, timeout: float | None = None

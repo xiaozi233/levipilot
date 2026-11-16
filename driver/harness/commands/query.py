@@ -14,6 +14,16 @@ LIQUID_BLOCKS = frozenset(
 )
 
 
+def _item_options(damage: int | None, flight: int | None) -> dict[str, int]:
+    """Build optional inventory-write fields without adding keys when omitted."""
+    options: dict[str, int] = {}
+    if damage is not None:
+        options["damage"] = int(damage)
+    if flight is not None:
+        options["flight"] = int(flight)
+    return options
+
+
 class QueryCommands(PipeConnection):
     def chat_history(self, limit: int = 32) -> dict[str, Any]:
         """Read the client's retained chat messages, oldest first (at most 64).
@@ -123,25 +133,38 @@ class QueryCommands(PipeConnection):
         count: int = 1,
         aux: int = 0,
         container: str = "inventory",
+        damage: int | None = None,
+        flight: int | None = None,
     ) -> dict[str, Any]:
         """Set one slot. ``count=0`` clears it. container: inventory/armor/offhand."""
-        return self.request(
-            {
-                "cmd": "set_item",
-                "slot": int(slot),
-                "item": item,
-                "count": int(count),
-                "aux": int(aux),
-                "container": container,
-            },
-            "inventory_set",
-        )
+        message: dict[str, Any] = {
+            "cmd": "set_item",
+            "slot": int(slot),
+            "item": item,
+            "count": int(count),
+            "aux": int(aux),
+            "container": container,
+            **_item_options(damage, flight),
+        }
+        return self.request(message, "inventory_set")
 
-    def give(self, item: str, *, count: int = 1, aux: int = 0) -> dict[str, Any]:
-        return self.request(
-            {"cmd": "give", "item": item, "count": int(count), "aux": int(aux)},
-            "inventory_given",
-        )
+    def give(
+        self,
+        item: str,
+        *,
+        count: int = 1,
+        aux: int = 0,
+        damage: int | None = None,
+        flight: int | None = None,
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "cmd": "give",
+            "item": item,
+            "count": int(count),
+            "aux": int(aux),
+            **_item_options(damage, flight),
+        }
+        return self.request(message, "inventory_given")
 
     def equip(self, target: str, *, slot: int = -1) -> dict[str, Any]:
         """Move an inventory stack into a worn slot (armor/offhand).

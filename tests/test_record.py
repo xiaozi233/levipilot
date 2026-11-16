@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import struct
 import unittest
 
@@ -87,6 +88,18 @@ class RecordEntryTests(unittest.TestCase):
         self.assertEqual(entry.tick, 7)
         with self.assertRaises(ValueError):
             RecordEntry.from_bytes(data, 8)
+
+    def test_completed_delta_and_horizontal_speed(self) -> None:
+        packed = decode_hex(pack_entry(vx=0.3, vy=0.42, vz=-0.4).hex())[0]
+        self.assertEqual(packed.completed_delta, (packed.vx, packed.vy, packed.vz))
+        self.assertAlmostEqual(packed.vx, 0.3, places=6)
+        self.assertAlmostEqual(packed.vy, 0.42, places=6)
+        self.assertAlmostEqual(packed.vz, -0.4, places=6)
+        self.assertAlmostEqual(packed.horizontal_speed, 0.5, places=6)
+
+        exact = RecordEntry(1, 0.0, 0.0, 0.0, 0.3, -0.1, 0.4, 0.0, 0.0, 0.0, 0, 0, 0, 0, 20000)
+        self.assertEqual(exact.completed_delta, (0.3, -0.1, 0.4))
+        self.assertEqual(exact.horizontal_speed, math.hypot(0.3, 0.4))
 
 
 if __name__ == "__main__":

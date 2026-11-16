@@ -229,6 +229,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     give.add_argument("item")
     give.add_argument("--count", type=int, default=1)
     give.add_argument("--aux", type=int, default=0)
+    give.add_argument("--damage", type=int, default=None)
+    give.add_argument("--flight", type=int, default=None)
 
     equip = sub.add_parser("equip", help="move a held/inventory stack into a worn slot")
     equip.add_argument("target", choices=["head", "torso", "legs", "feet", "offhand"])
@@ -242,6 +244,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     set_item.add_argument(
         "--container", default="inventory", choices=["inventory", "armor", "offhand"]
     )
+    set_item.add_argument("--damage", type=int, default=None)
+    set_item.add_argument("--flight", type=int, default=None)
 
     clear_item = sub.add_parser("clear-item")
     clear_item.add_argument("slot", type=int)
@@ -263,7 +267,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     look_entity = sub.add_parser("look-entity")
     look_entity.add_argument("runtime_id", type=int)
 
-    sub.add_parser("ecs-registries")
+    ecs_registries = sub.add_parser("ecs-registries")
+    ecs_registries.add_argument("--scope", choices=["client", "server", "all"], default=None)
     ecs_entity = sub.add_parser("ecs-entity", help="entity/registry/context addresses")
     ecs_entity.add_argument("--runtime-id", type=int, required=True)
     ecs_components = sub.add_parser("ecs-components", help="runtime component IDs and strides")
@@ -359,6 +364,11 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     reset.add_argument("z", type=float)
     reset.add_argument("--yaw", type=float)
     reset.add_argument("--pitch", type=float)
+    reset.add_argument(
+        "--no-wait-teleport",
+        action="store_true",
+        help="return after reset_done without waiting for teleported",
+    )
 
     set_input = sub.add_parser("set")
     set_input.add_argument("--forward", type=float, default=0.0)

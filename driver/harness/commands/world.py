@@ -7,6 +7,7 @@ from typing import Any
 
 from ..connection import PipeConnection
 from ..errors import ModTimeout
+from ..protocol import DEFAULT_TIMEOUT
 
 
 class WorldCommands(PipeConnection):
@@ -125,21 +126,44 @@ class WorldCommands(PipeConnection):
         *,
         yaw: float | None = None,
         pitch: float | None = None,
+        wait_teleport: bool = True,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Clear input/tasks/macro, then teleport to a known feet pose.
 
-        ``reset_done`` accepts the request; it is not the teleport result. New
-        mods include ``teleport_id``: wait for the matching ``teleported`` event
-        before checking the pose. A terminal ``error`` may indicate partial
-        side effects; never retry blindly. Only reset clears potion effects.
+        ``reset_done`` accepts the request; when ``wait_teleport`` is true (the
+        default) and the reply carries a positive ``teleport_id``, this waits
+        for the matching ``teleported`` event and attaches it at
+        ``reply["teleported"]`` so immediate follow-up teleports do not hit
+        ``teleport_busy``. Pass ``wait_teleport=False`` to return right after
+        ``reset_done``. A terminal ``error`` may indicate partial side effects;
+        never retry blindly. Only reset clears potion effects.
         """
         message: dict[str, Any] = {"cmd": "reset", "x": float(x), "y": float(y), "z": float(z)}
         if yaw is not None:
             message["yaw"] = float(yaw)
         if pitch is not None:
             message["pitch"] = float(pitch)
-        return self.request(message, "reset_done", timeout=timeout)
+        with self.exchange():
+            reply = self.request(message, "reset_done", timeout=timeout)
+            teleport_id = reply.get("teleport_id")
+            if (
+                wait_teleport
+                and isinstance(teleport_id, int)
+                and not isinstance(teleport_id, bool)
+                and teleport_id > 0
+            ):
+                wait_timeout = (
+                    timeout
+                    if timeout is not None
+                    else (getattr(self, "timeout", None) or DEFAULT_TIMEOUT)
+                )
+                reply["teleported"] = self.wait_event(
+                    "teleported",
+                    timeout=wait_timeout,
+                    predicate=lambda event: event.get("teleport_id") == teleport_id,
+                )
+            return reply
 
     def teleport(
         self,

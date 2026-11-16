@@ -10,6 +10,15 @@ from .protocol import PIPE_NAME, StateEvent
 from .record import RecordEntry
 
 
+def _item_options(damage: int | None, flight: int | None) -> dict[str, int]:
+    extra: dict[str, int] = {}
+    if damage is not None:
+        extra["damage"] = damage
+    if flight is not None:
+        extra["flight"] = flight
+    return extra
+
+
 class Harness:
     """Convenience wrapper for LLM/script use.
 
@@ -110,8 +119,36 @@ class Harness:
     def checkpoint_list(self) -> list[dict[str, Any]]:
         return list(self.client.checkpoint_list().get("checkpoints", []))
 
-    def give(self, item: str, count: int = 1, aux: int = 0) -> dict[str, Any]:
-        return self.client.give(item, count=count, aux=aux)
+    def give(
+        self,
+        item: str,
+        count: int = 1,
+        aux: int = 0,
+        *,
+        damage: int | None = None,
+        flight: int | None = None,
+    ) -> dict[str, Any]:
+        return self.client.give(item, count=count, aux=aux, **_item_options(damage, flight))
+
+    def set_item(
+        self,
+        slot: int,
+        item: str,
+        *,
+        count: int = 1,
+        aux: int = 0,
+        container: str = "inventory",
+        damage: int | None = None,
+        flight: int | None = None,
+    ) -> dict[str, Any]:
+        return self.client.set_item(
+            slot,
+            item,
+            count=count,
+            aux=aux,
+            container=container,
+            **_item_options(damage, flight),
+        )
 
     def entity(self, runtime_id: int) -> dict[str, Any]:
         return self.client.entity(runtime_id)
@@ -125,8 +162,9 @@ class Harness:
     def ecs_component(self, runtime_id: int, component_id: int, **kwargs: Any) -> dict[str, Any]:
         return self.client.ecs_component(runtime_id, component_id, **kwargs)
 
-    def ecs_registries(self) -> list[dict[str, Any]]:
-        return list(self.client.ecs_registries().get("registries", []))
+    def ecs_registries(self, *, scope: str | None = None) -> list[dict[str, Any]]:
+        extra: dict[str, Any] = {"scope": scope} if scope is not None else {}
+        return list(self.client.ecs_registries(**extra).get("registries", []))
 
     def attack(self, runtime_id: int) -> dict[str, Any]:
         return self.client.attack_entity(runtime_id)

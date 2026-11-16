@@ -1,2 +1,4 @@
 ruff>=0.17
 mypy>=2.0
+numpy>=1.26
+capstone>=5.0

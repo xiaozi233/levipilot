@@ -81,11 +81,12 @@ py -3.11 driver/pe_map.py --import-xrefs sinf
 py -3.11 driver/pe_map.py --disasm 0x146667b10 -n 15
 
 # 4) MSVC RTTI 定位（支持类名子串或 vtable VA）：输出解码类名、vtable、前 6 个虚表槽与 .text xrefs
-py -3.11 driver/pe_map.py --rtti GlideMoveSystem
+py -3.11 driver/pe_map.py --rtti StyledWriter
 py -3.11 driver/pe_map.py --rtti <vtable_va>
 ```
 
-上述例子对应本版本 `dword_151D6973C`（65536 项正弦查找表）与 `sub_146667B10`（`GlideMoveSystem` 主函数）。
+上述例子对应本版本 `dword_151D6973C`（65536 项正弦查找表）与 `sub_146667B10`（`GlideMoveSystem` 主函数）；
+注意 `Minecraft.Windows.exe` 中基岩版游戏类以 `/GR-` 编译，不生成 MSVC RTTI（只有启用 RTTI 的内嵌库/类如 `Json::StyledWriter` 会匹配 `--rtti`）。
 
 ### 2.2 钩住“只在几微秒内存在”的缓冲
 

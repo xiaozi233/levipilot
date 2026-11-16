@@ -499,7 +499,7 @@ def check_teleport(client: ModClient, checks: Checks, world: str | None = None) 
         checks.check("teleport_bad_param_preserves", rejected.get("reason") == "bad_param")
         result = complete(int(accepted["teleport_id"]))
         checks.check("teleport_busy_original", result.get("reason") == "teleport_timeout")
-        accepted = client.reset(**position, yaw=yaw, pitch=pitch)
+        accepted = client.reset(**position, yaw=yaw, pitch=pitch, wait_teleport=False)
         result = complete(int(accepted["teleport_id"]))
         wait_ticks(client, 4)
         checks.check(

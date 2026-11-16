@@ -261,6 +261,67 @@ def focus_game(pid: int, timeout: float = 15.0) -> bool:
     return False
 
 
+class _STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR),
+        ("lpTitle", wintypes.LPWSTR),
+        ("dwX", wintypes.DWORD),
+        ("dwY", wintypes.DWORD),
+        ("dwXSize", wintypes.DWORD),
+        ("dwYSize", wintypes.DWORD),
+        ("dwXCountChars", wintypes.DWORD),
+        ("dwYCountChars", wintypes.DWORD),
+        ("dwFillAttribute", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("wShowWindow", wintypes.WORD),
+        ("cbReserved2", wintypes.WORD),
+        ("lpReserved2", wintypes.LPBYTE),
+        ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE),
+        ("hStdError", wintypes.HANDLE),
+    ]
+
+
+def current_desktop_name() -> str | None:
+    """Return the startup desktop name (``lpDesktop``) for this process, or ``None``."""
+    windll = getattr(ctypes, "windll", None)
+    kernel32 = getattr(windll, "kernel32", None)
+    get_startup_info = getattr(kernel32, "GetStartupInfoW", None)
+    if get_startup_info is None:
+        return None
+    try:
+        info = _STARTUPINFOW()
+        info.cb = ctypes.sizeof(_STARTUPINFOW)
+        get_startup_info(ctypes.byref(info))
+        desktop = info.lpDesktop
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    if not desktop:
+        return None
+    name = str(desktop).strip()
+    return name or None
+
+
+def _is_isolated_desktop(desktop: str | None) -> bool:
+    if not desktop:
+        return False
+    leaf = desktop.rsplit("\\", 1)[-1].strip()
+    return bool(leaf) and leaf.lower() != "default"
+
+
+def _log_isolated_desktop_hint() -> None:
+    desktop = current_desktop_name()
+    if not _is_isolated_desktop(desktop):
+        return
+    log(
+        f"hint: current shell is running in an isolated desktop ({desktop}), "
+        "where launched windows cannot appear on the physical screen or take foreground focus; "
+        "start the game on the user desktop and run: py -3.11 driver/dev.py run --attach"
+    )
+
+
 def build_mod() -> None:
     env = os.environ.copy()
     env["PATH"] = XMAKE_PATH + ";" + env.get("PATH", "")
@@ -440,17 +501,20 @@ def wait_for_menu(client: ModClient, timeout: float = 90.0) -> list[dict]:
     raise ModTimeout("等待主菜单/世界列表超时")
 
 
-def run(args: argparse.Namespace) -> int:
-    version_dir = Path(args.version_dir).expanduser()
+def _parse_kv_options(items: list[str]) -> dict[str, str]:
     options: dict[str, str] = {}
-    for item in args.options:
+    for item in items:
         key, sep, value = item.partition("=")
         if not sep or not key:
             log(f"--options 需要 KEY=VALUE 形式，已忽略 {item!r}")
             continue
         options[key] = value
+    return options
+
+
+def _parse_kv_allow(items: list[str], *, lock_input: bool) -> dict[str, object]:
     allow: dict[str, object] = {}
-    for item in args.allow:
+    for item in items:
         key, sep, value = item.partition("=")
         if not sep or not key:
             log(f"--allow 需要 KEY=VALUE 形式，已忽略 {item!r}")
@@ -462,97 +526,167 @@ def run(args: argparse.Namespace) -> int:
             allow[key] = False
         else:
             allow[key] = value
-    if args.lock_input:
+    if lock_input:
         allow["lock_input"] = True
+    return allow
+
+
+def _prepare_and_enter_world(
+    client: ModClient,
+    *,
+    args: argparse.Namespace,
+    version_dir: Path,
+    options: dict[str, str],
+    pid: int,
+    attach: bool,
+) -> None:
+    log("pipe ready; waiting for menu")
+    worlds = wait_for_menu(client)
+    log("worlds: " + ", ".join(w.get("name", "?") for w in worlds))
+
+    if options:
+        result = client.set_options(options)
+        log(f"options: {result}")
+
+    if not args.world:
+        return
+
+    names = {w.get("name") for w in worlds}
+    if args.world not in names:
+        hint = ""
+        isolated = find_isolated_worlds(version_dir, args.world)
+        if isolated:
+            hint = (
+                "\n提示：这个版本开着数据隔离，世界在 "
+                f"{isolated[0].parents[5]}；直接启动 exe 用的是全局数据根。"
+                " 用 LeviLauncher 启动该实例，或把世界目录复制到 "
+                "%APPDATA%\\Minecraft Bedrock\\Users\\<id>\\games\\com.mojang\\minecraftWorlds。"
+            )
+        raise SystemExit(
+            f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}{hint}"
+        )
+    if not attach and not args.no_focus and not focus_game(pid, timeout=3.0):
+        log("warning: game window is not foreground; block ticks may be paused")
+        _log_isolated_desktop_hint()
+    try:
+        log(f"signin: {client.signin()}")
+    except (ModPipeError, ModTimeout) as exc:
+        log(f"signin query unavailable: {exc}")
+    log(f"entering {args.world!r}")
+    settled = client.enter_world_ready(args.world, attempts=args.attempts)
+    if not settled.get("ok"):
+        raise SystemExit(f"进入世界失败（可能在等 Microsoft 登录）：{settled}")
+    state = client.wait_in_world(timeout=args.timeout)
+    if all(key in state for key in ("feet_x", "feet_y", "feet_z", "health")):
+        log(
+            "in world: feet=({feet_x:.2f}, {feet_y:.2f}, {feet_z:.2f}) health={health}".format(
+                **state
+            )
+        )
+    else:
+        log("in world")
+    if wait_settled(client):
+        log("player settled (on ground, still)")
+    else:
+        log("warning: player did not settle before the timeout; selftest may be flaky")
+
+
+def run(args: argparse.Namespace) -> int:
+    version_dir = Path(args.version_dir).expanduser()
+    options = _parse_kv_options(args.options)
+    allow = _parse_kv_allow(args.allow, lock_input=args.lock_input)
     if args.write_config:
         write_auto_config(version_dir / "mods" / "probe", args.world, options, allow)
         log("wrote harness.json; the mod will auto-enter on launch")
         return 0
 
+    attach = bool(getattr(args, "attach", False))
+    exec_cmd = getattr(args, "exec", None)
+    stop_after = bool(getattr(args, "stop_after", False))
+
     exe = Path(args.exe).expanduser() if args.exe else version_dir / "Minecraft.Windows.exe"
-    if not exe.exists():
-        raise SystemExit(f"找不到游戏 exe：{exe}")
-    stale, newest, dll_mtime = probe_is_stale()
-    if args.build:
-        build_mod()
-    elif stale and not args.no_build:
-        log(
-            "probe.dll is older than the mod sources "
-            f"({time.strftime('%H:%M:%S', time.localtime(dll_mtime))} < "
-            f"{time.strftime('%H:%M:%S', time.localtime(newest))}); rebuilding"
-        )
-        build_mod()
-    elif stale:
-        log("warning: probe.dll is older than the mod sources; run without --no-build to rebuild")
-    kill_game(exe, force=args.force_stop)
-    time.sleep(1.0)
-    install_mod(version_dir)
-    # A stale auto_enter would race with the explicit enter_world below; the
-    # capability switches must still be present when the mod loads its config.
-    write_auto_config(version_dir / "mods" / "probe", None, {}, allow)
-
-    log(f"starting {exe}")
-    process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
-    if not args.no_focus:
-        # The window can take tens of seconds to appear behind the splash; the
-        # wait ends as soon as a visible window shows up.
-        if focus_game(process.pid, timeout=60.0):
-            log("game focused")
-        else:
+    pid: int
+    if attach:
+        pids = game_pids(exe)
+        if not pids:
+            log(f"no running {exe.name} to attach to")
+            return 1
+        pid = pids[0]
+        log(f"attaching to {exe.name} (pid={pid})")
+    else:
+        if not exe.exists():
+            raise SystemExit(f"找不到游戏 exe：{exe}")
+        stale, newest, dll_mtime = probe_is_stale()
+        if args.build:
+            build_mod()
+        elif stale and not args.no_build:
             log(
-                "warning: could not focus the game window; a paused world stops block ticks "
-                "(water/lava/sand look frozen while commands still work)"
+                "probe.dll is older than the mod sources "
+                f"({time.strftime('%H:%M:%S', time.localtime(dll_mtime))} < "
+                f"{time.strftime('%H:%M:%S', time.localtime(newest))}); rebuilding"
             )
-
-    client = ModClient(connect_timeout=90.0, timeout=20.0).connect()
-    try:
-        client.wait_ready(timeout=90.0, require_world=False)
-        log("pipe ready; waiting for menu")
-        worlds = wait_for_menu(client)
-        log("worlds: " + ", ".join(w.get("name", "?") for w in worlds))
-
-        if options:
-            result = client.set_options(options)
-            log(f"options: {result}")
-
-        if args.world:
-            names = {w.get("name") for w in worlds}
-            if args.world not in names:
-                hint = ""
-                isolated = find_isolated_worlds(version_dir, args.world)
-                if isolated:
-                    hint = (
-                        "\n提示：这个版本开着数据隔离，世界在 "
-                        f"{isolated[0].parents[5]}；直接启动 exe 用的是全局数据根。"
-                        " 用 LeviLauncher 启动该实例，或把世界目录复制到 "
-                        "%APPDATA%\\Minecraft Bedrock\\Users\\<id>\\games\\com.mojang\\minecraftWorlds。"
-                    )
-                raise SystemExit(
-                    f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}{hint}"
-                )
-            if not args.no_focus and not focus_game(process.pid, timeout=3.0):
-                log("warning: game window is not foreground; block ticks may be paused")
-            try:
-                log(f"signin: {client.signin()}")
-            except (ModPipeError, ModTimeout) as exc:
-                log(f"signin query unavailable: {exc}")
-            log(f"entering {args.world!r}")
-            settled = client.enter_world_ready(args.world, attempts=args.attempts)
-            if not settled.get("ok"):
-                raise SystemExit(f"进入世界失败（可能在等 Microsoft 登录）：{settled}")
-            state = client.wait_in_world(timeout=args.timeout)
+            build_mod()
+        elif stale:
             log(
-                "in world: feet=({feet_x:.2f}, {feet_y:.2f}, {feet_z:.2f}) health={health}".format(
-                    **state
-                )
+                "warning: probe.dll is older than the mod sources; run without --no-build to rebuild"
             )
-            if wait_settled(client):
-                log("player settled (on ground, still)")
+        kill_game(exe, force=args.force_stop)
+        time.sleep(1.0)
+        install_mod(version_dir)
+        # A stale auto_enter would race with the explicit enter_world below; the
+        # capability switches must still be present when the mod loads its config.
+        write_auto_config(version_dir / "mods" / "probe", None, {}, allow)
+
+        log(f"starting {exe}")
+        process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
+        pid = process.pid
+        if not args.no_focus:
+            # The window can take tens of seconds to appear behind the splash; the
+            # wait ends as soon as a visible window shows up.
+            if focus_game(pid, timeout=60.0):
+                log("game focused")
             else:
-                log("warning: player did not settle before the timeout; selftest may be flaky")
-        return 0
+                log(
+                    "warning: could not focus the game window; a paused world stops block ticks "
+                    "(water/lava/sand look frozen while commands still work)"
+                )
+                _log_isolated_desktop_hint()
+
+    exit_code = 0
+    try:
+        client = ModClient(connect_timeout=90.0, timeout=20.0).connect()
+        try:
+            client.wait_ready(timeout=90.0, require_world=False)
+            already_in_world = False
+            if attach:
+                status = client.status()
+                already_in_world = bool(status.get("in_world"))
+
+            if already_in_world:
+                log("already in world; skipping menu/world entry")
+                if options:
+                    result = client.set_options(options)
+                    log(f"options: {result}")
+            else:
+                _prepare_and_enter_world(
+                    client,
+                    args=args,
+                    version_dir=version_dir,
+                    options=options,
+                    pid=pid,
+                    attach=attach,
+                )
+        finally:
+            client.close()
+
+        if exec_cmd:
+            log(f"exec: {exec_cmd}")
+            exec_result = subprocess.run(exec_cmd, shell=True)
+            exit_code = int(exec_result.returncode)
     finally:
-        client.close()
+        if stop_after:
+            kill_game(exe)
+    return exit_code
 
 
 def recover(args: argparse.Namespace) -> int:
@@ -623,6 +757,7 @@ def focus(args: argparse.Namespace) -> int:
         log(f"game focused (pid={pids[0]})")
         return 0
     log("could not focus the game window; the world may stay paused (no block ticks)")
+    _log_isolated_desktop_hint()
     return 1
 
 
@@ -674,6 +809,20 @@ def main(argv: list[str] | None = None) -> int:
         "--write-config",
         action="store_true",
         help="only write harness.json (the mod auto-enters on launch)",
+    )
+    run_parser.add_argument(
+        "--attach",
+        action="store_true",
+        help="attach to an already-running game instead of rebuilding/restarting",
+    )
+    run_parser.add_argument(
+        "--exec",
+        help="shell command to execute once the world is ready",
+    )
+    run_parser.add_argument(
+        "--stop-after",
+        action="store_true",
+        help="save and stop the game after --exec or world entry finishes",
     )
 
     stop_parser = sub.add_parser("stop", help="save, leave and stop the selected game executable")

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import ctypes
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from driver import dev
@@ -352,6 +356,251 @@ class FocusCommandTests(unittest.TestCase):
                 self.assertEqual(dev.main(["focus"]), 0)
             with patch.object(dev, "focus_game", return_value=False):
                 self.assertEqual(dev.main(["focus"]), 1)
+
+
+class DesktopHintTests(unittest.TestCase):
+    def test_current_desktop_name_reads_startup_info(self) -> None:
+        buf = ctypes.create_unicode_buffer("exebox-TEST123")
+
+        def fake_get_startup_info(ptr) -> None:
+            info = ctypes.cast(ptr, ctypes.POINTER(dev._STARTUPINFOW)).contents
+            info.lpDesktop = ctypes.cast(buf, dev.wintypes.LPWSTR)
+
+        fake_kernel32 = SimpleNamespace(GetStartupInfoW=fake_get_startup_info)
+        with patch.object(dev.ctypes, "windll", SimpleNamespace(kernel32=fake_kernel32)):
+            self.assertEqual(dev.current_desktop_name(), "exebox-TEST123")
+
+    def test_current_desktop_name_real_call_returns_optional_str(self) -> None:
+        desktop = dev.current_desktop_name()
+        self.assertTrue(desktop is None or (isinstance(desktop, str) and bool(desktop)))
+
+    def test_current_desktop_name_falls_back_to_none_on_empty_or_error(self) -> None:
+        buf = ctypes.create_unicode_buffer("")
+
+        def empty_startup_info(ptr) -> None:
+            info = ctypes.cast(ptr, ctypes.POINTER(dev._STARTUPINFOW)).contents
+            info.lpDesktop = ctypes.cast(buf, dev.wintypes.LPWSTR)
+
+        fake_kernel32 = SimpleNamespace(GetStartupInfoW=empty_startup_info)
+        with patch.object(dev.ctypes, "windll", SimpleNamespace(kernel32=fake_kernel32)):
+            self.assertIsNone(dev.current_desktop_name())
+
+        broken_kernel32 = SimpleNamespace(GetStartupInfoW=MagicMock(side_effect=OSError("boom")))
+        with patch.object(dev.ctypes, "windll", SimpleNamespace(kernel32=broken_kernel32)):
+            self.assertIsNone(dev.current_desktop_name())
+
+        with patch.object(dev.ctypes, "windll", None):
+            self.assertIsNone(dev.current_desktop_name())
+
+    def test_focus_failure_logs_attach_hint_only_for_isolated_desktop(self) -> None:
+        buf = io.StringIO()
+        with (
+            patch.object(dev, "game_pids", return_value=[12]),
+            patch.object(dev, "focus_game", return_value=False),
+            patch.object(dev, "current_desktop_name", return_value="exebox-ISOLATED"),
+            contextlib.redirect_stdout(buf),
+        ):
+            self.assertEqual(dev.main(["focus"]), 1)
+        output = buf.getvalue()
+        self.assertIn("exebox-ISOLATED", output)
+        self.assertIn("isolated desktop", output)
+        self.assertIn("py -3.11 driver/dev.py run --attach", output)
+
+        for desktop in ("Default", "WinSta0\\Default", None):
+            buf = io.StringIO()
+            with (
+                patch.object(dev, "game_pids", return_value=[12]),
+                patch.object(dev, "focus_game", return_value=False),
+                patch.object(dev, "current_desktop_name", return_value=desktop),
+                contextlib.redirect_stdout(buf),
+            ):
+                self.assertEqual(dev.main(["focus"]), 1)
+            self.assertNotIn("--attach", buf.getvalue())
+
+    def test_run_focus_failure_logs_isolated_desktop_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            version_dir = Path(tmp)
+            exe = version_dir / "Minecraft.Windows.exe"
+            exe.write_bytes(b"exe")
+            client = MagicMock()
+            client.worlds.return_value = {"ready": True, "worlds": []}
+            buf = io.StringIO()
+            with (
+                patch.object(dev, "probe_is_stale", return_value=(False, 0.0, 0.0)),
+                patch.object(dev, "kill_game"),
+                patch.object(dev.time, "sleep"),
+                patch.object(dev, "install_mod"),
+                patch.object(dev, "write_auto_config"),
+                patch.object(dev.subprocess, "Popen", return_value=MagicMock(pid=99)),
+                patch.object(dev, "focus_game", return_value=False),
+                patch.object(dev, "current_desktop_name", return_value="exebox-SHELL"),
+                patch.object(dev, "ModClient") as factory,
+                contextlib.redirect_stdout(buf),
+            ):
+                factory.return_value.connect.return_value = client
+                code = dev.main(["run", "--version-dir", str(version_dir), "--no-build"])
+        self.assertEqual(code, 0)
+        output = buf.getvalue()
+        self.assertIn("exebox-SHELL", output)
+        self.assertIn("py -3.11 driver/dev.py run --attach", output)
+
+
+class RunAttachAndExecTests(unittest.TestCase):
+    def test_attach_without_running_process_logs_and_returns_1(self) -> None:
+        buf = io.StringIO()
+        with (
+            patch.object(dev, "game_pids", return_value=[]),
+            patch.object(dev, "kill_game") as kill_game,
+            patch.object(dev, "install_mod") as install_mod,
+            patch.object(dev.subprocess, "Popen") as popen,
+            patch.object(dev, "ModClient") as factory,
+            contextlib.redirect_stdout(buf),
+        ):
+            code = dev.main(["run", "--attach", "--exe", "D:/game/Minecraft.Windows.exe"])
+        self.assertEqual(code, 1)
+        self.assertIn("no running Minecraft.Windows.exe to attach to", buf.getvalue())
+        kill_game.assert_not_called()
+        install_mod.assert_not_called()
+        popen.assert_not_called()
+        factory.assert_not_called()
+
+    def test_attach_already_in_world_skips_menu_and_applies_options(self) -> None:
+        for extra_args in ([], ["--world", "超平坦测试"]):
+            client = MagicMock()
+            client.status.return_value = {"in_world": True}
+            with (
+                patch.object(dev, "game_pids", return_value=[123]),
+                patch.object(dev, "kill_game") as kill_game,
+                patch.object(dev, "install_mod") as install_mod,
+                patch.object(dev, "write_auto_config") as write_cfg,
+                patch.object(dev.subprocess, "Popen") as popen,
+                patch.object(dev, "ModClient") as factory,
+            ):
+                factory.return_value.connect.return_value = client
+                code = dev.main(
+                    [
+                        "run",
+                        "--attach",
+                        "--exe",
+                        "D:/game/Minecraft.Windows.exe",
+                        "--options",
+                        "gfx_gamma=0.8",
+                        *extra_args,
+                    ]
+                )
+            self.assertEqual(code, 0)
+            kill_game.assert_not_called()
+            install_mod.assert_not_called()
+            write_cfg.assert_not_called()
+            popen.assert_not_called()
+            client.wait_ready.assert_called_once_with(timeout=90.0, require_world=False)
+            client.status.assert_called_once_with()
+            client.worlds.assert_not_called()
+            client.enter_world_ready.assert_not_called()
+            client.set_options.assert_called_once_with({"gfx_gamma": "0.8"})
+            client.close.assert_called_once_with()
+
+    def test_attach_at_menu_enters_requested_world(self) -> None:
+        client = MagicMock()
+        client.status.return_value = {"in_world": False}
+        client.worlds.return_value = {"ready": True, "worlds": [{"name": "超平坦测试"}]}
+        client.signin.return_value = {"known": True}
+        client.enter_world_ready.return_value = {"ok": True}
+        client.wait_in_world.return_value = {
+            "in_world": True,
+            "feet_x": 0.0,
+            "feet_y": -60.0,
+            "feet_z": 0.0,
+            "health": 20.0,
+        }
+        with (
+            patch.object(dev, "game_pids", return_value=[123]),
+            patch.object(dev, "kill_game") as kill_game,
+            patch.object(dev, "install_mod") as install_mod,
+            patch.object(dev.subprocess, "Popen") as popen,
+            patch.object(dev, "wait_settled", return_value=True) as wait_settled,
+            patch.object(dev, "ModClient") as factory,
+        ):
+            factory.return_value.connect.return_value = client
+            code = dev.main(
+                [
+                    "run",
+                    "--attach",
+                    "--exe",
+                    "D:/game/Minecraft.Windows.exe",
+                    "--world",
+                    "超平坦测试",
+                ]
+            )
+        self.assertEqual(code, 0)
+        kill_game.assert_not_called()
+        install_mod.assert_not_called()
+        popen.assert_not_called()
+        client.enter_world_ready.assert_called_once_with("超平坦测试", attempts=3)
+        client.wait_in_world.assert_called_once()
+        wait_settled.assert_called_once_with(client)
+        client.close.assert_called_once_with()
+
+    def test_exec_and_stop_after_closes_pipe_first_and_propagates_exit_code(self) -> None:
+        events: list[str] = []
+        exe = Path("D:/game/Minecraft.Windows.exe")
+        client = MagicMock()
+        client.status.return_value = {"in_world": True}
+        client.close.side_effect = lambda: events.append("close")
+
+        def fake_run(cmd, shell=False):
+            events.append(f"exec:{cmd}:{shell}")
+            return subprocess.CompletedProcess(cmd, 7)
+
+        def fake_kill(target_exe):
+            events.append(f"stop:{target_exe}")
+
+        with (
+            patch.object(dev, "game_pids", return_value=[123]),
+            patch.object(dev, "ModClient") as factory,
+            patch.object(dev.subprocess, "run", side_effect=fake_run),
+            patch.object(dev, "kill_game", side_effect=fake_kill),
+        ):
+            factory.return_value.connect.return_value = client
+            code = dev.main(
+                [
+                    "run",
+                    "--attach",
+                    "--exe",
+                    str(exe),
+                    "--exec",
+                    "py -3.11 -V",
+                    "--stop-after",
+                ]
+            )
+        self.assertEqual(code, 7)
+        self.assertEqual(events, ["close", "exec:py -3.11 -V:True", f"stop:{exe}"])
+
+    def test_stop_after_still_stops_game_when_world_entry_fails(self) -> None:
+        exe = Path("D:/game/Minecraft.Windows.exe")
+        client = MagicMock()
+        client.status.return_value = {"in_world": False}
+        with (
+            patch.object(dev, "game_pids", return_value=[123]),
+            patch.object(dev, "wait_for_menu", side_effect=dev.ModTimeout("menu timeout")),
+            patch.object(dev, "ModClient") as factory,
+            patch.object(dev, "kill_game") as kill_game,
+        ):
+            factory.return_value.connect.return_value = client
+            code = dev.main(
+                [
+                    "run",
+                    "--attach",
+                    "--exe",
+                    str(exe),
+                    "--world",
+                    "超平坦测试",
+                    "--stop-after",
+                ]
+            )
+        self.assertEqual(code, 2)
+        client.close.assert_called_once_with()
+        kill_game.assert_called_once_with(exe)
 
 
 if __name__ == "__main__":

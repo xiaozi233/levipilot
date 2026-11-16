@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from driver import check
+
+
+class MarkdownLinkCheckTests(unittest.TestCase):
+    def test_valid_links_code_spans_and_external_urls_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs" / "notes").mkdir(parents=True)
+            (root / "mod").mkdir()
+            (root / "target.txt").write_text("ok", encoding="utf-8")
+            (root / "docs" / "guide.md").write_text("guide", encoding="utf-8")
+            (root / "docs" / "space file.md").write_text("space", encoding="utf-8")
+            (root / "docs" / "notes" / "ref.md").write_text(
+                "[back](../guide.md#section)\n", encoding="utf-8"
+            )
+            (root / "AGENTS.md").write_text("[readme](README.md)\n", encoding="utf-8")
+            (root / "mod" / "README.md").write_text("[top](../README.md)\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "\n".join(
+                    [
+                        "[guide](docs/guide.md)",
+                        "[dir](docs/notes/)",
+                        '[`guide`](docs/guide.md "title")',
+                        "[space](<docs/space file.md>)",
+                        "[ext](https://en.wikipedia.org/wiki/Foo_(bar))",
+                        "[mail](mailto:test@example.com)",
+                        "[anchor](#local-heading)",
+                        "`Block->[+0x68](mLegacy)`",
+                        "```markdown",
+                        "[ignored](does/not/exist.md)",
+                        "```",
+                        "~~~markdown",
+                        "[also ignored](missing.md)",
+                        "~~~",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            ok, output = check.check_markdown_links(root)
+            self.assertTrue(ok, output)
+            self.assertIn("6 files checked", output)
+
+    def test_broken_and_non_relative_links_are_reported_with_line_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "README.md").write_text(
+                "ok\n[missing](docs/nope.md#sec)\n[abs](/docs/nope.md)\n",
+                encoding="utf-8",
+            )
+            errors = check.find_broken_markdown_links(root)
+            self.assertEqual(
+                errors,
+                [
+                    "README.md:2: broken link docs/nope.md",
+                    "README.md:3: non-relative link /docs/nope.md",
+                ],
+            )
+            ok, output = check.check_markdown_links(root)
+            self.assertFalse(ok)
+            self.assertIn("README.md:2: broken link docs/nope.md", output)
+
+    def test_repo_markdown_links_currently_pass(self) -> None:
+        ok, output = check.check_markdown_links(check.REPO_ROOT)
+        self.assertTrue(ok, output)
+
+
+class CheckRunnerTests(unittest.TestCase):
+    def _make_fake_repo(self, root: Path) -> None:
+        (root / "skills" / "bedrock-re" / "checks" / "guards").mkdir(parents=True)
+        (root / "skills" / "bedrock-re" / "checks" / "guards" / "check_alpha.py").write_text(
+            "", encoding="utf-8"
+        )
+        (root / "skills" / "bedrock-re" / "checks" / "guards" / "check_beta.py").write_text(
+            "", encoding="utf-8"
+        )
+        (root / "README.md").write_text("# Root\n", encoding="utf-8")
+
+    def test_build_checks_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_fake_repo(root)
+
+            full = [spec.name for spec in check.build_checks(root=root)]
+            self.assertEqual(
+                full,
+                [
+                    "ruff check",
+                    "ruff format",
+                    "mypy",
+                    "lint_public",
+                    "lint_skill",
+                    "check_alpha",
+                    "check_beta",
+                    "gen_profiles",
+                    "markdown links",
+                    "git diff --check",
+                    "unittest",
+                ],
+            )
+
+            fast = [spec.name for spec in check.build_checks(fast=True, root=root)]
+            self.assertNotIn("unittest", fast)
+            self.assertIn("ruff check", fast)
+            self.assertIn("gen_profiles", fast)
+
+            docs = [spec.name for spec in check.build_checks(docs_only=True, root=root)]
+            self.assertEqual(
+                docs,
+                [
+                    "lint_public",
+                    "lint_skill",
+                    "check_alpha",
+                    "check_beta",
+                    "markdown links",
+                    "git diff --check",
+                ],
+            )
+
+    def test_runner_returns_zero_when_all_selected_checks_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_fake_repo(root)
+            seen_commands: list[list[str]] = []
+
+            def fake_run(cmd, cwd=None, **_kwargs):
+                self.assertEqual(cwd, root)
+                seen_commands.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+            buf = io.StringIO()
+            with (
+                patch.object(check.subprocess, "run", side_effect=fake_run),
+                contextlib.redirect_stdout(buf),
+            ):
+                code, results = check.run_checks(fast=True, root=root)
+
+            self.assertEqual(code, 0)
+            self.assertTrue(all(item.passed for item in results))
+            self.assertIn(["git", "diff", "--check"], seen_commands)
+            self.assertIn("10/10 checks passed", buf.getvalue())
+
+    def test_runner_continues_after_failure_and_reports_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_fake_repo(root)
+            (root / "README.md").write_text("[broken](missing.md)\n", encoding="utf-8")
+
+            def fake_run(cmd, **_kwargs):
+                if "lint_skill.py" in " ".join(cmd):
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="bad skill link\n")
+                if cmd == ["git", "diff", "--check"]:
+                    raise OSError("git missing")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+            buf = io.StringIO()
+            with (
+                patch.object(check.subprocess, "run", side_effect=fake_run),
+                contextlib.redirect_stdout(buf),
+            ):
+                code, results = check.run_checks(docs_only=True, root=root)
+
+            self.assertEqual(code, 1)
+            by_name = {item.name: item for item in results}
+            self.assertTrue(by_name["lint_public"].passed)
+            self.assertFalse(by_name["lint_skill"].passed)
+            self.assertFalse(by_name["markdown links"].passed)
+            self.assertFalse(by_name["git diff --check"].passed)
+            output = buf.getvalue()
+            self.assertIn("bad skill link", output)
+            self.assertIn("broken link missing.md", output)
+            self.assertIn("git missing", output)
+
+    def test_main_forwards_flags(self) -> None:
+        with patch.object(check, "run_checks", return_value=(0, [])) as run_checks:
+            self.assertEqual(check.main(["--docs-only"]), 0)
+            run_checks.assert_called_once_with(docs_only=True, fast=False, root=check.REPO_ROOT)
+
+        with patch.object(check, "run_checks", return_value=(1, [])) as run_checks:
+            self.assertEqual(check.main(["--fast"]), 1)
+            run_checks.assert_called_once_with(docs_only=False, fast=True, root=check.REPO_ROOT)
+
+
+if __name__ == "__main__":
+    unittest.main()

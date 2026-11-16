@@ -132,8 +132,9 @@ ECS 请求按 registry 所属线程执行。客户端 context 先核对当前客
 `"registries"`（Python 与 CLI 通过 `scope` / `--scope` 传入）。每次请求最多 1024 条组件/失败 id、
 4096 次 storage 访问和 512 字节原始组件数据，超限标 `truncated`，坏 storage 记入 `skipped/partial`。
 
-组件 id 是运行时 EnTT id，不保证跨进程/版本稳定。`stride` 由同 storage 元素地址差推断，
-只有一个元素时为 0；默认读取长度依次取 profile size、stride、64 字节。对于 `storage->contains(entity)`
+组件 id 是运行时 EnTT id，不保证跨进程/版本稳定。`stride` 由同 storage 有效相邻元素地址差推断
+（跳过 `entt::tombstone` 与未包含槽位，且本身包在独立的 `guardedGameRead` 内，单个坏邻槽不拖垮 `probeRow`），
+只有一个有效元素或 tag storage 时为 0；默认读取长度依次取 profile size、stride、64 字节。对于 `storage->contains(entity)`
 为真但元素地址为 0 的零字节 EnTT Tag 组件，当 `ecs_component` 请求 `len=0` 时不报 `bad_component`，
 直接返回 `ok: true, len: 0, hex: "", is_tag: true`；`ecs_context` 与 `ecs_components` 行同时
 包含 `present: true` 与 `is_tag`（`address == 0`）。组件不存在仍返回 `component_not_found`。

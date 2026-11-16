@@ -244,7 +244,7 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 
 实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见
 [`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。当前基线为离线
-**410/410**、完整现场 **1169/1169**，只在对应代码与权限前提下有效。
+**459/459**、完整现场 **1171/1171**，只在对应代码与权限前提下有效。
 
 ## License
 

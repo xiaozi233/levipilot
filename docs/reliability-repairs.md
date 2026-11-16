@@ -33,9 +33,9 @@ Python 观察游标与被动采集器的局部回归 **51/51**：覆盖 Harness 
 
 | 范围 | 当前结果 | 覆盖重点 |
 | --- | --- | --- |
-| 完整离线 | **410/410** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
-| 静态检查 | ruff check/format、mypy（116 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
-| 完整现场 `--require-complete` | **1169/1169**，0 fail、0 skip、0 required skip | 当前默认全套，含新增 69 项 SDK 边界与权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
+| 完整离线 | **459/459** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
+| 静态检查 | ruff check/format、mypy（120 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
+| 完整现场 `--require-complete` | **1171/1171**，0 fail、0 skip、0 required skip | 当前默认全套，含新增 69 项 SDK 边界与权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
 | SDK 局部边界 | **69/69** | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；注册与命令边界是调用前合成故障 |
 | 领域效果保留 | **126/126**；进入/退档 **35/35** | 夜视跨查询/聊天退档、宏播放、任务及世界进入恢复仍存在，结束只清理测试效果 |
 | 朝向/传送专项 | **45/45** | 保持 0.1° 容差与连续三个 tick；移除 state 快照之后的额外延迟 |

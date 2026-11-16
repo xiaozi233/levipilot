@@ -252,7 +252,9 @@ def check_violation_watch(
             str(reason_zero),
         )
         client.command("time set day")
-        wait_ticks(client, 2)
+        # Default inbound_sample=4 keeps 1 in 4 packets; 16 ticks gives >16 inbound
+        # packets even in an idle/unfocused superflat world instead of racing on 2 ticks.
+        wait_ticks(client, 16)
         try:
             check_inbound_slices(client, checks)
         except (ModPipeError, ModTimeout) as exc:

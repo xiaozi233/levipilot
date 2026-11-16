@@ -85,7 +85,8 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
     # 32768 air cells with limit=1 still require all 64 bounded batches.
     pose = client.state()
     x, y, z = [math.floor(float(pose[f"feet_{axis}"])) for axis in "xyz"]
-    low, high = [x, y + 8, z], [x + 31, y + 39, z + 31]
+    low_y = min(max(y + 40, 80), 200)
+    low, high = [x, low_y, z], [x + 31, low_y + 31, z + 31]
     scan = client.scan(high, low, include_air=False, limit=1)
     checks.check(
         "query_scan_budget",
@@ -97,7 +98,7 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
         and scan.get("to") == high,
         f"visited={scan.get('visited')} batches={scan.get('batches')} max_batch_us={scan.get('max_batch_us')}",
     )
-    limited = client.scan(low, [x + 2, y + 8, z], include_air=True, limit=2)
+    limited = client.scan(low, [x + 2, low_y, z], include_air=True, limit=2)
     checks.check(
         "query_scan_limit",
         limited.get("count") == 2

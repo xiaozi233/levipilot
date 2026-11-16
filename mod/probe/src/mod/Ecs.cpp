@@ -7,12 +7,53 @@ namespace {
 using Registry = entt::basic_registry<EntityId>;
 
 std::uint32_t storageStride(Registry::common_type const* storage) {
-    if (!storage || storage->size() < 2) return 0;
-    auto first = reinterpret_cast<std::uintptr_t>(storage->value((*storage)[0]));
-    auto second = reinterpret_cast<std::uintptr_t>(storage->value((*storage)[1]));
-    if (!first || !second) return 0;
-    auto distance = first > second ? first - second : second - first;
-    return distance <= UINT32_MAX ? static_cast<std::uint32_t>(distance) : 0;
+    if (!storage) return 0;
+    std::uint32_t stride = 0;
+    std::uint32_t fallback = 0;
+    bool ok = false;
+    try {
+        ok = guardedGameRead([&] {
+            std::size_t const count = storage->size();
+            if (count < 2) return;
+            std::size_t const limit = count < 1024 ? count : 1024;
+            std::size_t validSeen = 0;
+            std::size_t prevIdx = 0;
+            std::uintptr_t prevPtr = 0;
+            bool hasPrev = false;
+
+            // EnTT in_place_delete storages retain tombstones in packed[]; skip them
+            // without calling value(), and keep stride faults isolated from probeRow.
+            for (std::size_t i = 0; i < limit && validSeen < 64; ++i) {
+                auto const id = (*storage)[i];
+                if (id == entt::tombstone || id == entt::null || !storage->contains(id)) continue;
+                auto const ptr = reinterpret_cast<std::uintptr_t>(storage->value(id));
+                if (!ptr) return; // 0-byte tag storage has no packed payload stride.
+                ++validSeen;
+                if (hasPrev) {
+                    auto const gap = i - prevIdx;
+                    auto const distance = ptr > prevPtr ? ptr - prevPtr : prevPtr - ptr;
+                    if (gap == 1 && distance > 0 && distance <= UINT32_MAX) {
+                        auto const candidate = static_cast<std::uint32_t>(distance);
+                        if ((i & 63u) != 0u) {
+                            stride = candidate;
+                            return;
+                        }
+                        if (!fallback) fallback = candidate;
+                    } else if (!fallback && (prevIdx / 64) == (i / 64) && gap > 0 && gap <= 16 &&
+                               distance > 0 && (distance % gap) == 0 && (distance / gap) <= UINT32_MAX) {
+                        fallback = static_cast<std::uint32_t>(distance / gap);
+                    }
+                }
+                prevIdx = i;
+                prevPtr = ptr;
+                hasPrev = true;
+            }
+        });
+    } catch (...) {
+        return 0;
+    }
+    if (!ok) return 0;
+    return stride ? stride : fallback;
 }
 
 bool probeRow(Registry::common_type& storage, EntityId entity, bool details,

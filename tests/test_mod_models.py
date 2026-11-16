@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ModModelTests(unittest.TestCase):
-    def run_native(self, name: str) -> None:
+    def _find_compiler(self) -> str:
         compiler = shutil.which("clang++")
         if compiler is None:
             compiler = next(
@@ -32,31 +32,140 @@ class ModModelTests(unittest.TestCase):
             if os.environ.get("CI"):
                 self.fail("CI must provide clang++ for the native mod checks")
             self.skipTest("clang++ required for the native mod checks")
+        return compiler
+
+    def _compile_and_run(self, source: Path, executable: Path) -> None:
+        compiler = self._find_compiler()
+        build = subprocess.run(
+            [
+                compiler,
+                "-std=c++20",
+                "-O2",
+                "-fuse-ld=lld",
+                "-pthread",
+                "-I",
+                str(ROOT / "mod/probe/src"),
+                str(source),
+                "-o",
+                str(executable),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+        result = subprocess.run(
+            [str(executable)], capture_output=True, text=True, timeout=20, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def run_native(self, name: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            executable = Path(tmp) / f"{name}.exe"
-            build = subprocess.run(
-                [
-                    compiler,
-                    "-std=c++20",
-                    "-O2",
-                    "-fuse-ld=lld",
-                    "-pthread",
-                    "-I",
-                    str(ROOT / "mod/probe/src"),
-                    str(ROOT / f"tests/native/{name}.cpp"),
-                    "-o",
-                    str(executable),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
+            self._compile_and_run(
+                ROOT / f"tests/native/{name}.cpp",
+                Path(tmp) / f"{name}.exe",
             )
-            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-            result = subprocess.run(
-                [str(executable)], capture_output=True, text=True, timeout=20, check=False
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_query_and_ecs_model_extensions(self) -> None:
+        source = """
+#include "mod/EcsModel.h"
+#include "mod/QueryModel.h"
+
+#include <atomic>
+#include <cassert>
+#include <cstdlib>
+#include <memory>
+#include <new>
+#include <utility>
+#include <vector>
+
+std::atomic<unsigned> allocations{0};
+void* operator new(std::size_t size) {
+    ++allocations;
+    if (auto* value = std::malloc(size)) return value;
+    throw std::bad_alloc();
+}
+void operator delete(void* value) noexcept { std::free(value); }
+void operator delete(void* value, std::size_t) noexcept { std::free(value); }
+
+using namespace probe::detail;
+
+int main() {
+    auto stateCapture = std::make_unique<StateCapture>();
+    auto const stateBaseline = allocations.load();
+    assert(stateCapture->begin({}, 0, 2000));
+    stateCapture->advance([](auto const&, StateSnapshot& out) {
+        assert(out.posDelta.x == 0.0f && out.posDelta.y == 0.0f && out.posDelta.z == 0.0f);
+        assert(out.prevYaw == 0.0f && out.prevPitch == 0.0f);
+        assert(out.item.damage == 0 && out.item.maxDamage == 0);
+        out.posDelta = {0.25f, -0.08f, 0.5f};
+        out.prevYaw = 45.0f;
+        out.prevPitch = -12.5f;
+        out.item.present = true;
+        out.item.type.assign("minecraft:elytra");
+        out.item.damage = 430;
+        out.item.maxDamage = 432;
+        return true;
+    });
+    {
+        auto done = stateCapture->take(1);
+        assert(done && !done.error);
+        auto const& s = done.snapshot();
+        assert(s.posDelta.x == 0.25f && s.posDelta.y == -0.08f && s.posDelta.z == 0.5f);
+        assert(s.prevYaw == 45.0f && s.prevPitch == -12.5f);
+        assert(s.item.present && s.item.damage == 430 && s.item.maxDamage == 432);
+    }
+    assert(allocations.load() == stateBaseline);
+
+    EcsCapture ecsCapture;
+    EcsQuery query;
+    query.operation = EcsOperation::Registries;
+    assert(query.scope == EcsScope::Client);
+    query.scope = EcsScope::All;
+    auto req = ecsCapture.begin(query, 0, 2000);
+    assert(req && req->dispatch() == EcsStage::Client);
+    req->run(EcsStage::Client, 1, [](EcsSnapshot& out) {
+        assert(!out.clientRegistry.present && !out.serverRegistry.present);
+        out.playerRuntimeId = 77;
+        out.clientRegistry = {0x1000, 11, 42, true};
+        out.priorVisited = 42;
+        return EcsStage::Server;
+    });
+    assert(req->dispatch() == EcsStage::Server);
+    req->run(EcsStage::Server, 2, [](EcsSnapshot& out) {
+        assert(out.playerRuntimeId == 77);
+        assert(out.clientRegistry.present && out.clientRegistry.registry == 0x1000);
+        out.serverRegistry = {0x2000, 12, 84, true};
+        out.visited = out.priorVisited + 84;
+        return EcsStage::Complete;
+    });
+    {
+        auto done = ecsCapture.take(3);
+        assert(done.request && !done.error);
+        auto const& snap = done.request->snapshot;
+        assert(snap.clientRegistry.present && snap.clientRegistry.components == 42);
+        assert(snap.serverRegistry.present && snap.serverRegistry.components == 84);
+        assert(snap.visited == 126);
+    }
+
+    std::vector<std::pair<std::uint32_t, unsigned>> storages{{10u, 0u}, {20u, 1u}};
+    auto ecsOut = std::make_unique<EcsSnapshot>();
+    auto const ecsBaseline = allocations.load();
+    collectEcsRows(EcsOperation::Components, *ecsOut, storages, [](unsigned tagFlag, EcsSnapshot::Row& row, bool& present) {
+        present = true;
+        row.address = tagFlag == 0u ? 0u : 0xDEADu;
+        row.count = 1;
+        return true;
+    });
+    assert(allocations.load() == ecsBaseline);
+    assert(ecsOut->count == 2 && ecsOut->rows[0].address == 0 && ecsOut->rows[1].address == 0xDEADu);
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cpp_path = Path(tmp) / "query_ecs_ext.cpp"
+            cpp_path.write_text(source, encoding="utf-8")
+            self._compile_and_run(cpp_path, Path(tmp) / "query_ecs_ext.exe")
 
     # One data-driven case per native model. Each model is a self-contained
     # C++ program that asserts its own contract; the Python side only builds and

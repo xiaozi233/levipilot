@@ -7,9 +7,11 @@ namespace probe::detail {
 
 enum class EcsOperation { Entity, Components, Component, Registries, Context };
 enum class EcsStage { Client, Server, Complete };
+enum class EcsScope { Client, Server, All };
 
 struct EcsQuery {
     EcsOperation operation = EcsOperation::Entity;
+    EcsScope scope = EcsScope::Client;
     std::uint64_t runtimeId = 0, context = 0;
     std::uint32_t componentId = 0, length = 0;
     CaptureTest test = CaptureTest::None;
@@ -22,12 +24,17 @@ struct EcsSnapshot {
         std::uint32_t id = 0, stride = 0;
         std::uint64_t index = 0, address = 0, count = 0;
     } component;
+    struct RegistryEntry {
+        std::uint64_t registry = 0, entity = 0;
+        std::size_t   components = 0;
+        bool          present = false;
+    } clientRegistry, serverRegistry;
     std::array<Row, MaxRows> rows{};
     std::array<std::uint32_t, MaxRows> skipped{};
     std::array<std::uint8_t, 512> bytes{};
     FixedText<256> type;
-    std::size_t count = 0, skippedCount = 0, visited = 0;
-    std::uint64_t registry = 0, entity = 0, actor = 0, context = 0;
+    std::size_t count = 0, skippedCount = 0, visited = 0, priorVisited = 0;
+    std::uint64_t registry = 0, entity = 0, actor = 0, context = 0, playerRuntimeId = 0;
     std::uint32_t length = 0;
     bool server = false, truncated = false, ok = false;
     char const* error = nullptr;

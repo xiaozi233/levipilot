@@ -44,8 +44,13 @@ nlohmann::json stateJson(StateSnapshot const& s) {
         {"vx",             s.velocity.x                          },
         {"vy",             s.velocity.y                          },
         {"vz",             s.velocity.z                          },
+        {"pos_delta_x",    s.posDelta.x                          },
+        {"pos_delta_y",    s.posDelta.y                          },
+        {"pos_delta_z",    s.posDelta.z                          },
         {"yaw",            s.yaw                                 },
         {"pitch",          s.pitch                               },
+        {"prev_yaw",       s.prevYaw                             },
+        {"prev_pitch",     s.prevPitch                           },
         {"on_ground",      s.onGround                            },
         {"sprinting",      s.sprinting                           },
         {"sneaking",       s.sneaking                            },
@@ -126,9 +131,21 @@ void ProbeMod::captureState(
         out.feet       = vectorSnapshot(player.getFeetPos());
         out.head       = vectorSnapshot(player.getHeadPos());
         out.velocity   = vectorSnapshot(player.getVelocity());
+        if (auto sv = player.getEntityContext().tryGetComponent<StateVectorComponent>()) {
+            out.posDelta = vectorSnapshot(*sv->mPosDelta);
+        } else {
+            out.posDelta = vectorSnapshot(player.getPosDelta());
+        }
         auto const rot = player.getRotation();
         out.yaw        = finiteOrZero(rot.y);
         out.pitch      = finiteOrZero(rot.x);
+        if (auto rotComp = player.getEntityContext().tryGetComponent<ActorRotationComponent>()) {
+            out.prevYaw   = finiteOrZero(rotComp->mRotPrev->y);
+            out.prevPitch = finiteOrZero(rotComp->mRotPrev->x);
+        } else {
+            out.prevYaw   = out.yaw;
+            out.prevPitch = out.pitch;
+        }
         auto const in  = readInput(client);
         out.input      = {
             in.w,

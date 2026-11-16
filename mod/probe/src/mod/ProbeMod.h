@@ -296,11 +296,19 @@ private:
     detail::EcsStage captureEcsStage(detail::EcsStage stage, detail::EcsQuery const& query,
                                    detail::EcsSnapshot& out);
     void drainEcs();
-    void queueInventoryWrite(std::string const& container, int slot, std::string const& item, int count, int aux);
+    void queueInventoryWrite(
+        std::string const& container,
+        int                slot,
+        std::string const& item,
+        int                count,
+        int                aux,
+        int                damage = -1,
+        int                flight = -1
+    );
     // Moves an existing inventory stack into a worn slot (armor/offhand) so
     // enchantments applied while held (e.g. /enchant) survive the transfer.
     void queueEquip(std::string const& target, int slot);
-    void queueGive(std::string const& item, int count, int aux);
+    void queueGive(std::string const& item, int count, int aux, int damage = -1, int flight = -1);
     void queueClearInventory();
     void captureBlocks(LocalPlayer& player, detail::BlockRequest const& request, detail::BlockSnapshot& out);
     bool captureScan(LocalPlayer& player, detail::ScanQuery const& request, detail::ScanSnapshot& out);

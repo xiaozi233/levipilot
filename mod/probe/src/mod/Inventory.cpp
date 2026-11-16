@@ -62,7 +62,9 @@ void ProbeMod::queueInventoryWrite(
     int                slot,
     std::string const& itemName,
     int                count,
-    int                aux
+    int                aux,
+    int                damage,
+    int                flight
 ) {
     auto server = ll::service::bedrock::getServerInstance();
     if (!server) {
@@ -75,18 +77,18 @@ void ProbeMod::queueInventoryWrite(
         return;
     }
 
-    queueServerTask([this, identity, container, slot, itemName, count, aux] {
+    queueServerTask([this, identity, container, slot, itemName, count, aux, damage, flight] {
         auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
         auto* level = context.level;
         auto* player = context.player;
-        if (player == nullptr) {
+        if (level == nullptr || player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
         }
 
         ItemStack   stack;
         std::string error;
-        if (!makeItemStack(*level, itemName, count, aux, stack, error)) {
+        if (!makeItemStack(*level, itemName, count, aux, stack, error, damage, flight)) {
             enqueue(
                 nlohmann::json{
                     {"event",  "error"},
@@ -201,7 +203,7 @@ void ProbeMod::queueEquip(std::string const& target, int slot) {
     });
 }
 
-void ProbeMod::queueGive(std::string const& itemName, int count, int aux) {
+void ProbeMod::queueGive(std::string const& itemName, int count, int aux, int damage, int flight) {
     auto server = ll::service::bedrock::getServerInstance();
     if (!server) {
         enqueue(R"({"event":"error","reason":"inventory_no_server_instance"})");
@@ -213,18 +215,18 @@ void ProbeMod::queueGive(std::string const& itemName, int count, int aux) {
         return;
     }
 
-    queueServerTask([this, identity, itemName, count, aux] {
+    queueServerTask([this, identity, itemName, count, aux, damage, flight] {
         auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
         auto* level = context.level;
         auto* player = context.player;
-        if (player == nullptr) {
+        if (level == nullptr || player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
         }
 
         ItemStack   stack;
         std::string error;
-        if (!makeItemStack(*level, itemName, count, aux, stack, error)) {
+        if (!makeItemStack(*level, itemName, count, aux, stack, error, damage, flight)) {
             enqueue(
                 nlohmann::json{
                     {"event",  "error"},

@@ -206,12 +206,20 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             j.value("slot", 0),
             clear ? std::string{} : j.value("item", std::string{}),
             clear ? 0 : j.value("count", 1),
-            clear ? 0 : j.value("aux", 0)
+            clear ? 0 : j.value("aux", 0),
+            clear ? -1 : j.value("damage", -1),
+            clear ? -1 : j.value("flight", -1)
         );
         return true;
     }
     if (cmd == "give") {
-        queueGive(j.value("item", std::string{}), j.value("count", 1), j.value("aux", 0));
+        queueGive(
+            j.value("item", std::string{}),
+            j.value("count", 1),
+            j.value("aux", 0),
+            j.value("damage", -1),
+            j.value("flight", -1)
+        );
         return true;
     }
     if (cmd == "equip") {
@@ -233,8 +241,17 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         EcsQuery query;
         query.runtimeId = j.value("runtime_id", std::uint64_t{0});
         query.componentId = j.value("component_id", std::uint32_t{0});
-        if (cmd == "ecs_registries") query.operation = EcsOperation::Registries;
-        else if (cmd == "ecs_entity") query.operation = EcsOperation::Entity;
+        if (cmd == "ecs_registries") {
+            query.operation = EcsOperation::Registries;
+            auto const scope = j.value("scope", std::string{"client"});
+            if (scope == "client") query.scope = EcsScope::Client;
+            else if (scope == "server") query.scope = EcsScope::Server;
+            else if (scope == "all") query.scope = EcsScope::All;
+            else {
+                enqueue(R"({"event":"error","reason":"bad_scope"})");
+                return true;
+            }
+        } else if (cmd == "ecs_entity") query.operation = EcsOperation::Entity;
         else if (cmd == "ecs_components") query.operation = EcsOperation::Components;
         else if (cmd == "ecs_context") {
             query.operation = EcsOperation::Context;

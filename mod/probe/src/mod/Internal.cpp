@@ -19,6 +19,58 @@
 
 namespace probe::detail {
 
+namespace {
+
+int itemMaxDamage(ItemStack const& item) {
+    auto const* def = item.mItem.get();
+    return def ? static_cast<int>(def->getMaxDamage()) : 0;
+}
+
+std::unique_ptr<CompoundTag> newCompoundTag() {
+    auto res = Tag::newTag(Tag::Compound);
+    if (!res || !res.value()) {
+        return {};
+    }
+    return std::unique_ptr<CompoundTag>(static_cast<CompoundTag*>(res.value().release()));
+}
+
+bool applyFireworkFlight(ItemStack& stack, std::int8_t flight, std::string& error) {
+    std::unique_ptr<CompoundTag> root;
+    std::unique_ptr<CompoundTag> fireworks;
+    std::string                  sdkError;
+    bool                         missingTag = false;
+    bool const                   ok         = guardedSdkCall(
+        [&] {
+            root = stack.mUserData ? stack.mUserData->clone() : newCompoundTag();
+            if (!root) {
+                missingTag = true;
+                return;
+            }
+            if (auto* existing = root->get("Fireworks"); existing && existing->getId() == Tag::Compound) {
+                existing->as<CompoundTag>().putByte("Flight", static_cast<uchar>(flight));
+            } else {
+                fireworks = newCompoundTag();
+                if (!fireworks) {
+                    missingTag = true;
+                    return;
+                }
+                fireworks->putByte("Flight", static_cast<uchar>(flight));
+                root->putCompound("Fireworks", std::move(fireworks));
+            }
+            stack.setUserData(std::move(root));
+        },
+        CaptureTest::None,
+        &sdkError
+    );
+    if (!ok || missingTag) {
+        error = sdkError.empty() ? "item_flight_failed" : ("item_flight_failed: " + sdkError);
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 float finiteOrZero(float value) { return std::isfinite(value) ? value : 0.0f; }
 
 float wrapDegrees(float value) {
@@ -113,31 +165,51 @@ nlohmann::json itemJson(ItemStack const& item) {
         return nullptr;
     }
     return {
-        {"type",  item.getTypeName()              },
-        {"name",  item.getName()                  },
-        {"count", static_cast<int>(item.mCount)   },
-        {"aux",   static_cast<int>(item.mAuxValue)},
+        {"type",       item.getTypeName()                    },
+        {"name",       item.getName()                        },
+        {"count",      static_cast<int>(item.mCount)         },
+        {"aux",        static_cast<int>(item.mAuxValue)      },
+        {"damage",     static_cast<int>(item.getDamageValue())},
+        {"max_damage", itemMaxDamage(item)                   },
     };
 }
 
 void captureItem(ItemStack const& item, ItemSnapshot& out, bool& truncated) {
     if (item.isNull()) return;
-    out.present = true;
+    out.present      = true;
     auto const& type = item.getTypeName();
     auto const& name = item.getName();
     out.type.assign(type);
     out.name.assign(name);
-    out.count = static_cast<int>(item.mCount);
-    out.aux = static_cast<int>(item.mAuxValue);
-    truncated = truncated || out.type.view().size() != type.size() || out.name.view().size() != name.size();
+    out.count     = static_cast<int>(item.mCount);
+    out.aux       = static_cast<int>(item.mAuxValue);
+    out.damage    = static_cast<int>(item.getDamageValue());
+    out.maxDamage = itemMaxDamage(item);
+    truncated     = truncated || out.type.view().size() != type.size() || out.name.view().size() != name.size();
 }
 
 nlohmann::json itemJson(ItemSnapshot const& item) {
     if (!item.present) return nullptr;
-    return {{"type", item.type.c_str()}, {"name", item.name.c_str()}, {"count", item.count}, {"aux", item.aux}};
+    return {
+        {"type",       item.type.c_str()},
+        {"name",       item.name.c_str()},
+        {"count",      item.count       },
+        {"aux",        item.aux         },
+        {"damage",     item.damage      },
+        {"max_damage", item.maxDamage   },
+    };
 }
 
-bool makeItemStack(Level& level, std::string const& name, int count, int aux, ItemStack& out, std::string& error) {
+bool makeItemStack(
+    Level&             level,
+    std::string const& name,
+    int                count,
+    int                aux,
+    ItemStack&         out,
+    std::string&       error,
+    int                damage,
+    int                flight
+) {
     if (count <= 0) {
         out = ItemStack{};
         return true;
@@ -149,6 +221,22 @@ bool makeItemStack(Level& level, std::string const& name, int count, int aux, It
         return false;
     }
     out.reinit(*item, count, itemAux);
+    if (damage >= 0) {
+        auto const clampedDamage = static_cast<short>(
+            std::clamp(damage, 0, static_cast<int>(std::numeric_limits<short>::max()))
+        );
+        std::string sdkError;
+        if (!guardedSdkCall([&] { out.setDamageValue(clampedDamage); }, CaptureTest::None, &sdkError)) {
+            error = sdkError.empty() ? "item_damage_failed" : ("item_damage_failed: " + sdkError);
+            return false;
+        }
+    }
+    if (flight >= 0) {
+        auto const clampedFlight = static_cast<std::int8_t>(std::clamp(flight, 0, 127));
+        if (!applyFireworkFlight(out, clampedFlight, error)) {
+            return false;
+        }
+    }
     return true;
 }
 

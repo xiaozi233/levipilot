@@ -23,14 +23,14 @@ using HookCallCapture = SnapshotMailbox<HookCallRequest, HookCallSnapshot>;
 struct ItemSnapshot {
     FixedText<256>  type;
     FixedText<4096> name;
-    int             count = 0, aux = 0;
+    int             count = 0, aux = 0, damage = 0, maxDamage = 0;
     bool            present = false;
 };
 
 struct StateSnapshot {
     struct Vec {
         float x = 0, y = 0, z = 0;
-    } pos, feet, head, velocity;
+    } pos, feet, head, velocity, posDelta;
     struct Input {
         bool  w = false, a = false, s = false, d = false, jump = false, sprint = false, sneak = false;
         bool  actionSprint = false, locked = false;
@@ -48,7 +48,7 @@ struct StateSnapshot {
     std::size_t                   effectCount = 0;
     FixedText<1024>               name;
     std::uint64_t                 tick = 0, uuidA = 0, uuidB = 0, runtimeId = 0, context = 0;
-    float                         yaw = 0, pitch = 0, health = 0, maxHealth = 0;
+    float                         yaw = 0, pitch = 0, prevYaw = 0, prevPitch = 0, health = 0, maxHealth = 0;
     bool                          onGround = false, sprinting = false, sneaking = false, swimming = false;
     bool                          flying = false, mayfly = false, inWater = false, alive = false;
     int                           gamemode = 0, dimension = 0, selectedSlot = 0, itemUseTicks = 0;

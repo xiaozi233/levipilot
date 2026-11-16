@@ -49,7 +49,11 @@
 #include "mc/deps/input/enums/ButtonState.h"
 #include "mc/deps/input/enums/FocusImpact.h"
 #include "mc/deps/input/win/HIDControllerGameCoreDesktop.h"
+#include "mc/deps/nbt/ByteTag.h"
+#include "mc/deps/nbt/CompoundTag.h"
 #include "mc/deps/shared_types/legacy/actor/ArmorSlot.h"
+#include "mc/deps/vanilla_components/StateVectorComponent.h"
+#include "mc/entity/components/ActorRotationComponent.h"
 #include "mc/entity/components/MoveInputComponent.h"
 #include "mc/entity/components/PlayerActionComponent.h"
 #include "mc/input/MoveInputState.h"
@@ -281,7 +285,16 @@ nlohmann::json itemJson(ItemStack const& item);
 // Snapshot copying runs on the item's owning thread; formatting is cold-side.
 void captureItem(ItemStack const& item, ItemSnapshot& out, bool& truncated);
 nlohmann::json itemJson(ItemSnapshot const& item);
-bool makeItemStack(Level& level, std::string const& name, int count, int aux, ItemStack& out, std::string& error);
+bool makeItemStack(
+    Level&             level,
+    std::string const& name,
+    int                count,
+    int                aux,
+    ItemStack&         out,
+    std::string&       error,
+    int                damage = -1,
+    int                flight = -1
+);
 
 std::string blockName(BlockSource const& source, int x, int y, int z);
 Vec3        blockCenter(BlockPos const& pos);

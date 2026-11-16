@@ -6,7 +6,11 @@ the game binary from disk, never the running process.
 
     py -3.11 driver/pe_map.py 0x1431C35FF
     py -3.11 driver/pe_map.py --sections
-    py -3.11 driver/pe_map.py 0x1482A4890 --exe <path>
+    py -3.11 driver/pe_map.py --xrefs 0x151d6973c
+    py -3.11 driver/pe_map.py --iat sinf
+    py -3.11 driver/pe_map.py --import-xrefs sinf
+    py -3.11 driver/pe_map.py --disasm 0x146667b10 -n 15
+    py -3.11 driver/pe_map.py --rtti StyledWriter
 
 The binary is discovered from `MCBE_EXE`, `--exe`, or the newest
 `%APPDATA%\\levilauncher.exe\\versions\\*\\Minecraft.Windows.exe`.
@@ -18,10 +22,21 @@ import argparse
 import mmap
 import os
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+from capstone import CS_ARCH_X86, CS_GRP_CALL, CS_GRP_JUMP, CS_MODE_64, Cs, CsInsn
+from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_REG_RIP
+
 RUNTIME_FUNCTION = struct.Struct("<III")  # begin RVA, end RVA, unwind RVA
+IMPORT_DESCRIPTOR = struct.Struct("<IIIII")  # OFT, TimeDateStamp, Forwarder, Name, FT
+RTTI_COL = struct.Struct("<IIIIII")  # signature, offset, cdOffset, pTD, pCD, pSelf
+
+_IMAGE_SCN_MEM_EXECUTE = 0x20000000
+_RIP_TAILS = (0, 1, 2, 4)
+_SCAN_CHUNK_U32 = 4 * 1024 * 1024  # 16 MiB per slice
 
 
 @dataclass(frozen=True)
@@ -31,6 +46,11 @@ class Section:
     vsize: int
     raw: int
     raw_size: int
+    characteristics: int = 0
+
+    @property
+    def is_executable(self) -> bool:
+        return self.name == ".text" or bool(self.characteristics & _IMAGE_SCN_MEM_EXECUTE)
 
     def covers(self, rva: int) -> bool:
         return self.va <= rva < self.va + self.vsize
@@ -42,8 +62,78 @@ class Section:
         return offset if rva - self.va < self.raw_size else None
 
 
-def parse_headers(data: bytes | mmap.mmap) -> tuple[int, tuple[Section, ...]]:
-    """Return ``(image_base, sections)`` from the PE headers."""
+def _format_func_label(func_begin: int | None, func_end: int | None) -> str:
+    if func_begin is None or func_end is None:
+        return "<leaf>"
+    return f"func {func_begin:#x}..{func_end:#x}"
+
+
+@dataclass(frozen=True)
+class RipXref:
+    insn_va: int
+    func_begin: int | None
+    func_end: int | None
+    text: str
+
+    @property
+    def function(self) -> tuple[int, int] | None:
+        if self.func_begin is None or self.func_end is None:
+            return None
+        return (self.func_begin, self.func_end)
+
+    @property
+    def func_label(self) -> str:
+        return _format_func_label(self.func_begin, self.func_end)
+
+
+@dataclass(frozen=True)
+class ImportEntry:
+    dll: str
+    symbol: str
+    slot_va: int
+    ordinal: int | None = None
+
+
+@dataclass(frozen=True)
+class ImportXref:
+    entry: ImportEntry
+    insn_va: int
+    func_begin: int | None
+    func_end: int | None
+    text: str
+
+    @property
+    def function(self) -> tuple[int, int] | None:
+        if self.func_begin is None or self.func_end is None:
+            return None
+        return (self.func_begin, self.func_end)
+
+    @property
+    def func_label(self) -> str:
+        return _format_func_label(self.func_begin, self.func_end)
+
+
+@dataclass(frozen=True)
+class RttiResult:
+    name: str
+    mangled: str
+    vtable_va: int
+    col_va: int
+    type_desc_va: int
+    methods: tuple[int, ...]
+    xrefs: tuple[RipXref, ...]
+
+
+@dataclass(frozen=True)
+class _PeLayout:
+    image_base: int
+    sections: tuple[Section, ...]
+    is_pe32_plus: bool
+    import_dir_rva: int
+    import_dir_size: int
+
+
+def _parse_pe_layout(data: bytes | mmap.mmap) -> _PeLayout:
     if data[:2] != b"MZ":
         raise ValueError("not a PE file (missing MZ)")
     e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
@@ -54,19 +144,40 @@ def parse_headers(data: bytes | mmap.mmap) -> tuple[int, tuple[Section, ...]]:
     optional = e_lfanew + 24
     magic = struct.unpack_from("<H", data, optional)[0]
     if magic == 0x20B:  # PE32+
+        is_pe32_plus = True
         image_base = struct.unpack_from("<Q", data, optional + 24)[0]
+        num_rva_off, imp_dir_off = 108, 120
     elif magic == 0x10B:  # PE32
+        is_pe32_plus = False
         image_base = struct.unpack_from("<I", data, optional + 28)[0]
+        num_rva_off, imp_dir_off = 92, 104
     else:
         raise ValueError(f"unknown optional-header magic {magic:#x}")
+
+    import_dir_rva = 0
+    import_dir_size = 0
+    if optional_size >= imp_dir_off + 8:
+        num_rva = struct.unpack_from("<I", data, optional + num_rva_off)[0]
+        if num_rva >= 2:
+            import_dir_rva, import_dir_size = struct.unpack_from(
+                "<II", data, optional + imp_dir_off
+            )
+
     table = optional + optional_size
-    sections = []
+    sections: list[Section] = []
     for index in range(section_count):
         entry = table + index * 40
         name = data[entry : entry + 8].rstrip(b"\0").decode("ascii", "replace")
         vsize, va, raw_size, raw = struct.unpack_from("<IIII", data, entry + 8)
-        sections.append(Section(name, va, vsize, raw, raw_size))
-    return image_base, tuple(sections)
+        chars = struct.unpack_from("<I", data, entry + 36)[0]
+        sections.append(Section(name, va, vsize, raw, raw_size, chars))
+    return _PeLayout(image_base, tuple(sections), is_pe32_plus, import_dir_rva, import_dir_size)
+
+
+def parse_headers(data: bytes | mmap.mmap) -> tuple[int, tuple[Section, ...]]:
+    """Return ``(image_base, sections)`` from the PE headers."""
+    layout = _parse_pe_layout(data)
+    return layout.image_base, layout.sections
 
 
 class PdataIndex:
@@ -92,9 +203,188 @@ class PdataIndex:
                 return begin, end
         return None
 
+    def prev_function_end(self, rva: int) -> int:
+        """Return the ``end`` RVA of the nearest preceding ``.pdata`` function (or 0)."""
+        low, high = 0, self._count - 1
+        best = 0
+        while low <= high:
+            middle = (low + high) // 2
+            begin, end, _ = RUNTIME_FUNCTION.unpack_from(self._blob, middle * 12)
+            if begin == 0 or rva < begin:
+                high = middle - 1
+            elif rva >= end:
+                if end > best:
+                    best = end
+                low = middle + 1
+            else:
+                return begin
+        return best
+
+
+_MSVC_PRIMITIVES = {
+    "C": "signed char",
+    "D": "char",
+    "E": "unsigned char",
+    "F": "short",
+    "G": "unsigned short",
+    "H": "int",
+    "I": "unsigned int",
+    "J": "long",
+    "K": "unsigned long",
+    "M": "float",
+    "N": "double",
+    "O": "long double",
+    "X": "void",
+    "_N": "bool",
+    "_J": "int64_t",
+    "_K": "uint64_t",
+    "_W": "wchar_t",
+    "_S": "char16_t",
+    "_U": "char32_t",
+    "_Q": "char8_t",
+}
+
+
+def demangle_rtti_name(mangled: str) -> str:
+    """Decode an MSVC RTTI TypeDescriptor name (``.?AV...@@`` / ``.?AU...@@``) to C++ syntax."""
+    if not mangled.startswith(".?A"):
+        return mangled
+    if mangled.startswith(".?AW4"):
+        pos = 5
+    elif len(mangled) >= 4 and mangled[3] in ("V", "U", "T"):
+        pos = 4
+    else:
+        return mangled
+
+    n = len(mangled)
+    backrefs: list[str] = []
+
+    def read_name_part(i: int, br: list[str]) -> tuple[str, int]:
+        if i < n and mangled[i].isdigit():
+            idx = int(mangled[i])
+            return (br[idx] if idx < len(br) else mangled[i]), i + 1
+        if mangled.startswith("?$", i):
+            t_name, j = parse_template(i + 2)
+            if len(br) < 10:
+                br.append(t_name)
+            return t_name, j
+        if mangled.startswith("?A", i):
+            end = mangled.find("@", i)
+            if end == -1:
+                return mangled[i:], n
+            anon = "'anonymous namespace'"
+            if len(br) < 10:
+                br.append(anon)
+            return anon, end + 1
+        end = mangled.find("@", i)
+        if end == -1:
+            return mangled[i:], n
+        part = mangled[i:end]
+        if len(br) < 10:
+            br.append(part)
+        return part, end + 1
+
+    def parse_qual_name(i: int, br: list[str]) -> tuple[str, int]:
+        parts: list[str] = []
+        while i < n and mangled[i] != "@":
+            part, i = read_name_part(i, br)
+            parts.append(part)
+        if i < n and mangled[i] == "@":
+            i += 1
+        return "::".join(reversed(parts)), i
+
+    def parse_template(i: int) -> tuple[str, int]:
+        tbr: list[str] = []
+        end = mangled.find("@", i)
+        if end == -1:
+            return mangled[i:], n
+        tname = mangled[i:end]
+        tbr.append(tname)
+        i = end + 1
+        args: list[str] = []
+        while i < n and mangled[i] != "@":
+            arg, i = parse_type(i, tbr)
+            args.append(arg)
+        if i < n and mangled[i] == "@":
+            i += 1
+        return f"{tname}<{', '.join(args)}>", i
+
+    def parse_type(i: int, br: list[str]) -> tuple[str, int]:
+        if i >= n:
+            return "", i
+        if mangled[i] in ("V", "U", "T"):
+            return parse_qual_name(i + 1, br)
+        if mangled.startswith("W4", i):
+            return parse_qual_name(i + 2, br)
+        if mangled.startswith(("$$A6", "$$A8"), i):
+            end = mangled.find("@Z", i)
+            if end != -1:
+                return "func(...)", end + 2
+        for prefix, fmt in (
+            ("PEAV", "{0}*"),
+            ("PEAU", "{0}*"),
+            ("PEBV", "const {0}*"),
+            ("PEBU", "const {0}*"),
+            ("AEAV", "{0}&"),
+            ("AEAU", "{0}&"),
+            ("AEBV", "const {0}&"),
+            ("AEBU", "const {0}&"),
+        ):
+            if mangled.startswith(prefix, i):
+                inner, j = parse_qual_name(i + 4, br)
+                return fmt.format(inner), j
+        if mangled[i] == "_" and i + 1 < n and mangled[i : i + 2] in _MSVC_PRIMITIVES:
+            return _MSVC_PRIMITIVES[mangled[i : i + 2]], i + 2
+        if mangled[i] in _MSVC_PRIMITIVES:
+            return _MSVC_PRIMITIVES[mangled[i]], i + 1
+        if mangled.startswith("$0", i):
+            end = mangled.find("@", i)
+            if end != -1:
+                return mangled[i + 2 : end], end + 1
+        if mangled[i].isdigit():
+            idx = int(mangled[i])
+            return (br[idx] if idx < len(br) else mangled[i]), i + 1
+        end = mangled.find("@", i)
+        if end == -1:
+            return mangled[i:], n
+        return mangled[i:end], end + 1
+
+    try:
+        decoded, _ = parse_qual_name(pos, backrefs)
+        return decoded or mangled
+    except Exception:
+        return mangled
+
+
+def _make_disassembler(*, detail: bool) -> Cs:
+    md = Cs(CS_ARCH_X86, CS_MODE_64)
+    md.detail = detail
+    return md
+
+
+def _ascii_preview(raw: bytes, max_chars: int = 48) -> str | None:
+    """Return printable ASCII preview if ``raw`` starts with a C-string or ASCII run."""
+    nul = raw.find(0)
+    slice_bytes = raw[:nul] if nul != -1 else raw
+    min_len = 3 if nul != -1 else 8
+    if len(slice_bytes) < min_len:
+        return None
+    if not all(0x20 <= b <= 0x7E or b in (9, 10, 13) for b in slice_bytes):
+        return None
+    text = slice_bytes.decode("ascii")
+    if len(text) > max_chars:
+        return text[: max_chars - 3] + "..."
+    return text
+
+
+def _format_insn(address: int, mnemonic: str, op_str: str) -> str:
+    if op_str:
+        return f"{address:#x}: {mnemonic} {op_str}"
+    return f"{address:#x}: {mnemonic}"
+
 
 class PeImage:
-    """A mapped PE file: sections, image base and the function table."""
+    """A mapped PE file: sections, image base, functions, imports, xrefs, and RTTI."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -104,12 +394,21 @@ class PeImage:
         except Exception:
             self._file.close()
             raise
-        self.image_base, self.sections = parse_headers(self._data)
+        layout = _parse_pe_layout(self._data)
+        self.image_base = layout.image_base
+        self.sections = layout.sections
+        self._is_pe32_plus = layout.is_pe32_plus
+        self._import_dir_rva = layout.import_dir_rva
+        self._import_dir_size = layout.import_dir_size
         pdata = next((s for s in self.sections if s.name == ".pdata"), None)
         blob: bytes | mmap.mmap = b""
         if pdata is not None and pdata.raw_size:
             blob = self._data[pdata.raw : pdata.raw + pdata.raw_size]
         self.functions = PdataIndex(blob)
+        self._imports_cache: tuple[ImportEntry, ...] | None = None
+        self._iat_map_cache: dict[int, ImportEntry] | None = None
+        self._md_fast: Cs | None = None
+        self._md_detail: Cs | None = None
 
     # -- lifecycle ---------------------------------------------------------
     def close(self) -> None:
@@ -122,7 +421,7 @@ class PeImage:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    # -- queries -----------------------------------------------------------
+    # -- basic queries -----------------------------------------------------
     def rva(self, va: int) -> int:
         return va - self.image_base
 
@@ -145,10 +444,575 @@ class PeImage:
         return self.image_base + found[0], self.image_base + found[1]
 
     def read(self, va: int, length: int = 16) -> bytes:
-        offset = self.offset_of(va)
+        rva = self.rva(va)
+        for section in self.sections:
+            offset = section.offset_of(rva)
+            if offset is not None:
+                avail = (section.raw + section.raw_size) - offset
+                return self._data[offset : offset + min(length, avail)]
+        return b""
+
+    def _read_cstr_rva(self, rva: int, max_len: int = 4096) -> str:
+        offset = self.offset_of(self.image_base + rva)
         if offset is None:
-            return b""
-        return self._data[offset : offset + length]
+            return ""
+        end = self._data.find(b"\0", offset, min(len(self._data), offset + max_len))
+        if end == -1:
+            return ""
+        return self._data[offset:end].decode("ascii", "replace")
+
+    def _disasm_fast(self) -> Cs:
+        if self._md_fast is None:
+            self._md_fast = _make_disassembler(detail=False)
+        return self._md_fast
+
+    def _disasm_detail(self) -> Cs:
+        if self._md_detail is None:
+            self._md_detail = _make_disassembler(detail=True)
+        return self._md_detail
+
+    # -- imports & IAT -----------------------------------------------------
+    def parse_imports(self) -> list[ImportEntry]:
+        """Parse PE ``IMAGE_DIRECTORY_ENTRY_IMPORT`` into a list of :class:`ImportEntry`."""
+        if self._imports_cache is not None:
+            return list(self._imports_cache)
+        if self._import_dir_rva == 0:
+            self._imports_cache = ()
+            self._iat_map_cache = {}
+            return []
+        dir_off = self.offset_of(self.image_base + self._import_dir_rva)
+        if dir_off is None:
+            self._imports_cache = ()
+            self._iat_map_cache = {}
+            return []
+
+        ptr_size = 8 if self._is_pe32_plus else 4
+        ptr_fmt = "<Q" if self._is_pe32_plus else "<I"
+        ordinal_flag = 1 << (63 if self._is_pe32_plus else 31)
+        data_len = len(self._data)
+        entries: list[ImportEntry] = []
+
+        desc_index = 0
+        while dir_off + (desc_index + 1) * IMPORT_DESCRIPTOR.size <= data_len:
+            orig_ft, time_stamp, forwarder, name_rva, first_thunk = IMPORT_DESCRIPTOR.unpack_from(
+                self._data, dir_off + desc_index * IMPORT_DESCRIPTOR.size
+            )
+            desc_index += 1
+            if not (orig_ft or time_stamp or forwarder or name_rva or first_thunk):
+                break
+            if name_rva == 0 or first_thunk == 0:
+                continue
+            dll = self._read_cstr_rva(name_rva)
+            lookup_rva = orig_ft if orig_ft != 0 else first_thunk
+            if self.offset_of(self.image_base + lookup_rva) is None:
+                lookup_rva = first_thunk
+            slot_index = 0
+            while True:
+                thunk_off = self.offset_of(self.image_base + lookup_rva + slot_index * ptr_size)
+                if thunk_off is None or thunk_off + ptr_size > data_len:
+                    break
+                val = struct.unpack_from(ptr_fmt, self._data, thunk_off)[0]
+                if val == 0:
+                    break
+                slot_va = self.image_base + first_thunk + slot_index * ptr_size
+                if val & ordinal_flag:
+                    ord_num = val & 0xFFFF
+                    entries.append(ImportEntry(dll, f"ordinal#{ord_num}", slot_va, ord_num))
+                else:
+                    sym = self._read_cstr_rva((val & 0x7FFFFFFF) + 2)
+                    entries.append(ImportEntry(dll, sym, slot_va, None))
+                slot_index += 1
+
+        self._imports_cache = tuple(entries)
+        self._iat_map_cache = {entry.slot_va: entry for entry in entries}
+        return entries
+
+    def _iat_map(self) -> dict[int, ImportEntry]:
+        if self._iat_map_cache is None:
+            self.parse_imports()
+        assert self._iat_map_cache is not None
+        return self._iat_map_cache
+
+    # -- RIP-relative xref scanner -----------------------------------------
+    def _insn_matches_targets(self, insn: CsInsn, targets: set[int]) -> int | None:
+        """If ``insn`` has a RIP-relative or relative-branch operand targeting ``targets``, return it."""
+        is_branch = insn.group(CS_GRP_CALL) or insn.group(CS_GRP_JUMP)
+        for op in insn.operands:
+            if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
+                target = insn.address + insn.size + op.mem.disp
+                if target in targets:
+                    return int(target)
+            elif is_branch and op.type == X86_OP_IMM:
+                target = int(op.imm)
+                if target in targets:
+                    return target
+        return None
+
+    def _validate_rip_candidate(
+        self,
+        blob: memoryview,
+        text_va: int,
+        scan_len: int,
+        off: int,
+        tail: int,
+        targets: set[int],
+    ) -> tuple[int, RipXref] | None:
+        disp_va = text_va + off
+        expected_end = disp_va + 4 + tail
+        fn = self.function_at(disp_va)
+        md_fast = self._disasm_fast()
+        md_detail = self._disasm_detail()
+
+        def try_linear_sweep(start_off: int) -> tuple[bool, int | None, int | None]:
+            """Sweep from ``start_off``; return ``(decided, insn_off, insn_size)``."""
+            code = bytes(blob[start_off : min(scan_len, off + 4 + tail)])
+            last_end = text_va + start_off
+            for addr, size, _mnem, _op in md_fast.disasm_lite(code, text_va + start_off):
+                last_end = addr + size
+                if addr <= disp_va < last_end:
+                    if last_end == expected_end:
+                        return True, addr - text_va, size
+                    return True, None, None
+            return False, None, None
+
+        decided = False
+        insn_off: int | None = None
+        insn_size: int | None = None
+
+        if fn is not None and (disp_va - fn[0]) <= 0x40000:
+            decided, insn_off, insn_size = try_linear_sweep(fn[0] - text_va)
+        elif fn is None:
+            sync_rva = (
+                self.functions.prev_function_end(self.rva(disp_va)) if len(self.functions) else 0
+            )
+            sync_va = self.image_base + sync_rva if sync_rva else text_va
+            if sync_va < text_va:
+                sync_va = text_va
+            if 0 <= (disp_va - sync_va) <= 0x10000:
+                decided, insn_off, insn_size = try_linear_sweep(sync_va - text_va)
+
+        if not decided:
+            # Try syncing from a nearby 0xCC padding run, else longest valid decode in window.
+            win_lo = max(0, off - 2048)
+            raw_win = bytes(blob[win_lo:off])
+            cc_pos = raw_win.rfind(b"\xcc\xcc")
+            if cc_pos != -1:
+                decided, insn_off, insn_size = try_linear_sweep(win_lo + cc_pos + 2)
+
+        if insn_off is not None and insn_size is not None:
+            single = next(
+                md_detail.disasm(
+                    bytes(blob[insn_off : insn_off + insn_size]), text_va + insn_off, count=1
+                ),
+                None,
+            )
+            if single is not None:
+                matched_target = self._insn_matches_targets(single, targets)
+                if matched_target is not None:
+                    text_str = (
+                        f"{single.mnemonic} {single.op_str}" if single.op_str else single.mnemonic
+                    )
+                    fn_begin, fn_end = fn if fn is not None else (None, None)
+                    return matched_target, RipXref(single.address, fn_begin, fn_end, text_str)
+            return None
+
+        if decided:
+            return None
+
+        # Last-resort local window fallback (handles binaries without .pdata or embedded data).
+        for start_off in range(max(0, off - 11), off + 1):
+            code = bytes(blob[start_off : min(scan_len, off + 4 + tail + 1)])
+            single = next(md_detail.disasm(code, text_va + start_off, count=1), None)
+            if single is None or single.address + single.size != expected_end:
+                continue
+            matched_target = self._insn_matches_targets(single, targets)
+            if matched_target is not None:
+                text_str = (
+                    f"{single.mnemonic} {single.op_str}" if single.op_str else single.mnemonic
+                )
+                fn_begin, fn_end = fn if fn is not None else (None, None)
+                return matched_target, RipXref(single.address, fn_begin, fn_end, text_str)
+        return None
+
+    def _scan_rip_xrefs(self, target_vas: Sequence[int]) -> dict[int, list[RipXref]]:
+        """Scan ``.text`` once for RIP-relative / relative-branch xrefs to ``target_vas``."""
+        unique_targets = sorted(set(target_vas))
+        results: dict[int, list[RipXref]] = {t: [] for t in unique_targets}
+        if not unique_targets:
+            return results
+
+        text = next((s for s in self.sections if s.name == ".text"), None)
+        if text is None or text.raw_size < 4:
+            return results
+        scan_len = min(text.raw_size, text.vsize) if text.vsize > 0 else text.raw_size
+        if scan_len < 4:
+            return results
+
+        text_va = self.image_base + text.va
+        min_va = text_va - 0x80000000
+        max_va = text_va + scan_len + 0x7FFFFFFF
+        reachable = [t for t in unique_targets if min_va <= t <= max_va]
+        if not reachable:
+            return results
+
+        k_list = [t - text_va - 4 for t in reachable]
+        k_lookup = set(k_list)
+        target_set = set(reachable)
+        candidates: list[tuple[int, int]] = []
+
+        idx_buf = np.arange(0, _SCAN_CHUNK_U32 * 4, 4, dtype=np.int32)
+        work = np.empty(_SCAN_CHUNK_U32, dtype=np.int32)
+        uwork = work.view(np.uint32)
+        scratch = np.empty(_SCAN_CHUNK_U32, dtype=np.uint32) if len(k_list) > 1 else None
+        mask = np.empty(_SCAN_CHUNK_U32, dtype=np.bool_)
+
+        def record_hits(arr: np.ndarray, base_off: int, align: int, indices: Sequence[int]) -> None:
+            for h in indices:
+                off = base_off + align + h * 4
+                val_sum = int(arr[h]) + off
+                for tail in _RIP_TAILS:
+                    if (val_sum + tail) in k_lookup:
+                        candidates.append((off, tail))
+
+        blob = memoryview(self._data)[text.raw : text.raw + scan_len]
+        try:
+            for base_off in range(0, scan_len - 3, _SCAN_CHUNK_U32 * 4):
+                end_off = min(scan_len, base_off + _SCAN_CHUNK_U32 * 4 + 3)
+                seg = blob[base_off:end_off]
+                try:
+                    for align in range(4):
+                        cnt = (len(seg) - align) // 4
+                        if cnt <= 0:
+                            continue
+                        arr = np.frombuffer(seg, dtype="<i4", count=cnt, offset=align)
+                        try:
+                            w = work[:cnt]
+                            uw = uwork[:cnt]
+                            m = mask[:cnt]
+                            np.add(arr, idx_buf[:cnt], out=w)
+
+                            if len(k_list) == 1:
+                                k0 = k_list[0]
+                                uw -= np.uint32((k0 - base_off - align - 4) & 0xFFFFFFFF)
+                                np.less_equal(uw, 4, out=m)
+                                for h in np.flatnonzero(m):
+                                    off = base_off + align + int(h) * 4
+                                    tail = k0 - (int(arr[h]) + off)
+                                    if tail in _RIP_TAILS:
+                                        candidates.append((off, tail))
+                            elif len(k_list) <= 16:
+                                assert scratch is not None
+                                sc = scratch[:cnt]
+                                hit_indices: set[int] = set()
+                                for k_val in k_list:
+                                    np.subtract(
+                                        uw,
+                                        np.uint32((k_val - base_off - align - 4) & 0xFFFFFFFF),
+                                        out=sc,
+                                    )
+                                    np.less_equal(sc, 4, out=m)
+                                    if np.any(m):
+                                        hit_indices.update(int(h) for h in np.flatnonzero(m))
+                                if hit_indices:
+                                    record_hits(arr, base_off, align, sorted(hit_indices))
+                            else:
+                                needed_i4 = np.array(
+                                    [
+                                        ((kv - base_off - align - tail) & 0xFFFFFFFF)
+                                        for kv in k_list
+                                        for tail in _RIP_TAILS
+                                    ],
+                                    dtype=np.uint32,
+                                ).view(np.int32)
+                                hit_mask = np.isin(w, needed_i4)
+                                if np.any(hit_mask):
+                                    record_hits(
+                                        arr,
+                                        base_off,
+                                        align,
+                                        [int(h) for h in np.flatnonzero(hit_mask)],
+                                    )
+                        finally:
+                            del arr
+                finally:
+                    seg.release()
+
+            seen_insns: set[tuple[int, int]] = set()
+            for off, tail in sorted(candidates):
+                validated = self._validate_rip_candidate(
+                    blob, text_va, scan_len, off, tail, target_set
+                )
+                if validated is not None:
+                    matched_target, xref = validated
+                    key = (matched_target, xref.insn_va)
+                    if key not in seen_insns:
+                        seen_insns.add(key)
+                        results[matched_target].append(xref)
+        finally:
+            blob.release()
+            del idx_buf, work, uwork, scratch, mask
+
+        for target in results:
+            results[target].sort(key=lambda x: x.insn_va)
+        return results
+
+    def find_rip_xrefs(self, target_va: int) -> list[RipXref]:
+        """Scan ``.text`` for RIP-relative and branch xrefs targeting ``target_va``."""
+        return self._scan_rip_xrefs([target_va]).get(target_va, [])
+
+    def find_import_xrefs(self, symbol: str) -> list[ImportXref]:
+        """Find ``.text`` xrefs to IAT slot(s) matching ``symbol`` (exact, then substring)."""
+        if not symbol:
+            return []
+        imports = self.parse_imports()
+        matched = [entry for entry in imports if entry.symbol == symbol]
+        if not matched:
+            sym_lower = symbol.lower()
+            matched = [entry for entry in imports if entry.symbol.lower() == sym_lower]
+        if not matched:
+            sym_lower = symbol.lower()
+            matched = [entry for entry in imports if sym_lower in entry.symbol.lower()]
+        if not matched:
+            return []
+
+        slot_to_entry = {entry.slot_va: entry for entry in matched}
+        by_slot = self._scan_rip_xrefs(list(slot_to_entry))
+        out: list[ImportXref] = []
+        for slot_va, xrefs in by_slot.items():
+            entry = slot_to_entry[slot_va]
+            for xref in xrefs:
+                out.append(
+                    ImportXref(
+                        entry=entry,
+                        insn_va=xref.insn_va,
+                        func_begin=xref.func_begin,
+                        func_end=xref.func_end,
+                        text=xref.text,
+                    )
+                )
+        out.sort(key=lambda item: item.insn_va)
+        return out
+
+    # -- disassembly with annotation ---------------------------------------
+    def _annotate_target(self, target: int) -> str:
+        iat = self._iat_map().get(target)
+        if iat is not None:
+            return f"{target:#x} IAT {iat.dll}!{iat.symbol}"
+
+        section = self.section_of(target)
+        if section is None:
+            return f"{target:#x} (outside image)"
+
+        if section.is_executable:
+            found = self.function_at(target)
+            if found is not None:
+                begin, end = found
+                if target == begin:
+                    return f"{target:#x} func {begin:#x}..{end:#x}"
+                return f"{target:#x} func {begin:#x}..{end:#x} (+{target - begin:#x})"
+            return f"{target:#x} {section.name} <leaf> (+{self.rva(target):#x})"
+
+        raw = self.read(target, 64)
+        if not raw:
+            return f"{target:#x} {section.name} (+{self.rva(target):#x}, bss)"
+
+        parts = [section.name]
+        if len(raw) >= 4:
+            u32_val = struct.unpack_from("<I", raw, 0)[0]
+            f32_val = struct.unpack_from("<f", raw, 0)[0]
+            parts.append(f"f32={f32_val:.6g}")
+        if len(raw) >= 8:
+            f64_val = struct.unpack_from("<d", raw, 0)[0]
+            parts.append(f"f64={f64_val:.6g}")
+        if len(raw) >= 4:
+            parts.append(f"u32={u32_val:#010x}")
+        else:
+            parts.append(f"bytes={raw.hex()}")
+        preview = _ascii_preview(raw)
+        if preview is not None:
+            parts.append(f"str={preview!r}")
+        return f"{target:#x} " + " ".join(parts)
+
+    def disassemble(self, va: int, count: int = 40) -> list[str]:
+        """Disassemble ``count`` instructions from ``va`` with target annotations."""
+        if count <= 0:
+            return []
+        code = self.read(va, count * 15)
+        if not code:
+            return []
+
+        md = self._disasm_detail()
+        lines: list[str] = []
+        for idx, insn in enumerate(md.disasm(code, va)):
+            if idx >= count:
+                break
+            target: int | None = None
+            for op in insn.operands:
+                if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
+                    target = insn.address + insn.size + op.mem.disp
+                    break
+                if op.type == X86_OP_IMM and insn.mnemonic in ("call", "jmp"):
+                    target = int(op.imm)
+                    break
+            line = _format_insn(insn.address, insn.mnemonic, insn.op_str)
+            if target is not None:
+                line = f"{line}  ; {self._annotate_target(target)}"
+            lines.append(line)
+        return lines
+
+    # -- MSVC RTTI ---------------------------------------------------------
+    def _read_vtable_methods(self, vtable_va: int, limit: int = 6) -> tuple[int, ...]:
+        methods: list[int] = []
+        for index in range(limit):
+            raw = self.read(vtable_va + index * 8, 8)
+            if len(raw) < 8:
+                break
+            ptr = struct.unpack("<Q", raw)[0]
+            if ptr == 0:
+                break
+            section = self.section_of(ptr)
+            if section is None or not section.is_executable:
+                break
+            methods.append(ptr)
+        return tuple(methods)
+
+    def _find_rtti_by_vtable(self, vtable_va: int) -> list[RttiResult]:
+        col_ptr_bytes = self.read(vtable_va - 8, 8)
+        if len(col_ptr_bytes) < 8:
+            return []
+        col_va = struct.unpack("<Q", col_ptr_bytes)[0]
+        col_bytes = self.read(col_va, RTTI_COL.size)
+        if len(col_bytes) < RTTI_COL.size:
+            return []
+        sig, _off, _cd_off, p_type_desc, _p_class_desc, p_self = RTTI_COL.unpack(col_bytes)
+        if sig != 1 or p_type_desc == 0:
+            return []
+        if p_self != 0 and p_self != self.rva(col_va):
+            return []
+
+        type_desc_va = self.image_base + p_type_desc
+        mangled = self._read_cstr_rva(p_type_desc + 16)
+        if not mangled.startswith(".?A"):
+            return []
+        name = demangle_rtti_name(mangled)
+        methods = self._read_vtable_methods(vtable_va, limit=6)
+        xrefs = tuple(self.find_rip_xrefs(vtable_va))
+        return [
+            RttiResult(
+                name=name,
+                mangled=mangled,
+                vtable_va=vtable_va,
+                col_va=col_va,
+                type_desc_va=type_desc_va,
+                methods=methods,
+                xrefs=xrefs,
+            )
+        ]
+
+    def _find_rtti_by_name(self, substring: str) -> list[RttiResult]:
+        if not substring:
+            return []
+        q_lower = substring.lower()
+        td_matches: dict[int, tuple[str, str]] = {}
+
+        for sec_name in (".data", ".rdata"):
+            sec = next((s for s in self.sections if s.name == sec_name), None)
+            if sec is None or sec.raw_size <= 16:
+                continue
+            start = sec.raw
+            end = sec.raw + sec.raw_size
+            pos = start + 16
+            while pos < end:
+                hit = self._data.find(b".?A", pos, end)
+                if hit == -1:
+                    break
+                if self._data[hit - 1] == 0:
+                    nul = self._data.find(b"\0", hit, min(end, hit + 4096))
+                    if nul != -1:
+                        mangled = self._data[hit:nul].decode("ascii", "replace")
+                        demangled = demangle_rtti_name(mangled)
+                        if q_lower in mangled.lower() or q_lower in demangled.lower():
+                            td_rva = sec.va + (hit - sec.raw) - 16
+                            td_matches[td_rva] = (mangled, demangled)
+                pos = hit + 3
+
+        if not td_matches:
+            return []
+
+        rdata = next((s for s in self.sections if s.name == ".rdata"), None)
+        if rdata is None or rdata.raw_size < RTTI_COL.size:
+            return []
+
+        col_to_td: dict[int, int] = {}
+        mv = memoryview(self._data)[rdata.raw : rdata.raw + rdata.raw_size]
+        try:
+            u4_count = rdata.raw_size // 4
+            arr4 = np.frombuffer(mv, dtype="<u4", count=u4_count)
+            try:
+                sig_hits = np.flatnonzero(arr4[:-5] == 1)
+                td_rva_set = set(td_matches)
+                for idx_np in sig_hits:
+                    i = int(idx_np)
+                    ptd = int(arr4[i + 3])
+                    if ptd not in td_rva_set:
+                        continue
+                    col_rva = rdata.va + i * 4
+                    pself = int(arr4[i + 5])
+                    if pself != 0 and pself != col_rva:
+                        continue
+                    col_to_td[self.image_base + col_rva] = ptd
+            finally:
+                del arr4
+
+            if not col_to_td:
+                return []
+
+            vtable_to_col: dict[int, int] = {}
+            u8_count = rdata.raw_size // 8
+            arr8 = np.frombuffer(mv, dtype="<u8", count=u8_count)
+            try:
+                col_arr = np.array(sorted(col_to_td), dtype=np.uint64)
+                hits8 = np.flatnonzero(np.isin(arr8, col_arr))
+                for idx8 in hits8:
+                    j = int(idx8)
+                    col_va = int(arr8[j])
+                    vt_va = self.image_base + rdata.va + (j + 1) * 8
+                    vtable_to_col[vt_va] = col_va
+            finally:
+                del arr8
+        finally:
+            mv.release()
+
+        if not vtable_to_col:
+            return []
+
+        xrefs_by_vt = self._scan_rip_xrefs(sorted(vtable_to_col))
+        results: list[RttiResult] = []
+        for vt_va in sorted(vtable_to_col):
+            col_va = vtable_to_col[vt_va]
+            td_rva = col_to_td[col_va]
+            mangled, demangled = td_matches[td_rva]
+            results.append(
+                RttiResult(
+                    name=demangled,
+                    mangled=mangled,
+                    vtable_va=vt_va,
+                    col_va=col_va,
+                    type_desc_va=self.image_base + td_rva,
+                    methods=self._read_vtable_methods(vt_va, limit=6),
+                    xrefs=tuple(xrefs_by_vt.get(vt_va, ())),
+                )
+            )
+        return results
+
+    def find_rtti(self, query: str | int) -> list[RttiResult]:
+        """Resolve MSVC x64 RTTI by vtable VA (``int`` or ``0x...``) or class name substring."""
+        if isinstance(query, int):
+            return self._find_rtti_by_vtable(query)
+        stripped = query.strip()
+        if stripped.lower().startswith("0x") or stripped.isdigit():
+            return self._find_rtti_by_vtable(int(stripped, 0))
+        return self._find_rtti_by_name(stripped)
 
 
 def default_exe() -> Path:
@@ -186,12 +1050,104 @@ def describe(image: PeImage, address: int) -> list[str]:
     return lines
 
 
+def _print_xrefs(image: PeImage, target_va: int) -> int:
+    hits = image.find_rip_xrefs(target_va)
+    print(f"xrefs to {target_va:#x}: {len(hits)} hit(s)")
+    for hit in hits:
+        print(f"  {hit.insn_va:#x}  {hit.func_label:34s}  {hit.text}")
+    return 0
+
+
+def _print_iat(image: PeImage, filt: str) -> int:
+    entries = image.parse_imports()
+    filt_lower = filt.lower()
+    if filt_lower:
+        if "." in filt_lower or "!" in filt_lower:
+            entries = [e for e in entries if filt_lower in f"{e.dll}!{e.symbol}".lower()]
+        else:
+            sym_hits = [e for e in entries if filt_lower in e.symbol.lower()]
+            entries = sym_hits or [e for e in entries if filt_lower in e.dll.lower()]
+    label = f"IAT entries (filter={filt!r})" if filt else "IAT entries"
+    print(f"{label}: {len(entries)} match(es)")
+    for entry in entries:
+        print(f"  {entry.slot_va:#x}  {entry.dll}!{entry.symbol}")
+    return 0
+
+
+def _print_import_xrefs(image: PeImage, symbol: str) -> int:
+    hits = image.find_import_xrefs(symbol)
+    slots = len({hit.entry.slot_va for hit in hits})
+    print(f"import xrefs for {symbol!r} ({slots} IAT slot(s), {len(hits)} hit(s)):")
+    for hit in hits:
+        print(
+            f"  {hit.insn_va:#x}  {hit.func_label:34s}  "
+            f"{hit.entry.dll}!{hit.entry.symbol} ({hit.entry.slot_va:#x})  {hit.text}"
+        )
+    return 0
+
+
+def _print_disasm(image: PeImage, va: int, count: int) -> int:
+    lines = image.disassemble(va, count=count)
+    if not lines:
+        print(f"no readable code at {va:#x}")
+        return 1
+    print("\n".join(lines))
+    return 0
+
+
+def _print_rtti(image: PeImage, query: str) -> int:
+    results = image.find_rtti(query)
+    if not results:
+        print(f"no RTTI matches for {query!r}")
+        return 0
+    print(f"RTTI matches for {query!r}: {len(results)}")
+    for item in results:
+        print(f"  {item.name} ({item.mangled})")
+        print(
+            f"    vtable {item.vtable_va:#x}  col {item.col_va:#x}  "
+            f"type_desc {item.type_desc_va:#x}"
+        )
+        methods_str = ", ".join(f"{m:#x}" for m in item.methods) if item.methods else "<none>"
+        print(f"    methods[{len(item.methods)}]: {methods_str}")
+        print(f"    xrefs[{len(item.xrefs)}]:")
+        for xref in item.xrefs[:20]:
+            print(f"      {xref.insn_va:#x}  {xref.func_label:34s}  {xref.text}")
+        if len(item.xrefs) > 20:
+            print(f"      ... (+{len(item.xrefs) - 20} more)")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("address", nargs="?", help="VA in hex (0x...) or decimal")
     parser.add_argument("--exe", type=Path, default=None, help="path to Minecraft.Windows.exe")
-    parser.add_argument("--sections", action="store_true", help="print the section table")
+    parser.add_argument(
+        "-n", "--count", type=int, default=40, help="instruction count for --disasm"
+    )
+
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--sections", action="store_true", help="print the section table")
+    mode.add_argument("--xrefs", metavar="VA", help="find .text RIP-relative xrefs to VA")
+    mode.add_argument(
+        "--iat", nargs="?", const="", default=None, metavar="FILTER", help="list IAT imports"
+    )
+    mode.add_argument("--import-xrefs", metavar="SYMBOL", help="find .text xrefs to IAT import")
+    mode.add_argument("--disasm", metavar="VA", help="disassemble with annotations from VA")
+    mode.add_argument("--rtti", metavar="VA_OR_NAME", help="inspect MSVC RTTI by vtable VA or name")
     args = parser.parse_args()
+
+    has_mode = any(
+        [
+            args.sections,
+            args.xrefs is not None,
+            args.iat is not None,
+            args.import_xrefs is not None,
+            args.disasm is not None,
+            args.rtti is not None,
+        ]
+    )
+    if has_mode and args.address is not None:
+        parser.error("positional address cannot be combined with a mode flag")
 
     path = args.exe if args.exe is not None else default_exe()
     with PeImage(path) as image:
@@ -203,8 +1159,18 @@ def main() -> int:
                     f"raw {section.raw:#010x} rawsize {section.raw_size:#010x}"
                 )
             return 0
+        if args.xrefs is not None:
+            return _print_xrefs(image, int(args.xrefs, 0))
+        if args.iat is not None:
+            return _print_iat(image, args.iat)
+        if args.import_xrefs is not None:
+            return _print_import_xrefs(image, args.import_xrefs)
+        if args.disasm is not None:
+            return _print_disasm(image, int(args.disasm, 0), args.count)
+        if args.rtti is not None:
+            return _print_rtti(image, args.rtti)
         if args.address is None:
-            parser.error("address is required unless --sections is given")
+            parser.error("address is required unless a mode flag is given")
         address = int(args.address, 0)
         print("\n".join(describe(image, address)))
     return 0

@@ -11,8 +11,13 @@
   该偏移来自 `OffsetsComponent.mHeightOffset`，由 `ActorOffset::setHeightOffset` 写入常量
   `1.62001f`（`.rdata 0x14E6AE444`，全 exe 唯一），尾差是 float32 加法量化，见
   [position-y-offset 账本](../skills/bedrock-re/findings/1.26.51.01/cases/position-y-offset/resume.md)。
-- `state.vx/vy/vz` 来自 `Actor::getVelocity()`，不是 `StateVectorComponent+0x18` 的原始字段；
-  后者在地表行走时约为 **0.546 × 实际位移**。实际移动速度仍以相邻 tick 位置差为准。
+- `state.vx/vy/vz` 来自 `Actor::getVelocity()`（已完成位移 `mPos - mPosPrev`；Python
+  `RecordEntry.completed_delta` 与 `horizontal_speed` 也使用这组已完成位移）。
+  `state.pos_delta_x/pos_delta_y/pos_delta_z` 来自 `StateVectorComponent::mPosDelta`
+  （`StateVectorComponent+0x18/+0x1C/+0x20`，组件缺失时回退 `player.getPosDelta()`），
+  表示等待运动阶段应用的待执行位移，地表行走时约为 **0.546 × 实际位移**，不能与 `vx/vy/vz`
+  混用。`state.prev_yaw/prev_pitch` 来自 `ActorRotationComponent::mRotPrev`（`mRotPrev.y` /
+  `mRotPrev.x`，组件缺失时回退为当前 `yaw/pitch`）。实际移动速度仍以相邻 tick 位置差为准。
 - `state` 的方块读取失败以 `partial/warnings` 标记，不把缺字段当成完整成功。文本和槽位
   截断有 `truncated`。
 - `state/buttons/inventory/blocks` 通常有 2 秒截止，`scan` 为 10 秒；同域重复请求返回
@@ -21,7 +26,10 @@
   `visited/batches/batch_limit/max_batch_us/first_tick/last_tick`，结果上限另有
   `truncated_reason=result_limit`。
 - 背包最多采样 256 个槽，快照约 1.1 MiB；实体快照约 2.2 MiB、最多 512 个实体。
-  容量是预分配上限，不是每次响应都会返回这么多行。
+  容量是预分配上限，不是每次响应都会返回这么多行。`itemJson`（`inventory`、`state.item`、
+  `set_item`/`give`/`equip` 回执）在 `type`/`name`/`count`/`aux` 之外额外导出 `damage` 与
+  `max_damage`；`set_item` 与 `give` 可选 `damage`（非负整数设置耐久损耗）与烟花 `flight`
+  （非负时写入 `Fireworks.Flight` 字节，钳位到 `0..127`，并在受保护的 SDK 边界内应用）。
 - `PlayerIdentityStore` 只发布 UUID、tick 和世界 epoch，不在 tick 读取 owning 玩家名。
   无效或过期快照不能回退成上一身份。
 - 服务端操作通过 `ServerPlayerContext` 在回调内重新验证 epoch 并解析 UUID。显式玩家名只在
@@ -61,7 +69,11 @@ ID 和截止时间；已经开始的 SDK 调用不能承诺抢占或回滚。
 这些检查不模拟 SDK 内部已经破坏的锁或内存，也不承诺失败后回滚部分游戏操作。
 
 领域夹具恢复位置用 `teleport` 保留效果；明确要求清效果的 reset 语义专项仍使用 `reset`。
-清理通过 `preserve_failure` 保留正在展开的首错。朝向同步仍要求 0.1° 内连续三个 tick；
+`reset` 接受请求后立即返回 `reset_done`（含正整数 `teleport_id`），实际服务端传送异步完成并再发
+`teleported`；`ModClient.reset(..., wait_teleport=True)` 默认按 `teleport_id` 等待匹配的
+`teleported` 事件并写入 `reply["teleported"]`，避免紧接着发起 `teleport`/`reset` 时触发
+`teleport_busy`（CLI `reset` 可用 `--no-wait-teleport` 跳过；测试桩未返回正 `teleport_id`
+时立即返回）。清理通过 `preserve_failure` 保留正在展开的首错。朝向同步仍要求 0.1° 内连续三个 tick；
 `state()` 已等待 tick 快照，等待循环不再叠加额外 sleep，以免人为漏掉下一采样 tick。
 
 ## 录制、宏与 spool
@@ -114,11 +126,17 @@ spool 每 100 ms 或 64 KB 刷盘，单文件超过 64 MiB 轮转。连接重放
 ## ECS 与版本 profile
 
 ECS 请求按 registry 所属线程执行。客户端 context 先核对当前客户端 registry，runtime id 请求
-读取服务端 Actor；`scope` 表明实际读取侧。每次请求最多 1024 条组件/失败 id、4096 次 storage
-访问和 512 字节原始组件数据，超限标 `truncated`，坏 storage 记入 `skipped/partial`。
+读取服务端 Actor；`scope` 表明实际读取侧。`ecs_registries` 支持可选 `scope` 参数：默认
+`"client"` 保持单元素 `"registries"` 数组；传入 `"server"` 或 `"all"` 时额外在
+`EcsStage::Server` 读取服务端玩家的 `EntityContext` 并把 `"scope": "server"` 条目追加到
+`"registries"`（Python 与 CLI 通过 `scope` / `--scope` 传入）。每次请求最多 1024 条组件/失败 id、
+4096 次 storage 访问和 512 字节原始组件数据，超限标 `truncated`，坏 storage 记入 `skipped/partial`。
 
 组件 id 是运行时 EnTT id，不保证跨进程/版本稳定。`stride` 由同 storage 元素地址差推断，
-只有一个元素时为 0；默认读取长度依次取 profile size、stride、64 字节。
+只有一个元素时为 0；默认读取长度依次取 profile size、stride、64 字节。对于 `storage->contains(entity)`
+为真但元素地址为 0 的零字节 EnTT Tag 组件，当 `ecs_component` 请求 `len=0` 时不报 `bad_component`，
+直接返回 `ok: true, len: 0, hex: "", is_tag: true`；`ecs_context` 与 `ecs_components` 行同时
+包含 `present: true` 与 `is_tag`（`address == 0`）。组件不存在仍返回 `component_not_found`。
 
 `docs/offsets/*.json` 是签名、结构偏移和组件 id 的唯一数据源，`GeneratedProfiles.h` 是提交物。
 `build_id` 选择 profile 且四个锚点都匹配时 `version_ok=true`。导入锚点先跟随 thunk，再比较

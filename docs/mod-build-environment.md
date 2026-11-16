@@ -83,6 +83,10 @@ add_repositories("local-repo local-repo")
 - **复制 `probe.dll` 报 `Device or resource busy`**：游戏仍在运行。先用
   `py -3.11 driver/dev.py stop` 按保存门禁关闭目标实例；只有明确放弃未保存更改时才使用
   force 选项，不要按映像名强杀所有游戏进程。
+- **xmake 拉取 Git 依赖超时或未走系统代理**：Git for Windows 默认使用 `http.sslbackend openssl`
+  （基于 libcurl），不会自动读取 Windows Internet Settings 中的 `ProxyServer`。如果本机使用
+  本地代理（例如 `127.0.0.1:7897`），请显式传入 `-c http.proxy=http://127.0.0.1:7897` 或在
+  运行构建前设置 `HTTPS_PROXY`（如 `$env:HTTPS_PROXY = 'http://127.0.0.1:7897'`）。
 - **构建吃满 CPU 导致桌面卡顿**：始终使用 `xmake -j4`，不要用默认并发。
 
 ## 另见

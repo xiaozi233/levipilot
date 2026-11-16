@@ -42,6 +42,7 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 | `hook_call` | 调用已支持的导出符号；当前为 `MobJump::setJumpPendingScale` |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、取消任务和输入，不杀进程 |
 | `diagnose` / `profile_dump` / `profile_probe` / `signature_check` | 版本、profile、锚点和签名诊断 |
+| `ecs_registries` / `ecs_entity` / `ecs_components` / `ecs_component` / `ecs_context` | ECS 查询；`ecs_registries` 支持可选 `scope`（`client`/`server`/`all`），`ecs_context`/`ecs_component` 支持零字节 Tag 组件（`present: true`、`is_tag: true`、`len: 0`、`hex: ""`） |
 | `overhead` | tick/hook 耗时与调用率统计 |
 | `spool_flush` | 立即刷写内存中的 spool 记录 |
 | `selftest_av` / `selftest_crash` | 请求异常隔离 / 进程崩溃取证；后者需 `allow_crash_test=true` |
@@ -107,9 +108,9 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 | `look_at_entity` | 转向实体，回执带实际使用的 eye/target |
 | `blocks` / `scan` | 方块读取 / 跨 tick 有界区域扫描 |
 | `inventory` | `slots`、`armor`、`offhand`、`selected_slot` |
-| `set_item` / `give` / `clear_item` / `clear_inventory` | 背包、盔甲和副手操作 |
+| `set_item` / `give` / `clear_item` / `clear_inventory` | 背包、盔甲和副手操作；`set_item`/`give` 支持可选 `damage` 与烟花 `flight` 参数（CLI 为 `--damage`/`--flight`） |
 | `equip` | 把库存栈移入 armor/offhand，附魔随栈移动 |
-| `teleport` / `reset` | 服务端权威传送；`reset` 额外清任务/输入/macro/药水效果 |
+| `teleport` / `reset` | 服务端权威传送；`reset` 额外清任务/输入/macro/药水效果；`ModClient.reset(..., wait_teleport=True)` 默认按 `teleport_id` 等待 `teleported`（CLI 可用 `--no-wait-teleport`） |
 | `checkpoint_save` / `checkpoint_load` / `checkpoint_list` / `checkpoint_delete` | 命名脚部坐标与朝向；load 不清药水效果 |
 | `command` | 以本地 UUID 或显式完整玩家名执行服务端命令，保留 `@s`/`~` |
 | `worlds` / `enter_world` / `leave_world` / `signin` | 世界列表、进入、退出和登录态 |
@@ -133,11 +134,19 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 
 ## `state` 与事件字段
 
-关键字段：`x,y,z`（位置基准，实测脚部 + 1.6200101）、`feet_*`、`head_*`、`vx/vy/vz`、`yaw/pitch`、
+关键字段：`x,y,z`（位置基准，实测脚部 + 1.6200101）、`feet_*`、`head_*`、`vx/vy/vz`、
+`pos_delta_x/pos_delta_y/pos_delta_z`、`yaw/pitch`、`prev_yaw/prev_pitch`、
 `on_ground`、`sprinting/sneaking/swimming/flying/mayfly/in_water/alive`、
 `health/max_health`、`hunger/saturation/exhaustion`、`xp_level/xp_progress`、
 `gamemode/dimension/name/uuid/selected_slot/item`、`block_*`、`effects`、`input` 和 `bindings`。
-`x,y,z` 与 `feet_*` 的 1.62001 差写自 `OffsetsComponent.mHeightOffset`，不随蹲姿变化。
+`x,y,z` 与 `feet_*` 的 1.62001 差写自 `OffsetsComponent.mHeightOffset`，不随蹲姿变化；
+`vx/vy/vz` 为 `Actor::getVelocity()` 返回的已完成位移（`mPos - mPosPrev`），
+`pos_delta_x/pos_delta_y/pos_delta_z` 来自 `StateVectorComponent::mPosDelta`（待执行位移），
+`prev_yaw/prev_pitch` 来自 `ActorRotationComponent::mRotPrev`。
+
+`inventory`、`state.item`、`set_item`、`give` 与 `equip` 中的物品对象（`itemJson`）在
+`type`/`name`/`count`/`aux` 之外还包含 `damage` 与 `max_damage`；`set_item`/`give` 可选
+传入 `damage`（非负整数设置耐久损耗）和 `flight`（烟花 `Fireworks.Flight` 字节 `0..127`）。
 
 跑酷事件不需要 `start`：`player_landed`、`player_hurt`、`player_died`。legacy `start`
 的 tick 另有 `in_air/jump_edge/block_below/block_feet/block_head`。
@@ -182,8 +191,11 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 - `command` 的方块效果是 deferred，`success=false` 不代表失败；`click`、任务、封包注入的
   接受/完成回执也不代替 `blocks`/`state` 回读。
 - `interact_entity` 只转向并注入使用按钮；`mouse_event` 左右键不等于 `click`。
-- `reset` 清效果；普通 `teleport` 和 `checkpoint_load` 保留效果。传送接受后需按
-  `teleport_id` 等完成，再回读位置/朝向。
+- `reset` 清效果；普通 `teleport` 和 `checkpoint_load` 保留效果。`ModClient.reset(..., wait_teleport=True)`
+  在 `reset_done` 含正整数 `teleport_id` 时默认等待匹配的 `teleported` 事件并写入 `reply["teleported"]`，
+  防止紧接着发起 `teleport`/`reset` 时触发 `teleport_busy`（CLI `reset` 可用 `--no-wait-teleport`
+  只等 `reset_done`；测试桩未带 `teleport_id` 时立即返回）。普通异步传送接受后同样须按 `teleport_id`
+  等完成，再回读位置/朝向。
 - 查询、实体、ECS、飞行、传送和封包注入都有忙、截止、取消与旧代次隔离；已开始的 SDK
   调用不支持超时抢占或自动回滚。
 - `scan` 每 tick 最多 512 格，响应带起止 tick，不能当成同 tick 原子世界快照。

@@ -61,7 +61,33 @@
     `[rip + disp]` 求目标地址。先在 `.rdata` 里定位常量，再用 capstone 找引用点，
     最后只让 IDA 反编译这几个地址。
 
-### 2.1 钩住“只在几微秒内存在”的缓冲
+### 2.1 离线 PE 静态分析（`driver/pe_map.py`）
+
+不启动游戏或 IDA 即可直接对磁盘上的 `Minecraft.Windows.exe`（默认发现 `%APPDATA%\levilauncher.exe\versions\*\Minecraft.Windows.exe`，也可传 `--exe` 或 `MCBE_EXE`）做纯离线 PE 查询：
+
+```bash
+# 查看区段与特定 VA 所属的 .pdata 函数边界
+py -3.11 driver/pe_map.py --sections
+py -3.11 driver/pe_map.py 0x146667b10
+
+# 1) 全 .text RIP 相对交叉引用（含所在 .pdata 函数或 <leaf> 及反汇编指令）
+py -3.11 driver/pe_map.py --xrefs 0x151d6973c
+
+# 2) 解析 PE 导入表（可选子串过滤）与导入槽在 .text 的调用点
+py -3.11 driver/pe_map.py --iat sinf
+py -3.11 driver/pe_map.py --import-xrefs sinf
+
+# 3) Capstone 反汇编并自动标注 IAT、.pdata 函数范围与 .rdata/.data 常量/字符串预览
+py -3.11 driver/pe_map.py --disasm 0x146667b10 -n 15
+
+# 4) MSVC RTTI 定位（支持类名子串或 vtable VA）：输出解码类名、vtable、前 6 个虚表槽与 .text xrefs
+py -3.11 driver/pe_map.py --rtti GlideMoveSystem
+py -3.11 driver/pe_map.py --rtti <vtable_va>
+```
+
+上述例子对应本版本 `dword_151D6973C`（65536 项正弦查找表）与 `sub_146667B10`（`GlideMoveSystem` 主函数）。
+
+### 2.2 钩住“只在几微秒内存在”的缓冲
 
 入口 hook 默认只记录 `rcx/rdx/r8/r9` 四个整数；对“指针参数指向的临时向量/结构”
 （每 tick 重建的形状表、按地址传入的 AABB），等 `hook_drain` 时那块内存已经没了

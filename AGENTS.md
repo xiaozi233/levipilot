@@ -15,17 +15,31 @@ cd mod/probe && xmake -j4 -y
 # 按需构建、受控重启、等待菜单并进世界；--no-build 跳过，--build 强制
 py -3.11 driver/dev.py run --world "超平坦测试"
 
+# 附着到用户桌面已运行的游戏实例（不杀进程、不重装 mod，避开隔离桌面 exebox 不可见/失焦暂停）；
+# 可选 --exec 在世界就绪后执行命令，--stop-after 在完成后按保存门禁停止游戏
+py -3.11 driver/dev.py run --attach --world "超平坦测试"
+py -3.11 driver/dev.py run --attach --exec "<cmd>" --stop-after
+
 # 断开错误页恢复：先落盘诊断，再回菜单/重进；不要凭 HBUI 推断保存状态
 py -3.11 driver/dev.py recover --world "超平坦测试"
 
 # 实验前把游戏窗口拉到前台；未聚焦时世界会暂停（水/岩浆/沙不更新）
 py -3.11 driver/dev.py focus
 
-# 无游戏检查
+# 统一无游戏与文档检查（ruff/mypy/lint_public/lint_skill/守卫/gen_profiles/文档相对链接/git diff --check/unittest）
+py -3.11 driver/check.py
+py -3.11 driver/check.py --docs-only   # 或 --fast：跳过 unittest，仅跑静态与文档检查
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests
 py -3.11 -m ruff format --check driver tests
 py -3.11 -m mypy
+
+# 离线 PE 静态分析（不启动游戏或 IDA，示例见 docs/reverse-engineering.md）
+py -3.11 driver/pe_map.py --xrefs <va>
+py -3.11 driver/pe_map.py --iat [filter]
+py -3.11 driver/pe_map.py --import-xrefs <sym>
+py -3.11 driver/pe_map.py --disasm <va> [-n N]
+py -3.11 driver/pe_map.py --rtti <va_or_name>
 
 # 需要已进入测试存档；权限或空槽不足产生的 required skip 在严格模式下也失败
 py -3.11 driver/selftest.py --require-complete
@@ -50,7 +64,9 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
 | `driver/harness/` | Python 客户端：`connection`、`commands/`、`facade`、`client`、`protocol`、`errors`、`lab`；CLI 为 `cli`/`cli_parser`/`cli_commands/` |
 | `driver/selftest.py` | live 自检 CLI、专项分发和兼容导出 |
 | `driver/selftest_*.py` | `default` 默认全套，`runtime` 共享门禁/夹具，core/tasks/queries/packets/streams/input/recovery 等领域检查 |
-| `driver/dev.py` | 受控启动、保存退出、重启和自动进世界 |
+| `driver/check.py` | 统一离线检查入口（ruff/mypy/lint/守卫/gen_profiles/文档链接/diff/unittest，`--docs-only` / `--fast`） |
+| `driver/dev.py` | 受控启动、用户桌面 `--attach`、保存退出、重启、自动进世界与 `--exec`/`--stop-after` |
+| `driver/pe_map.py` | 离线 PE 静态分析（`.pdata`、`--xrefs`、`--iat`、`--import-xrefs`、`--disasm`、`--rtti`） |
 | `driver/gen_profiles.py` | 从 `docs/offsets/*.json` 生成 `GeneratedProfiles.h`；`--check` 用于 CI |
 | `docs/offsets/`、`docs/roles/` | 版本 profile 与 RE 角色；不要混用 |
 | `docs/notes/`、`reverse/`、`skills/bedrock-re/` | 逆向证据、调查原文和实验方法；不是第二套现行 API 文档 |
@@ -132,9 +148,10 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
   `state.input.sprint` 可能锁存，走/跑对照前要明确清到 `input_sprint=False`。
 - `StateVectorComponent+0x18/+0x1C/+0x20` 是 **`mPosDelta`（等待运动阶段应用的位移量，不保证是下一个世界 tick）**，不是速度：
   地表行走时约为 **0.546 × 实际位移**（地面摩擦乘在上一拍位移上，`[推断]`）；`state` 报告的
-  速度来自 `Actor::getVelocity()`，等于已完成位移（`mPos − mPosPrev`），实际速度仍以相邻 tick
-  位置差判定。Liquid Blip 写的 `+0x1C` 就是这个 `mPosDelta.y`；已完成位移 / 待执行位移 /
-  录制 `vy`（=已完成位移）是三个量，不要混。
+  `vx/vy/vz` 来自 `Actor::getVelocity()`，等于已完成位移（`mPos − mPosPrev`），而
+  `state.pos_delta_x/y/z` 直接导出 `StateVectorComponent::mPosDelta`，`prev_yaw/prev_pitch`
+  导出 `ActorRotationComponent::mRotPrev`，实际速度仍以相邻 tick 位置差判定。Liquid Blip 写的
+  `+0x1C` 就是这个 `mPosDelta.y`；已完成位移 / 待执行位移 / 录制 `vy`（=已完成位移）是三个量，不要混。
   传送/场景的 `pos.y` 是脚部；StateVector/录制的 Y 是位置基准，本版本原地站蹲对照都为
   **脚部 + 1.6200101**，不随头部回读一起降低。不要称为当前眼睛或镜头高度；`state.head_y`
   与当前 AABB 需分别读取，蹲姿对照见 liquid-blip 的 `r20-066`。
@@ -145,7 +162,9 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
 - 液体液位读 `blocks` 回包的 `addr` + `probe addr+288`（客户端封装 `liquid_depth`）；
   `/testforblock ... ["liquid_depth"=N]` 匹配不可靠，整池都会报 `=0`。
 - `dev.py` 报 `could not focus the game window` 时世界可能处于暂停：`setblock`/`teleport`/
-  方块回读都正常但水不流、沙不落，会被误判成“基岩不流动体”。先聚焦窗口再跑液体实验。
+  方块回读都正常但水不流、沙不落，会被误判成“基岩不流动体”。先聚焦窗口再跑液体实验；
+  若当前 shell 位于隔离桌面（如 `exebox-*`），拉起的窗口无法在物理屏幕可见或获取焦点，应在
+  用户桌面手动启动游戏后用 `py -3.11 driver/dev.py run --attach`。
 
 ### 诊断、版本与逆向
 
@@ -165,7 +184,7 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
 - 不要在 tick 线程枚举客户端 ECS registry；runtime id 对应服务端 Actor，客户端 context
   使用 `state.context`。
 - 不要对正在打开的 IDA/idalib 进程 `taskkill /F`。停止后端用 `idb_close(save=true)`；
-  地址到函数用 `driver/pe_map.py`，IDA 客户端用 `driver/ida.py`。
+  离线 PE 定位/xref/IAT/反汇编/RTTI 用 `driver/pe_map.py`（`--xrefs`、`--iat`、`--import-xrefs`、`--disasm`、`--rtti`），IDA 客户端用 `driver/ida.py`。
 - `driver/ida.py` 报 `Failed to open database` 先跑 `driver/ida.py status`：2~5 秒就失败的
   是开库锁冲突（另一个 worker 占着同一个 `.i64`），不是库损坏；冷开成功要 3~12 分钟。
   `open_session`/`connect` 会先 adopt 同库的活会话，不会再开第二次。

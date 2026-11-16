@@ -39,6 +39,11 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 # 按需重建、重启并进世界；--no-build 可跳过构建
 py -3.11 driver/dev.py run --world "超平坦测试"
 
+# 附着到用户桌面已运行的游戏实例（不强杀重启、不重装 mod，避开隔离桌面 exebox 不可见与失焦暂停）
+py -3.11 driver/dev.py run --attach --world "超平坦测试"
+# 就绪后执行命令；加 --stop-after 在完成后按保存门禁退出游戏
+py -3.11 driver/dev.py run --attach --exec "py -3.11 driver/selftest.py --connection-only" --stop-after
+
 # 手动启动时也可以让 mod 自己进世界：写 mods/probe/harness.json
 py -3.11 driver/dev.py run --write-config --world "超平坦测试"
 
@@ -74,6 +79,13 @@ py -3.11 driver/parkour.py attempts --macro p0_forward \
 # 场景 DSL
 py -3.11 driver/run_mod.py --scenario scenarios/setup-platform.json
 py -3.11 driver/run_mod.py --scenario scenarios/example.json
+
+# 离线 PE 静态分析（不启动游戏或 IDA；示例见 docs/reverse-engineering.md）
+py -3.11 driver/pe_map.py --xrefs <va>
+py -3.11 driver/pe_map.py --iat [filter]
+py -3.11 driver/pe_map.py --import-xrefs <sym>
+py -3.11 driver/pe_map.py --disasm <va> [-n N]
+py -3.11 driver/pe_map.py --rtti <va_or_name>
 ```
 
 ## 项目结构
@@ -100,7 +112,7 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 - 当前验收与未覆盖范围：[`docs/reliability-repairs.md`](docs/reliability-repairs.md)
 - 跑酷、场景 DSL：[`docs/parkour.md`](docs/parkour.md)、[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
 - 流体机制：[`docs/fluid-movement.md`](docs/fluid-movement.md)；wiki 精简版：[`docs/fluid-wiki.md`](docs/fluid-wiki.md)
-- 逆向证据：[`docs/notes/`](docs/notes/) 与 [`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
+- 逆向方法与证据：[`docs/reverse-engineering.md`](docs/reverse-engineering.md)、[`docs/notes/`](docs/notes/) 与 [`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 逆向实验与文档规范：[`skills/bedrock-re/`](skills/bedrock-re/)、[`skills/project-docs/`](skills/project-docs/)
 - UI 与 IDA 排障：[`docs/ui-automation.md`](docs/ui-automation.md)、[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
 - Agent 常驻约定：[`AGENTS.md`](AGENTS.md)
@@ -126,6 +138,8 @@ py -3.11 driver/run_mod.py --scenario scenarios/example.json
 ## 测试
 
 ```bash
+py -3.11 driver/check.py                    # 统一离线检查（ruff/mypy/lint/守卫/gen_profiles/文档链接/diff/unittest）
+py -3.11 driver/check.py --docs-only        # 仅跑静态、守卫、文档相对链接与 diff 检查（--fast 同样跳过 unittest）
 py -3.11 -m unittest discover -s tests -v   # 不需要游戏
 py -3.11 driver/selftest.py                 # 需要游戏已进入存档
 ```

@@ -18,19 +18,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Configure LLVM for native task model tests
+      - name: Cache LLVM 22 for native tests
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/levipilot-native/llvm22
+          key: llvm-22.1.8-win64-${{ hashFiles('.github/scripts/setup-native.ps1') }}
+
+      - name: Configure LLVM 22 for native model tests
         shell: pwsh
-        run: |
-          $llvmBin = Join-Path $env:ProgramFiles 'LLVM\bin'
-          $clang = Join-Path $llvmBin 'clang++.exe'
-          if (-not (Test-Path -LiteralPath $clang -PathType Leaf)) {
-            throw "LLVM compiler is missing: $clang"
-          }
-          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $clang --version
-          if ($LASTEXITCODE -ne 0) {
-            throw 'LLVM compiler version check failed'
-          }
+        run: ./.github/scripts/setup-native.ps1 -ToolsDirectory "${{ runner.temp }}/levipilot-native" -SkipXmake
 
       - name: Install dev tools
         run: python -m pip install -r requirements-dev.txt

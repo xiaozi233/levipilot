@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ModModelTests(unittest.TestCase):
     def _find_compiler(self) -> str:
+        llvm_root = os.environ.get("LEVIPILOT_LLVM_ROOT")
+        if llvm_root:
+            rooted = Path(llvm_root) / "bin" / "clang++.exe"
+            if rooted.is_file():
+                return str(rooted)
         compiler = shutil.which("clang++")
         if compiler is None:
             compiler = next(

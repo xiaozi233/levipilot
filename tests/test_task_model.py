@@ -14,11 +14,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TaskModelTests(unittest.TestCase):
     def test_native_lifecycle_and_allocation_contract(self) -> None:
-        compiler = shutil.which("clang++")
+        llvm_root = os.environ.get("LEVIPILOT_LLVM_ROOT")
+        compiler: str | None = None
+        if llvm_root:
+            rooted = Path(llvm_root) / "bin" / "clang++.exe"
+            if rooted.is_file():
+                compiler = str(rooted)
+        if compiler is None:
+            compiler = shutil.which("clang++")
         # Also support local LLVM installations without a PATH entry.
         candidates = (
-            Path("C:/Program Files/LLVM/bin/clang++.exe"),
             Path("D:/Tools/LLVM22/bin/clang++.exe"),
+            Path("C:/Program Files/LLVM/bin/clang++.exe"),
         )
         if compiler is None:
             compiler = next((str(path) for path in candidates if path.is_file()), None)

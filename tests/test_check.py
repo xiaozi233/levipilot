@@ -85,6 +85,11 @@ class CheckRunnerTests(unittest.TestCase):
         (root / "skills" / "bedrock-re" / "checks" / "guards" / "check_beta.py").write_text(
             "", encoding="utf-8"
         )
+        (root / "mod" / "probe" / "src" / "mod").mkdir(parents=True)
+        (root / "mod" / "probe" / "src" / "mod" / "Commands.cpp").write_text(
+            'if (cmd == "ping") return true;\n', encoding="utf-8"
+        )
+        (root / "mod" / "README.md").write_text("`ping`\n", encoding="utf-8")
         (root / "README.md").write_text("# Root\n", encoding="utf-8")
 
     def test_build_checks_modes(self) -> None:
@@ -104,6 +109,7 @@ class CheckRunnerTests(unittest.TestCase):
                     "check_alpha",
                     "check_beta",
                     "gen_profiles",
+                    "command docs",
                     "markdown links",
                     "git diff --check",
                     "unittest",
@@ -114,6 +120,7 @@ class CheckRunnerTests(unittest.TestCase):
             self.assertNotIn("unittest", fast)
             self.assertIn("ruff check", fast)
             self.assertIn("gen_profiles", fast)
+            self.assertIn("command docs", fast)
 
             docs = [spec.name for spec in check.build_checks(docs_only=True, root=root)]
             self.assertEqual(
@@ -123,10 +130,14 @@ class CheckRunnerTests(unittest.TestCase):
                     "lint_skill",
                     "check_alpha",
                     "check_beta",
+                    "command docs",
                     "markdown links",
                     "git diff --check",
                 ],
             )
+
+            formatted = [spec.name for spec in check.build_checks(cpp_format=True, root=root)]
+            self.assertIn("cpp format", formatted)
 
     def test_runner_returns_zero_when_all_selected_checks_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -149,7 +160,7 @@ class CheckRunnerTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(all(item.passed for item in results))
             self.assertIn(["git", "diff", "--check"], seen_commands)
-            self.assertIn("10/10 checks passed", buf.getvalue())
+            self.assertIn("11/11 checks passed", buf.getvalue())
 
     def test_runner_continues_after_failure_and_reports_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +186,7 @@ class CheckRunnerTests(unittest.TestCase):
             by_name = {item.name: item for item in results}
             self.assertTrue(by_name["lint_public"].passed)
             self.assertFalse(by_name["lint_skill"].passed)
+            self.assertTrue(by_name["command docs"].passed)
             self.assertFalse(by_name["markdown links"].passed)
             self.assertFalse(by_name["git diff --check"].passed)
             output = buf.getvalue()
@@ -185,11 +197,65 @@ class CheckRunnerTests(unittest.TestCase):
     def test_main_forwards_flags(self) -> None:
         with patch.object(check, "run_checks", return_value=(0, [])) as run_checks:
             self.assertEqual(check.main(["--docs-only"]), 0)
-            run_checks.assert_called_once_with(docs_only=True, fast=False, root=check.REPO_ROOT)
+            run_checks.assert_called_once_with(
+                docs_only=True,
+                fast=False,
+                cpp_format=False,
+                cpp_format_all=False,
+                root=check.REPO_ROOT,
+            )
 
         with patch.object(check, "run_checks", return_value=(1, [])) as run_checks:
-            self.assertEqual(check.main(["--fast"]), 1)
-            run_checks.assert_called_once_with(docs_only=False, fast=True, root=check.REPO_ROOT)
+            self.assertEqual(check.main(["--fast", "--cpp-format", "--cpp-format-all"]), 1)
+            run_checks.assert_called_once_with(
+                docs_only=False,
+                fast=True,
+                cpp_format=True,
+                cpp_format_all=True,
+                root=check.REPO_ROOT,
+            )
+
+    def test_command_docs_detects_missing_and_ignores_selftest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_fake_repo(root)
+            (root / "mod" / "probe" / "src" / "mod" / "Commands.cpp").write_text(
+                'if (cmd == "ping" || cmd == "selftest_secret") return true;\n',
+                encoding="utf-8",
+            )
+            ok, out = check.check_command_docs(root)
+            self.assertTrue(ok, out)
+
+            (root / "mod" / "probe" / "src" / "mod" / "CommandExtra.cpp").write_text(
+                'if (cmd == "undoc_cmd") return true;\n', encoding="utf-8"
+            )
+            ok, out = check.check_command_docs(root)
+            self.assertFalse(ok)
+            self.assertIn("undoc_cmd", out)
+
+    def test_cpp_format_runs_clang_format_on_non_generated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mod_dir = root / "mod" / "probe" / "src" / "mod"
+            mod_dir.mkdir(parents=True)
+            keep = mod_dir / "Sample.cpp"
+            keep.write_text("int main() {}\n", encoding="utf-8")
+            (mod_dir / "GeneratedProfiles.h").write_text("// generated\n", encoding="utf-8")
+
+            with (
+                patch.object(check, "_find_clang_format", return_value="clang-format"),
+                patch.object(
+                    check.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                ) as run_mock,
+            ):
+                ok, out = check.check_cpp_format(root, all_files=True)
+
+            self.assertTrue(ok, out)
+            cmd = run_mock.call_args.args[0]
+            self.assertEqual(cmd[:3], ["clang-format", "--dry-run", "--Werror"])
+            self.assertEqual([Path(p).name for p in cmd[3:]], ["Sample.cpp"])
 
 
 if __name__ == "__main__":

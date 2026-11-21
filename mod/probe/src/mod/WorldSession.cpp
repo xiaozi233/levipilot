@@ -21,10 +21,12 @@ void WorldSession::post(std::function<void()> task) {
 
 std::shared_ptr<ll::data::CancellableCallback> WorldSession::after(std::function<void()> task, int milliseconds) {
     auto const epoch = mEpoch.load(std::memory_order_acquire);
+    std::uint64_t const reqId = activeReqId();
     // Delay in wall-clock time, then enqueue on the main thread. World-tick
     // delays cannot make progress while waiting for sign-in at the main menu.
     auto tracked = trackedCallback(gCallbacks, CallbackDomain::Delay,
-        [this, epoch, task = std::move(task)] {
+        [this, epoch, reqId, task = std::move(task)] {
+            ActiveReqIdScope reqScope(reqId);
             mOwner.queueClientTask([this, epoch, task] {
                 if (mEpoch.load(std::memory_order_acquire) == epoch) task();
             });
@@ -152,6 +154,7 @@ void WorldSession::start() {
         // F4: this listener may run on the client thread; ask the spool thread
         // to flush immediately instead of doing file IO here.
         mOwner.mSpoolForce.store(true, std::memory_order_release);
+        mOwner.wakeSpool();
     });
     mCancelListener    = bus.emplaceListener<ll::event::client::ClientCancelJoinLevelEvent>([this](auto&) {
             CallbackScope callback(gCallbacks, CallbackDomain::Event);
@@ -205,6 +208,7 @@ void WorldSession::emitEntryCompletion(std::optional<WorldEntryModel::Completion
         {"ok", completion->ok}, {"reason", completion->reason},
         {"entry", entryStatus()}
     }.dump());
+    mOwner.wakeSpool();
 }
 
 void WorldSession::settleEntry(bool ok, char const* reason) {

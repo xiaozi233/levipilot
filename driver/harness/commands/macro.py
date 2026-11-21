@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModProtocolError
+from ._protocol import PipeMixinBase
 
 
-class MacroCommands(PipeConnection):
+class MacroCommands(PipeMixinBase):
     def macro_load(self, name: str = "default", path: str | None = None) -> dict[str, Any]:
         message: dict[str, Any] = {"cmd": "macro_load", "name": name}
         if path is not None:

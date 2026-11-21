@@ -118,7 +118,8 @@ bool ProbeMod::releaseRealInput() {
 
 bool ProbeMod::performClick(LocalPlayer& player, int button) {
     ClickResult result;
-    result.button   = button;
+    result.reqId  = mClickReqId.exchange(0, std::memory_order_acquire);
+    result.button = button;
     mInputSession.injectingClick = true;
     try {
         if (!guardedGameRead([&] {
@@ -159,6 +160,7 @@ bool ProbeMod::performClick(LocalPlayer& player, int button) {
     }
     mInputSession.injectingClick = false;
     if (!mClickResults.push(result)) mClickResultsLost.fetch_add(1, std::memory_order_relaxed);
+    wakeSpool();
     return result.error == nullptr;
 }
 
@@ -179,6 +181,7 @@ void ProbeMod::drainClicks() {
                 {"hit_pos",  {finiteOrZero(result.hitX), finiteOrZero(result.hitY), finiteOrZero(result.hitZ)}}
             });
         if (result.error) out["reason"] = result.error;
+        attachReqId(out, result.reqId);
         enqueue(out.dump());
     }
     if (auto lost = mClickResultsLost.exchange(0))

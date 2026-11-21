@@ -251,7 +251,11 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"forward|strafe"})");
             return true;
         }
-        int const ticks = j.value("ticks", 1);
+        int ticks = 1;
+        if (!parseInputTicks(j, "ticks", 1, ticks)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"ticks"})");
+            return true;
+        }
         updateRequests([forward, strafe, ticks](RequestBlock& request) {
             request.input.forward = std::clamp(static_cast<float>(forward), -1.0f, 1.0f);
             request.input.strafe  = std::clamp(static_cast<float>(strafe), -1.0f, 1.0f);
@@ -279,6 +283,11 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"forward|strafe"})");
             return true;
         }
+        int ticks = 1;
+        if (!parseInputTicks(j, "ticks", 1, ticks)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"ticks"})");
+            return true;
+        }
         ControlState input;
         input.forward = std::clamp(static_cast<float>(forward), -1.0f, 1.0f);
         input.strafe  = std::clamp(static_cast<float>(strafe), -1.0f, 1.0f);
@@ -288,7 +297,6 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         input.rmb     = j.value("rmb", false);
         input.lmb     = j.value("lmb", false);
         input.active  = true;
-        int const ticks = j.value("ticks", 1);
         updateRequests([input, ticks](RequestBlock& request) {
             request.input         = input;
             request.inputTicks    = ticks;
@@ -313,8 +321,12 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"yaw|pitch"})");
             return true;
         }
+        int ticks = 1;
+        if (!parseInputTicks(j, "ticks", 1, ticks)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"ticks"})");
+            return true;
+        }
         bool const relative = j.value("relative", true);
-        int const ticks = j.value("ticks", 1);
         updateRequests([relative, ticks, yaw, pitch](RequestBlock& request) {
             request.lookRelative = relative;
             request.lookYaw      = static_cast<float>(yaw);
@@ -368,7 +380,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
     }
     if (cmd == "buttons") {
         if (!mWorld.inWorld()) enqueue(R"({"event":"error","reason":"not_in_world"})");
-        else if (!mButtonCapture.begin({}, GetTickCount64(), 2000))
+        else if (!mButtonCapture.begin({}, GetTickCount64(), 2000, activeReqId()))
             enqueue(R"({"event":"error","reason":"buttons_busy"})");
         return true;
     }
@@ -384,7 +396,8 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         mClickReach.store(static_cast<float>(reach));
-        mClickRequest.store(button == "right" ? 2 : 1);
+        mClickReqId.store(activeReqId(), std::memory_order_release);
+        mClickRequest.store(button == "right" ? 2 : 1, std::memory_order_release);
         return true;
     }
     if (cmd == "fly" || cmd == "togglefly") {

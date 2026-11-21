@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
 from ..memory import parse_hex_bytes, to_hex
+from ._protocol import PipeMixinBase
 
 
-class MemoryCommands(PipeConnection):
+class MemoryCommands(PipeMixinBase):
     def mem_read(
         self, addr: int | str, length: int = 16, *, timeout: float | None = None
     ) -> dict[str, Any]:

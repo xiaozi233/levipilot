@@ -291,9 +291,12 @@ void ProbeMod::drainEcs() {
             if (request->query.test != CaptureTest::Deferred || *stage != request->query.testStage) {
                 auto weak = std::weak_ptr{request};
                 auto run = [this, weak, stage = *stage] {
-                    if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](EcsSnapshot& out) {
-                        return captureEcsStage(stage, active->query, out);
-                    });
+                    if (auto active = weak.lock()) {
+                        active->run(stage, GetTickCount64(), [&](EcsSnapshot& out) {
+                            return captureEcsStage(stage, active->query, out);
+                        });
+                        wakeSpool();
+                    }
                 };
                 auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
                 try {
@@ -308,6 +311,7 @@ void ProbeMod::drainEcs() {
     auto result = done.error
         ? nlohmann::json{{"event", "error"}, {"reason", done.error}, {"phase", "ecs"}}
         : ecsJson(done.request->query, done.request->snapshot);
+    attachReqId(result, done.request->reqId);
     auto line = result.dump();
     if (done.release()) enqueue(std::move(line));
 }

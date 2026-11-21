@@ -5,12 +5,15 @@ Usage::
     py -3.11 driver/check.py               # full suite (lint, types, docs, guards, unit tests)
     py -3.11 driver/check.py --fast        # skip the full unittest suite
     py -3.11 driver/check.py --docs-only   # run doc, guard, link, and diff whitespace checks
+    py -3.11 driver/check.py --cpp-format  # also verify clang-format on modified C++ files
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -30,6 +33,8 @@ _INLINE_CODE_RE = re.compile(r"(`+)[^\n]*?\1")
 _LINK_RE = re.compile(r"!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(((?:[^()\n]|\([^()\n]*\))+)\)")
 _SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]+:")
 _DRIVE_RE = re.compile(r"^[a-zA-Z]:")
+_CPP_CMD_RE = re.compile(r'cmd\s*==\s*"([a-z0-9_]+)"')
+_DOC_BACKTICK_RE = re.compile(r"`([a-z0-9_]+)`")
 
 
 @dataclass(frozen=True)
@@ -158,10 +163,129 @@ def check_markdown_links(root: Path = REPO_ROOT) -> tuple[bool, str]:
     return True, f"markdown links: ok ({len(files)} files checked)"
 
 
+def check_command_docs(root: Path = REPO_ROOT) -> tuple[bool, str]:
+    """Ensure every non-selftest C++ pipe command literal appears in ``mod/README.md``."""
+    mod_src = root / "mod" / "probe" / "src" / "mod"
+    readme = root / "mod" / "README.md"
+    if not mod_src.is_dir():
+        return False, f"missing mod source directory: {mod_src}"
+    if not readme.is_file():
+        return False, f"missing mod README: {readme}"
+
+    commands: set[str] = set()
+    for cpp_path in sorted(mod_src.rglob("*.cpp")):
+        text = cpp_path.read_text(encoding="utf-8", errors="replace")
+        for cmd in _CPP_CMD_RE.findall(text):
+            if not cmd.startswith("selftest_"):
+                commands.add(cmd)
+
+    documented = set(_DOC_BACKTICK_RE.findall(readme.read_text(encoding="utf-8")))
+    missing = sorted(cmd for cmd in commands if cmd not in documented)
+    if missing:
+        return False, f"undocumented pipe commands in mod/README.md: {', '.join(missing)}"
+    return True, f"command docs: ok ({len(commands)} commands documented)"
+
+
+def _find_clang_format() -> str | None:
+    llvm_root = os.environ.get("LEVIPILOT_LLVM_ROOT")
+    if llvm_root:
+        candidate = Path(llvm_root) / "bin" / "clang-format.exe"
+        if candidate.is_file():
+            return str(candidate)
+        posix_candidate = Path(llvm_root) / "bin" / "clang-format"
+        if posix_candidate.is_file():
+            return str(posix_candidate)
+    which = shutil.which("clang-format")
+    if which:
+        return which
+    fallback = Path("D:/Tools/LLVM22/bin/clang-format.exe")
+    if fallback.is_file():
+        return str(fallback)
+    return None
+
+
+def _collect_cpp_files(root: Path, *, all_files: bool) -> list[Path] | tuple[bool, str]:
+    mod_src = root / "mod" / "probe" / "src" / "mod"
+    if not mod_src.is_dir():
+        return []
+    if all_files:
+        return sorted(
+            path
+            for path in mod_src.rglob("*")
+            if path.suffix in {".h", ".cpp"} and path.name != "GeneratedProfiles.h"
+        )
+
+    rel_paths: set[str] = set()
+    for git_cmd in (
+        ["git", "diff", "--name-only", "HEAD", "--", "mod/probe/src/mod"],
+        ["git", "ls-files", "--others", "--exclude-standard", "--", "mod/probe/src/mod"],
+    ):
+        try:
+            proc = subprocess.run(
+                git_cmd,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            return False, str(exc)
+        if proc.returncode != 0:
+            return False, (proc.stderr or proc.stdout).strip() or "git query failed"
+        for line in proc.stdout.splitlines():
+            trimmed = line.strip()
+            if trimmed:
+                rel_paths.add(trimmed)
+
+    files: list[Path] = []
+    for rel in sorted(rel_paths):
+        path = root / rel
+        if path.is_file() and path.suffix in {".h", ".cpp"} and path.name != "GeneratedProfiles.h":
+            files.append(path)
+    return files
+
+
+def check_cpp_format(root: Path = REPO_ROOT, *, all_files: bool = False) -> tuple[bool, str]:
+    """Run ``clang-format --dry-run --Werror`` on changed or all mod C++ files."""
+    clang_format = _find_clang_format()
+    if not clang_format:
+        return False, "clang-format not found (set LEVIPILOT_LLVM_ROOT or add clang-format to PATH)"
+
+    collected = _collect_cpp_files(root, all_files=all_files)
+    if isinstance(collected, tuple):
+        return collected
+    if not collected:
+        return True, "cpp format: ok (no changed C++ files)"
+
+    try:
+        completed = subprocess.run(
+            [clang_format, "--dry-run", "--Werror", *(str(path) for path in collected)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        return False, str(exc)
+
+    combined = "\n".join(
+        part.rstrip() for part in (completed.stdout, completed.stderr) if part and part.strip()
+    )
+    if completed.returncode != 0:
+        return False, combined or "clang-format failed"
+    return True, f"cpp format: ok ({len(collected)} files checked)"
+
+
 def build_checks(
     *,
     docs_only: bool = False,
     fast: bool = False,
+    cpp_format: bool = False,
+    cpp_format_all: bool = False,
     root: Path = REPO_ROOT,
 ) -> list[CheckSpec]:
     """Build the ordered list of checks for the selected mode."""
@@ -205,8 +329,17 @@ def build_checks(
             )
         )
 
+    if cpp_format or cpp_format_all:
+        checks.append(
+            CheckSpec(
+                "cpp format",
+                fn=lambda r: check_cpp_format(r, all_files=cpp_format_all),
+            )
+        )
+
     checks.extend(
         [
+            CheckSpec("command docs", fn=check_command_docs),
             CheckSpec("markdown links", fn=check_markdown_links),
             CheckSpec("git diff --check", command=["git", "diff", "--check"]),
         ]
@@ -266,10 +399,18 @@ def run_checks(
     *,
     docs_only: bool = False,
     fast: bool = False,
+    cpp_format: bool = False,
+    cpp_format_all: bool = False,
     root: Path = REPO_ROOT,
 ) -> tuple[int, list[CheckResult]]:
     """Run all selected checks, report per-check status, and return `(exit_code, results)`."""
-    specs = build_checks(docs_only=docs_only, fast=fast, root=root)
+    specs = build_checks(
+        docs_only=docs_only,
+        fast=fast,
+        cpp_format=cpp_format,
+        cpp_format_all=cpp_format_all,
+        root=root,
+    )
     results: list[CheckResult] = []
     for spec in specs:
         _print_safe(f"[RUN ] {spec.name}")
@@ -302,8 +443,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip the full unittest suite",
     )
+    parser.add_argument(
+        "--cpp-format",
+        action="store_true",
+        help="run clang-format --dry-run --Werror on modified C++ files",
+    )
+    parser.add_argument(
+        "--cpp-format-all",
+        action="store_true",
+        help="run clang-format --dry-run --Werror on all non-generated mod C++ files",
+    )
     args = parser.parse_args(argv)
-    exit_code, _results = run_checks(docs_only=args.docs_only, fast=args.fast, root=REPO_ROOT)
+    exit_code, _results = run_checks(
+        docs_only=args.docs_only,
+        fast=args.fast,
+        cpp_format=args.cpp_format,
+        cpp_format_all=args.cpp_format_all,
+        root=REPO_ROOT,
+    )
     return exit_code
 
 

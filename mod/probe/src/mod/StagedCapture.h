@@ -20,8 +20,19 @@ public:
     : mFirstStage(firstStage), mInvalidStage(invalidStage) {}
 
     struct Request {
-        Request(Query value, std::uint64_t now, std::uint64_t timeout, char const* invalidStage, Stage firstStage)
-        : query(value), deadline(now + timeout), stageError(invalidStage), stage(firstStage) {}
+        Request(
+            Query         value,
+            std::uint64_t now,
+            std::uint64_t timeout,
+            char const*   invalidStage,
+            Stage         firstStage,
+            std::uint64_t reqIdValue = 0
+        )
+        : query(value),
+          reqId(reqIdValue),
+          deadline(now + timeout),
+          stageError(invalidStage),
+          stage(firstStage) {}
 
         std::optional<Stage> dispatch() {
             auto expected = Phase::Pending;
@@ -53,8 +64,9 @@ public:
             failure.compare_exchange_strong(expected, reason, std::memory_order_release);
         }
 
-        Query const query;
-        Snapshot snapshot;
+        Query const         query;
+        std::uint64_t const reqId = 0;
+        Snapshot            snapshot;
 
     private:
         friend class StagedCapture;
@@ -96,9 +108,14 @@ public:
         StagedCapture* owner = nullptr;
     };
 
-    std::shared_ptr<Request> begin(Query query, std::uint64_t now, std::uint64_t timeout = 2000) {
+    std::shared_ptr<Request> begin(
+        Query         query,
+        std::uint64_t now,
+        std::uint64_t timeout = 2000,
+        std::uint64_t reqId   = 0
+    ) {
         if (mCurrent.load(std::memory_order_acquire)) return {};
-        std::shared_ptr<Request> request = std::make_unique<Request>(query, now, timeout, mInvalidStage, mFirstStage);
+        std::shared_ptr<Request> request = std::make_unique<Request>(query, now, timeout, mInvalidStage, mFirstStage, reqId);
         std::shared_ptr<Request> expected;
         if (!mCurrent.compare_exchange_strong(expected, request)) return {};
         return request;

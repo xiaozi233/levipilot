@@ -30,14 +30,15 @@ void lifecycle() {
     assert(capture.begin({}, 100, 2000));
     assert(!capture.begin({}, 101, 2000));
     assert(!capture.take(102));
-    capture.advance([](auto const&, auto& out) {
+    assert(!capture.advance([](auto const&, auto&) { return false; }));
+    assert(capture.advance([](auto const&, auto& out) {
         out.tick = 42;
         return true;
-    });
-    capture.advance([](auto const&, auto&) {
+    }));
+    assert(!capture.advance([](auto const&, auto&) {
         assert(false);
         return true;
-    });
+    }));
     {
         auto result = capture.take(103);
         assert(result && !result.error && result.snapshot().tick == 42);
@@ -54,7 +55,7 @@ void lifecycle() {
         assert(result && std::string_view(result.error) == "capture_timeout");
     }
     assert(capture.begin({}, 300, 10));
-    capture.advance([](auto const&, auto&) -> bool { throw 42; });
+    assert(capture.advance([](auto const&, auto&) -> bool { throw 42; }));
     {
         auto result = capture.take(301);
         assert(result && std::string_view(result.error) == "capture_failed");
@@ -278,12 +279,32 @@ void hookCallOwnership() {
     assert(allocations.load() == before);
 }
 
+void scanVolumeBounds() {
+    assert(scanVolumeWithinLimit({0, 0, 0}, {31, 31, 31}));
+    assert(!scanVolumeWithinLimit({0, 0, 0}, {31, 31, 32}));
+    assert(!scanVolumeWithinLimit({-30000000, -4096, -30000000}, {30000000, 4096, 30000000}));
+    assert(!scanVolumeWithinLimit(
+        {std::numeric_limits<int>::min(), -4096, std::numeric_limits<int>::min()},
+        {std::numeric_limits<int>::max(), 4096, std::numeric_limits<int>::max()}
+    ));
+
+    auto storage = std::make_unique<ScanSnapshot>();
+    ScanQuery overflow{{-30000000, -4096, -30000000}, {30000000, 4096, 30000000}, 4096, false};
+    bool called = false;
+    bool const done = advanceScan(overflow, *storage, 1, [&](BlockRow&) {
+        called = true;
+        return true;
+    });
+    assert(done && !called && std::string_view(storage->error) == "bad_region");
+}
+
 int main() {
     hookCallOwnership();
     lifecycle();
     runningCancellation(false);
     runningCancellation(true);
     scans();
+    scanVolumeBounds();
     inventoryPublication();
     publication();
 }

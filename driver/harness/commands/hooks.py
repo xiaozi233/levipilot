@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
+from ._protocol import PipeMixinBase
 
 
 def remember_ring_head(client: Any, kind: str, ident: int) -> None:
@@ -41,7 +41,7 @@ def ring_head(client: Any, kind: str, ident: int | None) -> int:
     return 0
 
 
-class HookCommands(PipeConnection):
+class HookCommands(PipeMixinBase):
     def hook_install(
         self,
         symbol: str | None = None,

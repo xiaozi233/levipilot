@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModPipeError, ModTimeout
 from driver.harness.lab import Builder, world_state
 from driver.harness.record import RecordEntry
 from driver.selftest_support import Checks
-from driver.transport_mod import ModClient, ModPipeError, ModTimeout
 
 ROOT = Path(__file__).resolve().parents[1]
 

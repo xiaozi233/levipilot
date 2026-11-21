@@ -177,7 +177,7 @@ class TransportStressTests(unittest.TestCase):
         )
 
     def test_reader_overflow_stops_only_the_old_session(self) -> None:
-        payload = b'{"event":"tick"}\n' * 8193
+        payload = b'{"event":"tick"}\n' * 20001
 
         class Pipe:
             closed = False
@@ -208,7 +208,7 @@ class TransportStressTests(unittest.TestCase):
         self.assertTrue(old.stream.stopped.is_set())
         self.assertTrue(pipe.closed)
         self.assertIsNone(old.stream.handle)
-        self.assertEqual(old.stream.lines.qsize(), 8192)
+        self.assertEqual(old.stream.lines.qsize(), 20000)
         self.assertIn("溢出", old.stream.failure)
         self.assertFalse(fresh.stream.stopped.is_set())
         self.assertTrue(fresh.stream.lines.empty())

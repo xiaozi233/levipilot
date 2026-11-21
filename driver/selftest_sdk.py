@@ -6,9 +6,9 @@ import contextlib
 import time
 from typing import Any
 
+from driver.harness import ModClient, ModTimeout
 from driver.selftest_runtime import wait_ticks
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient, ModTimeout
 
 
 def _task_retired(client: ModClient, domain: str) -> bool:

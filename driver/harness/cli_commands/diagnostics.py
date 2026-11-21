@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from ..commands import ModClient
+from ._emit import emit_json
 
 COMMANDS = frozenset(
     {
@@ -26,19 +27,15 @@ COMMANDS = frozenset(
 )
 
 
-def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
+def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> int | None:
     if args.command == "ping":
-        print(json.dumps(client.ping(), ensure_ascii=False))
-        return True
+        return emit_json(client.ping(), ensure_ascii=False)
     if args.command == "status":
-        print(json.dumps(client.status(), ensure_ascii=False))
-        return True
+        return emit_json(client.status(), ensure_ascii=False)
     if args.command == "diag":
-        print(json.dumps(client.diag(), ensure_ascii=False))
-        return True
+        return emit_json(client.diag(), ensure_ascii=False)
     if args.command == "diagnose":
-        print(json.dumps(client.diagnose(), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.diagnose(), ensure_ascii=False, indent=2)
     if args.command == "profile-dump":
         dump = client.profile_dump()
         if args.write:
@@ -47,33 +44,23 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                 encoding="utf-8",
             )
             print(f"wrote {args.write}")
-        else:
-            print(json.dumps(dump, ensure_ascii=False, indent=2))
-        return True
+            return 1 if isinstance(dump, dict) and dump.get("ok") is False else 0
+        return emit_json(dump, ensure_ascii=False, indent=2)
     if args.command == "profile-probe":
-        print(json.dumps(client.profile_probe(args.build_id), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.profile_probe(args.build_id), ensure_ascii=False, indent=2)
     if args.command == "signature-check":
-        print(
-            json.dumps(
-                client.signature_check(args.name, args.expected_hex),
-                ensure_ascii=False,
-            )
+        return emit_json(
+            client.signature_check(args.name, args.expected_hex),
+            ensure_ascii=False,
         )
-        return True
     if args.command == "panic":
-        print(json.dumps(client.panic(args.level), ensure_ascii=False))
-        return True
+        return emit_json(client.panic(args.level), ensure_ascii=False)
     if args.command == "overhead":
-        print(json.dumps(client.overhead(), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.overhead(), ensure_ascii=False, indent=2)
     if args.command == "busy-test":
-        print(json.dumps(client.selftest_busy(args.us, args.ticks), ensure_ascii=False))
-        return True
+        return emit_json(client.selftest_busy(args.us, args.ticks), ensure_ascii=False)
     if args.command == "spool-flush":
-        print(json.dumps(client.spool_flush(), ensure_ascii=False))
-        return True
+        return emit_json(client.spool_flush(), ensure_ascii=False)
     if args.command == "selftest-av":
-        print(json.dumps(client.selftest_av(), ensure_ascii=False))
-        return True
-    return False
+        return emit_json(client.selftest_av(), ensure_ascii=False)
+    return None

@@ -38,7 +38,7 @@ std::uint64_t ProbeMod::queueTeleport(TeleportQuery query, bool resetControls, s
     query.generation = mTeleport.generation.load();
     query.deadline = now + timeout;
     if (query.test == TeleportTest::Obsolete) ++query.identity.epoch;
-    auto request = mTeleport.capture.begin(query, now, timeout);
+    auto request = mTeleport.capture.begin(query, now, timeout, activeReqId());
     if (!request) {
         enqueue(R"({"event":"error","reason":"teleport_busy"})");
         return 0;
@@ -109,10 +109,13 @@ void ProbeMod::drainTeleport() {
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
             try {
                 queueServerTask([this, weak, stage = *stage] {
-                    if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](TeleportSnapshot& out) {
-                        captureTeleport(active->query, out);
-                        return TeleportStage::Complete;
-                    });
+                    if (auto active = weak.lock()) {
+                        active->run(stage, GetTickCount64(), [&](TeleportSnapshot& out) {
+                            captureTeleport(active->query, out);
+                            return TeleportStage::Complete;
+                        });
+                        wakeSpool();
+                    }
                 }, failed, request->query.test == TeleportTest::Queue);
             } catch (...) { request->cancel("teleport_queue_failed"); }
         }
@@ -132,6 +135,7 @@ void ProbeMod::drainTeleport() {
     else result = {{"event", "teleported"}, {"source", "server"}, {"teleport_id", query.id}, {"ok", true},
                    {"x", query.x}, {"y", query.y}, {"z", query.z}, {"has_rotation", query.hasRotation},
                    {"effects_cleared", done.request->snapshot.effectsCleared}};
+    attachReqId(result, done.request->reqId);
     auto line = result.dump();
     if (done.release()) enqueue(std::move(line));
 }

@@ -1,6 +1,9 @@
 """Probe smoke tests. The default live suite requires the game in a world.
 
     py -3.11 driver/selftest.py
+    py -3.11 driver/selftest.py --list          # list modes and default-suite sections
+    py -3.11 driver/selftest.py --only flight --world "超平坦测试"
+    py -3.11 driver/selftest.py --only default:parkour,swim
     py -3.11 driver/selftest.py --keep          # keep the test entity
     py -3.11 driver/selftest.py --entity minecraft:cow
     py -3.11 driver/selftest.py --client-io-only  # offline; never connects to the game
@@ -47,6 +50,8 @@ import contextlib
 import os
 import subprocess
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +59,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from driver import selftest_diagnostics  # noqa: E402
+from driver.harness import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402,F401
 from driver.harness.lab import Builder, capture_disconnect_report, settle  # noqa: E402,F401
 from driver.selftest_callbacks import check_callback_drain  # noqa: E402
 from driver.selftest_core import (  # noqa: E402,F401
@@ -62,7 +68,7 @@ from driver.selftest_core import (  # noqa: E402,F401
     check_dispatch_compatibility,
     check_overhead_window,
 )
-from driver.selftest_default import check_default_suite  # noqa: E402
+from driver.selftest_default import DEFAULT_SECTIONS, check_default_suite  # noqa: E402
 from driver.selftest_flight import (  # noqa: E402,F401
     EffectFixture,
     choose_sentinel_effect,
@@ -131,7 +137,6 @@ from driver.selftest_tasks import (  # noqa: E402,F401
     check_task_operations,
     check_use_lifecycle,
 )
-from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout  # noqa: E402,F401
 
 
 def check_macro_record_limits(client: ModClient, checks: Checks) -> None:
@@ -166,7 +171,447 @@ def check_send_probe(client: ModClient, checks: Checks) -> None:
     selftest_diagnostics.check_send_probe(client, checks, wait_ticks)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _flag_dest(flag: str) -> str:
+    return flag.lstrip("-").replace("-", "_")
+
+
+def _require_world_arg(world: str | None) -> str:
+    if not world:
+        raise ValueError("world name is required")
+    return world
+
+
+@dataclass(frozen=True)
+class ModeSpec:
+    """Registered selftest mode mapped to legacy flags and ``--only``."""
+
+    name: str
+    runner: Callable[
+        [ModClient, Checks, argparse.Namespace, ViolationObservation, str | None], None
+    ]
+    error_name: str
+    help: str
+    only_flag: str | None = None
+    world_flag: str | None = None
+    world_help: str = ""
+    accepts_world: bool = False
+    requires_world: bool = False
+    lock_input: bool = True
+    propagate_world_lost: bool = True
+    catch: tuple[type[BaseException], ...] = (ModPipeError, OSError, ValueError)
+    offline_suites: tuple[str, ...] = ()
+
+
+def _noop_runner(
+    _client: ModClient,
+    _checks: Checks,
+    _args: argparse.Namespace,
+    _observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    return None
+
+
+def _run_violation(
+    client: ModClient,
+    checks: Checks,
+    _args: argparse.Namespace,
+    observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    with observation.gap("violation_selftest"):
+        check_violation_watch(client, checks)
+    check_send_probe(client, checks)
+
+
+def _run_hot_reload(
+    client: ModClient,
+    checks: Checks,
+    _args: argparse.Namespace,
+    observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    with observation.reload_gap():
+        check_hot_reload(client, checks, close_client=False)
+
+
+def _run_callback_drain(
+    client: ModClient,
+    checks: Checks,
+    _args: argparse.Namespace,
+    observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    with observation.reload_gap():
+        check_callback_drain(client, checks)
+
+
+def _run_macro_long(
+    client: ModClient,
+    checks: Checks,
+    args: argparse.Namespace,
+    _observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    if args.macro_resume:
+        check_macro_long_recording(client, checks, resume=True)
+    else:
+        check_macro_long_recording(client, checks)
+
+
+def _run_record_medium(
+    client: ModClient,
+    checks: Checks,
+    _args: argparse.Namespace,
+    _observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    check_block_identity(client, checks)
+    check_record_medium(client, checks)
+
+
+def _run_controls(
+    client: ModClient,
+    checks: Checks,
+    _args: argparse.Namespace,
+    _observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    check_input_mode_contract(client, checks)
+    check_controls(client, checks)
+
+
+_CLIENT_IO_SUITES = (
+    "tests.test_transport.SessionTests",
+    "tests.test_transport_stress",
+    "tests.test_transport.LineDecoderTests",
+    "tests.test_recording_commands",
+    "tests.test_mod_agent.RecordingIntegrationTests",
+    "tests.test_dev_config",
+    "tests.test_dev.GameShutdownTests",
+    "tests.test_spool",
+)
+
+
+MODE_REGISTRY: tuple[ModeSpec, ...] = (
+    ModeSpec(
+        name="client-io",
+        runner=_noop_runner,
+        error_name="client_io_error",
+        help="run offline decoder/recording/spool regressions without connecting to the game",
+        only_flag="--client-io-only",
+        lock_input=False,
+        offline_suites=_CLIENT_IO_SUITES,
+    ),
+    ModeSpec(
+        name="mod-core",
+        runner=_noop_runner,
+        error_name="mod_core_error",
+        help="compile/run native mod transport/recording checks without connecting to the game",
+        only_flag="--mod-core-only",
+        lock_input=False,
+        offline_suites=("tests.test_mod_models",),
+    ),
+    ModeSpec(
+        name="sdk-boundaries",
+        runner=lambda c, k, _a, _o, _w: check_sdk_boundaries(c, k),
+        error_name="sdk_boundaries_error",
+        help="SDK lookup/submit/run fault recovery",
+        only_flag="--sdk-boundaries-only",
+        lock_input=False,
+        catch=(ModPipeError, OSError, ValueError, KeyError),
+    ),
+    ModeSpec(
+        name="diagnostic-export",
+        runner=lambda c, k, _a, _o, _w: check_diagnostic_export(c, k),
+        error_name="diagnostic_export_error",
+        help="export existing diagnostic buffers without arming hooks or changing the world",
+        only_flag="--diagnostic-export-only",
+        lock_input=False,
+        propagate_world_lost=False,
+        catch=(ModPipeError, OSError, ValueError, KeyError),
+    ),
+    ModeSpec(
+        name="connection",
+        runner=lambda c, k, _a, _o, _w: check_connection_lifecycle(c, k),
+        error_name="connection_lifecycle_error",
+        help="check abandoned clients and process-exit reconnects; no world changes or RE",
+        only_flag="--connection-only",
+        lock_input=False,
+        propagate_world_lost=False,
+        catch=(ModPipeError, OSError, ValueError, subprocess.SubprocessError),
+    ),
+    ModeSpec(
+        name="overhead",
+        runner=lambda c, k, _a, _o, _w: check_overhead_window(c, k, wrap=True),
+        error_name="overhead_window_error",
+        help="read overhead concurrently across 1100 real ticks and verify record path counters",
+        only_flag="--overhead-only",
+        lock_input=False,
+    ),
+    ModeSpec(
+        name="use-lifecycle",
+        runner=lambda c, k, _a, _o, _w: check_use_lifecycle(c, k),
+        error_name="use_lifecycle_error",
+        help="inject missing/failed server work and verify task termination/recovery in a world",
+        only_flag="--use-lifecycle-only",
+        lock_input=False,
+    ),
+    ModeSpec(
+        name="mod-core-live",
+        runner=lambda c, k, _a, _o, _w: check_mod_core_live(c, k),
+        error_name="mod_core_live_error",
+        help="check installed pipe/recording only; no RE, input injection or world edits",
+        only_flag="--mod-core-live-only",
+        lock_input=False,
+    ),
+    ModeSpec(
+        name="chat-lifecycle",
+        runner=lambda c, k, _a, _o, w: check_chat_lifecycle(c, k, _require_world_arg(w)),
+        error_name="chat_lifecycle_error",
+        help="save/leave, check chat cancellation and main menu recovery, then re-enter WORLD",
+        world_flag="--chat-lifecycle-world",
+        world_help="save/leave, check chat cancellation and main menu recovery, then re-enter WORLD",
+        accepts_world=True,
+        requires_world=True,
+        lock_input=False,
+    ),
+    ModeSpec(
+        name="record-medium",
+        runner=_run_record_medium,
+        error_name="record_medium_error",
+        help="check recording in an isolated water fixture",
+        only_flag="--record-medium-only",
+    ),
+    ModeSpec(
+        name="packet-tap",
+        runner=lambda c, k, _a, _o, _w: check_packet_tap(c, k),
+        error_name="packet_tap_error",
+        help="check isolation of packet observation faults",
+        only_flag="--packet-tap-only",
+    ),
+    ModeSpec(
+        name="violation",
+        runner=_run_violation,
+        error_name="violation_watch_error",
+        help="check the read-only violation watch (synthetic row, no real violation)",
+        only_flag="--violation-only",
+    ),
+    ModeSpec(
+        name="packet-injection",
+        runner=lambda c, k, _a, _o, w: check_packet_injection(c, k, w),
+        error_name="packet_injection_error",
+        help="check command templates and owned packet sends",
+        only_flag="--packet-injection-only",
+        world_flag="--packet-injection-world",
+        world_help="also check packet reconnect/leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="tick-recovery",
+        runner=lambda c, k, _a, _o, w: check_tick_recovery(c, k, w),
+        error_name="tick_recovery_error",
+        help="check tick errors and fail-stop recovery",
+        only_flag="--tick-recovery-only",
+        world_flag="--tick-recovery-world",
+        world_help="also check recovery across reconnect/leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="hot-reload",
+        runner=_run_hot_reload,
+        error_name="hot_reload_error",
+        help="reload probe through chat input and verify the same live process",
+        only_flag="--hot-reload-only",
+    ),
+    ModeSpec(
+        name="lifecycle-prepare",
+        runner=lambda c, k, _a, _o, _w: check_lifecycle_prepare(c, k),
+        error_name="lifecycle_prepare_error",
+        help="check active/expired input unload gates and restore hooks without reloading",
+        only_flag="--lifecycle-prepare-only",
+    ),
+    ModeSpec(
+        name="callback-drain",
+        runner=_run_callback_drain,
+        error_name="callback_drain_error",
+        help="delay client/server/tick callbacks, test timeout rollback and real reloads",
+        only_flag="--callback-drain-only",
+    ),
+    ModeSpec(
+        name="teleport",
+        runner=lambda c, k, _a, _o, w: check_teleport(c, k, w),
+        error_name="teleport_error",
+        help="check owned server teleports and failures",
+        only_flag="--teleport-only",
+        world_flag="--teleport-world",
+        world_help="also check teleport reconnect/leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="controls",
+        runner=_run_controls,
+        error_name="controls_error",
+        help="check control faults and input release",
+        only_flag="--controls-only",
+    ),
+    ModeSpec(
+        name="player-identity",
+        runner=lambda c, k, _a, _o, w: check_player_identity(c, k, w),
+        error_name="identity_error",
+        help="check local UUID sampling and server resolution",
+        only_flag="--player-identity-only",
+        world_flag="--player-identity-world",
+        world_help="also reject identities retained across worlds",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="flight",
+        runner=lambda c, k, _a, _o, w: check_flight(c, k, w),
+        error_name="flight_error",
+        help="check staged flight and tick assertions",
+        only_flag="--flight-only",
+        world_flag="--flight-world",
+        world_help="also check flight reconnect/leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="input-events",
+        runner=lambda c, k, _a, _o, w: check_input_events(c, k, w),
+        error_name="input_events_error",
+        help="check guarded input and text ordering",
+        only_flag="--input-events-only",
+        world_flag="--input-events-world",
+        world_help="also check input reconnect/leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="ecs-capture",
+        runner=lambda c, k, _a, _o, w: check_ecs_capture(c, k, w),
+        error_name="ecs_capture_error",
+        help="check owned ECS snapshots and failures",
+        only_flag="--ecs-capture-only",
+        world_flag="--ecs-capture-world",
+        world_help="also check ECS reconnect/leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="macro-playback",
+        runner=lambda c, k, _a, _o, w: check_macro_playback(c, k, w),
+        error_name="macro_playback_error",
+        help="check replay faults and frame ownership",
+        only_flag="--macro-playback-only",
+        world_flag="--macro-playback-world",
+        world_help="also check playback across leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="binary-capture",
+        runner=lambda c, k, _a, _o, w: check_binary_capture(c, k, w),
+        error_name="binary_capture_error",
+        help="check binary recording failure outcomes",
+        only_flag="--binary-capture-only",
+        world_flag="--binary-capture-world",
+        world_help="also check recording across leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="tick-safety",
+        runner=lambda c, k, _a, _o, w: check_tick_safety(c, k, w),
+        error_name="tick_safety_error",
+        help="check guarded hook calls and coherent poses",
+        only_flag="--tick-safety-only",
+        world_flag="--tick-safety-world",
+        world_help="also check hook cancellation and pose validity on leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="macro-capture",
+        runner=lambda c, k, _a, _o, w: check_macro_capture(c, k, w),
+        error_name="macro_capture_error",
+        help="check macro sampling faults and retained saves",
+        only_flag="--macro-capture-only",
+        world_flag="--macro-capture-world",
+        world_help="also check macro recording across leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="tick-stream",
+        runner=lambda c, k, _a, _o, w: check_tick_streams(c, k, w),
+        error_name="tick_stream_error",
+        help="check JSON streams and parkour event safety",
+        only_flag="--tick-stream-only",
+        world_flag="--tick-stream-world",
+        world_help="also check stream termination on leave/rejoin",
+        accepts_world=True,
+    ),
+    ModeSpec(
+        name="entry-lifecycle",
+        runner=lambda c, k, _a, _o, w: check_entry_lifecycle(c, k, _require_world_arg(w)),
+        error_name="entry_lifecycle_error",
+        help="save/leave, check entry timeout/quarantine and missing join recovery, then restore WORLD",
+        world_flag="--entry-lifecycle-world",
+        world_help="save/leave, check entry timeout/quarantine and missing join recovery, then restore WORLD",
+        accepts_world=True,
+        requires_world=True,
+    ),
+    ModeSpec(
+        name="macro-limit",
+        runner=lambda c, k, _a, _o, _w: check_macro_record_limits(c, k),
+        error_name="macro_limit_error",
+        help="check recording limit normalization, unique termination and buffered data preservation",
+        only_flag="--macro-limit-only",
+    ),
+    ModeSpec(
+        name="macro-long-recording",
+        runner=_run_macro_long,
+        error_name="macro_long_recording_error",
+        help="record, save and reload all 200000 ticks at real speed (about 2h47 at 20 TPS)",
+        only_flag="--macro-long-recording-only",
+    ),
+    ModeSpec(
+        name="query-lifecycle",
+        runner=lambda c, k, _a, _o, w: check_query_lifecycle(c, k, _require_world_arg(w)),
+        error_name="query_lifecycle_error",
+        help="check scan cancellation on reconnect/exit, then re-enter WORLD",
+        world_flag="--query-lifecycle-world",
+        world_help="check scan cancellation on reconnect/exit, then re-enter WORLD",
+        accepts_world=True,
+        requires_world=True,
+    ),
+    ModeSpec(
+        name="query-capture",
+        runner=lambda c, k, _a, _o, _w: check_query_capture(c, k),
+        error_name="query_capture_error",
+        help="check fixed query snapshots, SEH/timeout recovery and per-tick scan budget",
+        only_flag="--query-capture-only",
+    ),
+)
+
+_MODE_MAP: dict[str, ModeSpec] = {spec.name: spec for spec in MODE_REGISTRY}
+_DEFAULT_SECTION_NAMES: frozenset[str] = frozenset(name for name, _ in DEFAULT_SECTIONS)
+
+
+def _format_mode_list() -> str:
+    offline = [spec for spec in MODE_REGISTRY if spec.offline_suites]
+    live = [spec for spec in MODE_REGISTRY if not spec.offline_suites]
+    lines = ["Offline modes:"]
+    for spec in offline:
+        lines.append(f"  {spec.name}  - {spec.help}")
+    lines.append("")
+    lines.append("Live modes:")
+    for spec in live:
+        note = " (supports --world)" if spec.accepts_world else ""
+        req = " [requires --world]" if spec.requires_world else ""
+        lines.append(f"  {spec.name}{note}{req}  - {spec.help}")
+    lines.append("")
+    lines.append("Default suite sections (--only default:<sec1,sec2> or --only <section>):")
+    for name, _ in DEFAULT_SECTIONS:
+        lines.append(f"  {name}")
+    return "\n".join(lines)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--require-complete", action="store_true", help="fail when required coverage is skipped"
@@ -176,240 +621,111 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--radius", type=float, default=10.0)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument(
-        "--sdk-boundaries-only", action="store_true", help="SDK lookup/submit/run fault recovery"
-    )
-    modes.add_argument(
-        "--callback-drain-only",
+        "--list",
         action="store_true",
-        help="delay client/server/tick callbacks, test timeout rollback and real reloads",
+        help="list registered offline/live modes and default-suite sections, then exit",
     )
     modes.add_argument(
-        "--lifecycle-prepare-only",
-        action="store_true",
-        help="check active/expired input unload gates and restore hooks without reloading",
+        "--only",
+        metavar="NAME",
+        help="run one registered mode or default-suite section(s) (default:<sec1,sec2>)",
     )
-    modes.add_argument(
-        "--diagnostic-export-only",
-        action="store_true",
-        help="export existing diagnostic buffers without arming hooks or changing the world",
-    )
-    modes.add_argument(
-        "--client-io-only",
-        action="store_true",
-        help="run offline decoder/recording/spool regressions without connecting to the game",
-    )
-    modes.add_argument(
-        "--mod-core-only",
-        action="store_true",
-        help="compile/run native mod transport/recording checks without connecting to the game",
-    )
-    modes.add_argument(
-        "--chat-lifecycle-world",
+    for spec in MODE_REGISTRY:
+        if spec.only_flag:
+            modes.add_argument(spec.only_flag, action="store_true", help=spec.help)
+        if spec.world_flag:
+            modes.add_argument(spec.world_flag, metavar="WORLD", help=spec.world_help or spec.help)
+    parser.add_argument(
+        "--world",
         metavar="WORLD",
-        help="save/leave, check chat cancellation and main menu recovery, then re-enter WORLD",
-    )
-    modes.add_argument(
-        "--query-capture-only",
-        action="store_true",
-        help="check fixed query snapshots, SEH/timeout recovery and per-tick scan budget",
-    )
-    modes.add_argument(
-        "--query-lifecycle-world",
-        metavar="WORLD",
-        help="check scan cancellation on reconnect/exit, then re-enter WORLD",
-    )
-    modes.add_argument(
-        "--overhead-only",
-        action="store_true",
-        help="read overhead concurrently across 1100 real ticks and verify record path counters",
-    )
-    modes.add_argument(
-        "--tick-stream-only",
-        action="store_true",
-        help="check JSON streams and parkour event safety",
-    )
-    modes.add_argument(
-        "--tick-stream-world", metavar="WORLD", help="also check stream termination on leave/rejoin"
-    )
-    modes.add_argument(
-        "--entry-lifecycle-world",
-        metavar="WORLD",
-        help="save/leave, check entry timeout/quarantine and missing join recovery, then restore WORLD",
-    )
-    modes.add_argument(
-        "--macro-limit-only",
-        action="store_true",
-        help="check recording limit normalization, unique termination and buffered data preservation",
-    )
-    modes.add_argument(
-        "--macro-long-recording-only",
-        action="store_true",
-        help="record, save and reload all 200000 ticks at real speed (about 2h47 at 20 TPS)",
+        help="target world when running --only <mode> for world-lifecycle checks",
     )
     parser.add_argument(
         "--macro-resume",
         action="store_true",
         help="with --macro-long-recording-only, resume the same active recording after a watcher restart",
     )
-    modes.add_argument(
-        "--macro-capture-only",
-        action="store_true",
-        help="check macro sampling faults and retained saves",
-    )
-    modes.add_argument(
-        "--macro-capture-world",
-        metavar="WORLD",
-        help="also check macro recording across leave/rejoin",
-    )
-    modes.add_argument(
-        "--tick-safety-only",
-        action="store_true",
-        help="check guarded hook calls and coherent poses",
-    )
-    modes.add_argument(
-        "--tick-safety-world",
-        metavar="WORLD",
-        help="also check hook cancellation and pose validity on leave/rejoin",
-    )
-    modes.add_argument(
-        "--binary-capture-only", action="store_true", help="check binary recording failure outcomes"
-    )
-    modes.add_argument(
-        "--binary-capture-world", metavar="WORLD", help="also check recording across leave/rejoin"
-    )
-    modes.add_argument(
-        "--teleport-only", action="store_true", help="check owned server teleports and failures"
-    )
-    modes.add_argument(
-        "--packet-tap-only",
-        action="store_true",
-        help="check isolation of packet observation faults",
-    )
-    modes.add_argument(
-        "--packet-injection-only",
-        action="store_true",
-        help="check command templates and owned packet sends",
-    )
-    modes.add_argument(
-        "--packet-injection-world", metavar="WORLD", help="also check packet reconnect/leave/rejoin"
-    )
-    modes.add_argument(
-        "--record-medium-only",
-        action="store_true",
-        help="check recording in an isolated water fixture",
-    )
-    modes.add_argument(
-        "--violation-only",
-        action="store_true",
-        help="check the read-only violation watch (synthetic row, no real violation)",
-    )
-    modes.add_argument(
-        "--teleport-world", metavar="WORLD", help="also check teleport reconnect/leave/rejoin"
-    )
-    modes.add_argument(
-        "--controls-only", action="store_true", help="check control faults and input release"
-    )
-    modes.add_argument(
-        "--tick-recovery-only", action="store_true", help="check tick errors and fail-stop recovery"
-    )
-    modes.add_argument(
-        "--tick-recovery-world",
-        metavar="WORLD",
-        help="also check recovery across reconnect/leave/rejoin",
-    )
-    modes.add_argument(
-        "--hot-reload-only",
-        action="store_true",
-        help="reload probe through chat input and verify the same live process",
-    )
-    modes.add_argument(
-        "--player-identity-only",
-        action="store_true",
-        help="check local UUID sampling and server resolution",
-    )
-    modes.add_argument(
-        "--player-identity-world",
-        metavar="WORLD",
-        help="also reject identities retained across worlds",
-    )
-    modes.add_argument(
-        "--flight-only", action="store_true", help="check staged flight and tick assertions"
-    )
-    modes.add_argument(
-        "--flight-world", metavar="WORLD", help="also check flight reconnect/leave/rejoin"
-    )
-    modes.add_argument(
-        "--input-events-only", action="store_true", help="check guarded input and text ordering"
-    )
-    modes.add_argument(
-        "--input-events-world", metavar="WORLD", help="also check input reconnect/leave/rejoin"
-    )
-    modes.add_argument(
-        "--ecs-capture-only", action="store_true", help="check owned ECS snapshots and failures"
-    )
-    modes.add_argument(
-        "--ecs-capture-world", metavar="WORLD", help="also check ECS reconnect/leave/rejoin"
-    )
-    modes.add_argument(
-        "--macro-playback-only", action="store_true", help="check replay faults and frame ownership"
-    )
-    modes.add_argument(
-        "--macro-playback-world", metavar="WORLD", help="also check playback across leave/rejoin"
-    )
-    modes.add_argument(
-        "--use-lifecycle-only",
-        action="store_true",
-        help="inject missing/failed server work and verify task termination/recovery in a world",
-    )
-    modes.add_argument(
-        "--connection-only",
-        action="store_true",
-        help="check abandoned clients and process-exit reconnects; no world changes or RE",
-    )
-    modes.add_argument(
-        "--mod-core-live-only",
-        action="store_true",
-        help="check installed pipe/recording only; no RE, input injection or world edits",
-    )
     parser.add_argument("--stress-cycles", type=int, default=0, help="opt-in lifecycle soak cycles")
     parser.add_argument(
         "--stress-world", help="leave/re-enter this test world every 10 soak cycles"
     )
+    return parser
+
+
+def _parse_default_sections(raw: str) -> tuple[str, ...] | None:
+    if raw == "default":
+        return ()
+    body = raw[len("default:") :] if raw.startswith("default:") else raw
+    parts = [part.strip() for part in body.split(",") if part.strip()]
+    if not parts:
+        return None
+    if all(part in _DEFAULT_SECTION_NAMES for part in parts):
+        return tuple(parts)
+    return None
+
+
+def _resolve_selection(
+    args: argparse.Namespace, parser: argparse.ArgumentParser | None
+) -> tuple[ModeSpec | None, str | None, tuple[str, ...] | None]:
+    def fail(message: str) -> None:
+        if parser is not None:
+            parser.error(message)
+        raise ValueError(message)
+
+    world_opt = getattr(args, "world", None)
+    only_opt = getattr(args, "only", None)
+
+    if args.macro_resume and not (
+        args.macro_long_recording_only or only_opt == "macro-long-recording"
+    ):
+        fail("--macro-resume requires --macro-long-recording-only or --only macro-long-recording")
+    if world_opt is not None and not only_opt:
+        fail("--world requires --only <mode>")
+
+    for spec in MODE_REGISTRY:
+        if spec.only_flag and getattr(args, _flag_dest(spec.only_flag), False):
+            return spec, None, None
+        if spec.world_flag:
+            world_value = getattr(args, _flag_dest(spec.world_flag), None)
+            if world_value:
+                return spec, world_value, None
+
+    if only_opt:
+        if only_opt in _MODE_MAP:
+            spec = _MODE_MAP[only_opt]
+            if spec.requires_world and not world_opt:
+                fail(f"--only {spec.name} requires --world WORLD")
+            if world_opt is not None and not spec.accepts_world:
+                fail(f"--only {spec.name} does not accept --world")
+            return spec, world_opt, None
+        sections = _parse_default_sections(only_opt)
+        if sections is not None:
+            if world_opt is not None:
+                fail("--only default does not accept --world")
+            return None, None, sections or None
+        fail(f"unknown mode or default section: {only_opt!r} (use --list)")
+
+    return None, None, None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
-    if args.client_io_only or args.mod_core_only:
-        # Reuse the bounded regression fixtures; no game commands, input or
-        # live diagnostics are needed to verify these client-side workflows.
-        suites = (
-            ["tests.test_mod_models"]
-            if args.mod_core_only
-            else [
-                "tests.test_transport.SessionTests",
-                "tests.test_transport_stress",
-                "tests.test_transport.LineDecoderTests",
-                "tests.test_recording_commands",
-                "tests.test_mod_agent.RecordingIntegrationTests",
-                "tests.test_dev_config",
-                "tests.test_dev.GameShutdownTests",
-                "tests.test_spool",
-            ]
-        )
-        return subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "unittest",
-                *suites,
-                "-v",
-            ],
-            cwd=ROOT,
-            check=False,
-        ).returncode
-    if args.macro_resume and not args.macro_long_recording_only:
-        parser.error("--macro-resume requires --macro-long-recording-only")
+    if args.list:
+        print(_format_mode_list())
+        return 0
     if args.stress_cycles < 0 or (args.stress_world and args.stress_cycles < 10):
         parser.error(
             "--stress-cycles must be nonnegative; --stress-world requires at least 10 cycles"
         )
+
+    spec, world, default_sections = _resolve_selection(args, parser)
+    if spec is not None and spec.offline_suites:
+        return subprocess.run(
+            [sys.executable, "-m", "unittest", *spec.offline_suites, "-v"],
+            cwd=ROOT,
+            check=False,
+        ).returncode
 
     checks = Checks(require_complete=args.require_complete)
     try:
@@ -428,7 +744,15 @@ def main(argv: list[str] | None = None) -> int:
     result = 0
     try:
         observation.start()
-        result = run_live(client, checks, args, observation)
+        result = run_live(
+            client,
+            checks,
+            args,
+            observation,
+            mode=spec,
+            world=world,
+            default_sections=default_sections,
+        )
     except WorldLost as exc:
         checks.check("aborted_world_left", False, str(exc))
         try:
@@ -449,214 +773,32 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_live(
-    client: ModClient, checks: Checks, args: argparse.Namespace, observation: ViolationObservation
+    client: ModClient,
+    checks: Checks,
+    args: argparse.Namespace,
+    observation: ViolationObservation,
+    *,
+    mode: ModeSpec | None = None,
+    world: str | None = None,
+    default_sections: tuple[str, ...] | None = None,
 ) -> int:
-    if args.sdk_boundaries_only:
+    if mode is None and default_sections is None:
+        mode, world, default_sections = _resolve_selection(args, None)
+
+    if mode is not None:
         try:
-            check_sdk_boundaries(client, checks)
+            if mode.lock_input:
+                client.input_lock(True)
+            mode.runner(client, checks, args, observation, world)
         except WorldLost:
-            raise
-        except (ModPipeError, OSError, ValueError, KeyError) as exc:
-            checks.check("sdk_boundaries_error", False, str(exc))
-        return 0
-
-    if args.diagnostic_export_only:
-        try:
-            check_diagnostic_export(client, checks)
-        except (ModPipeError, OSError, ValueError, KeyError) as exc:
-            checks.check("diagnostic_export_error", False, str(exc))
-        return 0
-
-    if args.connection_only:
-        try:
-            check_connection_lifecycle(client, checks)
-        except (ModPipeError, OSError, ValueError, subprocess.SubprocessError) as exc:
-            checks.check("connection_lifecycle_error", False, str(exc))
-        return 0
-
-    if args.overhead_only:
-        try:
-            check_overhead_window(client, checks, wrap=True)
-        except WorldLost:
-            raise
-        except (ModPipeError, OSError, ValueError) as exc:
-            checks.check("overhead_window_error", False, str(exc))
-        return 0
-
-    if (
-        args.record_medium_only
-        or args.packet_tap_only
-        or args.violation_only
-        or args.packet_injection_only
-        or args.packet_injection_world
-        or args.teleport_only
-        or args.teleport_world
-        or args.tick_recovery_only
-        or args.tick_recovery_world
-        or args.hot_reload_only
-        or args.lifecycle_prepare_only
-        or args.callback_drain_only
-        or args.controls_only
-        or args.player_identity_only
-        or args.player_identity_world
-        or args.flight_only
-        or args.flight_world
-        or args.input_events_only
-        or args.input_events_world
-        or args.ecs_capture_only
-        or args.ecs_capture_world
-        or args.query_capture_only
-        or args.query_lifecycle_world
-        or args.macro_limit_only
-        or args.macro_long_recording_only
-        or args.entry_lifecycle_world
-        or args.tick_stream_only
-        or args.tick_stream_world
-        or args.macro_capture_only
-        or args.macro_capture_world
-        or args.tick_safety_only
-        or args.tick_safety_world
-        or args.binary_capture_only
-        or args.binary_capture_world
-        or args.macro_playback_only
-        or args.macro_playback_world
-    ):
-        try:
-            client.input_lock(True)
-            if args.record_medium_only:
-                check_block_identity(client, checks)
-                check_record_medium(client, checks)
-            elif args.packet_tap_only:
-                check_packet_tap(client, checks)
-            elif args.violation_only:
-                with observation.gap("violation_selftest"):
-                    check_violation_watch(client, checks)
-                check_send_probe(client, checks)
-            elif args.packet_injection_only or args.packet_injection_world:
-                check_packet_injection(client, checks, args.packet_injection_world)
-            elif args.tick_recovery_only or args.tick_recovery_world:
-                check_tick_recovery(client, checks, args.tick_recovery_world)
-            elif args.hot_reload_only:
-                with observation.reload_gap():
-                    check_hot_reload(client, checks, close_client=False)
-            elif args.lifecycle_prepare_only:
-                check_lifecycle_prepare(client, checks)
-            elif args.callback_drain_only:
-                with observation.reload_gap():
-                    check_callback_drain(client, checks)
-            elif args.teleport_only or args.teleport_world:
-                check_teleport(client, checks, args.teleport_world)
-            elif args.controls_only:
-                check_input_mode_contract(client, checks)
-                check_controls(client, checks)
-            elif args.player_identity_only or args.player_identity_world:
-                check_player_identity(client, checks, args.player_identity_world)
-            elif args.flight_only or args.flight_world:
-                check_flight(client, checks, args.flight_world)
-            elif args.input_events_only or args.input_events_world:
-                check_input_events(client, checks, args.input_events_world)
-            elif args.ecs_capture_only or args.ecs_capture_world:
-                check_ecs_capture(client, checks, args.ecs_capture_world)
-            elif args.macro_playback_only or args.macro_playback_world:
-                check_macro_playback(client, checks, args.macro_playback_world)
-            elif args.binary_capture_only or args.binary_capture_world:
-                check_binary_capture(client, checks, args.binary_capture_world)
-            elif args.tick_safety_only or args.tick_safety_world:
-                check_tick_safety(client, checks, args.tick_safety_world)
-            elif args.macro_capture_only or args.macro_capture_world:
-                check_macro_capture(client, checks, args.macro_capture_world)
-            elif args.tick_stream_only or args.tick_stream_world:
-                check_tick_streams(client, checks, args.tick_stream_world)
-            elif args.entry_lifecycle_world:
-                check_entry_lifecycle(client, checks, args.entry_lifecycle_world)
-            elif args.macro_limit_only:
-                check_macro_record_limits(client, checks)
-            elif args.macro_long_recording_only:
-                if args.macro_resume:
-                    check_macro_long_recording(client, checks, resume=True)
-                else:
-                    check_macro_long_recording(client, checks)
-            elif args.query_lifecycle_world:
-                check_query_lifecycle(client, checks, args.query_lifecycle_world)
-            else:
-                check_query_capture(client, checks)
-        except WorldLost:
-            raise
-        except (ModPipeError, OSError, ValueError) as exc:
-            name = (
-                "record_medium_error"
-                if args.record_medium_only
-                else "packet_tap_error"
-                if args.packet_tap_only
-                else "violation_watch_error"
-                if args.violation_only
-                else "packet_injection_error"
-                if args.packet_injection_only or args.packet_injection_world
-                else "tick_recovery_error"
-                if args.tick_recovery_only or args.tick_recovery_world
-                else "hot_reload_error"
-                if args.hot_reload_only
-                else "lifecycle_prepare_error"
-                if args.lifecycle_prepare_only
-                else "callback_drain_error"
-                if args.callback_drain_only
-                else "teleport_error"
-                if args.teleport_only or args.teleport_world
-                else "controls_error"
-                if args.controls_only
-                else "identity_error"
-                if args.player_identity_only or args.player_identity_world
-                else "flight_error"
-                if args.flight_only or args.flight_world
-                else "input_events_error"
-                if args.input_events_only or args.input_events_world
-                else "ecs_capture_error"
-                if args.ecs_capture_only or args.ecs_capture_world
-                else "macro_playback_error"
-                if args.macro_playback_only or args.macro_playback_world
-                else "binary_capture_error"
-                if args.binary_capture_only or args.binary_capture_world
-                else "tick_safety_error"
-                if args.tick_safety_only or args.tick_safety_world
-                else "macro_capture_error"
-                if args.macro_capture_only or args.macro_capture_world
-                else "macro_limit_error"
-                if args.macro_limit_only
-                else "macro_long_recording_error"
-                if args.macro_long_recording_only
-                else "query_capture_error"
-            )
-            checks.check(name, False, str(exc))
+            if mode.propagate_world_lost:
+                raise
+        except mode.catch as exc:
+            checks.check(mode.error_name, False, str(exc))
         finally:
-            with contextlib.suppress(ModPipeError):
-                client.input_lock(False)
-        return 0
-
-    if args.use_lifecycle_only:
-        try:
-            check_use_lifecycle(client, checks)
-        except WorldLost:
-            raise
-        except (ModPipeError, OSError, ValueError) as exc:
-            checks.check("use_lifecycle_error", False, str(exc))
-        return 0
-
-    if args.mod_core_live_only:
-        try:
-            check_mod_core_live(client, checks)
-        except WorldLost:
-            raise
-        except (ModPipeError, OSError, ValueError) as exc:
-            checks.check("mod_core_live_error", False, str(exc))
-        return 0
-
-    if args.chat_lifecycle_world:
-        try:
-            check_chat_lifecycle(client, checks, args.chat_lifecycle_world)
-        except WorldLost:
-            raise
-        except (ModPipeError, OSError, ValueError) as exc:
-            checks.check("chat_lifecycle_error", False, str(exc))
+            if mode.lock_input:
+                with contextlib.suppress(ModPipeError):
+                    client.input_lock(False)
         return 0
 
     return check_default_suite(
@@ -667,6 +809,7 @@ def run_live(
         require_world=require_world,
         wait_ticks=wait_ticks,
         dump_packet_tap=dump_packet_tap,
+        sections=default_sections,
     )
 
 

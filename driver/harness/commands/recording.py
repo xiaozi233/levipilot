@@ -6,12 +6,12 @@ import contextlib
 from collections.abc import Callable
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModProtocolError
 from ..record import RecordEntry, decode_dump
+from ._protocol import PipeMixinBase
 
 
-class RecordingCommands(PipeConnection):
+class RecordingCommands(PipeMixinBase):
     def start(self, max_ticks: int = 0) -> dict[str, Any]:
         return self.request({"cmd": "start", "max_ticks": int(max_ticks)}, "started")
 

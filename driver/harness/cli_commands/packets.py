@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from ..commands import ModClient
+from ._emit import emit_json
 
 COMMANDS = frozenset(
     {
@@ -17,28 +17,22 @@ COMMANDS = frozenset(
 )
 
 
-def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
+def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> int | None:
     if args.command == "packet-capture":
-        print(
-            json.dumps(
-                client.packet_capture(
-                    not args.off,
-                    ids=args.ids,
-                    sample=args.sample,
-                    directions=args.directions,
-                    serialize_ids=args.serialize_ids,
-                ),
-                ensure_ascii=False,
-            )
+        return emit_json(
+            client.packet_capture(
+                not args.off,
+                ids=args.ids,
+                sample=args.sample,
+                directions=args.directions,
+                serialize_ids=args.serialize_ids,
+            ),
+            ensure_ascii=False,
         )
-        return True
     if args.command == "packet-drain":
-        print(json.dumps(client.packet_drain(args.since, args.limit), ensure_ascii=False))
-        return True
+        return emit_json(client.packet_drain(args.since, args.limit), ensure_ascii=False)
     if args.command == "packet-bytes":
-        print(json.dumps(client.packet_bytes(args.since, args.limit), ensure_ascii=False))
-        return True
+        return emit_json(client.packet_bytes(args.since, args.limit), ensure_ascii=False)
     if args.command == "packet-stats":
-        print(json.dumps(client.packet_stats(), ensure_ascii=False))
-        return True
-    return False
+        return emit_json(client.packet_stats(), ensure_ascii=False)
+    return None

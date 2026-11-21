@@ -10,18 +10,26 @@ import contextlib
 import ctypes
 import json
 import msvcrt
+import os
 import queue
 import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Any, Self, cast
 
 from .errors import ModDisconnected, ModPipeError, ModProtocolError, ModTimeout
-from .protocol import DEFAULT_TIMEOUT, PIPE_NAME, HelloEvent, LineDecoder, kernel32
+from .protocol import (
+    DEFAULT_TIMEOUT,
+    PIPE_NAME,
+    HelloEvent,
+    LineDecoder,
+    LineTooLongError,
+    kernel32,
+)
 
 # Win32 errors seen when the pipe cannot be opened, with the action that
 # actually fixes them. "Invalid argument" on its own sends people hunting the
@@ -51,10 +59,13 @@ class _PipeStream:
     """Reader-owned I/O, without callbacks that could retain the client."""
 
     handle: Any = None
-    lines: queue.Queue[dict[str, Any]] = field(default_factory=lambda: queue.Queue(maxsize=8192))
+    lines: queue.Queue[dict[str, Any]] = field(default_factory=lambda: queue.Queue(maxsize=20000))
     stopped: threading.Event = field(default_factory=threading.Event)
     reader: threading.Thread | None = None
     failure: str = "pipe 已关闭（游戏退出或 mod 被卸载）"
+    drop_events: frozenset[str] = field(default_factory=frozenset)
+    dropped: int = 0
+    _drop_lock: threading.Lock = field(default_factory=threading.Lock)
     _close_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def close(self) -> None:
@@ -87,6 +98,7 @@ class _PipeSession:
     consumers: dict[str, dict[object, Callable[[dict[str, Any]], None]]] = field(
         default_factory=dict
     )
+    next_req_id: int = 0
 
 
 class PipeConnection:
@@ -97,19 +109,40 @@ class PipeConnection:
         pipe_name: str = PIPE_NAME,
         connect_timeout: float = 10.0,
         timeout: float = DEFAULT_TIMEOUT,
+        token: str | None = None,
     ) -> None:
         self.pipe_name = pipe_name
         self.connect_timeout = connect_timeout
         self.timeout = timeout
+        self.token = os.environ.get("LEVIPILOT_PIPE_TOKEN") if token is None else token
         self.protocol = 0
         self.hello: HelloEvent = HelloEvent(protocol=0, spool="", capabilities=[])
+        self._drop_events: frozenset[str] = frozenset()
         self._session = _PipeSession()
         self._exchange_lock = threading.RLock()
+
+    def set_drop_events(self, events: Iterable[str] | None = ("tick",)) -> None:
+        """Opt in to dropping named high-frequency events when queues fill."""
+        names = frozenset(str(name) for name in events) if events else frozenset()
+        with self.exchange():
+            self._drop_events = names
+            stream = self._session.stream
+            with stream._drop_lock:
+                stream.drop_events = names
+
+    def dropped_events(self) -> int:
+        stream = self._session.stream
+        with stream._drop_lock:
+            return stream.dropped
 
     @property
     def connected(self) -> bool:
         stream = self._session.stream
         return stream.handle is not None and not stream.stopped.is_set()
+
+    def _supports_req_id(self) -> bool:
+        caps = self.hello.get("capabilities")
+        return isinstance(caps, list) and "req_id" in caps
 
     @contextlib.contextmanager
     def exchange(self) -> Iterator[None]:
@@ -138,7 +171,7 @@ class PipeConnection:
                 time.sleep(0.2)
                 continue
 
-            stream = _PipeStream(handle=handle)
+            stream = _PipeStream(handle=handle, drop_events=self._drop_events)
             session = _PipeSession(stream=stream)
             self._session = session
             # The finalizer holds only I/O state. Neither it nor the worker may
@@ -157,6 +190,18 @@ class PipeConnection:
                     raise ModPipeError(f"握手失败：{hello!r}")
                 self.protocol = int(hello.get("protocol", 0))
                 self.hello = cast(HelloEvent, hello)
+                if hello.get("auth_required"):
+                    if not self.token:
+                        raise ModProtocolError("auth_required: set token or LEVIPILOT_PIPE_TOKEN")
+                    auth_reply = self.request(
+                        {"cmd": "auth", "token": self.token},
+                        ("auth_result", "error"),
+                        timeout=self.connect_timeout,
+                    )
+                    if not auth_reply.get("ok"):
+                        raise ModProtocolError(
+                            f"管道认证失败：{auth_reply.get('reason', auth_reply)}"
+                        )
             except BaseException:
                 self._disconnect(session)
                 raise
@@ -213,9 +258,27 @@ class PipeConnection:
                     except json.JSONDecodeError:
                         continue
                     if isinstance(message, dict):
-                        stream.lines.put_nowait(message)
+                        with stream._drop_lock:
+                            drop_events = stream.drop_events
+                        event_name = str(message.get("event", ""))
+                        if drop_events and event_name in drop_events and stream.lines.maxsize > 0:
+                            reserve = min(64, max(1, stream.lines.maxsize // 4))
+                            if stream.lines.qsize() >= max(1, stream.lines.maxsize - reserve):
+                                with stream._drop_lock:
+                                    stream.dropped += 1
+                                continue
+                        try:
+                            stream.lines.put_nowait(message)
+                        except queue.Full:
+                            if drop_events and event_name in drop_events:
+                                with stream._drop_lock:
+                                    stream.dropped += 1
+                                continue
+                            raise
         except queue.Full:
             stream.failure = "pipe 接收队列溢出；连接已终止"
+        except LineTooLongError as exc:
+            stream.failure = f"pipe 单行超过上限：{exc}；连接已终止"
         except (OSError, ValueError):
             pass
         finally:
@@ -315,6 +378,22 @@ class PipeConnection:
 
     def _defer(self, message: dict[str, Any]) -> None:
         if len(self._session.pending) >= 4096:
+            stream = self._session.stream
+            with stream._drop_lock:
+                drop_events = stream.drop_events
+            if drop_events:
+                event_name = str(message.get("event", ""))
+                if event_name in drop_events:
+                    with stream._drop_lock:
+                        stream.dropped += 1
+                    return
+                for index, queued in enumerate(self._session.pending):
+                    if str(queued.get("event", "")) in drop_events:
+                        del self._session.pending[index]
+                        self._session.pending.append(message)
+                        with stream._drop_lock:
+                            stream.dropped += 1
+                        return
             self.close()
             raise ModProtocolError("未消费事件超过 4096 条；请通过 readline 消费或停止录制")
         self._session.pending.append(message)
@@ -351,6 +430,13 @@ class PipeConnection:
                     raise ModTimeout(f"等待 {names} 超时")
                 row = self._next_line(remaining)
                 if row.get("event") == "error" and "error" not in names:
+                    if self._supports_req_id() and (
+                        row.get("req_id") is not None
+                        or row.get("phase")
+                        in ("tick_pre", "tick_post", "spool_thread", "record_tick", "macro_record")
+                    ):
+                        self._defer(row)
+                        continue
                     raise ModProtocolError(str(row.get("reason", row)))
                 if matches(row):
                     return row
@@ -364,7 +450,22 @@ class PipeConnection:
     ) -> dict[str, Any]:
         with self.exchange():
             wait = self.timeout if timeout is None else timeout
-            self.send(message)
+            session = self._session
+            req_id: int | None = None
+            outgoing = message
+            if "req_id" in message:
+                raw_req_id = message["req_id"]
+                if (
+                    isinstance(raw_req_id, int)
+                    and not isinstance(raw_req_id, bool)
+                    and raw_req_id > 0
+                ):
+                    req_id = raw_req_id
+            elif self._supports_req_id():
+                session.next_req_id += 1
+                req_id = session.next_req_id
+                outgoing = {**message, "req_id": req_id}
+            self.send(outgoing)
             deadline = time.monotonic() + wait
             while True:
                 remaining = deadline - time.monotonic()
@@ -380,8 +481,24 @@ class PipeConnection:
                 event = reply.get("event")
                 names = (expect,) if isinstance(expect, str) else expect
                 if event == "error" and (names is None or "error" not in names):
-                    raise ModProtocolError(f"{message.get('cmd')}: {reply.get('reason', reply)}")
+                    if req_id is None:
+                        raise ModProtocolError(
+                            f"{message.get('cmd')}: {reply.get('reason', reply)}"
+                        )
+                    reply_req_id = reply.get("req_id")
+                    if reply_req_id == req_id or (
+                        reply_req_id is None
+                        and reply.get("reason") in ("bad_json", "line_too_long")
+                    ):
+                        raise ModProtocolError(
+                            f"{message.get('cmd')}: {reply.get('reason', reply)}"
+                        )
+                    self._defer(reply)
+                    continue
                 if names is None or event in names:
+                    if req_id is not None and "req_id" in reply and reply.get("req_id") != req_id:
+                        self._defer(reply)
+                        continue
                     return reply
                 self._defer(reply)
 

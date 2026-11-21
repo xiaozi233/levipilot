@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Any
 
 from ..commands import ModClient
+from ._emit import emit_json
 
 COMMANDS = frozenset(
     {
@@ -26,53 +26,40 @@ COMMANDS = frozenset(
 )
 
 
-def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
+def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> int | None:
     if args.command == "mem-read":
-        print(json.dumps(client.mem_read(args.addr, args.len), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.mem_read(args.addr, args.len), ensure_ascii=False, indent=2)
     if args.command == "mem-write":
-        print(json.dumps(client.mem_write(args.addr, args.hex), ensure_ascii=False))
-        return True
+        return emit_json(client.mem_write(args.addr, args.hex), ensure_ascii=False)
     if args.command == "probe":
-        print(
-            json.dumps(
-                client.probe(args.addr, args.kind, length=args.len),
-                ensure_ascii=False,
-                indent=2,
-            )
+        return emit_json(
+            client.probe(args.addr, args.kind, length=args.len),
+            ensure_ascii=False,
+            indent=2,
         )
-        return True
     if args.command == "watch-set":
         sample_options: dict[str, Any] = {"sample": True} if args.sample else {}
-        print(
-            json.dumps(
-                client.watch_set(
-                    args.addr,
-                    size=args.size,
-                    mode=args.mode,
-                    thread=args.thread,
-                    tag=args.tag,
-                    **sample_options,
-                ),
-                ensure_ascii=False,
-            )
+        return emit_json(
+            client.watch_set(
+                args.addr,
+                size=args.size,
+                mode=args.mode,
+                thread=args.thread,
+                tag=args.tag,
+                **sample_options,
+            ),
+            ensure_ascii=False,
         )
-        return True
     if args.command == "watch-clear":
-        print(json.dumps(client.watch_clear(args.id, all=args.all), ensure_ascii=False))
-        return True
+        return emit_json(client.watch_clear(args.id, all=args.all), ensure_ascii=False)
     if args.command == "watch-list":
-        print(json.dumps(client.watch_list(), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.watch_list(), ensure_ascii=False, indent=2)
     if args.command == "watch-drain":
-        print(
-            json.dumps(
-                client.watch_drain(args.since, limit=args.limit),
-                ensure_ascii=False,
-                indent=2,
-            )
+        return emit_json(
+            client.watch_drain(args.since, limit=args.limit),
+            ensure_ascii=False,
+            indent=2,
         )
-        return True
     if args.command == "hook-install":
         symbol = None if args.va else args.symbol
         extra = {}
@@ -83,37 +70,28 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                 "mem_size": args.mem_size,
                 "mem_deref": args.mem_deref,
             }
-        print(
-            json.dumps(
-                client.hook_install(
-                    symbol,
-                    va=args.va,
-                    tag=args.tag,
-                    sample=args.sample,
-                    dry_run=args.dry_run,
-                    **extra,
-                ),
-                ensure_ascii=False,
-                indent=2,
-            )
+        return emit_json(
+            client.hook_install(
+                symbol,
+                va=args.va,
+                tag=args.tag,
+                sample=args.sample,
+                dry_run=args.dry_run,
+                **extra,
+            ),
+            ensure_ascii=False,
+            indent=2,
         )
-        return True
     if args.command == "hook-rm":
-        print(json.dumps(client.hook_rm(args.id), ensure_ascii=False))
-        return True
+        return emit_json(client.hook_rm(args.id), ensure_ascii=False)
     if args.command == "hook-list":
-        print(json.dumps(client.hook_list(), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.hook_list(), ensure_ascii=False, indent=2)
     if args.command == "hook-drain":
-        print(
-            json.dumps(
-                client.hook_drain(args.since, limit=args.limit),
-                ensure_ascii=False,
-                indent=2,
-            )
+        return emit_json(
+            client.hook_drain(args.since, limit=args.limit),
+            ensure_ascii=False,
+            indent=2,
         )
-        return True
     if args.command == "hook-call":
-        print(json.dumps(client.hook_call(args.symbol, args.scale), ensure_ascii=False))
-        return True
-    return False
+        return emit_json(client.hook_call(args.symbol, args.scale), ensure_ascii=False)
+    return None

@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from ctypes import wintypes
 from pathlib import Path
 
@@ -34,9 +35,16 @@ if __package__ in (None, ""):
 from driver.harness import ModClient, ModPipeError, ModTimeout
 from driver.harness.lab import capture_disconnect_report, world_state
 
-DEFAULT_VERSION = (
-    Path(os.environ.get("APPDATA", "")) / "levilauncher.exe" / "versions" / "1.26.51.01"
-)
+
+def _default_version_dir() -> Path:
+    override = os.environ.get("LEVIPILOT_VERSION_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    version = os.environ.get("LEVIPILOT_VERSION", "").strip() or "1.26.51.01"
+    return Path(os.environ.get("APPDATA", "")) / "levilauncher.exe" / "versions" / version
+
+
+DEFAULT_VERSION = _default_version_dir()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MOD_BUILD = REPO_ROOT / "mod" / "probe"
 
@@ -45,6 +53,39 @@ XMAKE_ENV = {
     "XMAKE_PKG_INSTALLDIR": r"D:\Tools\xmake-packages",
 }
 XMAKE_PATH = r"D:\Tools\LLVM22\bin;D:\Tools\xmake"
+
+
+def _build_xmake_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base_env is None else base_env)
+    for key, fallback in XMAKE_ENV.items():
+        if not env.get(key) and Path(fallback).exists():
+            env[key] = fallback
+
+    candidates: list[Path] = []
+    llvm_root = env.get("LEVIPILOT_LLVM_ROOT", "").strip()
+    if llvm_root:
+        candidates.append(Path(llvm_root) / "bin")
+    xmake_dir = env.get("LEVIPILOT_XMAKE_DIR", "").strip()
+    if xmake_dir:
+        candidates.append(Path(xmake_dir))
+    for entry in XMAKE_PATH.split(";"):
+        if entry:
+            candidates.append(Path(entry))
+
+    existing_parts = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+    seen = {os.path.normcase(os.path.normpath(part)) for part in existing_parts}
+    prepend: list[str] = []
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        text = str(candidate)
+        norm = os.path.normcase(os.path.normpath(text))
+        if norm not in seen:
+            seen.add(norm)
+            prepend.append(text)
+    if prepend:
+        env["PATH"] = os.pathsep.join([*prepend, *existing_parts])
+    return env
 
 
 def log(message: str) -> None:
@@ -323,9 +364,7 @@ def _log_isolated_desktop_hint() -> None:
 
 
 def build_mod() -> None:
-    env = os.environ.copy()
-    env["PATH"] = XMAKE_PATH + ";" + env.get("PATH", "")
-    env.update(XMAKE_ENV)
+    env = _build_xmake_env()
     log(f"building {MOD_BUILD} ...")
     result = subprocess.run(["xmake", "-j4", "-y"], cwd=MOD_BUILD, env=env)
     if result.returncode != 0:

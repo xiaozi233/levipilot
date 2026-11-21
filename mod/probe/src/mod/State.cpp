@@ -335,6 +335,7 @@ void ProbeMod::drainQueries() {
     drainEcs();
     auto const now     = GetTickCount64();
     auto       publish = [&](auto& done, nlohmann::json out) {
+        attachReqId(out, done.reqId);
         auto line = out.dump();
         // A fast client may submit again as soon as enqueue exposes the line.
         // Release the snapshot before making its response visible.

@@ -7,6 +7,8 @@ underneath a script.
 
 from __future__ import annotations
 
+import os
+import queue
 import threading
 import unittest
 from unittest.mock import patch
@@ -14,7 +16,9 @@ from unittest.mock import patch
 import driver.harness as public_api
 import driver.harness.client as client_api
 import driver.transport_mod as legacy_api
+from driver.harness.commands.session import SessionCommands
 from driver.harness.connection import PipeConnection, _PipeSession, _PipeStream, pipe_error_hint
+from driver.harness.protocol import MAX_LINE_BYTES, LineTooLongError
 from driver.transport_mod import (
     Harness,
     LineDecoder,
@@ -73,6 +77,20 @@ class LineDecoderTests(unittest.TestCase):
             self.assertEqual(decoder.feed(fragment), [])
         self.assertEqual(decoder.feed(b"\nlast\n"), ["x" * (256 * 1024), "last"])
         self.assertEqual(decoder.pending(), b"")
+
+    def test_line_limit_rejects_oversized_lines_and_resets_buffer(self) -> None:
+        self.assertEqual(MAX_LINE_BYTES, 16 * 1024 * 1024)
+        decoder = LineDecoder(max_line_bytes=8)
+        self.assertEqual(decoder.feed(b"12345678\r"), [])
+        self.assertEqual(decoder.feed(b"\nok\n"), ["12345678", "ok"])
+        with self.assertRaises(LineTooLongError):
+            decoder.feed(b"123456789\n")
+        self.assertEqual(decoder.pending(), b"")
+        with self.assertRaises(LineTooLongError):
+            decoder.feed(b"12345")
+            decoder.feed(b"6789")
+        self.assertEqual(decoder.pending(), b"")
+        self.assertEqual(decoder.feed(b"fresh\n"), ["fresh"])
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -253,6 +271,80 @@ class RequestTests(unittest.TestCase):
         with self.assertRaises(ModProtocolError) as caught:
             client.request({"cmd": "state"}, "state")
         self.assertIn("not_in_world", str(caught.exception))
+
+    def test_req_id_ignores_unrelated_async_errors_and_stale_replies(self) -> None:
+        client = FakeClient()
+        client.hello = {"protocol": 4, "spool": "", "capabilities": ["req_id"]}
+        outgoing = {"cmd": "ping"}
+        client._session.stream.lines.put(
+            {"event": "error", "phase": "tick_pre", "reason": "internal_error"}
+        )
+        client._session.stream.lines.put(
+            {"event": "error", "phase": "teleport", "reason": "panic", "req_id": 99}
+        )
+        client._session.stream.lines.put({"event": "pong", "req_id": 99, "stale": True})
+        client._session.stream.lines.put({"event": "pong", "req_id": 1, "stale": False})
+
+        reply = client.request(outgoing, "pong")
+        self.assertFalse(reply["stale"])
+        self.assertEqual(outgoing, {"cmd": "ping"})
+        self.assertEqual(client.sent, [{"cmd": "ping", "req_id": 1}])
+        self.assertEqual(client.readline()["phase"], "tick_pre")
+        self.assertEqual(client.readline()["req_id"], 99)
+        self.assertTrue(client.readline()["stale"])
+
+    def test_req_id_raises_on_matching_or_framing_errors(self) -> None:
+        for error_row in (
+            {"event": "error", "reason": "bad_param", "req_id": 1},
+            {"event": "error", "reason": "bad_json"},
+            {"event": "error", "reason": "line_too_long"},
+        ):
+            with self.subTest(error_row=error_row):
+                client = FakeClient()
+                client.hello = {"protocol": 4, "spool": "", "capabilities": ["req_id"]}
+                client._session.stream.lines.put(error_row)
+                with self.assertRaises(ModProtocolError):
+                    client.request({"cmd": "state"}, "state")
+
+    def test_wait_event_defers_background_errors_when_req_id_supported(self) -> None:
+        client = FakeClient()
+        client.hello = {"protocol": 4, "spool": "", "capabilities": ["req_id"]}
+        client._session.stream.lines.put(
+            {"event": "error", "phase": "tick_post", "reason": "internal_error"}
+        )
+        client._session.stream.lines.put(
+            {"event": "error", "phase": "teleport", "reason": "cancelled", "req_id": 5}
+        )
+        client._session.stream.lines.put({"event": "navigated", "task_id": 7, "ok": True})
+        done = client.wait_event("navigated", predicate=lambda r: r.get("task_id") == 7)
+        self.assertTrue(done["ok"])
+        self.assertEqual(client.readline()["phase"], "tick_post")
+        self.assertEqual(client.readline()["req_id"], 5)
+
+    def test_read_loop_records_line_too_long_failure(self) -> None:
+        class Pipe:
+            def close(self) -> None:
+                pass
+
+            def fileno(self) -> int:
+                return 1
+
+            def read(self, size: int) -> bytes:
+                return b"x" * size
+
+        stream = _PipeStream(handle=Pipe())
+        with (
+            patch("driver.harness.connection.msvcrt.get_osfhandle", return_value=1),
+            patch(
+                "driver.harness.connection.kernel32.PeekNamedPipe",
+                side_effect=lambda _h, _b, _s, _r, avail, _l: (
+                    setattr(avail._obj, "value", MAX_LINE_BYTES + 128) or True
+                ),
+            ),
+        ):
+            PipeConnection._read_loop(stream)
+        self.assertIn("单行超过上限", stream.failure)
+        self.assertTrue(stream.stopped.is_set())
 
     def test_timeout_raises_and_closes(self) -> None:
         client = FakeClient()
@@ -636,6 +728,152 @@ class PipeHintTests(unittest.TestCase):
         error = OSError(22, "Invalid argument")
         error.winerror = 1234  # type: ignore[attr-defined]
         self.assertIn("已进入存档", pipe_error_hint(error))
+
+
+class AuthAndBackpressureTests(unittest.TestCase):
+    def test_auth_handshake_with_explicit_token_and_env(self) -> None:
+        hello = {
+            "event": "hello",
+            "protocol": 4,
+            "spool": "",
+            "capabilities": ["req_id"],
+            "auth_required": True,
+        }
+        for use_env in (False, True):
+            with self.subTest(use_env=use_env):
+                pipe = WriteTests.Pipe()
+                env = {"LEVIPILOT_PIPE_TOKEN": "env-secret"} if use_env else {}
+                replies = iter([hello, {"event": "auth_result", "ok": True, "req_id": 1}])
+                next_line = lambda *_a, it=replies: next(it)  # noqa: E731
+                with (
+                    patch.dict(os.environ, env, clear=False),
+                    patch("builtins.open", return_value=pipe),
+                    patch("driver.harness.connection.threading.Thread.start"),
+                ):
+                    client = PipeConnection(token=None if use_env else "explicit-secret")
+                    with patch.object(client, "_next_line", side_effect=next_line):
+                        client.connect()
+                self.assertIn(
+                    b'"cmd":"auth"',
+                    bytes(pipe.data),
+                )
+                expected_tok = b"env-secret" if use_env else b"explicit-secret"
+                self.assertIn(expected_tok, bytes(pipe.data))
+                client.close()
+
+    def test_auth_handshake_rejects_missing_or_invalid_token(self) -> None:
+        hello = {
+            "event": "hello",
+            "protocol": 4,
+            "spool": "",
+            "capabilities": ["req_id"],
+            "auth_required": True,
+        }
+        pipe = WriteTests.Pipe()
+        with patch.dict(os.environ, {"LEVIPILOT_PIPE_TOKEN": ""}, clear=False):
+            client = PipeConnection(token="")
+            with (
+                patch("builtins.open", return_value=pipe),
+                patch("driver.harness.connection.threading.Thread.start"),
+                patch.object(client, "_next_line", return_value=hello),
+                self.assertRaisesRegex(ModProtocolError, "auth_required"),
+            ):
+                client.connect()
+        self.assertTrue(pipe.closed)
+
+        pipe2 = WriteTests.Pipe()
+        client2 = PipeConnection(token="wrong")
+        replies = iter([hello, {"event": "error", "reason": "bad_token", "req_id": 1}])
+        with (
+            patch("builtins.open", return_value=pipe2),
+            patch("driver.harness.connection.threading.Thread.start"),
+            patch.object(client2, "_next_line", side_effect=lambda *_a: next(replies)),
+            self.assertRaisesRegex(ModProtocolError, "bad_token"),
+        ):
+            client2.connect()
+        self.assertTrue(pipe2.closed)
+
+    def test_drop_events_opt_in_in_read_loop_and_defer(self) -> None:
+        class FeedPipe:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+                self.pos = 0
+                self.closed = False
+
+            def fileno(self) -> int:
+                return 1
+
+            def read(self, n: int) -> bytes:
+                chunk = self.payload[self.pos : self.pos + n]
+                self.pos += len(chunk)
+                return chunk
+
+            def close(self) -> None:
+                self.closed = True
+
+        lines_payload = (b'{"event":"tick"}\n' * 6) + b'{"event":"pong"}\n'
+        pipe = FeedPipe(lines_payload)
+        stream = _PipeStream(
+            handle=pipe,
+            lines=queue.Queue(maxsize=4),
+            drop_events=frozenset({"tick"}),
+        )
+
+        def fake_peek(_h, _b, _s, _r, avail, _l) -> bool:
+            remaining = len(pipe.payload) - pipe.pos
+            if remaining <= 0:
+                return False
+            avail._obj.value = remaining
+            return True
+
+        with (
+            patch("driver.harness.connection.msvcrt.get_osfhandle", return_value=1),
+            patch("driver.harness.connection.kernel32.PeekNamedPipe", side_effect=fake_peek),
+        ):
+            PipeConnection._read_loop(stream)
+        queued = []
+        while not stream.lines.empty():
+            queued.append(stream.lines.get_nowait()["event"])
+        self.assertIn("pong", queued)
+        self.assertEqual(queued[-1], "pong")
+        self.assertGreater(stream.dropped, 0)
+        self.assertTrue(stream.stopped.is_set())
+
+        client = FakeClient()
+        self.assertEqual(client._session.stream.lines.maxsize, 20000)
+        client.set_drop_events(("tick",))
+        client._session.pending.extend({"event": "tick"} for _ in range(4096))
+        client._defer({"event": "tick"})
+        self.assertEqual(len(client._session.pending), 4096)
+        self.assertEqual(client.dropped_events(), 1)
+        client._defer({"event": "notice"})
+        self.assertEqual(client._session.pending[-1]["event"], "notice")
+        self.assertEqual(client.dropped_events(), 2)
+
+        client.set_drop_events(())
+        client._session.pending[-1] = {"event": "tick"}
+        with self.assertRaisesRegex(ModProtocolError, "4096"):
+            client._defer({"event": "tick"})
+
+    def test_command_mixins_do_not_inherit_pipe_connection_and_harness_delegates(self) -> None:
+        self.assertFalse(issubclass(SessionCommands, PipeConnection))
+        for base in ModClient.__bases__:
+            if base is not PipeConnection:
+                self.assertFalse(issubclass(base, PipeConnection))
+
+        uninitialized = Harness.__new__(Harness)
+        with self.assertRaises(AttributeError):
+            _ = uninitialized.ping
+
+        real_harness = Harness.__new__(Harness)
+        real_harness.client = ModClient()
+        self.assertIn("ping", dir(real_harness))
+
+        harness = Harness.__new__(Harness)
+        recorder = HarnessForwardingTests.Recorder()
+        harness.client = recorder  # type: ignore[assignment]
+        harness.ping()
+        self.assertEqual(recorder.calls, [("ping", (), {})])
 
 
 if __name__ == "__main__":

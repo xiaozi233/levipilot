@@ -7,9 +7,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModProtocolError, ModTimeout
 from driver.selftest_runtime import wait_screen, wait_ticks
 from driver.selftest_support import Checks
-from driver.transport_mod import ModClient, ModProtocolError, ModTimeout
 
 
 def check_packet_injection(client: ModClient, checks: Checks, world: str | None = None) -> None:

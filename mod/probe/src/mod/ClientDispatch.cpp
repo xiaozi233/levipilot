@@ -4,16 +4,21 @@ using namespace probe::detail;
 
 namespace probe {
 bool ProbeMod::queueClientTask(std::function<void()> task, std::function<void(char const*)> onFailure, SdkTaskTest test) {
-    auto fail = [this, onFailure](char const* reason, char const* message = "") {
+    std::uint64_t const reqId = activeReqId();
+    auto fail = [this, onFailure, reqId](char const* reason, char const* message = "") {
         if (onFailure) {
             if (!guardedSdkCall([&] { onFailure(reason); })) bootLog("client task: failure handler failed");
-        } else if (std::strcmp(reason, "client_task_failed") == 0)
-            enqueue(nlohmann::json{{"event", "error"}, {"reason", "internal_error"},
-                                  {"phase", "client_task"}, {"message", message}}.dump());
-        else enqueue(nlohmann::json{{"event", "error"}, {"reason", reason}}.dump());
+        } else {
+            ActiveReqIdScope reqScope(reqId);
+            if (std::strcmp(reason, "client_task_failed") == 0)
+                enqueue(nlohmann::json{{"event", "error"}, {"reason", "internal_error"},
+                                      {"phase", "client_task"}, {"message", message}}.dump());
+            else enqueue(nlohmann::json{{"event", "error"}, {"reason", reason}}.dump());
+        }
     };
-    auto tracked = trackedCallback(gCallbacks, CallbackDomain::Client, [this, task = std::move(task), fail, test] {
+    auto tracked = trackedCallback(gCallbacks, CallbackDomain::Client, [this, task = std::move(task), fail, test, reqId] {
         if (!mRunning.load(std::memory_order_acquire)) return;
+        ActiveReqIdScope reqScope(reqId);
         // Report outside the guard: a throwing failure handler must not be
         // mistaken for a second failure of the original task.
         std::string message;

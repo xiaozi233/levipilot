@@ -8,11 +8,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from driver.harness import ModClient
 from driver.harness.errors import ModPipeError, ModProtocolError, ModTimeout
 from driver.harness.lab import inbound_slices
 from driver.selftest_fixtures import CrashSnapshot
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient
 
 ROOT = Path(__file__).resolve().parents[1]
 

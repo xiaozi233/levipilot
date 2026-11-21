@@ -43,131 +43,170 @@ bool ProbeMod::enable() {
     mLifecycleGeneration.store(generation);
     mDisableSerial.store(previous.disable);
     bootLog("enable: begin lifecycle=" + std::to_string(generation));
-    if (!mPacketRequests.templates.initialize()) bootLog("packet templates: allocation failed");
-    mChatCapture.reset();
-    resetQueries();
-    hookResetCalls();
-    bool const keyOk = setLifecycleKeyHook(true);
-    bool const mouseOk = setLifecycleMouseHook(true);
-    bool const playerOk = setLifecyclePlayerHook(true);
-    bool const turnOk = setLifecycleTurnHook(true);
-    if (!(keyOk && mouseOk && playerOk && turnOk)) {
-        mRunning.store(false);
+    mForeground.store(detail::isGameForeground(), std::memory_order_relaxed);
+
+    auto cleanupOnError = [&](char const* message) {
+        bootLog(message);
+        mRunning.store(false, std::memory_order_release);
+        wakeSpool();
+        if (mServerThread.joinable()) mServerThread.join();
+        if (mSpoolThread.joinable()) mSpoolThread.join();
+        if (mMouseListener) {
+            ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
+            mMouseListener.reset();
+        }
+        if (mKeyListener) {
+            ll::event::EventBus::getInstance().removeListener<ll::event::input::KeyInputEvent>(mKeyListener);
+            mKeyListener.reset();
+        }
+        if (mServerCommandListener) {
+            ll::event::EventBus::getInstance().removeListener<ll::event::command::ServerCommandRegisterEvent>(
+                mServerCommandListener
+            );
+            mServerCommandListener.reset();
+        }
+        mCommandRegistry = nullptr;
+        mWorld.stop();
+        watchShutdown();
         stopLifecycleHooks();
-        bootLog("enable: hook installation failed");
-        return false;
-    }
-    bootLog("enable: hooks installed");
-    mPoseEpoch.fetch_add(1);
+        if (mSpoolWakeEvent) {
+            CloseHandle(mSpoolWakeEvent);
+            mSpoolWakeEvent = nullptr;
+        }
+    };
 
-    mMouseListener =
-        ll::event::EventBus::getInstance().emplaceListener<ll::event::input::MouseInputEvent>([this](auto& event) {
-            CallbackScope callback(gCallbacks, CallbackDomain::Event);
-            // MouseAction: ActionMove=0, ActionLeft=1, ActionRight=2, DataDown=1.
-            int const action = static_cast<int>(event.actionButtonId());
-            int const data   = static_cast<int>(event.buttonData());
-            mInputSession.mouseEventCount.fetch_add(1, std::memory_order_relaxed);
-            mInputSession.mouseLastAction = action;
-            mInputSession.mouseLastData = data;
-            if (action >= 0 && action < static_cast<int>(mInputSession.mouseActionCounts.size())) {
-                mInputSession.mouseActionCounts[static_cast<size_t>(action)].fetch_add(1, std::memory_order_relaxed);
-            }
+    try {
+        if (!mPacketRequests.templates.initialize()) bootLog("packet templates: allocation failed");
+        mChatCapture.reset();
+        resetQueries();
+        hookResetCalls();
+        bool const keyOk = setLifecycleKeyHook(true);
+        bool const mouseOk = setLifecycleMouseHook(true);
+        bool const playerOk = setLifecyclePlayerHook(true);
+        bool const turnOk = setLifecycleTurnHook(true);
+        if (!(keyOk && mouseOk && playerOk && turnOk)) {
+            cleanupOnError("enable: hook installation failed");
+            return false;
+        }
+        bootLog("enable: hooks installed");
+        mPoseEpoch.fetch_add(1);
 
-            if (action == 1) {
-                mInputSession.mouseLeft = data != 0;
-                if (data != 0) {
-                    mInputSession.mouseLeftLatch = true;
+        mMouseListener =
+            ll::event::EventBus::getInstance().emplaceListener<ll::event::input::MouseInputEvent>([this](auto& event) {
+                CallbackScope callback(gCallbacks, CallbackDomain::Event);
+                // MouseAction: ActionMove=0, ActionLeft=1, ActionRight=2, DataDown=1.
+                int const action = static_cast<int>(event.actionButtonId());
+                int const data   = static_cast<int>(event.buttonData());
+                mInputSession.mouseEventCount.fetch_add(1, std::memory_order_relaxed);
+                mInputSession.mouseLastAction = action;
+                mInputSession.mouseLastData = data;
+                if (action >= 0 && action < static_cast<int>(mInputSession.mouseActionCounts.size())) {
+                    mInputSession.mouseActionCounts[static_cast<size_t>(action)].fetch_add(1, std::memory_order_relaxed);
                 }
-            } else if (action == 2) {
-                mInputSession.mouseRight = data != 0;
-                if (data != 0) {
-                    mInputSession.mouseRightLatch = true;
+
+                if (action == 1) {
+                    mInputSession.mouseLeft = data != 0;
+                    if (data != 0) {
+                        mInputSession.mouseLeftLatch = true;
+                    }
+                } else if (action == 2) {
+                    mInputSession.mouseRight = data != 0;
+                    if (data != 0) {
+                        mInputSession.mouseRightLatch = true;
+                    }
                 }
-            }
-        });
+            });
 
-    mKeyListener =
-        ll::event::EventBus::getInstance().emplaceListener<ll::event::input::KeyInputEvent>([this](auto& event) {
-            CallbackScope callback(gCallbacks, CallbackDomain::Event);
-            mInputSession.keyEventCount.fetch_add(1, std::memory_order_relaxed);
-            mInputSession.keyLastCode.store(event.keyCode(), std::memory_order_relaxed);
-            mInputSession.keyLastAction.store(static_cast<std::int32_t>(event.action()), std::memory_order_relaxed);
-            if (mInputSession.injecting.load(std::memory_order_relaxed)) {
-                mInputSession.keyInjectedSeen.fetch_add(1, std::memory_order_relaxed);
-            }
-        });
+        mKeyListener =
+            ll::event::EventBus::getInstance().emplaceListener<ll::event::input::KeyInputEvent>([this](auto& event) {
+                CallbackScope callback(gCallbacks, CallbackDomain::Event);
+                mInputSession.keyEventCount.fetch_add(1, std::memory_order_relaxed);
+                mInputSession.keyLastCode.store(event.keyCode(), std::memory_order_relaxed);
+                mInputSession.keyLastAction.store(static_cast<std::int32_t>(event.action()), std::memory_order_relaxed);
+                if (mInputSession.injecting.load(std::memory_order_relaxed)) {
+                    mInputSession.keyInjectedSeen.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
 
-    std::error_code ec;
-    std::filesystem::create_directories(macroDir(), ec);
-
-    // T1: everything printed to the pipe is also spooled to the mod directory.
-    // Resolve an absolute path once so the crash handler works regardless of
-    // the process CWD and never allocates.
-    std::error_code absoluteEc;
-    auto            modDirPath = std::filesystem::absolute(getSelf().getModDir(), absoluteEc);
-    if (absoluteEc) {
-        modDirPath = getSelf().getModDir();
-    }
-    auto const modDir = modDirPath.wstring();
-    if (!modDir.empty() && modDir.size() < std::size(mModDirW)) {
-        std::copy(modDir.begin(), modDir.end(), mModDirW);
-        mModDirW[modDir.size()] = L'\0';
-    }
-    mSpoolPath = modDirPath
-               / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
-    // F6: a reused PID must not append this session to an old spool file.
-    {
         std::error_code ec;
-        if (std::filesystem::exists(mSpoolPath, ec)
-            && std::filesystem::file_size(mSpoolPath, ec) > 0) {
-            auto const pid = std::to_string(GetCurrentProcessId());
-            for (int n = 1; n < 1000; ++n) {
-                auto candidate = modDirPath / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
-                if (!std::filesystem::exists(candidate, ec)) {
-                    std::filesystem::rename(mSpoolPath, candidate, ec);
-                    break;
+        std::filesystem::create_directories(macroDir(), ec);
+
+        // T1: everything printed to the pipe is also spooled to the mod directory.
+        // Resolve an absolute path once so the crash handler works regardless of
+        // the process CWD and never allocates.
+        std::error_code absoluteEc;
+        auto            modDirPath = std::filesystem::absolute(getSelf().getModDir(), absoluteEc);
+        if (absoluteEc) {
+            modDirPath = getSelf().getModDir();
+        }
+        auto const modDir = modDirPath.wstring();
+        if (!modDir.empty() && modDir.size() < std::size(mModDirW)) {
+            std::copy(modDir.begin(), modDir.end(), mModDirW);
+            mModDirW[modDir.size()] = L'\0';
+        }
+        mSpoolPath = modDirPath
+                   / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
+        // F6: a reused PID must not append this session to an old spool file.
+        {
+            std::error_code spoolEc;
+            if (std::filesystem::exists(mSpoolPath, spoolEc)
+                && std::filesystem::file_size(mSpoolPath, spoolEc) > 0) {
+                auto const pid = std::to_string(GetCurrentProcessId());
+                for (int n = 1; n < 1000; ++n) {
+                    auto candidate = modDirPath / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
+                    if (!std::filesystem::exists(candidate, spoolEc)) {
+                        std::filesystem::rename(mSpoolPath, candidate, spoolEc);
+                        break;
+                    }
                 }
             }
         }
+        // VEH owns crash diagnostics and is explicitly removed by watchShutdown().
+        // Do not install a process-global filter that could outlive this DLL.
+        resolveInit(getSelf().getModDir());
+        watchInit();
+        overheadInit();
+
+        mWorld.start();
+        loadAutoConfig();
+        // On a client the mod is enabled at the main window, long before any server
+        // (and its command registry) exists -- registering in enable() crashes.
+        // LeviLamina fires this event while the local server builds its command
+        // tree, which is the documented place for client mods to add server
+        // commands. The registry is rebuilt per world, hence the pointer guard.
+        mServerCommandListener =
+            ll::event::EventBus::getInstance().emplaceListener<ll::event::command::ServerCommandRegisterEvent>(
+                [this](auto& event) {
+                    CallbackScope callback(gCallbacks, CallbackDomain::Event);
+                    if (!callback.admitted()) return;
+                    if (!guardedSdkCall([&] { registerCommands(event.commandRegistry()); }))
+                        bootLog("command: registration event failed");
+                }
+            );
+        // A reload inside an existing world does not fire the registration event
+        // again. Rebind our overload on the server thread after LL disabled the old
+        // DLL's factory. At the main menu there is no server; the event handles the
+        // first world normally.
+        queueServerTask([this] {
+            if (!mRunning.load(std::memory_order_acquire)) return;
+            if (auto registry = ll::service::getCommandRegistry(false)) registerCommands(*registry);
+        }, [](char const*) {});
+        loadCheckpoints();
+
+        if (!mSpoolWakeEvent) mSpoolWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        mSpoolThread = std::thread([this] { spoolThreadLoop(); });
+
+        mServerThread = std::thread([this] { serverLoop(); });
+        getSelf().getLogger().info("harness: enabled, pipe=\\\\.\\pipe\\mcbe-harness");
+        bootLog("enable: done lifecycle=" + std::to_string(generation));
+        return true;
+    } catch (std::exception const& e) {
+        cleanupOnError((std::string("enable: exception: ") + e.what()).c_str());
+        return false;
+    } catch (...) {
+        cleanupOnError("enable: unknown exception");
+        return false;
     }
-    // VEH owns crash diagnostics and is explicitly removed by watchShutdown().
-    // Do not install a process-global filter that could outlive this DLL.
-    resolveInit(getSelf().getModDir());
-    watchInit();
-    overheadInit();
-
-    mWorld.start();
-    loadAutoConfig();
-    // On a client the mod is enabled at the main window, long before any server
-    // (and its command registry) exists -- registering in enable() crashes.
-    // LeviLamina fires this event while the local server builds its command
-    // tree, which is the documented place for client mods to add server
-    // commands. The registry is rebuilt per world, hence the pointer guard.
-    mServerCommandListener =
-        ll::event::EventBus::getInstance().emplaceListener<ll::event::command::ServerCommandRegisterEvent>(
-            [this](auto& event) {
-                CallbackScope callback(gCallbacks, CallbackDomain::Event);
-                if (!callback.admitted()) return;
-                if (!guardedSdkCall([&] { registerCommands(event.commandRegistry()); }))
-                    bootLog("command: registration event failed");
-            }
-        );
-    // A reload inside an existing world does not fire the registration event
-    // again. Rebind our overload on the server thread after LL disabled the old
-    // DLL's factory. At the main menu there is no server; the event handles the
-    // first world normally.
-    queueServerTask([this] {
-        if (!mRunning.load(std::memory_order_acquire)) return;
-        if (auto registry = ll::service::getCommandRegistry(false)) registerCommands(*registry);
-    }, [](char const*) {});
-    loadCheckpoints();
-
-    mSpoolThread = std::thread([this] { spoolThreadLoop(); });
-
-    mServerThread = std::thread([this] { serverLoop(); });
-    getSelf().getLogger().info("harness: enabled, pipe=\\\\.\\pipe\\mcbe-harness");
-    bootLog("enable: done lifecycle=" + std::to_string(generation));
-    return true;
 }
 
 bool ProbeMod::stopLifecycleHooks(bool suspendThreads) {
@@ -188,6 +227,7 @@ bool ProbeMod::disable() {
     if (!drainCallbacks()) return false;
     if (mCallbackTestThread.joinable()) mCallbackTestThread.join();
     mRunning.store(false);
+    wakeSpool();
 
     auto const generation = mLifecycleGeneration.load();
     auto const disableId  = mDisableSerial.fetch_add(1) + 1;
@@ -255,11 +295,16 @@ bool ProbeMod::disable() {
     }
     watchShutdown();
     bool const hooksStopped = stopLifecycleHooks();
+    if (mSpoolWakeEvent) {
+        CloseHandle(mSpoolWakeEvent);
+        mSpoolWakeEvent = nullptr;
+    }
     bootLog("disable: hooks stopped ok=" + std::to_string(hooksStopped ? 1 : 0));
 
     {
         std::lock_guard lock(mQueueMutex);
         mQueue.clear();
+        mQueueBytes = 0;
     }
     getSelf().getLogger().info("harness: disabled");
     bootLog(
@@ -281,47 +326,79 @@ bool ProbeMod::unload() {
 }
 
 void ProbeMod::loadAutoConfig() {
-    auto          path = getSelf().getModDir() / "harness.json";
-    std::ifstream in(path);
-    if (!in) {
-        return;
-    }
-    auto config = nlohmann::json::parse(in, nullptr, false);
-    if (config.is_discarded()) {
-        bootLog("config: invalid json");
-        return;
-    }
-    auto const autoWorld = config.value("auto_enter", std::string{});
-    auto const autoDelayMs = std::clamp(config.value("delay_ms", 2000), 0, 60000);
-    std::string autoOptions;
-    mBackgroundGuard  = config.value("background_guard", true);
-    mAllowMemoryWrite = config.value("allow_write", false);
-    mAllowCrashTest   = config.value("allow_crash_test", false);
-    mAllowHookVa      = config.value("allow_hook_va", false);
-    mAllowSelftestStress = config.value("allow_selftest_stress", false);
-    mAllowWatch      = config.value("allow_watch", true);
-    mAllowPacketCapture = config.value("allow_packet_capture", false);
-    mAllowPacketInject  = config.value("allow_packet_inject", false);
-    mInputSession.allowInject = config.value("allow_input_inject", false);
-    // Armed by serverLoop() when a client connects, not here: a lock held from
-    // startup (previous script run, stale harness.json) makes the main menu
-    // unclickable for the person at the keyboard.
-    mInputSession.lockOnConnect  = config.value("lock_input", false);
-    mInputSession.hardwareLocked = false;
-    mAllowVersionMismatch = config.value("allow_version_mismatch", false);
-    setAllowVersionMismatch(mAllowVersionMismatch.load());
-    mWorld.setSignInWaitMs(std::clamp(config.value("signin_wait_ms", 15000), 0, 120000));
-    if (config.contains("options") && config["options"].is_object()) {
-        for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
-            std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
-            autoOptions += it.key() + ":" + value + "\n";
+    try {
+        auto          path = getSelf().getModDir() / "harness.json";
+        std::ifstream in(path);
+        if (!in) {
+            return;
         }
+        auto config = nlohmann::json::parse(in, nullptr, false);
+        if (config.is_discarded() || !config.is_object()) {
+            bootLog("config: invalid json");
+            return;
+        }
+        auto readBool = [&](char const* key, bool fallback) {
+            bool invalid = false;
+            bool const val = safeJsonBool(config, key, fallback, &invalid);
+            if (invalid) bootLog(std::string("config: bad field=") + key);
+            return val;
+        };
+        auto readInt = [&](char const* key, int fallback) {
+            bool invalid = false;
+            int const val = safeJsonInt(config, key, fallback, &invalid);
+            if (invalid) bootLog(std::string("config: bad field=") + key);
+            return val;
+        };
+        auto readString = [&](char const* key, std::string const& fallback) {
+            bool invalid = false;
+            std::string val = safeJsonString(config, key, fallback, &invalid);
+            if (invalid) bootLog(std::string("config: bad field=") + key);
+            return val;
+        };
+        auto const autoWorld   = readString("auto_enter", "");
+        auto const autoDelayMs = std::clamp(readInt("delay_ms", 2000), 0, 60000);
+        std::string autoOptions;
+        mBackgroundGuard          = readBool("background_guard", true);
+        mAllowMemoryRead          = readBool("allow_read", true);
+        mAllowMemoryWrite         = readBool("allow_write", false);
+        mAllowToggleFly           = readBool("allow_togglefly", true);
+        mAllowCrashTest           = readBool("allow_crash_test", false);
+        mAllowHookVa              = readBool("allow_hook_va", false);
+        mAllowSelftestStress      = readBool("allow_selftest_stress", false);
+        mAllowWatch               = readBool("allow_watch", true);
+        mAllowPacketCapture       = readBool("allow_packet_capture", false);
+        mAllowPacketInject        = readBool("allow_packet_inject", false);
+        mInputSession.allowInject = readBool("allow_input_inject", false);
+        // Armed by serverLoop() when a client connects, not here: a lock held from
+        // startup (previous script run, stale harness.json) makes the main menu
+        // unclickable for the person at the keyboard.
+        mInputSession.lockOnConnect  = readBool("lock_input", false);
+        mInputSession.hardwareLocked = false;
+        mAllowVersionMismatch        = readBool("allow_version_mismatch", false);
+        setAllowVersionMismatch(mAllowVersionMismatch.load());
+        mPipeToken                   = readString("pipe_token", "");
+        mPipeAuthed.store(mPipeToken.empty(), std::memory_order_release);
+        mWorld.setSignInWaitMs(std::clamp(readInt("signin_wait_ms", 15000), 0, 120000));
+        if (config.contains("options")) {
+            if (config["options"].is_object()) {
+                for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
+                    std::string value = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+                    autoOptions += it.key() + ":" + value + "\n";
+                }
+            } else {
+                bootLog("config: bad field=options");
+            }
+        }
+        if (autoWorld.empty() && autoOptions.empty()) {
+            return;
+        }
+        bootLog("config: auto_enter=" + autoWorld + " delay=" + std::to_string(autoDelayMs));
+        mWorld.autoEnter(autoWorld, autoOptions, autoDelayMs);
+    } catch (std::exception const& e) {
+        bootLog(std::string("config: exception: ") + e.what());
+    } catch (...) {
+        bootLog("config: unknown exception");
     }
-    if (autoWorld.empty() && autoOptions.empty()) {
-        return;
-    }
-    bootLog("config: auto_enter=" + autoWorld + " delay=" + std::to_string(autoDelayMs));
-    mWorld.autoEnter(autoWorld, autoOptions, autoDelayMs);
 }
 
 void ProbeMod::onPlayerTick(LocalPlayer& player) {
@@ -420,6 +497,10 @@ bool ProbeMod::registerCommands(CommandRegistry& registry, CaptureTest test) {
                 CallbackScope callback(gCallbacks, CallbackDomain::Command);
                 bool const ok = guardedSdkCall([&] {
                     if (!callback.admitted()) { output.error("probe is quiescing"); return; }
+                    if (!mAllowToggleFly.load(std::memory_order_relaxed)) {
+                        output.error("togglefly: disabled by allow_togglefly=false in harness.json");
+                        return;
+                    }
                     auto* actor = origin.getEntity();
                     if (actor == nullptr || !actor->isPlayer()) {
                         output.error("togglefly: player origin required");
@@ -581,16 +662,18 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
         applySlotRequest(player, SlotQuery{slot}, ignored);
     }
     if (!mTickRecovery.active()) {
-        mSlotCapture.advance([&](auto const& request, auto& out) {
-            if (request.test == CaptureTest::Deferred) return false;
-            applySlotRequest(player, request, out);
-            return true;
-        });
+        if (mSlotCapture.advance([&](auto const& request, auto& out) {
+                if (request.test == CaptureTest::Deferred) return false;
+                applySlotRequest(player, request, out);
+                return true;
+            })) {
+            wakeSpool();
+        }
     }
 
     runCaptureRequests(*client, player);
 
-    detail::hookTick(player);
+    if (detail::hookTick(player)) wakeSpool();
 
     if (mMacroSession.recording.active()) {
         recordMacroTick(*client, player);
@@ -627,29 +710,31 @@ void ProbeMod::recordTickPose(LocalPlayer& player) {
 }
 
 void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
-    mStateCapture.advance([&](auto const& request, auto& out) {
+    bool notify = false;
+    notify |= mStateCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureState(client, player, request, out);
         return true;
     });
-    mButtonCapture.advance([&](auto const& request, auto& out) {
+    notify |= mButtonCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureButtons(client, request, out);
         return true;
     });
-    mInventoryCapture.advance([&](auto const& request, auto& out) {
+    notify |= mInventoryCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureInventory(player, request, out);
         return true;
     });
-    mBlockCapture.advance([&](auto const& request, auto& out) {
+    notify |= mBlockCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureBlocks(player, request, out);
         return true;
     });
-    mScanCapture.advance([&](auto const& request, auto& out) {
+    notify |= mScanCapture.advance([&](auto const& request, auto& out) {
         return request.test != CaptureTest::Deferred && captureScan(player, request, out);
     });
+    if (notify) wakeSpool();
 }
 
 bool ProbeMod::allowTurnDelta() const {
@@ -667,7 +752,7 @@ bool ProbeMod::allowTurnDelta() const {
     if (mInputSession.hardwareLocked.load(std::memory_order_relaxed)) {
         return false;
     }
-    return detail::isGameForeground();
+    return mForeground.load(std::memory_order_relaxed);
 }
 
 bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
@@ -677,7 +762,7 @@ bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
 
 void ProbeMod::updateFocusState() {
     bool const foreground = detail::isGameForeground();
-    if (foreground == mForeground) {
+    if (foreground == mForeground.load(std::memory_order_relaxed)) {
         if (!foreground) {
             // The game keeps calling ClipCursor even in the background.
             ClipCursor(nullptr);
@@ -707,7 +792,7 @@ void ProbeMod::updateFocusState() {
         }
         bootLog("focus: gained");
     }
-    mForeground = foreground;
+    mForeground.store(foreground, std::memory_order_relaxed);
 }
 
 
@@ -752,9 +837,10 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
         CloseHandle(file);
     }
 
+    unsigned const slot = mLastCommandSlot.load(std::memory_order_acquire) & 1u;
     char command[512]{};
-    for (std::size_t i = 0; i < sizeof(command) - 1 && mLastCommand[i] != '\0'; ++i) {
-        command[i] = mLastCommand[i];
+    for (std::size_t i = 0; i < sizeof(command) - 1 && mLastCommand[slot][i] != '\0'; ++i) {
+        command[i] = mLastCommand[slot][i];
     }
 
     wchar_t textPath[1200]{};

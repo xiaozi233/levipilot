@@ -5,12 +5,12 @@ from __future__ import annotations
 import time
 from typing import Any, cast
 
-from ..connection import PipeConnection
 from ..errors import ModPipeError, ModTimeout
 from ..protocol import StateEvent
+from ._protocol import PipeMixinBase
 
 
-class SessionCommands(PipeConnection):
+class SessionCommands(PipeMixinBase):
     # wait_ready needs a long default: it polls through game boot.
     def wait_ready(self, timeout: float = 60.0, require_world: bool = True) -> StateEvent:
         """Reconnect until the mod answers and (optionally) a world is loaded."""

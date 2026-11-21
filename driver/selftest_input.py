@@ -9,11 +9,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModPipeError, ModProtocolError, ModTimeout
 from driver.harness.lab import settle
 from driver.selftest_flight import EffectFixture
 from driver.selftest_runtime import require_world, wait_rotation, wait_screen, wait_ticks
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout
 
 
 def check_input_mode_contract(client: ModClient, checks: Checks) -> None:

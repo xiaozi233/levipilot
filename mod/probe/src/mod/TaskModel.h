@@ -278,6 +278,11 @@ public:
         return true;
     }
 
+    bool hasPendingEvents() const {
+        std::lock_guard lock(mMutex);
+        return mRead != mWrite;
+    }
+
 private:
     bool expireUseLocked(std::uint64_t nowMs) {
         auto const* use = std::get_if<UseTask>(&mActive.state);

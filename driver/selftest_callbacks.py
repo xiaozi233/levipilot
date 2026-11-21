@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModTimeout
 from driver.selftest_lifecycle import (
     RELOAD_COMMAND,
     _capture_command_template,
@@ -19,7 +20,6 @@ from driver.selftest_lifecycle import (
 )
 from driver.selftest_runtime import wait_ticks
 from driver.selftest_support import Checks
-from driver.transport_mod import ModClient, ModTimeout
 
 
 def _callbacks(client: ModClient) -> dict[str, Any]:

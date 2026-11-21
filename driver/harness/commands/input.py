@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
+from ._protocol import PipeMixinBase
 
 
-class InputCommands(PipeConnection):
+class InputCommands(PipeMixinBase):
     def move(self, forward: float = 0.0, strafe: float = 0.0, ticks: int = 1) -> dict[str, Any]:
         """Accept a desired movement; asynchronous SDK failures emit control_error."""
         return self.request(

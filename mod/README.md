@@ -33,7 +33,8 @@ CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mo
 
 | 命令 | 说明 |
 | --- | --- |
-| `ping` / `status` / `state` | 心跳、mod/生命周期状态、玩家快照 |
+| `ping` / `status` / `state` / `diag` | 心跳、mod/生命周期状态、玩家快照、服务端可见对象诊断 |
+| `auth` | `token=...`；配置了 `pipe_token` 时在连接握手后校验访问令牌 |
 | `chat_history` | `limit=1..64`；客户端保留的聊天快照，含截断标记 |
 | `mem_read` / `mem_write` | 进程内存读写；写需 `allow_write=true`，坏地址回 `bad_addr` |
 | `probe` | 需 `addr`（取自 `blocks` 回包的地址）+ `kind=raw/block/legacy`、`len=1..64`；`addr+288` 是方块状态字 |
@@ -73,9 +74,9 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 | `key_state` | 游戏键状态、LL 事件和注入计数；计数不等于游戏已收键 |
 | `mouse_event` | `move/left/right/middle/wheel/x1/x2/move_relative`；走 `MouseDevice::feed` |
 | `text_input` | 向当前输入框送字符；接受带 `input_id`，可等待 `text_input_done` |
-| `screen` / `buttons` / `mouse` / `input_cfg` | UI/输入诊断与 legacy 对照配置 |
-| `set` | `forward,strafe` 是**数值** `-1..1`（布尔会回 `bad_param`）、另外 `sprint,sneak,jump,ticks`；默认合成当前绑定的 Hardware HID 按键 |
-| `look` | `yaw,pitch,relative,ticks`；`relative=false` 为绝对朝向 |
+| `screen` / `buttons` / `mouse` / `mouse_clear` / `input_cfg` | UI/输入诊断、`mouse_clear` 清零诊断计数/锁存与 legacy 对照配置 |
+| `set` / `stopmove` / `jump` | `forward,strafe` 是**数值** `-1..1`（布尔会回 `bad_param`）、另外 `sprint,sneak,jump,ticks`（`0..200000` 或 `-1` 持续）；`stopmove` 清零移动请求；`jump` 触发单次起跳；默认合成当前绑定的 Hardware HID 按键 |
+| `look` | `yaw,pitch,relative,ticks`（`0..200000` 或 `-1` 持续）；`relative=false` 为绝对朝向 |
 | `click` | `button=left/right,reach`；实际破坏/放置效果须回读 |
 | `select_slot` | `slot=0..8`；接受与 `select_slot_done` 分离 |
 | `input_lock` | `on`；锁真实硬件输入，注入照常；断开客户端自动解锁 |
@@ -151,8 +152,20 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 跑酷事件不需要 `start`：`player_landed`、`player_hurt`、`player_died`。legacy `start`
 的 tick 另有 `in_air/jump_edge/block_below/block_feet/block_head`。
 
-握手含 `protocol:4`、`capabilities`、`spool`、`replay_rows` 和 `queue_dropped`。`status`
-另有 spool、record、profile、生命周期、pipe 写入超时和诊断统计。
+握手（`hello`）与 `ping` 响应（`pong`）共享同一份 `capabilities`（含 `req_id`），握手另带
+`protocol:4`、`spool`、`replay_rows` 和 `queue_dropped`。`status` 另有 spool、record、
+profile、生命周期、pipe 写入超时和诊断统计。
+
+## 安全模型与本地信任边界
+
+命名管道通过 `PIPE_REJECT_REMOTE_CLIENTS` 拒绝远程连接，并为管道实例附加**仅授权当前进程用户 SID 的
+显式 DACL**。可选配置 `"pipe_token"` 时，`hello` 会带 `"auth_required": true` 并在认证前屏蔽除
+`auth` 与 `ping` 之外的命令（Python 客户端自动使用构造参数 `token` 或环境变量
+`LEVIPILOT_PIPE_TOKEN` 完成握手）。
+
+`mem_read`/`probe`（`allow_read`）与 `/togglefly`（`allow_togglefly`）默认开启；可将其设为
+`false` 收紧本地暴露面。`mem_write`、崩溃测试、任意 VA hook、压力测试、输入注入、封包采集与
+封包注入默认关闭，须由 `harness.json` 按最小权限显式开启。
 
 ## 配置（`harness.json`）
 
@@ -162,7 +175,9 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
   "options": {"gfx_gamma": "0.5"},
   "delay_ms": 2000,
   "background_guard": true,
+  "allow_read": true,
   "allow_write": false,
+  "allow_togglefly": true,
   "allow_crash_test": false,
   "allow_hook_va": false,
   "allow_selftest_stress": false,
@@ -170,6 +185,7 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
   "allow_input_inject": false,
   "allow_packet_capture": false,
   "allow_packet_inject": false,
+  "pipe_token": "",
   "lock_input": false,
   "signin_wait_ms": 15000
 }
@@ -207,8 +223,13 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 - 宏录制省略、0 或超上限均取 200000 tick；到顶保留缓冲并可保存。保存使用临时文件和原子
   替换，失败保留旧文件与缓冲。
 - 二进制环为 524288 条 64 B 记录；失败/退出可导出部分帧，但不跨 record_id 拼接。
-- 管道输入上限 1 MiB，输出批量/大行写入预算 5 秒，超时断开当前客户端。请求超时关闭连接，
-  独立事件等待超时不关闭连接。
+- 管道输入上限 1 MiB，发送队列受 20000 条与 32 MiB 双上限保护，输出批量/大行写入预算
+  5 秒，超时断开当前客户端。Python `LineDecoder` 单行上限 16 MiB（可容纳大体积 `scan`）。
+  请求超时关闭连接，独立事件等待超时不关闭连接。客户端附带可选正整数 `req_id` 时，mod
+  在同步/异步回执及请求期错误中原样回传 `req_id`；无关异步 `error`（如 tick `internal_error`）
+  不会误杀正在等待的请求。
+- `set`/`move`/`look` 的 `ticks=-1` 仅作持续注入语义，在管道断开时自动清除；有限 `ticks`
+  保留以便单命令短连接 CLI 生效。
 - Python 客户端必须显式 close；GC/EOF 恢复不证明所有 Errno 22 或高频查询挂起已解决。
 
 ### 封包与诊断
@@ -241,6 +262,13 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 - `allow_version_mismatch` 只用于移植，不校验 profile，日常关闭。
 - `dev.py run/stop` 只处理选定 exe 的 PID，并先验证保存退出；无法确认时保留进程。
   只有明确放弃未保存更改才使用 force 选项。
+- `blocks` 对非法或越界 `positions` 显式返回 `error/bad_coord`（`param="positions"`），不再静默跳过。
+- Python 客户端接收队列上限为 `20000`（与 `mQueue` 对齐）；默认仍 fail-closed，调用
+  `set_drop_events()` 可按事件名开启溢出丢弃并通过 `dropped_events()` 读计数。CLI 在响应含
+  `ok=false` 时退出码为 `1`。
+- `selftest.py` 支持 `--list` 查看模式与默认套件分节，`--only <name>`/`--world <WORLD>`
+  （及 `--only default:<sec1,sec2>`）运行指定子集；`tests.test_mod_models` 支持设
+  `LEVIPILOT_NATIVE_ASAN=1` 运行 ASAN，`driver/check.py` 支持 `--cpp-format` / `--cpp-format-all`。
 
 实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见
 [`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。当前基线为离线

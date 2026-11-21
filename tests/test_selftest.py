@@ -623,5 +623,109 @@ class ViolationObservationTests(unittest.TestCase):
             self.assertEqual(failures, ["violation_session_drain", "violation_session_dump"])
 
 
+class RegistryAndSelectionTests(unittest.TestCase):
+    def test_mode_registry_has_unique_names_and_flags(self) -> None:
+        from driver import selftest
+
+        names = [spec.name for spec in selftest.MODE_REGISTRY]
+        self.assertEqual(len(names), len(set(names)))
+        flags = [
+            flag
+            for spec in selftest.MODE_REGISTRY
+            for flag in (spec.only_flag, spec.world_flag)
+            if flag
+        ]
+        self.assertEqual(len(flags), len(set(flags)))
+
+    def test_list_flag_outputs_modes_and_sections_without_connecting(self) -> None:
+        from driver import selftest
+
+        out = io.StringIO()
+        with (
+            patch("driver.selftest.ModClient") as factory,
+            contextlib.redirect_stdout(out),
+        ):
+            self.assertEqual(selftest.main(["--list"]), 0)
+        factory.assert_not_called()
+        text = out.getvalue()
+        self.assertIn("client-io", text)
+        self.assertIn("flight (supports --world)", text)
+        self.assertIn("swim", text)
+
+    def test_only_and_world_validation_and_dispatch(self) -> None:
+        from driver import selftest
+
+        client = InterruptedSelftestTests.observation_client()
+        with (
+            patch("driver.selftest.ModClient") as factory,
+            patch("driver.selftest.check_flight") as check,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            factory.return_value.connect.return_value = client
+            self.assertEqual(selftest.main(["--only", "flight", "--world", "超平坦测试"]), 0)
+        check.assert_called_once_with(client, unittest.mock.ANY, "超平坦测试")
+
+        with (
+            patch("driver.selftest.ModClient") as factory,
+            patch("driver.selftest.check_macro_long_recording") as check,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            factory.return_value.connect.return_value = client
+            self.assertEqual(selftest.main(["--only", "macro-long-recording", "--macro-resume"]), 0)
+        check.assert_called_once_with(client, unittest.mock.ANY, resume=True)
+
+        for bad_argv in (
+            ["--world", "超平坦测试"],
+            ["--only", "controls", "--world", "超平坦测试"],
+            ["--only", "chat-lifecycle"],
+            ["--only", "no-such-mode"],
+        ):
+            with (
+                self.subTest(bad_argv=bad_argv),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                selftest.main(bad_argv)
+
+    def test_default_sections_selection_and_validation(self) -> None:
+        from types import SimpleNamespace
+
+        from driver import selftest_default
+
+        client = Mock()
+        checks = Checks()
+        seen: list[str] = []
+        with patch.dict(
+            selftest_default._DEFAULT_SECTION_MAP,
+            {"line_framing": lambda ctx: seen.append(f"ran:{ctx.client is client}")},
+        ):
+            code = selftest_default.check_default_suite(
+                client,
+                checks,
+                SimpleNamespace(stress_cycles=0, stress_world=None),
+                Mock(),
+                require_world=Mock(),
+                wait_ticks=Mock(),
+                dump_packet_tap=Mock(),
+                sections=("line_framing",),
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, ["ran:True"])
+
+        with self.assertRaisesRegex(ValueError, "unknown default suite sections"):
+            selftest_default.check_default_suite(
+                client,
+                checks,
+                SimpleNamespace(),
+                Mock(),
+                require_world=Mock(),
+                wait_ticks=Mock(),
+                dump_packet_tap=Mock(),
+                sections=("missing_section",),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,12 +13,12 @@ import weakref
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModPipeError, ModTimeout
 from driver.harness.lab import capture_disconnect_report
 from driver.harness.record import decode_dump
 from driver.harness.spool import read_spool
 from driver.selftest_runtime import ROOT, wait_ticks
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient, ModPipeError, ModTimeout
 
 
 def check_entry_lifecycle(client: ModClient, checks: Checks, world: str) -> None:
@@ -499,13 +499,17 @@ def check_mod_core_backpressure(client: ModClient, checks: Checks) -> None:
 def check_request_recovery(client: ModClient, checks: Checks) -> None:
     before = client.state()
     yaw, pitch = float(before["yaw"]), float(before["pitch"])
-    for command in (
-        {"cmd": "set", "sprint": "invalid"},
-        {"cmd": "move", "ticks": "invalid"},
-        {"cmd": "look", "relative": "invalid"},
+    for command, expected_reason in (
+        ({"cmd": "set", "sprint": "invalid"}, "bad_command"),
+        ({"cmd": "move", "ticks": "invalid"}, "bad_param"),
+        ({"cmd": "look", "relative": "invalid"}, "bad_command"),
     ):
         reply = client.request(command, "error")
-        checks.check(f"request_reject_{command['cmd']}", reply.get("reason") == "bad_command")
+        checks.check(
+            f"request_reject_{command['cmd']}",
+            reply.get("reason") == expected_reason,
+            str(reply.get("reason")),
+        )
     try:
         client.look(yaw + 5, pitch, relative=False)
         wait_ticks(client, 8)

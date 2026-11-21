@@ -193,7 +193,13 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
     }
     if (cmd == "ping") {
         enqueue(
-            R"({"event":"pong","mod":"probe","protocol":4,"capabilities":["tick_json","bin_record","mem","watch","signin","hook"]})"
+            nlohmann::json{
+                {"event",        "pong"                    },
+                {"mod",          "probe"                   },
+                {"protocol",     4                         },
+                {"capabilities", protocolCapabilitiesJson()},
+            }
+                .dump()
         );
         return true;
     }
@@ -456,6 +462,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                 .dump()
         );
         mSpoolForce.store(true, std::memory_order_release);
+        wakeSpool();
         return true;
     }
     if (cmd == "spool_flush") {
@@ -625,7 +632,10 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["spool"]               = mSpoolPath.string();
         out["spool_rows"]          = mSpoolRows.load();
         out["spool_flushes"]       = mSpoolFlushes.load();
+        out["allow_read"]          = mAllowMemoryRead.load();
         out["allow_write"]         = mAllowMemoryWrite.load();
+        out["allow_togglefly"]     = mAllowToggleFly.load();
+        out["auth_required"]       = !mPipeToken.empty();
         out["tick_thread_id"]      = mTickThreadId.load();
         out["server_thread_id"]    = gServerThreadId.load();
         out["packet_capture"]      = mPackets.capturing();

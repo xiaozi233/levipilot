@@ -1,5 +1,6 @@
 #include "mod/PipeChannel.h"
 
+#include <aclapi.h>
 #include <cassert>
 #include <chrono>
 #include <string>
@@ -24,6 +25,31 @@ void connectionAndTransfer() {
     auto const path = name();
     std::atomic_bool running{true};
     assert(pipe.open(path.c_str(), 1024));
+    {
+        PACL                 dacl = nullptr;
+        PSECURITY_DESCRIPTOR sd   = nullptr;
+        assert(
+            GetSecurityInfo(
+                pipe.nativeHandle(), SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr,
+                &sd
+            )
+            == ERROR_SUCCESS
+        );
+        assert(dacl != nullptr && dacl->AceCount == 1);
+        void* aceRaw = nullptr;
+        assert(GetAce(dacl, 0, &aceRaw));
+        auto*       ace   = static_cast<ACCESS_ALLOWED_ACE*>(aceRaw);
+        HANDLE      token = nullptr;
+        assert(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token));
+        DWORD needed = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+        std::string buf(needed, '\0');
+        assert(GetTokenInformation(token, TokenUser, buf.data(), needed, &needed));
+        auto* tu = reinterpret_cast<TOKEN_USER*>(buf.data());
+        assert(EqualSid(&ace->SidStart, tu->User.Sid));
+        CloseHandle(token);
+        LocalFree(sd);
+    }
     auto const peer = client(path.c_str()); // ERROR_PIPE_CONNECTED race.
     assert(pipe.connect(running));
     DWORD bytes = 0, available = 0;

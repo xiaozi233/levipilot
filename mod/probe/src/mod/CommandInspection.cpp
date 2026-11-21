@@ -6,6 +6,10 @@ namespace probe {
 
 bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json& j) {
     if (cmd == "mem_read") {
+        if (!mAllowMemoryRead.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"read_disabled","hint":"set allow_read=true in harness.json"})");
+            return true;
+        }
         nlohmann::json out;
         out["event"] = "mem_read";
         std::uint64_t addr = 0;
@@ -73,6 +77,10 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
         return true;
     }
     if (cmd == "probe") {
+        if (!mAllowMemoryRead.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"read_disabled","hint":"set allow_read=true in harness.json"})");
+            return true;
+        }
         nlohmann::json out;
         out["event"] = "probe";
         std::uint64_t addr = 0;

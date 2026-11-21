@@ -8,10 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModTimeout
 from driver.harness.lab import settle
 from driver.selftest_runtime import wait_ticks
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient, ModTimeout
 
 
 def check_query_capture(client: ModClient, checks: Checks) -> None:

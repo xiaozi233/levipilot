@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Any
 
 from ..commands import ModClient
+from ._emit import emit_json
 
 COMMANDS = frozenset(
     {
@@ -24,26 +24,21 @@ COMMANDS = frozenset(
 )
 
 
-def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> bool:
+def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentParser) -> int | None:
     if args.command == "command":
-        print(json.dumps(client.command(args.text), ensure_ascii=False))
-        return True
+        return emit_json(client.command(args.text), ensure_ascii=False)
     if args.command == "checkpoint":
         if args.checkpoint_command == "save":
-            print(json.dumps(client.checkpoint_save(args.name), ensure_ascii=False))
-        elif args.checkpoint_command == "load":
-            print(json.dumps(client.checkpoint_load(args.name), ensure_ascii=False))
-        elif args.checkpoint_command == "list":
-            print(json.dumps(client.checkpoint_list(), ensure_ascii=False, indent=2))
-        else:
-            print(json.dumps(client.checkpoint_delete(args.name), ensure_ascii=False))
-        return True
+            return emit_json(client.checkpoint_save(args.name), ensure_ascii=False)
+        if args.checkpoint_command == "load":
+            return emit_json(client.checkpoint_load(args.name), ensure_ascii=False)
+        if args.checkpoint_command == "list":
+            return emit_json(client.checkpoint_list(), ensure_ascii=False, indent=2)
+        return emit_json(client.checkpoint_delete(args.name), ensure_ascii=False)
     if args.command == "worlds":
-        print(json.dumps(client.worlds(), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.worlds(), ensure_ascii=False, indent=2)
     if args.command == "signin":
-        print(json.dumps(client.signin(), ensure_ascii=False, indent=2))
-        return True
+        return emit_json(client.signin(), ensure_ascii=False, indent=2)
     if args.command == "enter-world":
         if args.wait:
             result = client.enter_world_ready(
@@ -59,11 +54,9 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
                 intent=args.intent,
                 force=args.force,
             )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return True
+        return emit_json(result, ensure_ascii=False, indent=2)
     if args.command == "leave-world":
-        print(json.dumps(client.leave_world(), ensure_ascii=False))
-        return True
+        return emit_json(client.leave_world(), ensure_ascii=False)
     if args.command == "options-set":
         values: dict[str, str] = {}
         for item in args.set:
@@ -71,25 +64,17 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
             if not sep:
                 raise SystemExit(f"--set 需要 KEY=VALUE：{item!r}")
             values[key] = value
-        print(
-            json.dumps(
-                client.set_options(values or None, text=args.text),
-                ensure_ascii=False,
-            )
+        return emit_json(
+            client.set_options(values or None, text=args.text),
+            ensure_ascii=False,
         )
-        return True
     if args.command == "options-save":
-        print(json.dumps(client.save_options(), ensure_ascii=False))
-        return True
+        return emit_json(client.save_options(), ensure_ascii=False)
     if args.command == "teleport":
-        print(json.dumps(client.teleport(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch)))
-        return True
+        return emit_json(client.teleport(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch))
     if args.command == "reset":
         extra: dict[str, Any] = {"wait_teleport": False} if args.no_wait_teleport else {}
-        print(
-            json.dumps(
-                client.reset(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch, **extra)
-            )
+        return emit_json(
+            client.reset(args.x, args.y, args.z, yaw=args.yaw, pitch=args.pitch, **extra)
         )
-        return True
-    return False
+    return None

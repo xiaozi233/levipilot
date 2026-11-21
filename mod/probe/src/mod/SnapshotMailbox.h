@@ -25,7 +25,8 @@ public:
         Completion()                             = default;
         Completion(Completion const&)            = delete;
         Completion& operator=(Completion const&) = delete;
-        Completion(Completion&& other) noexcept : error(other.error), mOwner(std::exchange(other.mOwner, nullptr)) {}
+        Completion(Completion&& other) noexcept
+        : error(other.error), reqId(other.reqId), mOwner(std::exchange(other.mOwner, nullptr)) {}
         ~Completion() { release(); }
         bool release() {
             if (auto owner = std::exchange(mOwner, nullptr)) {
@@ -39,18 +40,21 @@ public:
         explicit        operator bool() const { return mOwner != nullptr; }
         Snapshot const& snapshot() const { return mOwner->mSnapshot; }
         char const*     error = nullptr;
+        std::uint64_t   reqId = 0;
 
     private:
         friend class SnapshotMailbox;
-        Completion(SnapshotMailbox* owner, char const* failure) : error(failure), mOwner(owner) {}
+        Completion(SnapshotMailbox* owner, char const* failure, std::uint64_t id)
+        : error(failure), reqId(id), mOwner(owner) {}
         SnapshotMailbox* mOwner = nullptr;
     };
 
-    bool begin(Request const& request, std::uint64_t now, std::uint64_t timeoutMs) {
+    bool begin(Request const& request, std::uint64_t now, std::uint64_t timeoutMs, std::uint64_t reqId = 0) {
         std::lock_guard lock(mControl);
         reapDiscarded();
         if (mPhase.load(std::memory_order_acquire) != Phase::Idle) return false;
         mRequest = request;
+        mReqId   = reqId;
         // In-place value initialization avoids a multi-MiB temporary for scan.
         std::destroy_at(&mSnapshot);
         std::construct_at(&mSnapshot);
@@ -62,9 +66,10 @@ public:
     }
 
     template <class Advance>
-    void advance(Advance&& advance) {
+    bool advance(Advance&& advance) {
         auto expected = Phase::Pending;
-        if (!mPhase.compare_exchange_strong(expected, Phase::Capturing, std::memory_order_acquire)) return;
+        if (!mPhase.compare_exchange_strong(expected, Phase::Capturing, std::memory_order_acquire))
+            return false;
         bool done = true;
         if (!mFailure.load(std::memory_order_acquire)) {
             try {
@@ -73,7 +78,9 @@ public:
                 fail("capture_failed");
             }
         }
+        bool const failed = mFailure.load(std::memory_order_acquire) != nullptr;
         mPhase.store(done ? Phase::Ready : Phase::Pending, std::memory_order_release);
+        return done || failed;
     }
 
     Completion take(std::uint64_t now) {
@@ -90,7 +97,7 @@ public:
             mPhase.store(Phase::Idle, std::memory_order_release);
             return {};
         }
-        return {this, error};
+        return {this, error, mReqId};
     }
 
     void cancel(char const* reason) {
@@ -128,6 +135,7 @@ private:
     std::atomic<char const*> mFailure{nullptr};
     Request                  mRequest{};
     Snapshot                 mSnapshot{};
+    std::uint64_t            mReqId    = 0;
     std::uint64_t            mDeadline = 0;
     bool                     mDiscard  = false; // Cold control side only.
 };

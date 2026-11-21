@@ -6,10 +6,10 @@ import contextlib
 import math
 from pathlib import Path
 
+from driver.harness import ModClient, ModTimeout
 from driver.harness.lab import settle, world_state
 from driver.selftest_runtime import WorldLost, slot_item, wait_ticks
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient, ModTimeout
 
 
 def check_task_lifecycle(client: ModClient, checks: Checks) -> None:

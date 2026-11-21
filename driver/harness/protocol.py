@@ -70,14 +70,24 @@ kernel32.PeekNamedPipe.argtypes = [
 kernel32.PeekNamedPipe.restype = wintypes.BOOL
 
 
+MAX_LINE_BYTES = 16 * 1024 * 1024
+
+
+class LineTooLongError(ValueError):
+    """Raised when a single JSONL line exceeds ``max_line_bytes``."""
+
+
 class LineDecoder:
     """Incrementally split a byte stream into newline-terminated lines."""
 
-    __slots__ = ("_buffer", "_scan_from")
+    __slots__ = ("_buffer", "_max_line_bytes", "_scan_from")
 
-    def __init__(self) -> None:
+    def __init__(self, max_line_bytes: int = MAX_LINE_BYTES) -> None:
+        if max_line_bytes <= 0:
+            raise ValueError("max_line_bytes must be positive")
         self._buffer = bytearray()
         self._scan_from = 0
+        self._max_line_bytes = int(max_line_bytes)
 
     def feed(self, chunk: bytes) -> list[str]:
         if not chunk:
@@ -89,8 +99,17 @@ class LineDecoder:
             # Bytes retained from the previous feed contain no newline.
             index = self._buffer.find(b"\n", self._scan_from)
             if index < 0:
+                limit = self._max_line_bytes + (1 if self._buffer.endswith(b"\r") else 0)
+                if len(self._buffer) - start > limit:
+                    self._buffer.clear()
+                    self._scan_from = 0
+                    raise LineTooLongError(f"line exceeds {self._max_line_bytes} bytes")
                 break
             end = index - 1 if index > start and self._buffer[index - 1] == 13 else index
+            if end - start > self._max_line_bytes:
+                self._buffer.clear()
+                self._scan_from = 0
+                raise LineTooLongError(f"line exceeds {self._max_line_bytes} bytes")
             if end > start:
                 lines.append(self._buffer[start:end].decode("utf-8", errors="replace"))
             start = self._scan_from = index + 1
@@ -109,9 +128,11 @@ _LineDecoder = LineDecoder
 
 __all__ = [
     "DEFAULT_TIMEOUT",
+    "MAX_LINE_BYTES",
     "PIPE_NAME",
     "HelloEvent",
     "LineDecoder",
+    "LineTooLongError",
     "StateEvent",
     "kernel32",
 ]

@@ -103,6 +103,7 @@ void ProbeMod::stopLegacy(StreamEnd reason, bool reply) {
         enqueue(stoppedJson(done).dump());
     }
     mSpoolForce = true;
+    wakeSpool();
 }
 
 void ProbeMod::captureLegacyTick(ClientInstance& client, LocalPlayer& player) {

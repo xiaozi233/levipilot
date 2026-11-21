@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from driver.transport_mod import ModClient
+from driver.harness import ModClient
 
 
 class CrashSnapshot:

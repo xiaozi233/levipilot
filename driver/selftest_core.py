@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 
+from driver.harness import ModClient
 from driver.harness.memory import fnv1_64
 from driver.selftest_runtime import (
     ROOT,
@@ -16,7 +17,6 @@ from driver.selftest_runtime import (
     wait_ticks,
 )
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient
 
 
 def check_block_identity(client: ModClient, checks: Checks) -> None:
@@ -89,21 +89,21 @@ def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
     """Exercise each CLI domain over the actual pipe, without changing the world."""
     was_locked = bool(client.state().get("input", {}).get("locked"))
     commands = (
-        ("diagnostics", ["ping"], '"event": "pong"'),
-        ("input", ["mouse"], '"event": "mouse"'),
-        ("inspection", ["mem-read", "0x10"], '"reason": "bad_addr"'),
-        ("packets", ["packet-stats"], '"event": "packet_stats"'),
-        ("query", ["state"], '"event": "state"'),
-        ("chat_history", ["chat-history", "--limit", "1"], '"event": "chat_history"'),
-        ("world", ["worlds"], '"event": "worlds"'),
-        ("tasks", ["task-status"], '"event": "task_status"'),
-        ("recording", ["record-dump", "--limit", "1"], "entries="),
+        ("diagnostics", ["ping"], '"event": "pong"', 0),
+        ("input", ["mouse"], '"event": "mouse"', 0),
+        ("inspection", ["mem-read", "0x10"], '"reason": "bad_addr"', 1),
+        ("packets", ["packet-stats"], '"event": "packet_stats"', 0),
+        ("query", ["state"], '"event": "state"', 0),
+        ("chat_history", ["chat-history", "--limit", "1"], '"event": "chat_history"', 0),
+        ("world", ["worlds"], '"event": "worlds"', 0),
+        ("tasks", ["task-status"], '"event": "task_status"', 0),
+        ("recording", ["record-dump", "--limit", "1"], "entries=", 0),
     )
     # The server accepts one client at a time. Release this connection before
     # starting subprocesses, then reconnect even if a subprocess fails.
     client.close()
     try:
-        for domain, argv, expected in commands:
+        for domain, argv, expected, expected_code in commands:
             result = subprocess.run(
                 [
                     sys.executable,
@@ -120,8 +120,8 @@ def check_cli_compatibility(client: ModClient, checks: Checks) -> None:
             )
             checks.check(
                 f"cli_{domain}",
-                result.returncode == 0 and expected in result.stdout,
-                f"exit={result.returncode}"
+                result.returncode == expected_code and expected in result.stdout,
+                f"exit={result.returncode} expected={expected_code}"
                 + (f" stderr={result.stderr.strip()}" if result.stderr else ""),
             )
         result = subprocess.run(

@@ -132,4 +132,20 @@ public:
     std::atomic<JumpImpulse> jumpImpulseMode{JumpImpulse::None};
 };
 
+// Clear only unbounded ("until stopped") input/look requests on client
+// disconnect. Finite tick counts stay intact so single-shot CLI commands keep
+// working after the short pipe connection exits.
+template <class RequestBlockT>
+constexpr void clearContinuousRequests(RequestBlockT& request) noexcept {
+    if (request.inputTicks < 0) {
+        request.input      = decltype(request.input){};
+        request.inputTicks = 0;
+        ++request.inputSeq;
+    }
+    if (request.lookTicks < 0) {
+        request.lookTicks = 0;
+        ++request.lookSeq;
+    }
+}
+
 } // namespace probe::detail

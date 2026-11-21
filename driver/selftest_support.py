@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from driver.harness import ModClient
 from driver.harness.errors import ModPipeError
-from driver.transport_mod import ModClient
 
 
 @dataclass(frozen=True)

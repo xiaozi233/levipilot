@@ -1,6 +1,7 @@
 #include "mod/TransportModel.h"
 
 #include <cassert>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -72,4 +73,26 @@ int main() {
         return true;
     }));
     assert(wire == "last\n");
+
+    // req_id injection helper.
+    assert(probe::detail::attachReqId(R"({"event":"pong"})", 0) == R"({"event":"pong"})");
+    assert(probe::detail::attachReqId(R"({"event":"pong"})", 7) == R"({"event":"pong","req_id":7})");
+    assert(probe::detail::attachReqId("{}", 3) == R"({"req_id":3})");
+    assert(
+        probe::detail::attachReqId(R"({"event":"error","req_id":5})", 9)
+        == R"({"event":"error","req_id":5})"
+    );
+
+    // Count- and byte-bounded queue eviction.
+    std::deque<std::string> queue;
+    std::size_t queueBytes = 0;
+    assert(probe::detail::pushBoundedLine(queue, queueBytes, "abcd", 3, 10) == 0);
+    assert(probe::detail::pushBoundedLine(queue, queueBytes, "efgh", 3, 10) == 0);
+    assert(queueBytes == 8 && queue.size() == 2);
+    assert(probe::detail::pushBoundedLine(queue, queueBytes, "ijkl", 3, 10) == 1);
+    assert(queueBytes == 8 && (queue == std::deque<std::string>{"efgh", "ijkl"}));
+    assert(probe::detail::pushBoundedLine(queue, queueBytes, "0123456789AB", 3, 10) == 2);
+    assert(queueBytes == 12 && (queue == std::deque<std::string>{"0123456789AB"}));
+    assert(probe::detail::pushBoundedLine(queue, queueBytes, "xy", 3, 10) == 1);
+    assert(queueBytes == 2 && (queue == std::deque<std::string>{"xy"}));
 }

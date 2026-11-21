@@ -10,10 +10,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient
 from driver.harness.errors import ModPipeError, ModProtocolError, ModTimeout
 from driver.selftest_runtime import wait_ticks
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient
 
 
 def _sha256(path: Path) -> str:

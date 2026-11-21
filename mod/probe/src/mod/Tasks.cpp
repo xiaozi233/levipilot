@@ -170,7 +170,10 @@ bool ProbeMod::aimAt(LocalPlayer& player, Vec3 const& point) {
     return applyTurnDelta(player, Vec2{rot.x - pitch, wrapDegrees(yaw - rot.y)});
 }
 
-void ProbeMod::cancelTasks(char const* reason) { mTasks.cancel(reason); }
+void ProbeMod::cancelTasks(char const* reason) {
+    mTasks.cancel(reason);
+    wakeSpool();
+}
 
 std::uint64_t ProbeMod::startTask(TaskState state) {
     return mTasks.start(state, [this] { beginTask(); });
@@ -241,6 +244,7 @@ bool ProbeMod::tickTask(ClientInstance& client, LocalPlayer& player) {
         });
         if (stopped.finished) cancelTasks(stopped.outcome.reason);
     }
+    if (mTasks.hasPendingEvents()) wakeSpool();
     return active;
 }
 

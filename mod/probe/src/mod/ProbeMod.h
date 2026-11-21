@@ -451,7 +451,7 @@ private:
 
     // Written by enable()/config and read on the tick thread.
     std::atomic_bool mBackgroundGuard{true};
-    bool             mForeground     = true;
+    std::atomic_bool mForeground{true};
     detail::ParkourTracker mParkourTracker; // Tick-owned; reset on generation changes.
     detail::TickQueue<detail::ParkourEvent, 256> mParkourEvents;
     std::atomic<std::uint64_t> mParkourGeneration{0};
@@ -475,6 +475,7 @@ private:
     detail::TeleportRequestState mTeleport;
     detail::FlightRequestState   mFlight;
     struct ClickResult {
+        std::uint64_t reqId = 0;
         int         button = 0, hitType = 0, x = 0, y = 0, z = 0, face = 0;
         float       hitX = 0, hitY = 0, hitZ = 0;
         bool        gameMode = false, hitValid = false;
@@ -484,6 +485,7 @@ private:
     std::atomic<std::uint64_t>          mClickResultsLost{0};
     std::atomic<detail::CaptureTest>    mClickCaptureTest{detail::CaptureTest::None};
     std::atomic<int>                    mClickRequest{-1};
+    std::atomic<std::uint64_t>          mClickReqId{0};
     std::atomic<float>          mClickReach{5.5f};
     std::atomic<int>            mSlotRequest{-1};
     // Non-default paths are accepted by input_cfg only with force=true.
@@ -518,6 +520,7 @@ private:
 
     std::mutex              mQueueMutex;
     std::deque<std::string> mQueue;
+    std::size_t             mQueueBytes = 0;
     std::atomic<std::uint64_t> mQueueDropped{0};
     std::atomic<std::uint64_t> mPipeWriteTimeouts{0};
     detail::TickRecovery mTickRecovery;
@@ -548,20 +551,29 @@ private:
     // F4: set by non-spool threads that need the next flush to be immediate
     // (world_left, panic_done) without doing file IO on the tick thread.
     std::atomic_bool           mSpoolForce{false};
+    HANDLE                     mSpoolWakeEvent = nullptr;
+    void                       wakeSpool() {
+        if (mSpoolWakeEvent) SetEvent(mSpoolWakeEvent);
+    }
     std::atomic<std::uint64_t> mSpoolErrors{0};
 
-    // Crash report context. The pipe thread is the only writer of
-    // mLastCommand; the tick thread is the only writer of mPose.
-    char                       mLastCommand[512]{};
+    // Crash report context. The pipe thread publishes alternating slots; the
+    // tick thread is the only writer of mPose.
+    char                       mLastCommand[2][512]{};
+    std::atomic<unsigned>      mLastCommandSlot{0};
     std::atomic<std::uint32_t> mTickThreadId{0};
 
     // T2/T3 configuration and diagnostics.
+    std::atomic_bool           mAllowMemoryRead{true};
     std::atomic_bool           mAllowMemoryWrite{false};
+    std::atomic_bool           mAllowToggleFly{true};
     std::atomic_bool           mAllowCrashTest{false};
     std::atomic_bool           mAllowHookVa{false};
     std::atomic_bool           mAllowSelftestStress{false};
     std::atomic_bool           mAllowWatch{true};
     std::atomic_bool           mAllowVersionMismatch{false};
+    std::string                mPipeToken;
+    std::atomic_bool           mPipeAuthed{true};
     std::atomic_bool           mCrashDumpInProgress{false};
     std::atomic<std::uint64_t> mTickProbe{0};
 };

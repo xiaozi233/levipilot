@@ -89,9 +89,25 @@ legacy JSON 录制由 `LegacyStreamState` 统一持有流、冷锁、终结和�
 槽位；到顶只发一次 `macro_rec_limit`，录制停止但数据仍可保存。保存先写同目录临时文件，检查
 write/flush/close 后原子替换，失败保留旧目标和内存缓冲。
 
-spool 每 100 ms 或 64 KB 刷盘，单文件超过 64 MiB 轮转。连接重放与文件刷盘是两条路径；
-`queue_dropped` 表示传输队列溢出，不能据此推断 spool 文件完整。崩溃时最多可能损失最后一段
-未刷盘记录。
+spool 每 100 ms 或 64 KB 刷盘（未刷缓冲上限 16 MiB），单文件超过 64 MiB 轮转；`spoolThreadLoop`
+使用自动重置事件 `mSpoolWakeEvent` 等待（25 ms 上限），在查询、任务、点击、world_left、
+`panic` 和异步后台回调完成时立即唤醒，idle tick 零额外系统调用。出站队列
+`mQueue` 受 20000 条和 32 MiB 字节双上限约束，连接重放与文件刷盘是两条路径；`queue_dropped`
+表示传输队列溢出，不能据此推断 spool 文件完整。崩溃取证使用双缓冲 `mLastCommand` 与原子槽位，
+最大程度避免管道线程写入时读出半条命令；崩溃时仍可能损失最后一段未刷盘记录。
+
+命名管道通过 `PipeChannel::OwnerSecurity` 为实例附加仅授权当前进程用户 SID 的显式 DACL，
+并配合 `PIPE_REJECT_REMOTE_CLIENTS`。配置 `pipe_token` 时，未认证连接只开放 `auth` 与
+`ping`，并在接收新连接前先将积压队列刷入 spool 后清空 `mQueue`，防止未认证前泄露旧事件。
+
+客户端断开连接时，管道线程通过 `updateRequests` 调用 `clearContinuousRequests` 仅清除
+`ticks < 0` 的持续移动/转向请求，不直接触碰 tick 线程控制状态或 SDK，同时保留有限 `ticks`
+以便短连接 CLI 命令执行。`allowTurnDelta` 在事件路径读取 tick 维护的 `atomic_bool mForeground`，
+不在每次鼠标事件重复调用 `GetForegroundWindow`。
+
+启动加载 `harness.json`、`offsets.json` 与 `checkpoints.json` 均使用容错 JSON 解析与异常
+保护：字段类型错误会写入 `harness-boot.log` 并回退默认值或跳过坏条目，不会因异常逃逸导致
+`enable()` 静默失效。
 
 ## 内存、观察点与 hook
 
@@ -244,12 +260,25 @@ stream；EOF、接收溢出和显式 close 都会释放当前代次，旧 close 
 对象，不代替显式关闭。
 
 请求只取本次响应，其他事件进入 pending；独立事件等待超时不关闭连接，请求超时关闭连接。
+协商 `capabilities` 含 `req_id` 时，客户端为每次 `request()` 分配递增正整数 `req_id`（不修改
+调用方字典）；mod 同步回执、投递后的 `client/server` 任务以及 `SnapshotMailbox`/`StagedCapture`/
+`ChatCapture`/`click` 异步回执与对应错误均回传同一 `req_id`，异步后台错误不再误杀当前请求。
 任务封装先等 started，再按 task_id 等终结，取消抛 `ModTaskCancelled`。
 
-`selftest.py` 只负责 CLI、专项分发和兼容导出。`selftest_default.py` 编排默认套件，
-`selftest_runtime.py` 统一 WorldLost、等待与水池夹具，其他 `selftest_<领域>.py` 分别承载
-任务、查询、输入、封包、录制和恢复检查。三态结果与首错保护在 `selftest_support.py`，
-诊断会话明确记录空窗，不用旧检查名掩盖缺少覆盖。
+客户端与命令行层方面，命令域 mixin 继承无运行时实现的方法壳 `PipeMixinBase`（配合
+`PipeClientProtocol` 静态约束），与具体 `PipeConnection` 解耦后再在 `ModClient` 统一汇聚；
+`Harness` 保留显式签名、别名与集合拆箱适配器，其余 1 对 1 方法通过 `__getattr__` / `__dir__`
+转发到 `client`。客户端接收队列上限提高到 `20000` 与 `mQueue` 对齐；默认仍在 `pending >= 4096` 或
+队列满时 fail-closed 断连，调用 `set_drop_events()` 可按事件名（如 `"tick"`）显式开启溢出丢弃并
+通过 `dropped_events()` 读计数（仍为非丢弃响应预留尾槽）。CLI 处理器返回退出码，在返回对象显式
+含 `ok=false` 时退出 `1` 而保持完整 JSON 输出。
+
+`selftest.py` 通过 `MODE_REGISTRY` 与 `ModeSpec` 驱动命令行分支、`--list`、`--only <name>`
+和 `--world <WORLD>`（并保留全部历史 `--*-only` / `--*-world` 参数和兼容导出）。
+`selftest_default.py` 按 `DefaultSuiteContext` 与 `DEFAULT_SECTIONS` 分段组织，支持单节
+回放（`--only default:<sec1,sec2>`）；`selftest_runtime.py` 统一 WorldLost、等待与水池夹具，
+其余 `selftest_<领域>.py` 统一直接从 `driver.harness` 导入公开客户端，不再经由兼容垫片。
+三态结果与首错保护在 `selftest_support.py`，诊断会话明确记录空窗，不用旧检查名掩盖缺少覆盖。
 
 ## 验证边界
 

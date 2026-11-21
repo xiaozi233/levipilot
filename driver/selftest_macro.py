@@ -11,9 +11,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
+from driver.harness import ModClient
 from driver.harness.errors import ModPipeError, ModTimeout
 from driver.selftest_support import Checks
-from driver.transport_mod import ModClient
 
 MACRO_RECORD_LIMIT = 200000
 

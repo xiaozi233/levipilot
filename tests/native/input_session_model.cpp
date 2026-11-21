@@ -61,4 +61,23 @@ int main() {
     assert(session.mouseEventCount == 0 && session.mouseLastAction == -1);
     assert(session.buttonStates[0] == false && session.handlerStates[8] == false);
     assert(allocations.load() == before);
+
+    struct RequestBlock {
+        ControlState  input{};
+        int           inputTicks = 0;
+        std::uint32_t inputSeq   = 0;
+        int           lookTicks  = 0;
+        std::uint32_t lookSeq    = 0;
+    };
+    RequestBlock continuous{{1.0f, 0.0f, true, true}, -1, 10, -1, 20};
+    probe::detail::clearContinuousRequests(continuous);
+    assert(!continuous.input.active && continuous.input.forward == 0.0f);
+    assert(continuous.inputTicks == 0 && continuous.inputSeq == 11);
+    assert(continuous.lookTicks == 0 && continuous.lookSeq == 21);
+
+    RequestBlock finite{{0.5f, -0.5f, true, false}, 15, 10, 4, 20};
+    probe::detail::clearContinuousRequests(finite);
+    assert(finite.input.active && finite.input.forward == 0.5f);
+    assert(finite.inputTicks == 15 && finite.inputSeq == 10);
+    assert(finite.lookTicks == 4 && finite.lookSeq == 20);
 }

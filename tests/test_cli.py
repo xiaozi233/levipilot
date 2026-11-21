@@ -350,6 +350,48 @@ class CliCompatibilityTests(unittest.TestCase):
         registered = set(cli.REGISTRY) | set(cli.DIRECT)
         self.assertEqual(defined, registered, "parser/registry drift")
 
+    def test_ok_false_returns_exit_code_one_with_exact_json(self) -> None:
+        from unittest.mock import patch
+
+        for argv, method_name in (
+            (["leave-world"], "leave_world"),
+            (["enter-world", "--name", "测试"], "enter_world"),
+        ):
+            with self.subTest(argv=argv):
+                import contextlib
+                import io
+
+                class FailingClient:
+                    def __init__(self, *_a, **_kw) -> None:
+                        pass
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_exc) -> None:
+                        pass
+
+                    def __getattr__(self, name: str, target: str = method_name):
+                        if name == target:
+                            return lambda *_a, **_kw: {
+                                "event": f"{target}_result",
+                                "ok": False,
+                                "reason": "not_ready",
+                            }
+                        raise AttributeError(name)
+
+                out = io.StringIO()
+                with (
+                    patch.object(cli, "ModClient", FailingClient),
+                    contextlib.redirect_stdout(out),
+                ):
+                    code = cli.main(argv)
+                self.assertEqual(code, 1)
+                self.assertEqual(
+                    json.loads(out.getvalue()),
+                    {"event": f"{method_name}_result", "ok": False, "reason": "not_ready"},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

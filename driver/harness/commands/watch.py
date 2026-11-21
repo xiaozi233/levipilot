@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
+from ._protocol import PipeMixinBase
 from .hooks import remember_ring_head, ring_head
 
 
-class WatchCommands(PipeConnection):
+class WatchCommands(PipeMixinBase):
     def watch_set(
         self,
         addr: int | str,

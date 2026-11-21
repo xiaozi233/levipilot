@@ -643,15 +643,15 @@ bool hookRequestCall(std::string const& symbol, float scale, std::string& error,
         error = "bad_param";
         return false;
     }
-    if (!gCalls.begin({scale, test}, GetTickCount64(), 2000)) {
+    if (!gCalls.begin({scale, test}, GetTickCount64(), 2000, activeReqId())) {
         error = "hook_call_busy";
         return false;
     }
     return true;
 }
 
-void hookTick(LocalPlayer& player) {
-    gCalls.advance([&](auto const& request, auto& out) {
+bool hookTick(LocalPlayer& player) {
+    return gCalls.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         out.scale = request.scale;
         if (!guardedGameRead([&] {
@@ -681,6 +681,7 @@ std::optional<nlohmann::json> hookTakeCallResult() {
             {"scale",  done.snapshot().scale},
             {"ok",     true                 }
         };
+    attachReqId(result, done.reqId);
     if (!done.release()) return {};
     return result;
 }

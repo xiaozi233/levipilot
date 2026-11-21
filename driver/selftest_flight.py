@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from driver.harness import ModClient
 from driver.selftest_support import Checks
-from driver.transport_mod import ModClient
 
 SENTINEL_EFFECTS = (
     ("night_vision", 16),

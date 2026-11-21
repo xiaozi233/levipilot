@@ -14,6 +14,7 @@ void ProbeMod::reportInternalError(TickPhase phase, char const* message) noexcep
     // release retains its held edge for the recovery ticks to retry.
     releaseRealInput();
     releaseInputEvents();
+    wakeSpool();
 }
 
 bool ProbeMod::recoverTickControls(LocalPlayer& player) {

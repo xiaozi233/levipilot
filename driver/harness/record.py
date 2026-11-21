@@ -32,7 +32,8 @@ FLAG_BLOCK_OOB = 1 << 11
 FLAG_IN_WATER = 1 << 12
 FLAG_IN_LAVA = 1 << 13
 
-assert struct.calcsize(ENTRY_FORMAT) == ENTRY_SIZE
+if struct.calcsize(ENTRY_FORMAT) != ENTRY_SIZE:
+    raise RuntimeError(f"ENTRY_FORMAT size {struct.calcsize(ENTRY_FORMAT)} != {ENTRY_SIZE}")
 
 
 @dataclass(frozen=True)

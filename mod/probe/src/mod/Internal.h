@@ -337,6 +337,30 @@ bool        parseSize(nlohmann::json const& value, std::uint32_t& out);
 bool numberJson(nlohmann::json const& j, char const* key, double low, double high, double fallback, double& out);
 bool numberValue(nlohmann::json const& value, double low, double high, double& out);
 
+inline constexpr int MaxInputTicks = 200000;
+bool parseInputTicks(nlohmann::json const& j, char const* key, int fallback, int& out);
+
+// Non-throwing JSON accessors for startup config, overrides, and checkpoints.
+bool        safeJsonBool(nlohmann::json const& j, char const* key, bool fallback, bool* invalid = nullptr);
+int         safeJsonInt(nlohmann::json const& j, char const* key, int fallback, bool* invalid = nullptr);
+std::string safeJsonString(
+    nlohmann::json const& j, char const* key, std::string const& fallback, bool* invalid = nullptr
+);
+bool safeJsonFloat(nlohmann::json const& j, char const* key, float fallback, float& out);
+
+// Incremental per-request correlation IDs (pipe/task thread-local + cold JSON).
+std::uint64_t activeReqId() noexcept;
+void          setActiveReqId(std::uint64_t id) noexcept;
+struct ActiveReqIdScope {
+    std::uint64_t prev;
+    explicit ActiveReqIdScope(std::uint64_t id = 0) noexcept;
+    ~ActiveReqIdScope() noexcept;
+    ActiveReqIdScope(ActiveReqIdScope const&)            = delete;
+    ActiveReqIdScope& operator=(ActiveReqIdScope const&) = delete;
+};
+void           attachReqId(nlohmann::json& out, std::uint64_t reqId);
+nlohmann::json protocolCapabilitiesJson();
+
 // World-space sanity bounds for block/command coordinates. A double outside
 // these is rejected as a bad coordinate instead of being cast to int.
 inline constexpr double CoordHorizonLimit = 3.0e7;
@@ -495,7 +519,7 @@ int            hookRemoveAll();
 nlohmann::json hookListJson();
 nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit);
 bool hookRequestCall(std::string const& symbol, float scale, std::string& error, CaptureTest test = CaptureTest::None);
-void hookTick(LocalPlayer& player);
+bool hookTick(LocalPlayer& player);
 std::optional<nlohmann::json> hookTakeCallResult();
 void                          hookCancelCalls(char const* reason);
 void                          hookResetCalls();

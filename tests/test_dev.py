@@ -603,5 +603,32 @@ class RunAttachAndExecTests(unittest.TestCase):
         kill_game.assert_called_once_with(exe)
 
 
+class BuildEnvTests(unittest.TestCase):
+    def test_build_xmake_env_preserves_caller_vars_and_uses_existing_tool_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            llvm_bin = root / "llvm" / "bin"
+            xmake_dir = root / "xmake"
+            existing = root / "existing"
+            llvm_bin.mkdir(parents=True)
+            xmake_dir.mkdir(parents=True)
+            existing.mkdir(parents=True)
+
+            base = {
+                "PATH": str(existing),
+                "XMAKE_GLOBALDIR": "C:/custom/xmake-home",
+                "XMAKE_PKG_INSTALLDIR": "C:/custom/xmake-pkgs",
+                "LEVIPILOT_LLVM_ROOT": str(root / "llvm"),
+                "LEVIPILOT_XMAKE_DIR": str(xmake_dir),
+            }
+            with patch.object(dev, "XMAKE_PATH", r"Z:\nonexistent\llvm\bin;Z:\nonexistent\xmake"):
+                env = dev._build_xmake_env(base)
+            self.assertEqual(env["XMAKE_GLOBALDIR"], "C:/custom/xmake-home")
+            self.assertEqual(env["XMAKE_PKG_INSTALLDIR"], "C:/custom/xmake-pkgs")
+            parts = env["PATH"].split(os.pathsep)
+            self.assertEqual(parts[:3], [str(llvm_bin), str(xmake_dir), str(existing)])
+            self.assertNotIn(r"Z:\nonexistent\llvm\bin", env["PATH"])
+
+
 if __name__ == "__main__":
     unittest.main()

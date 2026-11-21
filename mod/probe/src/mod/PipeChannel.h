@@ -25,19 +25,81 @@ class PipeChannel {
             CloseHandle(mEvent);
     }
 
+    struct OwnerSecurity {
+        HANDLE              token   = nullptr;
+        BYTE*               userBuf = nullptr;
+        ACL*                dacl    = nullptr;
+        SECURITY_DESCRIPTOR sd{};
+        SECURITY_ATTRIBUTES sa{};
+
+        OwnerSecurity()                                = default;
+        OwnerSecurity(OwnerSecurity const&)            = delete;
+        OwnerSecurity& operator=(OwnerSecurity const&) = delete;
+        ~OwnerSecurity() {
+            HANDLE heap = GetProcessHeap();
+            if (dacl)
+                HeapFree(heap, 0, dacl);
+            if (userBuf)
+                HeapFree(heap, 0, userBuf);
+            if (token)
+                CloseHandle(token);
+        }
+
+        bool init() {
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+                return false;
+            DWORD needed = 0;
+            GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+            if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || needed == 0)
+                return false;
+            HANDLE heap = GetProcessHeap();
+            userBuf = static_cast<BYTE*>(HeapAlloc(heap, HEAP_ZERO_MEMORY, needed));
+            if (!userBuf)
+                return false;
+            if (!GetTokenInformation(token, TokenUser, userBuf, needed, &needed))
+                return false;
+            PSID userSid = reinterpret_cast<TOKEN_USER const*>(userBuf)->User.Sid;
+            if (!userSid || !IsValidSid(userSid))
+                return false;
+
+            DWORD aclSize = static_cast<DWORD>(
+                sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(userSid));
+            dacl = static_cast<ACL*>(HeapAlloc(heap, HEAP_ZERO_MEMORY, aclSize));
+            if (!dacl)
+                return false;
+            if (!InitializeAcl(dacl, aclSize, ACL_REVISION))
+                return false;
+            if (!AddAccessAllowedAce(dacl, ACL_REVISION, GENERIC_ALL, userSid))
+                return false;
+            if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION))
+                return false;
+            if (!SetSecurityDescriptorDacl(&sd, TRUE, dacl, FALSE))
+                return false;
+
+            sa.nLength              = sizeof(SECURITY_ATTRIBUTES);
+            sa.lpSecurityDescriptor = &sd;
+            sa.bInheritHandle       = FALSE;
+            return true;
+        }
+    };
+
     bool open(wchar_t const* name, DWORD bufferBytes) {
         close();
+        OwnerSecurity sec;
+        if (!sec.init())
+            return false;
         if (!mEvent)
             mEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!mEvent)
             return false;
         mPipe = CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                                  PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1,
-                                 bufferBytes, bufferBytes, 0, nullptr);
+                                 bufferBytes, bufferBytes, 0, &sec.sa);
         return valid();
     }
 
-    bool valid() const { return mPipe != INVALID_HANDLE_VALUE; }
+    bool   valid() const { return mPipe != INVALID_HANDLE_VALUE; }
+    HANDLE nativeHandle() const { return mPipe; }
     void close() {
         if (valid()) {
             DisconnectNamedPipe(mPipe);

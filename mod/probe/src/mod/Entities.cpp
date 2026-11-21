@@ -171,6 +171,7 @@ void ProbeMod::drainEntities() {
                         active->run(stage, GetTickCount64(), [&](EntitySnapshot& out) {
                             return captureEntityStage(stage, active->query, out);
                         });
+                        wakeSpool();
                     }
                 };
                 try {
@@ -190,6 +191,7 @@ void ProbeMod::drainEntities() {
     auto result = done.error
         ? nlohmann::json{{"event", "error"}, {"reason", done.error}, {"phase", "entities"}}
         : entityJson(done.request->query, done.request->snapshot);
+    attachReqId(result, done.request->reqId);
     auto line = result.dump();
     if (done.release()) enqueue(std::move(line));
 }

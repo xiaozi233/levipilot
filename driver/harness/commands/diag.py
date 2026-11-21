@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModProtocolError, ModTimeout
+from ._protocol import PipeMixinBase
 
 
-class DiagnosticsCommands(PipeConnection):
+class DiagnosticsCommands(PipeMixinBase):
     def overhead(self) -> dict[str, Any]:
         """Tick/hook timing percentiles (T9)."""
         return self.request({"cmd": "overhead"}, "overhead")

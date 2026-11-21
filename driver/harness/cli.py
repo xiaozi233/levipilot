@@ -17,14 +17,13 @@ from .spool import read_spool
 # One dispatch table instead of a parser list and a handler list that could
 # drift apart: a command defined in cli_parser but missing here fails loudly
 # (test_cli.test_every_parser_command_has_a_handler locks the two together).
-_Handler = Callable[[argparse.Namespace, ModClient, argparse.ArgumentParser], bool]
+_Handler = Callable[[argparse.Namespace, ModClient, argparse.ArgumentParser], int | None]
 _MODULES = (diagnostics, input, inspection, packets, query, world, tasks, recording)
 REGISTRY: dict[str, _Handler] = {
     name: module.run for module in _MODULES for name in module.COMMANDS
 }
-assert len(REGISTRY) == sum(len(module.COMMANDS) for module in _MODULES), (
-    "duplicate command names across CLI handler modules"
-)
+if len(REGISTRY) != sum(len(module.COMMANDS) for module in _MODULES):
+    raise RuntimeError("duplicate command names across CLI handler modules")
 # Commands handled before connecting to the mod.
 DIRECT = frozenset({"spool", "packet-decode"})
 
@@ -69,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with ModClient(args.pipe) as client:
-            handler(args, client, parser)
+            code = handler(args, client, parser)
     except ModPipeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         print("提示：游戏内是否已加载 probe/harness mod，并且已经进入存档？", file=sys.stderr)
@@ -81,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
-    return 0
+    if code is None:
+        parser.error(f"unhandled command: {args.command}")
+    return code
 
 
 if __name__ == "__main__":

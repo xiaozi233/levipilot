@@ -117,6 +117,153 @@ bool numberJson(nlohmann::json const& j, char const* key, double low, double hig
     return numberValue(*it, low, high, out);
 }
 
+bool parseInputTicks(nlohmann::json const& j, char const* key, int fallback, int& out) {
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        out = fallback;
+        return true;
+    }
+    if (!it->is_number() || it->is_boolean()) {
+        return false;
+    }
+    if (it->is_number_unsigned()) {
+        auto const uv = it->get<std::uint64_t>();
+        if (uv > static_cast<std::uint64_t>(MaxInputTicks)) {
+            return false;
+        }
+        out = static_cast<int>(uv);
+        return true;
+    }
+    if (it->is_number_integer()) {
+        auto const sv = it->get<std::int64_t>();
+        if (sv != -1 && (sv < 0 || sv > static_cast<std::int64_t>(MaxInputTicks))) {
+            return false;
+        }
+        out = static_cast<int>(sv);
+        return true;
+    }
+    double const dv = it->get<double>();
+    if (!std::isfinite(dv) || std::trunc(dv) != dv) {
+        return false;
+    }
+    if (dv != -1.0 && (dv < 0.0 || dv > static_cast<double>(MaxInputTicks))) {
+        return false;
+    }
+    out = static_cast<int>(dv);
+    return true;
+}
+
+bool safeJsonBool(nlohmann::json const& j, char const* key, bool fallback, bool* invalid) {
+    if (!j.is_object()) {
+        if (invalid) *invalid = true;
+        return fallback;
+    }
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        return fallback;
+    }
+    if (it->is_boolean()) {
+        return it->get<bool>();
+    }
+    if (invalid) *invalid = true;
+    return fallback;
+}
+
+int safeJsonInt(nlohmann::json const& j, char const* key, int fallback, bool* invalid) {
+    if (!j.is_object()) {
+        if (invalid) *invalid = true;
+        return fallback;
+    }
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        return fallback;
+    }
+    if (it->is_number_unsigned()) {
+        auto const uv = it->get<std::uint64_t>();
+        if (uv <= static_cast<std::uint64_t>((std::numeric_limits<int>::max)())) {
+            return static_cast<int>(uv);
+        }
+    } else if (it->is_number_integer()) {
+        auto const sv = it->get<std::int64_t>();
+        if (sv >= static_cast<std::int64_t>((std::numeric_limits<int>::min)())
+            && sv <= static_cast<std::int64_t>((std::numeric_limits<int>::max)())) {
+            return static_cast<int>(sv);
+        }
+    }
+    if (invalid) *invalid = true;
+    return fallback;
+}
+
+std::string safeJsonString(
+    nlohmann::json const& j, char const* key, std::string const& fallback, bool* invalid
+) {
+    if (!j.is_object()) {
+        if (invalid) *invalid = true;
+        return fallback;
+    }
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        return fallback;
+    }
+    if (it->is_string()) {
+        return it->get<std::string>();
+    }
+    if (invalid) *invalid = true;
+    return fallback;
+}
+
+bool safeJsonFloat(nlohmann::json const& j, char const* key, float fallback, float& out) {
+    if (!j.is_object()) {
+        return false;
+    }
+    auto const it = j.find(key);
+    if (it == j.end()) {
+        out = fallback;
+        return true;
+    }
+    if (!it->is_number() || it->is_boolean()) {
+        return false;
+    }
+    double const parsed = it->get<double>();
+    double const limit  = static_cast<double>((std::numeric_limits<float>::max)());
+    if (!std::isfinite(parsed) || parsed < -limit || parsed > limit) {
+        return false;
+    }
+    out = static_cast<float>(parsed);
+    return true;
+}
+
+namespace {
+thread_local std::uint64_t gActiveReqId = 0;
+} // namespace
+
+std::uint64_t activeReqId() noexcept { return gActiveReqId; }
+void          setActiveReqId(std::uint64_t id) noexcept { gActiveReqId = id; }
+
+ActiveReqIdScope::ActiveReqIdScope(std::uint64_t id) noexcept : prev(gActiveReqId) { gActiveReqId = id; }
+ActiveReqIdScope::~ActiveReqIdScope() noexcept { gActiveReqId = prev; }
+
+void attachReqId(nlohmann::json& out, std::uint64_t reqId) {
+    if (reqId != 0 && out.is_object() && !out.contains("req_id")) {
+        out["req_id"] = reqId;
+    }
+}
+
+nlohmann::json protocolCapabilitiesJson() {
+    return nlohmann::json::array(
+        {"tick_json",
+         "bin_record",
+         "mem",
+         "watch",
+         "signin",
+         "hook",
+         "ecs",
+         "task_lifecycle",
+         "chat_history",
+         "req_id"}
+    );
+}
+
 bool parseBool(nlohmann::json const& value, bool& out) {
     if (value.is_boolean()) {
         out = value.get<bool>();

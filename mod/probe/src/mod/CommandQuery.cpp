@@ -25,13 +25,14 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         auto const target   = j.value("target", std::string{"state"});
-        auto const now      = GetTickCount64();
-        auto const timeout  = static_cast<std::uint64_t>(std::clamp(j.value("timeout_ms", 250), 1, 10000));
-        bool       accepted = false;
-        if (target == "state") accepted = mStateCapture.begin({test}, now, timeout);
-        else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, timeout);
-        else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, timeout);
-        else if (target == "select_slot") accepted = mSlotCapture.begin({0, test}, now, timeout);
+        auto const  now      = GetTickCount64();
+        auto const  timeout  = static_cast<std::uint64_t>(std::clamp(j.value("timeout_ms", 250), 1, 10000));
+        auto const  reqId    = activeReqId();
+        bool        accepted = false;
+        if (target == "state") accepted = mStateCapture.begin({test}, now, timeout, reqId);
+        else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, timeout, reqId);
+        else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, timeout, reqId);
+        else if (target == "select_slot") accepted = mSlotCapture.begin({0, test}, now, timeout, reqId);
         else if (target == "ecs") {
             EcsQuery query;
             query.test = test;
@@ -45,7 +46,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             query.runtimeId = j.value("runtime_id", std::uint64_t{0});
             query.operation = query.testStage == EcsStage::Client
                 ? EcsOperation::Registries : EcsOperation::Components;
-            accepted = bool(mEcsCapture.begin(query, now, timeout));
+            accepted = bool(mEcsCapture.begin(query, now, timeout, reqId));
         }
         else if (target == "entities") {
             EntityQuery query;
@@ -61,16 +62,16 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
                 enqueue(R"({"event":"error","reason":"bad_test_stage"})");
                 return true;
             }
-            accepted = bool(mEntityCapture.begin(query, now, timeout));
+            accepted = bool(mEntityCapture.begin(query, now, timeout, reqId));
         }
         else if (target == "blocks") {
             BlockRequest request;
             request.test = test;
-            accepted     = mBlockCapture.begin(request, now, timeout);
+            accepted     = mBlockCapture.begin(request, now, timeout, reqId);
         } else if (target == "scan") {
             ScanQuery request;
             request.test = test;
-            accepted     = mScanCapture.begin(request, now, timeout);
+            accepted     = mScanCapture.begin(request, now, timeout, reqId);
         } else {
             enqueue(R"({"event":"error","reason":"bad_test_target"})");
             return true;
@@ -87,7 +88,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         if (!mWorld.inWorld() || (mLastTickMs.load() != 0 && now - mLastTickMs.load() > 1000)) {
             enqueue(R"({"event":"state","in_world":false})");
         } else {
-            if (!mStateCapture.begin({}, now, 2000)) enqueue(R"({"event":"error","reason":"state_busy"})");
+            if (!mStateCapture.begin({}, now, 2000, activeReqId())) enqueue(R"({"event":"error","reason":"state_busy"})");
         }
         return true;
     }
@@ -103,7 +104,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_radius"})");
             return true;
         }
-        if (!mEntityCapture.begin(request, GetTickCount64()))
+        if (!mEntityCapture.begin(request, GetTickCount64(), 2000, activeReqId()))
             enqueue(R"({"event":"error","reason":"entities_busy"})");
         return true;
     }
@@ -113,10 +114,18 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         BlockRequest request;
-        if (j.contains("positions") && j["positions"].is_array()) {
+        if (j.contains("positions")) {
+            if (!j["positions"].is_array()) {
+                enqueue(R"({"event":"error","reason":"bad_coord","param":"positions"})");
+                return true;
+            }
             for (auto const& pos : j["positions"]) {
+                if (request.count >= request.positions.size()) {
+                    break;
+                }
                 if (!pos.is_array() || pos.size() != 3) {
-                    continue;
+                    enqueue(R"({"event":"error","reason":"bad_coord","param":"positions"})");
+                    return true;
                 }
                 double x = 0.0, y = 0.0, z = 0.0;
                 // A raw static_cast<int> on an out-of-range double is UB
@@ -124,19 +133,17 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
                 if (!numberValue(pos[0], -CoordHorizonLimit, CoordHorizonLimit, x)
                     || !numberValue(pos[1], CoordHeightLow, CoordHeightHigh, y)
                     || !numberValue(pos[2], -CoordHorizonLimit, CoordHorizonLimit, z)) {
-                    continue;
+                    enqueue(R"({"event":"error","reason":"bad_coord","param":"positions"})");
+                    return true;
                 }
                 request.positions[request.count++] = BlockPoint{
                     static_cast<int>(std::floor(x)),
                     static_cast<int>(std::floor(y)),
                     static_cast<int>(std::floor(z)),
                 };
-                if (request.count >= request.positions.size()) {
-                    break;
-                }
             }
         }
-        if (!mBlockCapture.begin(request, GetTickCount64(), 2000))
+        if (!mBlockCapture.begin(request, GetTickCount64(), 2000, activeReqId()))
             enqueue(R"({"event":"error","reason":"blocks_busy"})");
         return true;
     }
@@ -166,21 +173,19 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"bad_region"})");
             return true;
         }
-        std::int64_t const dx = std::llabs(static_cast<std::int64_t>(request.to.x) - request.from.x) + 1;
-        std::int64_t const dy = std::llabs(static_cast<std::int64_t>(request.to.y) - request.from.y) + 1;
-        std::int64_t const dz = std::llabs(static_cast<std::int64_t>(request.to.z) - request.from.z) + 1;
-        if (dx * dy * dz > 32768) {
+        if (!scanVolumeWithinLimit(request.from, request.to)) {
             enqueue(R"({"event":"error","reason":"region_too_large","limit":32768})");
             return true;
         }
         request.includeAir = j.value("include_air", false);
         request.limit      = std::clamp(j.value("limit", 4096), 1, 16384);
-        if (!mScanCapture.begin(request, GetTickCount64(), 10000)) enqueue(R"({"event":"error","reason":"scan_busy"})");
+        if (!mScanCapture.begin(request, GetTickCount64(), 10000, activeReqId()))
+            enqueue(R"({"event":"error","reason":"scan_busy"})");
         return true;
     }
     if (cmd == "select_slot") {
         if (!mWorld.inWorld()) enqueue(R"({"event":"error","reason":"not_in_world"})");
-        else if (!mSlotCapture.begin({std::clamp(j.value("slot", 0), 0, 8)}, GetTickCount64(), 2000))
+        else if (!mSlotCapture.begin({std::clamp(j.value("slot", 0), 0, 8)}, GetTickCount64(), 2000, activeReqId()))
             enqueue(R"({"event":"error","reason":"select_slot_busy"})");
         else enqueue(R"({"event":"select_slot_ok"})");
         return true;
@@ -189,7 +194,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
         } else {
-            if (!mInventoryCapture.begin({}, GetTickCount64(), 2000))
+            if (!mInventoryCapture.begin({}, GetTickCount64(), 2000, activeReqId()))
                 enqueue(R"({"event":"error","reason":"inventory_busy"})");
         }
         return true;
@@ -263,7 +268,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             query.operation = EcsOperation::Component;
             query.length = j.value("len", std::uint32_t{0});
         }
-        if (auto request = mEcsCapture.begin(query, GetTickCount64())) {
+        if (auto request = mEcsCapture.begin(query, GetTickCount64(), 2000, activeReqId())) {
             if (!mWorld.inWorld() || mPoseEpoch.load() != epoch) request->cancel("world_left");
         } else enqueue(R"({"event":"error","reason":"ecs_busy","phase":"ecs"})");
         return true;
@@ -284,7 +289,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             action.operation = EntityOperation::LookAt;
         }
         action.runtimeId = j.value("runtime_id", std::uint64_t{0});
-        if (!mEntityCapture.begin(action, GetTickCount64()))
+        if (!mEntityCapture.begin(action, GetTickCount64(), 2000, activeReqId()))
             enqueue(R"({"event":"error","reason":"entities_busy"})");
         return true;
     }

@@ -12,7 +12,7 @@ bool ProbeMod::queueFlight(FlightQuery query, std::uint64_t timeout) {
     }
     query.id = mFlight.nextId + 1;
     query.generation = mFlight.generation.load();
-    if (!mFlight.capture.begin(query, GetTickCount64(), timeout)) {
+    if (!mFlight.capture.begin(query, GetTickCount64(), timeout, activeReqId())) {
         enqueue(R"({"event":"error","reason":"flight_busy"})");
         return false;
     }
@@ -116,9 +116,12 @@ void ProbeMod::drainFlight() {
         if (auto stage = request->dispatch(); stage && !(request->query.test == CaptureTest::Deferred && *stage == request->query.testStage)) {
             auto weak = std::weak_ptr{request};
             auto run = [this, weak, stage = *stage] {
-                if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](FlightSnapshot& out) {
-                    return captureFlightStage(stage, active->query, out);
-                });
+                if (auto active = weak.lock()) {
+                    active->run(stage, GetTickCount64(), [&](FlightSnapshot& out) {
+                        return captureFlightStage(stage, active->query, out);
+                    });
+                    wakeSpool();
+                }
             };
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
             try {
@@ -143,6 +146,7 @@ void ProbeMod::drainFlight() {
                   {"client_observed", out.clientApplied}, {"server_applied", out.serverApplied},
                   {"application", "server_with_client_readback"}, {"assertion", "readback"}};
     }
+    attachReqId(result, done.request->reqId);
     auto line = result.dump();
     if (done.release()) enqueue(std::move(line));
 }

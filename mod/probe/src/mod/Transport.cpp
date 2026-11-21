@@ -7,17 +7,22 @@ using namespace probe::detail;
 namespace probe {
 
 void ProbeMod::enqueue(std::string line) {
-    std::lock_guard lock(mQueueMutex);
-    if (mQueue.size() >= 20000) {
-        mQueue.pop_front();
-        mQueueDropped.fetch_add(1, std::memory_order_relaxed);
+    if (auto const reqId = activeReqId(); reqId != 0) {
+        line = attachReqId(std::move(line), reqId);
     }
+    std::lock_guard lock(mQueueMutex);
     // Spool before the move below. The spool thread is the only reader, and it
     // swaps the buffer under the same mutex, so the tick path stays allocation-
     // free apart from the string append it already did for the queue.
-    mSpoolBuffer.append(line);
-    mSpoolBuffer.push_back('\n');
-    mQueue.push_back(std::move(line));
+    if (mSpoolBuffer.size() + line.size() + 1 <= MaxSpoolBufferBytes) {
+        mSpoolBuffer.append(line);
+        mSpoolBuffer.push_back('\n');
+    } else {
+        mSpoolErrors.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (auto const dropped = pushBoundedLine(mQueue, mQueueBytes, std::move(line)); dropped > 0) {
+        mQueueDropped.fetch_add(dropped, std::memory_order_relaxed);
+    }
 }
 
 void ProbeMod::spoolThreadLoop() {
@@ -42,7 +47,11 @@ void ProbeMod::spoolThreadLoop() {
     // fills, tickTask stops). Failures become error events instead.
     bool faultReported = false;
     while (mRunning.load(std::memory_order_relaxed)) {
-        Sleep(25);
+        if (mSpoolWakeEvent) {
+            WaitForSingleObject(mSpoolWakeEvent, 25);
+        } else {
+            Sleep(25);
+        }
         try {
             drainInternalErrors();
             mWorld.pollEntry();
@@ -219,10 +228,12 @@ void ProbeMod::queueServerTask(
     bool                             rejectQueueForSelftest,
     SdkTaskTest                       test
 ) {
-    auto fail = [this, onFailure](char const* reason, char const* message = "") {
+    std::uint64_t const reqId = activeReqId();
+    auto fail = [this, onFailure, reqId](char const* reason, char const* message = "") {
         if (onFailure) {
             if (!guardedSdkCall([&] { onFailure(reason); })) bootLog("server task: failure handler failed");
         } else {
+            ActiveReqIdScope reqScope(reqId);
             nlohmann::json error{
                 {"event",  "error"},
                 {"reason", reason }
@@ -231,8 +242,9 @@ void ProbeMod::queueServerTask(
             enqueue(error.dump());
         }
     };
-    auto tracked = detail::trackedCallback(detail::gCallbacks, detail::CallbackDomain::Server, [fn = std::move(fn), fail, test] {
+    auto tracked = detail::trackedCallback(detail::gCallbacks, detail::CallbackDomain::Server, [fn = std::move(fn), fail, test, reqId] {
         gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+        ActiveReqIdScope reqScope(reqId);
         std::string message;
         if (!guardedSdkCall([&] { injectSdkTaskFault(test, SdkTaskPhase::Run); fn(); }, CaptureTest::None, &message))
             fail("server_task_failed", message.c_str());
@@ -296,9 +308,17 @@ void ProbeMod::serverLoop() {
             }
 
             if (!connected) {
+                mPipeAuthed.store(mPipeToken.empty(), std::memory_order_release);
+                if (!mPipeToken.empty()) {
+                    flushSpool(true);
+                    std::lock_guard lock(mQueueMutex);
+                    mQueue.clear();
+                    mQueueBytes = 0;
+                }
                 mChatCapture.reset();
                 resetQueries();
                 hookResetCalls();
+                updateRequests([](RequestBlock& request) { clearContinuousRequests(request); });
                 bool const ok = pipe.connect(mRunning);
                 if (!mRunning.load(std::memory_order_relaxed)) {
                     break;
@@ -309,6 +329,8 @@ void ProbeMod::serverLoop() {
                     continue;
                 }
                 connected = true;
+                bool const authRequired = !mPipeToken.empty();
+                mPipeAuthed.store(!authRequired, std::memory_order_release);
                 bootLog("pipe: client connected");
                 if (mInputSession.lockOnConnect.load(std::memory_order_relaxed)) {
                     mInputSession.hardwareLocked.store(true, std::memory_order_relaxed);
@@ -329,18 +351,9 @@ void ProbeMod::serverLoop() {
                     {"spool",         mSpoolPath.string() },
                     {"replay_rows",   replay              },
                     {"queue_dropped", mQueueDropped.load()},
+                    {"auth_required", authRequired        },
                 };
-                helloJson["capabilities"] = nlohmann::json::array(
-                    {"tick_json",
-                     "bin_record",
-                     "mem",
-                     "watch",
-                     "signin",
-                     "hook",
-                     "ecs",
-                     "task_lifecycle",
-                     "chat_history"}
-                );
+                helloJson["capabilities"]  = protocolCapabilitiesJson();
                 helloJson["build_id"]      = buildId();
                 helloJson["version_ok"]    = versionOk();
                 helloJson["hooks_allowed"] = hooksAllowed();
@@ -393,6 +406,7 @@ void ProbeMod::serverLoop() {
             {
                 std::lock_guard lock(mQueueMutex);
                 batch.swap(mQueue);
+                mQueueBytes = 0;
             }
 
             bool const failed = !writeLineBatch<PipeBuffer>(batch, writeBuffer, [&](std::string const& bytes) {

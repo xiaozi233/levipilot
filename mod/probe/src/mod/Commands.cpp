@@ -8,9 +8,11 @@ namespace probe {
 thread_local bool gDispatchSehActive = false;
 
 void ProbeMod::recordCommand(std::string const& line) {
-    std::size_t const length = line.size() < sizeof(mLastCommand) - 1 ? line.size() : sizeof(mLastCommand) - 1;
-    std::memcpy(mLastCommand, line.data(), length);
-    mLastCommand[length] = '\0';
+    unsigned const   next   = 1u - (mLastCommandSlot.load(std::memory_order_relaxed) & 1u);
+    std::size_t const length = line.size() < sizeof(mLastCommand[next]) - 1 ? line.size() : sizeof(mLastCommand[next]) - 1;
+    std::memcpy(mLastCommand[next], line.data(), length);
+    mLastCommand[next][length] = '\0';
+    mLastCommandSlot.store(next, std::memory_order_release);
 }
 
 bool ProbeMod::dispatchWithSeh(std::string const& line) {
@@ -41,6 +43,7 @@ void ProbeMod::handleLine(std::string const& line) {
     // the request, not to the process. The flag must be visible to the crash
     // VEH, which runs before the __except filter below.
     HandledSehScope dispatchFlag;
+    ActiveReqIdScope reqScope(0);
     // nlohmann throws on type mismatches, and a bad line from a script must not
     // kill the pipe thread (which would make the whole harness unreachable).
     try {
@@ -65,14 +68,47 @@ void ProbeMod::handleLine(std::string const& line) {
 
 void ProbeMod::dispatchLine(std::string const& line) {
     auto j = nlohmann::json::parse(line, nullptr, false);
-    if (j.is_discarded()) {
+    if (j.is_discarded() || !j.is_object()) {
         enqueue(R"({"event":"error","reason":"bad_json"})");
         return;
+    }
+    if (auto const it = j.find("req_id"); it != j.end()) {
+        if (it->is_number_unsigned()) {
+            auto const reqId = it->get<std::uint64_t>();
+            if (reqId > 0) setActiveReqId(reqId);
+        } else if (it->is_number_integer()) {
+            auto const reqId = it->get<std::int64_t>();
+            if (reqId > 0) setActiveReqId(static_cast<std::uint64_t>(reqId));
+        }
     }
 
     auto cmd = j.value("cmd", std::string{});
     if (gCallbacks.closed() && cmd != "status" && cmd != "ping") {
         enqueue(R"({"event":"error","reason":"quiescing"})");
+        return;
+    }
+    if (!mPipeAuthed.load(std::memory_order_acquire) && cmd != "auth" && cmd != "ping") {
+        enqueue(R"({"event":"error","reason":"auth_required"})");
+        return;
+    }
+    if (cmd == "auth") {
+        auto const token = safeJsonString(j, "token", "");
+        bool       ok    = mPipeToken.empty();
+        if (!ok && token.size() == mPipeToken.size()) {
+            unsigned char diff = 0;
+            for (std::size_t i = 0; i < token.size(); ++i) {
+                diff |= static_cast<unsigned char>(token[i]) ^ static_cast<unsigned char>(mPipeToken[i]);
+            }
+            ok = (diff == 0);
+        }
+        if (ok) {
+            mPipeAuthed.store(true, std::memory_order_release);
+            enqueue(nlohmann::json{{"event", "auth_result"}, {"ok", true}}.dump());
+        } else {
+            mPipeAuthed.store(false, std::memory_order_release);
+            bootLog("pipe: auth failed");
+            enqueue(R"({"event":"error","reason":"bad_token"})");
+        }
         return;
     }
     if (mTickRecovery.active() && blockedDuringTickRecovery(cmd)) {

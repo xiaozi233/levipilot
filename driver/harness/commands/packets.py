@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModProtocolError
+from ._protocol import PipeMixinBase
 
 
-class PacketCommands(PipeConnection):
+class PacketCommands(PipeMixinBase):
     def packet_capture(
         self,
         on: bool = True,

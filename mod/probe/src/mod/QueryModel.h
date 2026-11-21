@@ -130,6 +130,21 @@ struct ScanSnapshot {
     char const*                    error = nullptr;
 };
 
+inline constexpr std::int64_t ScanMaxVolume = 32768;
+
+constexpr bool scanVolumeWithinLimit(BlockPoint from, BlockPoint to, std::int64_t limit = ScanMaxVolume) noexcept {
+    if (limit <= 0) return false;
+    auto const loX = std::min(from.x, to.x), hiX = std::max(from.x, to.x);
+    auto const loY = std::min(from.y, to.y), hiY = std::max(from.y, to.y);
+    auto const loZ = std::min(from.z, to.z), hiZ = std::max(from.z, to.z);
+    std::int64_t const dx = static_cast<std::int64_t>(hiX) - loX + 1;
+    std::int64_t const dy = static_cast<std::int64_t>(hiY) - loY + 1;
+    std::int64_t const dz = static_cast<std::int64_t>(hiZ) - loZ + 1;
+    if (dx <= 0 || dy <= 0 || dz <= 0) return false;
+    if (dx > limit || dy > limit / dx) return false;
+    return dz <= limit / (dx * dy);
+}
+
 template <class Read>
 bool advanceScan(ScanQuery const& request, ScanSnapshot& out, std::uint64_t tick, Read&& read) {
     if (!out.initialized) {
@@ -146,13 +161,13 @@ bool advanceScan(ScanQuery const& request, ScanSnapshot& out, std::uint64_t tick
         out.firstTick   = tick;
         out.initialized = true;
     }
-    auto const dx = std::int64_t(out.to.x) - out.from.x + 1;
-    auto const dy = std::int64_t(out.to.y) - out.from.y + 1;
-    auto const dz = std::int64_t(out.to.z) - out.from.z + 1;
-    if (dx > 32768 || dy > 32768 || dz > 32768 || dx * dy * dz > 32768) {
+    if (!scanVolumeWithinLimit(out.from, out.to)) {
         out.error = "bad_region";
         return true;
     }
+    auto const dx = std::int64_t(out.to.x) - out.from.x + 1;
+    auto const dy = std::int64_t(out.to.y) - out.from.y + 1;
+    auto const dz = std::int64_t(out.to.z) - out.from.z + 1;
     auto const total = static_cast<std::size_t>(dx * dy * dz);
     auto const limit = static_cast<std::size_t>(std::clamp(request.limit, 1, static_cast<int>(ScanSnapshot::Capacity)));
     ++out.batches;

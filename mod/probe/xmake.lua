@@ -26,6 +26,8 @@ target("probe")
         add_cxflags( "/EHa", "/utf-8", "/W4", "/w44265", "/w44289", "/w44296", "/w45263", "/w44738", "/w45204")
         add_cxflags(
             "/EHs",
+            "-Werror=return-type",
+            "-Werror=uninitialized",
             "-Wno-microsoft-cast",
             "-Wno-invalid-offsetof",
             "-Wno-c++2b-extensions",
@@ -38,7 +40,7 @@ target("probe")
             {tools = {"clang_cl"}}
         )
         set_toolchains("clang-cl")
-        add_syslinks("user32", "dbghelp", "version")
+        add_syslinks("user32", "dbghelp", "version", "advapi32")
     end
     add_packages("levilamina", "nlohmann_json")
     set_kind("shared")

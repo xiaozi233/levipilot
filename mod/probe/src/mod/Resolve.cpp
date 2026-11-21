@@ -436,44 +436,52 @@ VersionInfo readVersion() {
 }
 
 void loadOffsetsFile(std::filesystem::path const& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        return;
-    }
-    auto parsed = nlohmann::json::parse(in, nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object()) {
-        ProbeMod::getInstance().bootLog("resolve: offsets json invalid");
-        return;
-    }
-    gOffsetSource = path.filename().string();
-    auto anchors  = parsed.find("anchors");
-    if (anchors != parsed.end() && anchors->is_object()) {
-        for (auto it = anchors->begin(); it != anchors->end(); ++it) {
-            if (!it.value().is_object() || !it.value().contains("expected_hex")) {
-                continue;
-            }
-            for (auto& anchor : gAnchors) {
-                if (std::strcmp(it.key().c_str(), anchor.name) != 0) {
+    try {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            return;
+        }
+        auto parsed = nlohmann::json::parse(in, nullptr, false);
+        if (parsed.is_discarded() || !parsed.is_object()) {
+            ProbeMod::getInstance().bootLog("resolve: offsets json invalid");
+            return;
+        }
+        gOffsetSource = path.filename().string();
+        auto anchors  = parsed.find("anchors");
+        if (anchors != parsed.end() && anchors->is_object()) {
+            for (auto it = anchors->begin(); it != anchors->end(); ++it) {
+                if (!it.value().is_object() || !it.value().contains("expected_hex")) {
                     continue;
                 }
-                std::size_t length = 0;
-                if (it.value().value("expected_hex", std::string{}).empty()) {
-                    anchor.expectedLength = 0;
-                    anchor.configured     = false;
-                } else if (parseHexInto(
-                               it.value().value("expected_hex", std::string{}),
-                               anchor.expected,
-                               length
-                           )) {
-                    anchor.expectedLength = length;
-                    anchor.configured     = true;
+                auto const hexIt = it.value().find("expected_hex");
+                if (hexIt == it.value().end() || !hexIt->is_string()) {
+                    ProbeMod::getInstance().bootLog("resolve: bad expected_hex for anchor=" + it.key());
+                    continue;
                 }
-                break;
+                for (auto& anchor : gAnchors) {
+                    if (std::strcmp(it.key().c_str(), anchor.name) != 0) {
+                        continue;
+                    }
+                    std::string const& hexText = hexIt->get_ref<std::string const&>();
+                    std::size_t        length  = 0;
+                    if (hexText.empty()) {
+                        anchor.expectedLength = 0;
+                        anchor.configured     = false;
+                    } else if (parseHexInto(hexText, anchor.expected, length)) {
+                        anchor.expectedLength = length;
+                        anchor.configured     = true;
+                    }
+                    break;
+                }
             }
         }
+        loadStructOverrides(parsed);
+        loadComponentOverrides(parsed);
+    } catch (std::exception const& e) {
+        ProbeMod::getInstance().bootLog(std::string("resolve: offsets exception: ") + e.what());
+    } catch (...) {
+        ProbeMod::getInstance().bootLog("resolve: offsets unknown exception");
     }
-    loadStructOverrides(parsed);
-    loadComponentOverrides(parsed);
 }
 
 } // namespace

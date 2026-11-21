@@ -9,29 +9,39 @@ std::filesystem::path ProbeMod::checkpointsPath() const {
 }
 
 void ProbeMod::loadCheckpoints() {
-    std::ifstream in(checkpointsPath(), std::ios::binary);
-    if (!in) {
-        return;
-    }
-    auto parsed = nlohmann::json::parse(in, nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object()) {
-        bootLog("checkpoints: invalid json");
-        return;
-    }
-    std::lock_guard lock(mCheckpointMutex);
-    for (auto it = parsed.begin(); it != parsed.end(); ++it) {
-        if (!it.value().is_object()) {
-            continue;
+    try {
+        std::ifstream in(checkpointsPath(), std::ios::binary);
+        if (!in) {
+            return;
         }
-        Checkpoint point;
-        point.x     = it.value().value("x", 0.0f);
-        point.y     = it.value().value("y", 0.0f);
-        point.z     = it.value().value("z", 0.0f);
-        point.yaw   = it.value().value("yaw", 0.0f);
-        point.pitch = it.value().value("pitch", 0.0f);
-        mCheckpoints[it.key()] = point;
+        auto parsed = nlohmann::json::parse(in, nullptr, false);
+        if (parsed.is_discarded() || !parsed.is_object()) {
+            bootLog("checkpoints: invalid json");
+            return;
+        }
+        std::lock_guard lock(mCheckpointMutex);
+        for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+            if (!it.value().is_object()) {
+                bootLog("checkpoints: skipping invalid entry " + it.key());
+                continue;
+            }
+            Checkpoint point;
+            if (!safeJsonFloat(it.value(), "x", 0.0f, point.x)
+                || !safeJsonFloat(it.value(), "y", 0.0f, point.y)
+                || !safeJsonFloat(it.value(), "z", 0.0f, point.z)
+                || !safeJsonFloat(it.value(), "yaw", 0.0f, point.yaw)
+                || !safeJsonFloat(it.value(), "pitch", 0.0f, point.pitch)) {
+                bootLog("checkpoints: skipping invalid entry " + it.key());
+                continue;
+            }
+            mCheckpoints[it.key()] = point;
+        }
+        bootLog("checkpoints: loaded " + std::to_string(mCheckpoints.size()));
+    } catch (std::exception const& e) {
+        bootLog(std::string("checkpoints: exception: ") + e.what());
+    } catch (...) {
+        bootLog("checkpoints: unknown exception");
     }
-    bootLog("checkpoints: loaded " + std::to_string(mCheckpoints.size()));
 }
 
 bool ProbeMod::saveCheckpoints(std::string& error) {

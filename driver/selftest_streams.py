@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from driver.harness import ModClient, ModPipeError, ModProtocolError, ModTimeout
 from driver.harness.lab import record_session, settle
 from driver.harness.record import decode_dump
 from driver.parkour import read_until_run_end
@@ -22,7 +23,6 @@ from driver.selftest_runtime import (
     wait_ticks,
 )
 from driver.selftest_support import Checks, preserve_failure
-from driver.transport_mod import ModClient, ModPipeError, ModProtocolError, ModTimeout
 
 
 def check_record_medium(client: ModClient, checks: Checks) -> None:
@@ -452,7 +452,13 @@ def check_tick_streams(client: ModClient, checks: Checks, world: str | None = No
         )
         checks.check(f"tick_stream_{mode}_unique", no_late(started["record_id"]))
         acknowledged = client.request({"cmd": "stop"}, "stopped")
-        checks.check(f"tick_stream_{mode}_failure_retained", acknowledged == done)
+        ack_body = {key: value for key, value in acknowledged.items() if key != "req_id"}
+        done_body = {key: value for key, value in done.items() if key != "req_id"}
+        checks.check(
+            f"tick_stream_{mode}_failure_retained",
+            ack_body == done_body,
+            f"ack={ack_body} done={done_body}",
+        )
         checks.check(
             f"tick_stream_{mode}_recovery", len(client.record(2)) == 2 and bool(client.ping())
         )

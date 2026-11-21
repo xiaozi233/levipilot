@@ -5,12 +5,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModTimeout
 from ..protocol import DEFAULT_TIMEOUT
+from ._protocol import PipeMixinBase
 
 
-class WorldCommands(PipeConnection):
+class WorldCommands(PipeMixinBase):
     def worlds(self, timeout: float | None = None) -> dict[str, Any]:
         """List cached worlds (id, name, last_saved, game_type)."""
         return self.request({"cmd": "worlds"}, "worlds", timeout=timeout)

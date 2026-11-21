@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModProtocolError
+from ._protocol import PipeMixinBase
 
 # Names that can appear for water/lava blocks (source and flowing variants).
 LIQUID_BLOCKS = frozenset(
@@ -24,7 +24,7 @@ def _item_options(damage: int | None, flight: int | None) -> dict[str, int]:
     return options
 
 
-class QueryCommands(PipeConnection):
+class QueryCommands(PipeMixinBase):
     def chat_history(self, limit: int = 32) -> dict[str, Any]:
         """Read the client's retained chat messages, oldest first (at most 64).
 

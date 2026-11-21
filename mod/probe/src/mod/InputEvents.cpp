@@ -147,7 +147,7 @@ void ProbeMod::tickInputInjection() {
 bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
     std::lock_guard lock(mInputSession.eventMutex);
     TextQuery query{std::move(text), mInputSession.events.nextId(), mInputSession.events.generation(), test};
-    auto request = mInputSession.textCapture.begin(std::move(query), GetTickCount64());
+    auto request = mInputSession.textCapture.begin(std::move(query), GetTickCount64(), 2000, activeReqId());
     if (!request) { enqueue(R"({"event":"error","reason":"text_input_busy"})"); return false; }
     InputInjection barrier;
     barrier.kind = InputKind::Text;
@@ -162,7 +162,7 @@ bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
 
 bool ProbeMod::queueUiQuery(UiQuery query) {
     std::lock_guard lock(mInputSession.eventMutex);
-    if (mInputSession.uiCapture.begin(query, GetTickCount64())) return true;
+    if (mInputSession.uiCapture.begin(query, GetTickCount64(), 2000, activeReqId())) return true;
     enqueue(R"({"event":"error","reason":"ui_query_busy"})");
     return false;
 }
@@ -185,22 +185,25 @@ void ProbeMod::drainInputEvents() {
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
             try {
                 queueClientTask([this, weak, stage = *stage] {
-                    if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](TextSnapshot& out) {
-                        if (stage == InputStage::Flush)
-                            return mInputSession.tickSerial.load(std::memory_order_acquire) >= out.resumeTick
-                                ? InputStage::Complete : InputStage::Flush;
-                        std::string error;
-                        if (!guardedGameRead([&] {
-                            injectCaptureFault(active->query.test);
-                            if (active->query.generation != mInputSession.events.generation() || !mWorld.inWorld())
-                                out.error = "world_left";
-                            else if (!hidTextInput(active->query.text, error)) out.error = "text_input_failed";
-                        })) out.error = "text_input_fault";
-                        // onTextInput queues UI work. Cross two player tick
-                        // boundaries before releasing a following Enter edge.
-                        out.resumeTick = mInputSession.tickSerial.load(std::memory_order_acquire) + 2;
-                        return out.error ? InputStage::Complete : InputStage::Flush;
-                    });
+                    if (auto active = weak.lock()) {
+                        active->run(stage, GetTickCount64(), [&](TextSnapshot& out) {
+                            if (stage == InputStage::Flush)
+                                return mInputSession.tickSerial.load(std::memory_order_acquire) >= out.resumeTick
+                                    ? InputStage::Complete : InputStage::Flush;
+                            std::string error;
+                            if (!guardedGameRead([&] {
+                                injectCaptureFault(active->query.test);
+                                if (active->query.generation != mInputSession.events.generation() || !mWorld.inWorld())
+                                    out.error = "world_left";
+                                else if (!hidTextInput(active->query.text, error)) out.error = "text_input_failed";
+                            })) out.error = "text_input_fault";
+                            // onTextInput queues UI work. Cross two player tick
+                            // boundaries before releasing a following Enter edge.
+                            out.resumeTick = mInputSession.tickSerial.load(std::memory_order_acquire) + 2;
+                            return out.error ? InputStage::Complete : InputStage::Flush;
+                        });
+                        wakeSpool();
+                    }
                 }, failed);
             } catch (...) { request->cancel("text_input_queue_failed"); }
         }
@@ -209,6 +212,7 @@ void ProbeMod::drainInputEvents() {
         auto error = done.error ? done.error : done.request->snapshot.error;
         nlohmann::json out{{"event", "text_input_done"}, {"input_id", done.request->query.id}, {"ok", !error}};
         if (error) out["reason"] = error;
+        attachReqId(out, done.request->reqId);
         auto line = out.dump();
         // A queued Enter must never submit a partially applied/old command
         // after text fails. Keep numbered cancellation replies on this client;
@@ -223,28 +227,31 @@ void ProbeMod::drainInputEvents() {
             auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
             try {
                 queueClientTask([this, weak] {
-                    if (auto active = weak.lock()) active->run(InputStage::Client, GetTickCount64(), [&](UiSnapshot& out) {
-                        std::string name;
-                        if (!guardedGameRead([&] {
-                            injectCaptureFault(active->query.test);
-                            out.inWorld = mWorld.inWorld();
-                            if (active->query.operation == UiOperation::Screen) {
-                                auto client = ll::service::getClientInstance();
-                                if (client) name = client->getScreenName();
-                                out.name.assign(name);
-                                out.truncated = out.name.view().size() != name.size();
-                            } else {
-                                if (!out.inWorld) { out.error = "not_in_world"; return; }
-                                out.down = Keyboard::_states()[active->query.code] != 0;
-                                out.events = mInputSession.keyEventCount.load();
-                                out.injectedSeen = mInputSession.keyInjectedSeen.load();
-                                out.lastCode = mInputSession.keyLastCode.load();
-                                out.lastAction = mInputSession.keyLastAction.load();
-                                out.pending = mInputSession.events.pending();
-                            }
-                        })) out.error = "ui_query_fault";
-                        return InputStage::Complete;
-                    });
+                    if (auto active = weak.lock()) {
+                        active->run(InputStage::Client, GetTickCount64(), [&](UiSnapshot& out) {
+                            std::string name;
+                            if (!guardedGameRead([&] {
+                                injectCaptureFault(active->query.test);
+                                out.inWorld = mWorld.inWorld();
+                                if (active->query.operation == UiOperation::Screen) {
+                                    auto client = ll::service::getClientInstance();
+                                    if (client) name = client->getScreenName();
+                                    out.name.assign(name);
+                                    out.truncated = out.name.view().size() != name.size();
+                                } else {
+                                    if (!out.inWorld) { out.error = "not_in_world"; return; }
+                                    out.down = Keyboard::_states()[active->query.code] != 0;
+                                    out.events = mInputSession.keyEventCount.load();
+                                    out.injectedSeen = mInputSession.keyInjectedSeen.load();
+                                    out.lastCode = mInputSession.keyLastCode.load();
+                                    out.lastAction = mInputSession.keyLastAction.load();
+                                    out.pending = mInputSession.events.pending();
+                                }
+                            })) out.error = "ui_query_fault";
+                            return InputStage::Complete;
+                        });
+                        wakeSpool();
+                    }
                 }, failed);
             } catch (...) { request->cancel("ui_query_queue_failed"); }
         }
@@ -261,6 +268,7 @@ void ProbeMod::drainInputEvents() {
                         {"events", s.events}, {"injected_seen", s.injectedSeen}, {"last_code", s.lastCode},
                         {"last_action", s.lastAction}, {"pending", s.pending}};
         }
+        attachReqId(out, done.request->reqId);
         auto line = out.dump();
         if (done.release()) enqueue(std::move(line));
     }

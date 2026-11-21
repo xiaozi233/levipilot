@@ -41,27 +41,46 @@ class ModModelTests(unittest.TestCase):
 
     def _compile_and_run(self, source: Path, executable: Path) -> None:
         compiler = self._find_compiler()
+        use_asan = os.environ.get("LEVIPILOT_NATIVE_ASAN", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        cmd = [
+            compiler,
+            "-std=c++20",
+            "-O2",
+            "-fuse-ld=lld",
+            "-pthread",
+        ]
+        if use_asan:
+            cmd.extend(["-fsanitize=address", "-fno-omit-frame-pointer", "-g"])
+        cmd.extend(["-I", str(ROOT / "mod/probe/src"), str(source)])
+        if sys.platform == "win32":
+            cmd.append("-ladvapi32")
+        cmd.extend(["-o", str(executable)])
         build = subprocess.run(
-            [
-                compiler,
-                "-std=c++20",
-                "-O2",
-                "-fuse-ld=lld",
-                "-pthread",
-                "-I",
-                str(ROOT / "mod/probe/src"),
-                str(source),
-                "-o",
-                str(executable),
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
         )
         self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+        run_env = dict(os.environ)
+        if use_asan and sys.platform == "win32":
+            clang_dir = Path(compiler).resolve().parent.parent / "lib" / "clang"
+            extra_paths = [str(p) for p in clang_dir.glob("*/lib/windows") if p.is_dir()]
+            if extra_paths:
+                run_env["PATH"] = os.pathsep.join([*extra_paths, run_env.get("PATH", "")])
         result = subprocess.run(
-            [str(executable)], capture_output=True, text=True, timeout=20, check=False
+            [str(executable)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=run_env,
+            check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

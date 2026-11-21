@@ -7,22 +7,24 @@ void ProbeMod::requestChatHistory(int limit, bool deferForSelftest) {
         enqueue(R"({"event":"error","reason":"version_mismatch"})");
         return;
     }
-    auto request = mChatCapture.begin(GetTickCount64());
+    auto request = mChatCapture.begin(GetTickCount64(), detail::activeReqId());
     if (!request) {
         enqueue(R"({"event":"error","reason":"chat_history_busy"})");
         return;
     }
     if (deferForSelftest) return;
     try {
-        queueClientTask([weak = std::weak_ptr{request}, limit] {
+        queueClientTask([this, weak = std::weak_ptr{request}, limit] {
             if (auto active = weak.lock()) {
                 active->run(GetTickCount64(), [limit](auto& snapshot) {
                     captureChatHistory(snapshot, limit);
                 });
+                wakeSpool();
             }
         });
     } catch (...) {
         request->cancel("chat_history_failed");
+        wakeSpool();
     }
 }
 
@@ -91,6 +93,7 @@ void ProbeMod::drainChatHistory() {
             });
         }
     }
+    detail::attachReqId(result, completion.request->reqId);
     auto output = result.dump();
     enqueue(std::move(output));
 }

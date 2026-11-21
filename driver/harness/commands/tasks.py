@@ -6,11 +6,11 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
-from ..connection import PipeConnection
 from ..errors import ModProtocolError, ModTaskCancelled, ModTimeout
+from ._protocol import PipeMixinBase
 
 
-class TaskCommands(PipeConnection):
+class TaskCommands(PipeMixinBase):
     def _task_request(
         self, message: dict[str, Any], started: str, terminal: str | tuple[str, ...], timeout: float
     ) -> dict[str, Any]:

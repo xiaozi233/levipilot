@@ -1,9 +1,12 @@
 """Panic acknowledgements and cancelled workflows can arrive in either order."""
 
 import unittest
+from pathlib import Path
 
 from driver.harness import ModProtocolError, ModTimeout
 from tests.test_transport import FakeClient
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class PanicCommandsTests(unittest.TestCase):
@@ -38,3 +41,16 @@ class PanicCommandsTests(unittest.TestCase):
         with self.assertRaises(ModTimeout):
             client.panic(timeout=0)
         self.assertTrue(client._session.stream.stopped.is_set())
+
+
+class CapabilityAndDocParityTests(unittest.TestCase):
+    def test_hello_and_pong_share_protocol_capabilities_source(self) -> None:
+        transport = (ROOT / "mod/probe/src/mod/Transport.cpp").read_text(encoding="utf-8")
+        diag = (ROOT / "mod/probe/src/mod/CommandDiagnostics.cpp").read_text(encoding="utf-8")
+        self.assertIn("protocolCapabilitiesJson()", transport)
+        self.assertIn("protocolCapabilitiesJson()", diag)
+
+    def test_readme_documents_stopmove_and_mouse_clear(self) -> None:
+        readme = (ROOT / "mod/README.md").read_text(encoding="utf-8")
+        self.assertIn("`stopmove`", readme)
+        self.assertIn("`mouse_clear`", readme)

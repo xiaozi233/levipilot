@@ -26,7 +26,8 @@ public:
     };
 
     struct Request {
-        explicit Request(std::uint64_t now) : deadline(now + TimeoutMs) {}
+        explicit Request(std::uint64_t now, std::uint64_t reqIdValue = 0)
+        : reqId(reqIdValue), deadline(now + TimeoutMs) {}
 
         template <typename Capture>
         void run(std::uint64_t now, Capture&& capture) {
@@ -50,7 +51,8 @@ public:
             phase.compare_exchange_strong(pending, Phase::Cancelled);
         }
 
-        Snapshot snapshot;
+        std::uint64_t const reqId = 0;
+        Snapshot            snapshot;
 
     private:
         friend class ChatCapture;
@@ -65,11 +67,11 @@ public:
         char const*              error = nullptr;
     };
 
-    std::shared_ptr<Request> begin(std::uint64_t now) {
+    std::shared_ptr<Request> begin(std::uint64_t now, std::uint64_t reqId = 0) {
         if (mCurrent.load(std::memory_order_acquire)) return {};
         // Queued work holds only a weak_ptr. Use a separate control block so
         // its weak reference cannot retain the 128 KiB snapshot after timeout.
-        std::shared_ptr<Request> request = std::make_unique<Request>(now);
+        std::shared_ptr<Request> request = std::make_unique<Request>(now, reqId);
         std::shared_ptr<Request> expected;
         if (!mCurrent.compare_exchange_strong(expected, request)) return {};
         return request;

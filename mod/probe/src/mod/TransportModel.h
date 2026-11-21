@@ -1,10 +1,53 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace probe::detail {
+
+inline constexpr std::size_t MaxQueueCount       = 20000;
+inline constexpr std::size_t MaxQueueBytes       = 32u << 20;
+inline constexpr std::size_t MaxSpoolBufferBytes = 16u << 20;
+
+inline std::string attachReqId(std::string line, std::uint64_t reqId) {
+    if (reqId == 0 || line.size() < 2 || line.front() != '{' || line.back() != '}') {
+        return line;
+    }
+    if (line.find("\"req_id\":") != std::string::npos) {
+        return line;
+    }
+    std::string suffix = line.size() == 2 ? "\"req_id\":" : ",\"req_id\":";
+    suffix += std::to_string(reqId);
+    suffix.push_back('}');
+    line.pop_back();
+    line.append(suffix);
+    return line;
+}
+
+template <class Queue>
+std::uint64_t pushBoundedLine(
+    Queue&       queue,
+    std::size_t& queueBytes,
+    std::string  line,
+    std::size_t  maxCount = MaxQueueCount,
+    std::size_t  maxBytes = MaxQueueBytes
+) {
+    std::uint64_t dropped = 0;
+    std::size_t const nextSize = line.size();
+    while (!queue.empty()
+           && (queue.size() >= maxCount || nextSize > maxBytes || queueBytes > maxBytes - nextSize)) {
+        std::size_t const frontSize = queue.front().size();
+        queueBytes                  = queueBytes >= frontSize ? queueBytes - frontSize : 0;
+        queue.pop_front();
+        ++dropped;
+    }
+    queueBytes += nextSize;
+    queue.push_back(std::move(line));
+    return dropped;
+}
 
 // Pipe-thread owned; only the unfinished line is retained between reads.
 // Callbacks consume the line synchronously and must not retain its reference.

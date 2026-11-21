@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..connection import PipeConnection
+from ._protocol import PipeMixinBase
 
 
-class EcsCommands(PipeConnection):
+class EcsCommands(PipeMixinBase):
     def ecs_registries(
         self, timeout: float | None = None, *, scope: str | None = None
     ) -> dict[str, Any]:

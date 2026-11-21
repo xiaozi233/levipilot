@@ -67,7 +67,7 @@ void ProbeMod::queuePacketInjection(PacketInjectionQuery query, std::uint64_t ti
     query.templateError = mPacketRequests.templates.latest(query.origin, query.owner, query.generation);
     if (query.test == PacketInjectionTest::Obsolete) ++query.owner.epoch;
     if (query.test == PacketInjectionTest::WrongOwner) ++query.origin.owner.uuidA;
-    auto request = mPacketRequests.injection.begin(std::move(query), now, timeout);
+    auto request = mPacketRequests.injection.begin(std::move(query), now, timeout, activeReqId());
     if (!request) {
         enqueue(R"({"event":"error","reason":"packet_inject_busy"})");
         return;
@@ -167,10 +167,13 @@ void ProbeMod::drainPacketInjection() {
             try {
                 if (request->query.test == PacketInjectionTest::Queue) failed("packet_inject_queue_failed");
                 else queueClientTask([this, weak, stage = *stage] {
-                    if (auto active = weak.lock()) active->run(stage, GetTickCount64(), [&](PacketInjectionSnapshot& out) {
-                        sendCommandPacket(active->query, out);
-                        return PacketInjectionStage::Complete;
-                    });
+                    if (auto active = weak.lock()) {
+                        active->run(stage, GetTickCount64(), [&](PacketInjectionSnapshot& out) {
+                            sendCommandPacket(active->query, out);
+                            return PacketInjectionStage::Complete;
+                        });
+                        wakeSpool();
+                    }
                 }, failed);
             } catch (...) { failed("packet_inject_queue_failed"); }
         }
@@ -186,6 +189,7 @@ void ProbeMod::drainPacketInjection() {
     nlohmann::json result{{"event", "chat_sent"}, {"ok", error == nullptr}, {"text", query.text},
                            {"packet_id", query.id}, {"partial", error != nullptr}};
     if (error) result["reason"] = error;
+    attachReqId(result, done.request->reqId);
     auto line = result.dump();
     if (done.release()) {
         if (!error) mPacketRequests.chatSent.fetch_add(1);

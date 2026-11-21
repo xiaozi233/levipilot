@@ -1,4 +1,5 @@
 #include "mod/Internal.h"
+#include "mod/TransportModel.h"
 
 using namespace probe::detail;
 
@@ -88,20 +89,13 @@ void ProbeMod::dispatchLine(std::string const& line) {
         enqueue(R"({"event":"error","reason":"quiescing"})");
         return;
     }
-    if (!mPipeAuthed.load(std::memory_order_acquire) && cmd != "auth" && cmd != "ping") {
+    if (!mPipeAuthed.load(std::memory_order_acquire) && !commandAllowedBeforeAuth(cmd)) {
         enqueue(R"({"event":"error","reason":"auth_required"})");
         return;
     }
     if (cmd == "auth") {
         auto const token = safeJsonString(j, "token", "");
-        bool       ok    = mPipeToken.empty();
-        if (!ok && token.size() == mPipeToken.size()) {
-            unsigned char diff = 0;
-            for (std::size_t i = 0; i < token.size(); ++i) {
-                diff |= static_cast<unsigned char>(token[i]) ^ static_cast<unsigned char>(mPipeToken[i]);
-            }
-            ok = (diff == 0);
-        }
+        bool const ok    = verifyPipeToken(mPipeToken, token);
         if (ok) {
             mPipeAuthed.store(true, std::memory_order_release);
             enqueue(

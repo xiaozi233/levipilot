@@ -257,6 +257,30 @@ class CheckRunnerTests(unittest.TestCase):
             self.assertEqual(cmd[:3], ["clang-format", "--dry-run", "--Werror"])
             self.assertEqual([Path(p).name for p in cmd[3:]], ["Sample.cpp"])
 
+    def test_find_clang_format_uses_env_or_path_without_hardcoded_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            llvm_dir = Path(tmp)
+            exe = llvm_dir / "bin" / "clang-format.exe"
+            exe.parent.mkdir(parents=True)
+            exe.write_text("", encoding="utf-8")
+            with (
+                patch.dict("os.environ", {"LEVIPILOT_LLVM_ROOT": str(llvm_dir)}, clear=False),
+                patch("driver.check.shutil.which", return_value=None),
+            ):
+                self.assertEqual(check._find_clang_format(), str(exe))
+
+        with (
+            patch.dict("os.environ", {"LEVIPILOT_LLVM_ROOT": ""}, clear=False),
+            patch("driver.check.shutil.which", return_value="clang-format-on-path"),
+        ):
+            self.assertEqual(check._find_clang_format(), "clang-format-on-path")
+
+        with (
+            patch.dict("os.environ", {"LEVIPILOT_LLVM_ROOT": ""}, clear=False),
+            patch("driver.check.shutil.which", return_value=None),
+        ):
+            self.assertIsNone(check._find_clang_format())
+
 
 if __name__ == "__main__":
     unittest.main()

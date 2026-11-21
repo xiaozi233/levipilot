@@ -97,8 +97,9 @@ spool 每 100 ms 或 64 KB 刷盘（未刷缓冲上限 16 MiB），单文件超�
 最大程度避免管道线程写入时读出半条命令；崩溃时仍可能损失最后一段未刷盘记录。
 
 命名管道通过 `PipeChannel::OwnerSecurity` 为实例附加仅授权当前进程用户 SID 的显式 DACL，
-并配合 `PIPE_REJECT_REMOTE_CLIENTS`。配置 `pipe_token` 时，未认证连接只开放 `auth` 与
-`ping`，并在接收新连接前先将积压队列刷入 spool 后清空 `mQueue`，防止未认证前泄露旧事件。
+并配合 `PIPE_REJECT_REMOTE_CLIENTS`。该 DACL 只隔离本机其他用户账户，不隔离同用户进程；防范同用户本地进程接入须配置非空
+`pipe_token`（未认证连接只开放 `auth` 与 `ping`，并在接收新连接前先将积压队列刷入 spool 后清空
+`mQueue`，防止未认证前泄露旧事件）。`allow_mem_read` 仅管控 `mem_read`/`probe` 内存读取，不屏蔽状态或背包查询。
 
 客户端断开连接时，管道线程通过 `updateRequests` 调用 `clearContinuousRequests` 仅清除
 `ticks < 0` 的持续移动/转向请求，不直接触碰 tick 线程控制状态或 SDK，同时保留有限 `ticks`

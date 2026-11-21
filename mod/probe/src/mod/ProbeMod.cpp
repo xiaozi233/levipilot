@@ -363,7 +363,7 @@ void ProbeMod::loadAutoConfig() {
         auto const  autoDelayMs = std::clamp(readInt("delay_ms", 2000), 0, 60000);
         std::string autoOptions;
         mBackgroundGuard          = readBool("background_guard", true);
-        mAllowMemoryRead          = readBool("allow_read", true);
+        mAllowMemoryRead          = readBool("allow_mem_read", true);
         mAllowMemoryWrite         = readBool("allow_write", false);
         mAllowToggleFly           = readBool("allow_togglefly", true);
         mAllowCrashTest           = readBool("allow_crash_test", false);

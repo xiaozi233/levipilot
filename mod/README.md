@@ -22,7 +22,7 @@ xmake -j4 -y
 产物在 `bin/probe/`：`probe.dll`、`probe.pdb`、`manifest.json`。xmake 不自动安装；手动安装时
 把整个 `probe/` 放到实例 `mods/` 下，日常开发可使用受控的 `driver/dev.py run`。
 
-CI 运行 Python/native 检查，Windows `mod-build` 也构建完整客户端 mod，但不启动游戏。
+CI 运行 Python/native 检查及 `--cpp-format-all`（经 `LEVIPILOT_LLVM_ROOT` 或 `PATH` 查找 `clang-format`），Windows `mod-build` 也构建完整客户端 mod，但不启动游戏。
 
 ## API
 
@@ -159,13 +159,14 @@ profile、生命周期、pipe 写入超时和诊断统计。
 ## 安全模型与本地信任边界
 
 命名管道通过 `PIPE_REJECT_REMOTE_CLIENTS` 拒绝远程连接，并为管道实例附加**仅授权当前进程用户 SID 的
-显式 DACL**。可选配置 `"pipe_token"` 时，`hello` 会带 `"auth_required": true` 并在认证前屏蔽除
-`auth` 与 `ping` 之外的命令（Python 客户端自动使用构造参数 `token` 或环境变量
-`LEVIPILOT_PIPE_TOKEN` 完成握手）。
+显式 DACL**。注意该 DACL 只隔离本机其他 Windows 用户账户，**不能**隔离同一登录用户会话下运行的其他本地进程；
+需要防止同用户本地进程接入时，须配置非空 `"pipe_token"`（默认空 `""` 不开启）。配置 `"pipe_token"` 后，
+`hello` 会带 `"auth_required": true`，认证前屏蔽除 `auth` 与 `ping` 之外的所有命令（Python 客户端默认使用
+构造参数 `token` 或环境变量 `LEVIPILOT_PIPE_TOKEN` 完成握手）。
 
-`mem_read`/`probe`（`allow_read`）与 `/togglefly`（`allow_togglefly`）默认开启；可将其设为
-`false` 收紧本地暴露面。`mem_write`、崩溃测试、任意 VA hook、压力测试、输入注入、封包采集与
-封包注入默认关闭，须由 `harness.json` 按最小权限显式开启。
+`allow_mem_read` 默认开启，**仅**控制 `mem_read` 与 `probe` 内存读取（不影响 `state`/`inventory`/`chat_history`/`status`
+等常规查询）；`/togglefly`（`allow_togglefly`）同样默认开启，可将两项设为 `false` 收紧暴露面。
+`mem_write`、崩溃测试、任意 VA hook、压力测试、输入注入、封包采集与封包注入默认关闭，须由 `harness.json` 按最小权限显式开启。
 
 ## 配置（`harness.json`）
 
@@ -175,7 +176,7 @@ profile、生命周期、pipe 写入超时和诊断统计。
   "options": {"gfx_gamma": "0.5"},
   "delay_ms": 2000,
   "background_guard": true,
-  "allow_read": true,
+  "allow_mem_read": true,
   "allow_write": false,
   "allow_togglefly": true,
   "allow_crash_test": false,
@@ -267,7 +268,8 @@ profile、生命周期、pipe 写入超时和诊断统计。
   `set_drop_events()` 可按事件名开启溢出丢弃并通过 `dropped_events()` 读计数。CLI 在响应含
   `ok=false` 时退出码为 `1`。
 - `selftest.py` 支持 `--list` 查看模式与默认套件分节，`--only <name>`/`--world <WORLD>`
-  （及 `--only default:<sec1,sec2>`）运行指定子集；`tests.test_mod_models` 支持设
+  （及 `--only default:<sec1,sec2>`）运行指定子集，`--security-only` 现场核验管道 DACL、
+  `pipe_token` 认证及 `allow_mem_read`/`allow_togglefly` 开关；`tests.test_mod_models` 支持设
   `LEVIPILOT_NATIVE_ASAN=1` 运行 ASAN，`driver/check.py` 支持 `--cpp-format` / `--cpp-format-all`。
 
 实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见

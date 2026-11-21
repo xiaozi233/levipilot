@@ -17,17 +17,19 @@
 
 | 范围 | 当前结果 | 覆盖重点与前提 |
 | --- | --- | --- |
-| 完整离线 | **459/459** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
-| 静态与文档检查 | `driver/check.py` 全部通过 | `ruff check`/`format`、`mypy`（120 files）、`profiles`、`roles`（56/63）、`lint_public`、机制守卫、Markdown 相对链接；另经 LLVM 22 C++ 构建 |
-| 完整现场 `--require-complete` | **1171/1171**，0 fail、0 skip、0 required skip | 当前默认全套，含新增 69 项 SDK 边界与权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
-| SDK 局部边界 | **69/69** | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；注册与命令边界是调用前合成故障 |
+| 完整离线 | **480/480**（另 native ASAN **3/3**） | Python、native 模型、CLI、协议、安全/格式化检查与资源生命周期；含 `LEVIPILOT_NATIVE_ASAN=1` 原生回归 |
+| 静态与文档检查 | `driver/check.py --cpp-format-all`（**15/15**） | `ruff check`/`format`、`mypy`、`profiles`、`roles`、`lint_public`、`command docs`、机制守卫、89/89 C++ `clang-format 22.1.8`、Markdown 相对链接；另经 LLVM 22 C++ 构建 |
+| 完整现场 `--require-complete` | **1171/1171**，0 fail、0 skip、0 required skip | 当前默认全套，含权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
+| 安全与鉴权 `--security-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip | 最终 DLL 实测：管道 1-ACE DACL、`pipe_token` 未认证/错令牌拒止、`allow_mem_read=false` 与 `allow_togglefly=false` 及两次热重载完整还原 |
+| 受控空闲真实热重载 `--hot-reload-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip | 最终 DLL 实测：拒绝不存在模块、静默准入、`/ll reload probe` 同 PID 切换代次/日志/四 hook/tick/`/togglefly` 恢复及配置/DLL/crash 一致 |
+| 连接生命周期 `--connection-only --require-complete` | **11/11**，0 fail、0 skip、0 required skip | 最终 DLL 实测：弃用句柄、正常与异常退出后的管道释放与重连 |
+| SDK 局部边界 | **69/69**（既有历史基线，未单跑） | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；默认完整现场含相同内核覆盖 |
 | 领域效果保留 | **126/126**；进入/退档 **35/35** | 夜视跨查询/聊天退档、宏播放、任务及世界进入恢复仍存在，结束只清理测试效果 |
 | 朝向/传送专项 | **45/45** | 保持 0.1° 容差与连续三个 tick；移除 state 快照之后的额外延迟 |
 | 有界查询/重连 | **8/8** | 四轮共 1040 次查询，约 24–25 次/秒，显式关闭并重连；仅该专项内未复现失联 |
-| `lifecycle-prepare-only` | **10/10** | 持续/到期输入、未消费序号、事件持键、hook 恢复与姿态恢复 |
-| 受控空闲真实热重载 | **22/22 × 4**，0 fail、0 skip | 竞争专项内在同一 PID 反复完成受控重载；完整停用/启用日志、四 hook、tick、命令能力变化与恢复 |
-| 守望开启时的真实重载 | **25/25**，0 fail、0 skip | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止 |
-| 在途回调竞争专项 | **132/132**，0 fail、0 skip、0 required skip | client/tick 在执行时排空并重载，server 排队未执行时超时拒绝/恢复再重载；各域同线程卸载拒绝，持键 busy/活跃诊断拒绝，以及旧代次隔离和姿态/能力/输入恢复 |
+| `lifecycle-prepare-only --require-complete` | **8/8**，0 fail、0 skip、0 required skip | 最终 DLL 实测：持续/到期输入、事件持键、hook 恢复与姿态恢复 |
+| 守望开启时的真实重载 | **25/25**（既有历史基线，本轮未重跑） | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止 |
+| 在途回调竞争专项（`--callback-drain-only`） | **132/132**（既有历史基线，**本轮未重跑**） | 人为延迟回调/同线程卸载拒绝压力专项；本轮仅跑常规热重载与安全重载，未重跑该压力专项 |
 | 输入事件专项 | **46/46** | 真实键状态、raw/注入对照、标记恢复和输入释放 |
 | tick 客户端读取恢复 | **55/55** | pre/post 局部 SEH 与既有恢复链，不是整个 tick 的 SEH |
 | 世界进入/退档 | **32/32** | `leave_id`、菜单快照和正常恢复；异常 HBUI 根因不在覆盖内 |
@@ -40,8 +42,10 @@
 常用复核入口：
 
 ```bash
-py -3.11 driver/check.py
+py -3.11 driver/check.py --cpp-format-all
 py -3.11 driver/selftest.py --require-complete
+py -3.11 driver/selftest.py --hot-reload-only --require-complete
+py -3.11 driver/selftest.py --security-only --require-complete
 py -3.11 driver/selftest.py --sdk-boundaries-only --require-complete
 py -3.11 driver/selftest.py --callback-drain-only --require-complete
 ```

@@ -95,4 +95,16 @@ int main() {
     assert(queueBytes == 12 && (queue == std::deque<std::string>{"0123456789AB"}));
     assert(probe::detail::pushBoundedLine(queue, queueBytes, "xy", 3, 10) == 1);
     assert(queueBytes == 2 && (queue == std::deque<std::string>{"xy"}));
+
+    // Pipe authentication helpers.
+    assert(probe::detail::commandAllowedBeforeAuth("auth"));
+    assert(probe::detail::commandAllowedBeforeAuth("ping"));
+    assert(!probe::detail::commandAllowedBeforeAuth("state"));
+    assert(!probe::detail::commandAllowedBeforeAuth("status"));
+    assert(probe::detail::verifyPipeToken("", ""));
+    assert(probe::detail::verifyPipeToken("", "anything"));
+    assert(probe::detail::verifyPipeToken("secret-42", "secret-42"));
+    assert(!probe::detail::verifyPipeToken("secret-42", ""));
+    assert(!probe::detail::verifyPipeToken("secret-42", "secret-4"));
+    assert(!probe::detail::verifyPipeToken("secret-42", "secret-43"));
 }

@@ -12,6 +12,22 @@ inline constexpr std::size_t MaxQueueCount       = 20000;
 inline constexpr std::size_t MaxQueueBytes       = 32u << 20;
 inline constexpr std::size_t MaxSpoolBufferBytes = 16u << 20;
 
+inline bool commandAllowedBeforeAuth(std::string_view cmd) noexcept { return cmd == "auth" || cmd == "ping"; }
+
+inline bool verifyPipeToken(std::string_view expected, std::string_view candidate) noexcept {
+    if (expected.empty()) {
+        return true;
+    }
+    if (candidate.size() != expected.size()) {
+        return false;
+    }
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        diff |= static_cast<unsigned char>(candidate[i]) ^ static_cast<unsigned char>(expected[i]);
+    }
+    return diff == 0;
+}
+
 inline std::string attachReqId(std::string line, std::uint64_t reqId) {
     if (reqId == 0 || line.size() < 2 || line.front() != '{' || line.back() != '}') {
         return line;

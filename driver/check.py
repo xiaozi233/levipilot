@@ -195,13 +195,7 @@ def _find_clang_format() -> str | None:
         posix_candidate = Path(llvm_root) / "bin" / "clang-format"
         if posix_candidate.is_file():
             return str(posix_candidate)
-    which = shutil.which("clang-format")
-    if which:
-        return which
-    fallback = Path("D:/Tools/LLVM22/bin/clang-format.exe")
-    if fallback.is_file():
-        return str(fallback)
-    return None
+    return shutil.which("clang-format")
 
 
 def _collect_cpp_files(root: Path, *, all_files: bool) -> list[Path] | tuple[bool, str]:

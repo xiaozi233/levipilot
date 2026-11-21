@@ -793,6 +793,19 @@ class AuthAndBackpressureTests(unittest.TestCase):
             client2.connect()
         self.assertTrue(pipe2.closed)
 
+        pipe3 = WriteTests.Pipe()
+        with patch.dict(os.environ, {"LEVIPILOT_PIPE_TOKEN": ""}, clear=False):
+            raw_client = PipeConnection(token="", auto_auth=False)
+            with (
+                patch("builtins.open", return_value=pipe3),
+                patch("driver.harness.connection.threading.Thread.start"),
+                patch.object(raw_client, "_next_line", return_value=hello),
+            ):
+                raw_client.connect()
+        self.assertEqual(bytes(pipe3.data), b"")
+        self.assertIs(raw_client._session.stream.handle, pipe3)
+        raw_client.close()
+
     def test_drop_events_opt_in_in_read_loop_and_defer(self) -> None:
         class FeedPipe:
             def __init__(self, payload: bytes) -> None:

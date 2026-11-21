@@ -123,6 +123,7 @@ from driver.selftest_runtime import (  # noqa: E402,F401
     wait_ticks,
 )
 from driver.selftest_sdk import check_sdk_boundaries  # noqa: E402
+from driver.selftest_security import check_security  # noqa: E402
 from driver.selftest_streams import (  # noqa: E402,F401
     check_binary_capture,
     check_jump_motion,
@@ -244,6 +245,17 @@ def _run_callback_drain(
 ) -> None:
     with observation.reload_gap():
         check_callback_drain(client, checks)
+
+
+def _run_security(
+    client: ModClient,
+    checks: Checks,
+    _args: argparse.Namespace,
+    observation: ViolationObservation,
+    _world: str | None,
+) -> None:
+    with observation.reload_gap():
+        check_security(client, checks)
 
 
 def _run_macro_long(
@@ -437,6 +449,13 @@ MODE_REGISTRY: tuple[ModeSpec, ...] = (
         error_name="callback_drain_error",
         help="delay client/server/tick callbacks, test timeout rollback and real reloads",
         only_flag="--callback-drain-only",
+    ),
+    ModeSpec(
+        name="security",
+        runner=_run_security,
+        error_name="security_error",
+        help="verify live pipe DACL, pipe_token auth, allow_mem_read and allow_togglefly across reload",
+        only_flag="--security-only",
     ),
     ModeSpec(
         name="teleport",

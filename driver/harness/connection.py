@@ -110,11 +110,14 @@ class PipeConnection:
         connect_timeout: float = 10.0,
         timeout: float = DEFAULT_TIMEOUT,
         token: str | None = None,
+        *,
+        auto_auth: bool = True,
     ) -> None:
         self.pipe_name = pipe_name
         self.connect_timeout = connect_timeout
         self.timeout = timeout
         self.token = os.environ.get("LEVIPILOT_PIPE_TOKEN") if token is None else token
+        self.auto_auth = bool(auto_auth)
         self.protocol = 0
         self.hello: HelloEvent = HelloEvent(protocol=0, spool="", capabilities=[])
         self._drop_events: frozenset[str] = frozenset()
@@ -190,7 +193,7 @@ class PipeConnection:
                     raise ModPipeError(f"握手失败：{hello!r}")
                 self.protocol = int(hello.get("protocol", 0))
                 self.hello = cast(HelloEvent, hello)
-                if hello.get("auth_required"):
+                if self.auto_auth and hello.get("auth_required"):
                     if not self.token:
                         raise ModProtocolError("auth_required: set token or LEVIPILOT_PIPE_TOKEN")
                     auth_reply = self.request(

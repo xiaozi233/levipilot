@@ -17,7 +17,7 @@ class PhysicalInputContractTests(unittest.TestCase):
         self.assertIn("inputMode{ControlInputMode::Hardware}", session)
         self.assertIn("jumpImpulseMode{JumpImpulse::None}", session)
         self.assertIn("mInputSession", header)
-        self.assertIn("int sprintTapPhase = 0;", session)
+        self.assertRegex(session, r"\bint\s+sprintTapPhase\s*=\s*0;")
         self.assertIn("applyRealInput", header)
         self.assertNotIn("std::atomic_bool& mHardwareInputLocked", header)
 

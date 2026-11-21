@@ -699,7 +699,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["spool"]                     = mSpoolPath.string();
         out["spool_rows"]                = mSpoolRows.load();
         out["spool_flushes"]             = mSpoolFlushes.load();
-        out["allow_read"]                = mAllowMemoryRead.load();
+        out["allow_mem_read"]            = mAllowMemoryRead.load();
         out["allow_write"]               = mAllowMemoryWrite.load();
         out["allow_togglefly"]           = mAllowToggleFly.load();
         out["auth_required"]             = !mPipeToken.empty();

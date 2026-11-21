@@ -676,6 +676,18 @@ class RegistryAndSelectionTests(unittest.TestCase):
             self.assertEqual(selftest.main(["--only", "macro-long-recording", "--macro-resume"]), 0)
         check.assert_called_once_with(client, unittest.mock.ANY, resume=True)
 
+        for argv in (["--security-only"], ["--only", "security"]):
+            with (
+                self.subTest(argv=argv),
+                patch("driver.selftest.ModClient") as factory,
+                patch("driver.selftest.check_security") as check,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                factory.return_value.connect.return_value = client
+                self.assertEqual(selftest.main(argv), 0)
+            check.assert_called_once_with(client, unittest.mock.ANY)
+
         for bad_argv in (
             ["--world", "超平坦测试"],
             ["--only", "controls", "--world", "超平坦测试"],
@@ -725,6 +737,51 @@ class RegistryAndSelectionTests(unittest.TestCase):
                 dump_packet_tap=Mock(),
                 sections=("missing_section",),
             )
+
+
+class SecurityChecksTests(unittest.TestCase):
+    def test_check_security_restores_original_config_on_reload_failure(self) -> None:
+        from driver import selftest_security
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mod_dir = Path(tmp)
+            cfg_path = mod_dir / "harness.json"
+            original_text = '{\n  "allow_input_inject": true,\n  "allow_packet_capture": true\n}\n'
+            cfg_path.write_text(original_text, encoding="utf-8")
+            (mod_dir / "probe.dll").write_bytes(b"dll")
+            (mod_dir / "harness-boot.log").write_bytes(b"log")
+
+            client = Mock()
+            client.pipe_name = r"\\.\pipe\mcbe-harness"
+            client.token = None
+            client.connected = True
+            client.state.return_value = {"in_world": True, "on_ground": True, "flying": False}
+            client.status.return_value = {
+                "spool": str(mod_dir / "spool-1.jsonl"),
+                "lifecycle": {"generation": 1, "running": True},
+            }
+            client.macro_status.return_value = {"playing": False, "recording": False}
+            checks = Checks()
+
+            with (
+                patch.object(
+                    selftest_security,
+                    "inspect_pipe_dacl",
+                    return_value={"ok": True, "ace_count": 1, "sid_match": True},
+                ),
+                patch.object(selftest_security, "_reconnect"),
+                patch.object(
+                    selftest_security,
+                    "_reload_mod",
+                    side_effect=ModProtocolError("template unavailable"),
+                ),
+                self.assertRaisesRegex(ModProtocolError, "template unavailable"),
+            ):
+                selftest_security.check_security(client, checks)
+
+            self.assertEqual(cfg_path.read_text(encoding="utf-8"), original_text)
+            self.assertIsNone(client.token)
+            client.input_lock.assert_called_with(False)
 
 
 if __name__ == "__main__":

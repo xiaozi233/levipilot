@@ -10,12 +10,12 @@ enum class EcsStage { Client, Server, Complete };
 enum class EcsScope { Client, Server, All };
 
 struct EcsQuery {
-    EcsOperation operation = EcsOperation::Entity;
-    EcsScope scope = EcsScope::Client;
+    EcsOperation  operation = EcsOperation::Entity;
+    EcsScope      scope     = EcsScope::Client;
     std::uint64_t runtimeId = 0, context = 0;
     std::uint32_t componentId = 0, length = 0;
-    CaptureTest test = CaptureTest::None;
-    EcsStage testStage = EcsStage::Client;
+    CaptureTest   test      = CaptureTest::None;
+    EcsStage      testStage = EcsStage::Client;
 };
 
 struct EcsSnapshot {
@@ -27,25 +27,31 @@ struct EcsSnapshot {
     struct RegistryEntry {
         std::uint64_t registry = 0, entity = 0;
         std::size_t   components = 0;
-        bool          present = false;
+        bool          present    = false;
     } clientRegistry, serverRegistry;
-    std::array<Row, MaxRows> rows{};
+    std::array<Row, MaxRows>           rows{};
     std::array<std::uint32_t, MaxRows> skipped{};
-    std::array<std::uint8_t, 512> bytes{};
-    FixedText<256> type;
-    std::size_t count = 0, skippedCount = 0, visited = 0, priorVisited = 0;
-    std::uint64_t registry = 0, entity = 0, actor = 0, context = 0, playerRuntimeId = 0;
-    std::uint32_t length = 0;
-    bool server = false, truncated = false, ok = false;
-    char const* error = nullptr;
+    std::array<std::uint8_t, 512>      bytes{};
+    FixedText<256>                     type;
+    std::size_t                        count = 0, skippedCount = 0, visited = 0, priorVisited = 0;
+    std::uint64_t                      registry = 0, entity = 0, actor = 0, context = 0, playerRuntimeId = 0;
+    std::uint32_t                      length = 0;
+    bool                               server = false, truncated = false, ok = false;
+    char const*                        error = nullptr;
 
     bool add(Row const& row) {
-        if (count == rows.size()) { truncated = true; return false; }
+        if (count == rows.size()) {
+            truncated = true;
+            return false;
+        }
         rows[count++] = row;
         return true;
     }
     bool skip(std::uint32_t id) {
-        if (skippedCount == skipped.size()) { truncated = true; return false; }
+        if (skippedCount == skipped.size()) {
+            truncated = true;
+            return false;
+        }
         skipped[skippedCount++] = id;
         return true;
     }
@@ -57,13 +63,21 @@ struct EcsSnapshot {
 template <class Range, class Probe>
 void collectEcsRows(EcsOperation operation, EcsSnapshot& out, Range&& storages, Probe&& probe) {
     for (auto&& [id, storage] : storages) {
-        if (out.visited == EcsSnapshot::MaxVisited) { out.truncated = true; break; }
+        if (out.visited == EcsSnapshot::MaxVisited) {
+            out.truncated = true;
+            break;
+        }
         ++out.visited;
-        if (operation == EcsOperation::Registries) { ++out.count; continue; }
+        if (operation == EcsOperation::Registries) {
+            ++out.count;
+            continue;
+        }
         EcsSnapshot::Row row;
-        row.id = static_cast<std::uint32_t>(id);
+        row.id       = static_cast<std::uint32_t>(id);
         bool present = false, valid = false;
-        try { valid = probe(storage, row, present); } catch (...) {}
+        try {
+            valid = probe(storage, row, present);
+        } catch (...) {}
         if (!valid) {
             if (!out.skip(row.id)) break;
         } else if (present) {

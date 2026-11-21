@@ -15,18 +15,20 @@ namespace probe::detail {
 // reader never waits for a writer and retains its own last validated snapshot.
 // Atomic payload words are essential: a sequence counter alone does not make
 // concurrent access to an ordinary C++ object legal.
-template <class T> class RequestMailbox {
+template <class T>
+class RequestMailbox {
     static_assert(std::is_trivially_copyable_v<T>);
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     static constexpr std::size_t WordCount = (sizeof(T) + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
-    using Words = std::array<std::uint64_t, WordCount>;
+    using Words                            = std::array<std::uint64_t, WordCount>;
 
-  public:
+public:
     RequestMailbox() { publish(mCurrent); }
 
-    template <class Update> void update(Update&& update) {
+    template <class Update>
+    void update(Update&& update) {
         std::lock_guard lock(mWriterMutex);
-        T next = mCurrent;
+        T               next = mCurrent;
         std::forward<Update>(update)(next); // Failure leaves the published value intact.
         mCurrent = next;
         publish(next);
@@ -48,7 +50,7 @@ template <class T> class RequestMailbox {
         return false;
     }
 
-  private:
+private:
     void publish(T const& value) noexcept {
         Words words{};
         std::memcpy(words.data(), &value, sizeof(T));
@@ -60,7 +62,7 @@ template <class T> class RequestMailbox {
         mSequence.store(sequence + 2);
     }
 
-    T mCurrent{}; // Writer-owned, accessed only under mWriterMutex.
+    T          mCurrent{}; // Writer-owned, accessed only under mWriterMutex.
     std::mutex mWriterMutex;
     alignas(64) std::atomic<std::uint64_t> mSequence{0};
     std::array<std::atomic<std::uint64_t>, WordCount> mWords{};

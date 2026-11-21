@@ -26,7 +26,9 @@ public:
         Completion(Completion const&)            = delete;
         Completion& operator=(Completion const&) = delete;
         Completion(Completion&& other) noexcept
-        : error(other.error), reqId(other.reqId), mOwner(std::exchange(other.mOwner, nullptr)) {}
+        : error(other.error),
+          reqId(other.reqId),
+          mOwner(std::exchange(other.mOwner, nullptr)) {}
         ~Completion() { release(); }
         bool release() {
             if (auto owner = std::exchange(mOwner, nullptr)) {
@@ -45,7 +47,9 @@ public:
     private:
         friend class SnapshotMailbox;
         Completion(SnapshotMailbox* owner, char const* failure, std::uint64_t id)
-        : error(failure), reqId(id), mOwner(owner) {}
+        : error(failure),
+          reqId(id),
+          mOwner(owner) {}
         SnapshotMailbox* mOwner = nullptr;
     };
 
@@ -68,8 +72,7 @@ public:
     template <class Advance>
     bool advance(Advance&& advance) {
         auto expected = Phase::Pending;
-        if (!mPhase.compare_exchange_strong(expected, Phase::Capturing, std::memory_order_acquire))
-            return false;
+        if (!mPhase.compare_exchange_strong(expected, Phase::Capturing, std::memory_order_acquire)) return false;
         bool done = true;
         if (!mFailure.load(std::memory_order_acquire)) {
             try {

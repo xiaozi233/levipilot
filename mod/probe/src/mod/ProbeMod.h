@@ -1,7 +1,7 @@
 #pragma once
 
-#include "mod/ChatModel.h"
 #include "mod/CallbackLifecycleModel.h"
+#include "mod/ChatModel.h"
 #include "mod/EcsModel.h"
 #include "mod/EntityModel.h"
 #include "mod/FlightRequestState.h"
@@ -51,9 +51,9 @@ namespace probe::detail {
 enum class SdkTaskPhase { Lookup, Submit, Run };
 struct SdkTaskTest {
     SdkTaskPhase phase = SdkTaskPhase::Run;
-    CaptureTest fault = CaptureTest::None;
+    CaptureTest  fault = CaptureTest::None;
 };
-}
+} // namespace probe::detail
 class Level;
 class Vec2;
 class Vec3;
@@ -105,15 +105,15 @@ public:
     // tick drains into the game's own Keyboard/MouseDevice queues.
     using InputInjection = detail::InputInjection;
     std::uint64_t queueInputInjection(InputInjection const& item);
-    bool queueTextInput(std::string text, detail::CaptureTest test = detail::CaptureTest::None);
-    bool queueUiQuery(detail::UiQuery query);
-    void drainInputEvents();
-    void resetInputEvents();
-    void cancelInputEvents(char const* reason);
-    char const* applyInputEvent(InputInjection const& item);
-    void                                         tickInputInjection();
-    bool                                         releaseInputEvents();
-    char const*                                  hidKeyEdge(int code, bool down, bool hardware);
+    bool          queueTextInput(std::string text, detail::CaptureTest test = detail::CaptureTest::None);
+    bool          queueUiQuery(detail::UiQuery query);
+    void          drainInputEvents();
+    void          resetInputEvents();
+    void          cancelInputEvents(char const* reason);
+    char const*   applyInputEvent(InputInjection const& item);
+    void          tickInputInjection();
+    bool          releaseInputEvents();
+    char const*   hidKeyEdge(int code, bool down, bool hardware);
     bool          setLifecycleKeyHook(bool on, bool suspendThreads = true);
     bool          setLifecycleMouseHook(bool on, bool suspendThreads = true);
     bool          setLifecyclePlayerHook(bool on, bool suspendThreads = true);
@@ -128,21 +128,21 @@ public:
     void             packetPeerTick();
     void             packetCaptureStop();
 
-    std::atomic_bool mAllowPacketCapture{false};
-    std::atomic_bool mAllowPacketInject{false};
+    std::atomic_bool           mAllowPacketCapture{false};
+    std::atomic_bool           mAllowPacketInject{false};
     detail::PacketRequestState mPacketRequests;
-    void queuePacketInjection(detail::PacketInjectionQuery query, std::uint64_t timeout = 2000);
-    void drainPacketInjection();
-    void cancelPacketInjection(char const* reason, bool discard = false);
+    void                       queuePacketInjection(detail::PacketInjectionQuery query, std::uint64_t timeout = 2000);
+    void                       drainPacketInjection();
+    void                       cancelPacketInjection(char const* reason, bool discard = false);
     void sendCommandPacket(detail::PacketInjectionQuery const& query, detail::PacketInjectionSnapshot& out);
-    bool             hidTextInput(std::string const& text, std::string& error);
-    void             captureCommandTemplate(Packet& packet);
-    ll::event::ListenerPtr     mKeyListener;
+    bool hidTextInput(std::string const& text, std::string& error);
+    void captureCommandTemplate(Packet& packet);
+    ll::event::ListenerPtr mKeyListener;
     // Hooks belong to enable/disable, never CRT constructors/destructors under
     // the Windows loader lock. These flags start at the actual unmapped state.
-    std::atomic_bool       mLifecycleKeyHooked{false}, mLifecyclePlayerHooked{false};
-    std::atomic_bool       mLifecycleMouseHooked{false}, mLifecycleTurnHooked{false};
-    bool stopLifecycleHooks(bool suspendThreads = true);
+    std::atomic_bool mLifecycleKeyHooked{false}, mLifecyclePlayerHooked{false};
+    std::atomic_bool mLifecycleMouseHooked{false}, mLifecycleTurnHooked{false};
+    bool             stopLifecycleHooks(bool suspendThreads = true);
     // Set while quiesced for unload: no new work is admitted between the last
     // in-flight request and the moment the static hooks come off.
     std::atomic_bool mQuiescing{false};
@@ -186,17 +186,17 @@ private:
     // <modDir>/spool-<pid>.jsonl so a killed/crashed game still leaves data.
     void spoolThreadLoop();
     // Returns the number of rows written; 0 when nothing was due/queued.
-    std::uint64_t      flushSpool(bool force);
+    std::uint64_t flushSpool(bool force);
     // Re-append swapped-out rows after a failed spool write (bounded).
-    void               requeueSpool(std::string& data);
-    void               writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
-    void               recordCommand(std::string const& line);
+    void requeueSpool(std::string& data);
+    void writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept;
+    void recordCommand(std::string const& line);
     // Runs a callback on the integrated server thread with exception isolation.
     void queueServerTask(
         std::function<void()>            fn,
         std::function<void(char const*)> onFailure              = {},
         bool                             rejectQueueForSelftest = false,
-        detail::SdkTaskTest               test = {}
+        detail::SdkTaskTest              test                   = {}
     );
 
     // Tick isolation: a bug in one of our hooks must not take the game down.
@@ -223,7 +223,7 @@ private:
     void          drainChatHistory();
     void          dispatchUseTask(std::uint64_t id);
     void          beginTask();
-    nlohmann::json taskStatusJson();
+    nlohmann::json     taskStatusJson();
     [[nodiscard]] bool aimAt(LocalPlayer& player, Vec3 const& point);
 
     // World flow: start/leave an existing world without going through the UI.
@@ -233,24 +233,17 @@ private:
     void reportSignInState();
     void setOptions(std::string const& text);
     void saveOptions();
-    std::uint64_t resetPlayer(
-        float x,
-        float y,
-        float z,
-        bool  hasYaw,
-        float yaw,
-        bool  hasPitch,
-        float pitch,
-        bool  clearEffects
-    );
+    std::uint64_t
+         resetPlayer(float x, float y, float z, bool hasYaw, float yaw, bool hasPitch, float pitch, bool clearEffects);
     void loadAutoConfig();
     bool registerCommands(CommandRegistry& registry, detail::CaptureTest test = detail::CaptureTest::None);
     [[nodiscard]] bool applyTurnDelta(LocalPlayer& player, Vec2 const& delta);
-    void updateFocusState();
+    void               updateFocusState();
 
     [[nodiscard]] bool applyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
-    bool applyLegacyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
-    template <class Apply> bool guardedControl(detail::ControlOp op, Apply&& apply);
+    bool               applyLegacyControls(ClientInstance& client, LocalPlayer& player, ControlState const& state);
+    template <class Apply>
+    bool guardedControl(detail::ControlOp op, Apply&& apply);
     void drainControlDiagnostics();
     void publishHeldInput();
     // Real-input path: translate the desired digital key state into Hardware
@@ -277,13 +270,13 @@ private:
         float           jumpDistance,
         float           edgeLookahead
     );
-    bool applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick, bool eventLevel);
+    bool          applyMacroTick(ClientInstance& client, LocalPlayer& player, MacroTick const& tick, bool eventLevel);
     std::uint64_t queueTeleport(detail::TeleportQuery query, bool resetControls = false, std::uint64_t timeout = 2000);
-    void drainTeleport();
-    void cancelTeleport(char const* reason, bool discard = false);
-    void captureTeleport(detail::TeleportQuery const& query, detail::TeleportSnapshot& out);
-    void applySlotRequest(LocalPlayer& player, detail::SlotQuery const& request, detail::SlotSnapshot& out);
-    void captureState(
+    void          drainTeleport();
+    void          cancelTeleport(char const* reason, bool discard = false);
+    void          captureTeleport(detail::TeleportQuery const& query, detail::TeleportSnapshot& out);
+    void          applySlotRequest(LocalPlayer& player, detail::SlotQuery const& request, detail::SlotSnapshot& out);
+    void          captureState(
         ClientInstance&               client,
         LocalPlayer&                  player,
         detail::CaptureRequest const& request,
@@ -291,12 +284,11 @@ private:
     );
     void captureInventory(LocalPlayer& player, detail::CaptureRequest const& request, detail::InventorySnapshot& out);
     void drainEntities();
-    detail::EntityStage captureEntityStage(detail::EntityStage stage, detail::EntityQuery const& query,
-                                           detail::EntitySnapshot& out);
-    detail::EcsStage captureEcsStage(detail::EcsStage stage, detail::EcsQuery const& query,
-                                   detail::EcsSnapshot& out);
-    void drainEcs();
-    void queueInventoryWrite(
+    detail::EntityStage
+    captureEntityStage(detail::EntityStage stage, detail::EntityQuery const& query, detail::EntitySnapshot& out);
+    detail::EcsStage captureEcsStage(detail::EcsStage stage, detail::EcsQuery const& query, detail::EcsSnapshot& out);
+    void             drainEcs();
+    void             queueInventoryWrite(
         std::string const& container,
         int                slot,
         std::string const& item,
@@ -342,9 +334,13 @@ private:
     static bool saveMacroFile(std::filesystem::path const& path, Macro const& macro, std::string& error);
 
     ll::mod::NativeMod& mSelf;
-    WorldSession mWorld{*this};
-    PacketTap    mPackets;
-    bool queueClientTask(std::function<void()> task, std::function<void(char const*)> onFailure = {}, detail::SdkTaskTest test = {});
+    WorldSession        mWorld{*this};
+    PacketTap           mPackets;
+    bool                queueClientTask(
+        std::function<void()>            task,
+        std::function<void(char const*)> onFailure = {},
+        detail::SdkTaskTest              test      = {}
+    );
 
     ll::event::ListenerPtr mMouseListener;
     ll::event::ListenerPtr mServerCommandListener;
@@ -352,22 +348,22 @@ private:
     // rebuilt registry (new world) gets the command again without duplicating
     // the execute handler on the same one.
     void const* mCommandRegistry = nullptr;
-    std::thread            mServerThread;
+    std::thread mServerThread;
 
-    std::atomic_bool mRunning{false};
-    std::mutex mDisableMutex;
-    std::thread mCallbackTestThread;
-    std::atomic_bool mCallbackTestActive{false};
-    std::atomic<char const*> mUnloadRefusal{""};
+    std::atomic_bool                                            mRunning{false};
+    std::mutex                                                  mDisableMutex;
+    std::thread                                                 mCallbackTestThread;
+    std::atomic_bool                                            mCallbackTestActive{false};
+    std::atomic<char const*>                                    mUnloadRefusal{""};
     std::array<std::atomic<unsigned>, detail::kCallbackDomains> mCallbackDelayMs{};
     std::array<std::atomic<unsigned>, detail::kCallbackDomains> mCallbackTestEntered{}, mCallbackTestCompleted{};
-    nlohmann::json callbackStatus() const;
-    nlohmann::json lifecycleBusy();
-    bool drainCallbacks();
-    bool attachListeners(bool on);
-    bool listenersReleased() const;
-    std::atomic<std::uint64_t> mLifecycleGeneration{0}, mDisableSerial{0};
-    std::atomic<std::uint64_t> mLastTickMs{0};
+    nlohmann::json                                              callbackStatus() const;
+    nlohmann::json                                              lifecycleBusy();
+    bool                                                        drainCallbacks();
+    bool                                                        attachListeners(bool on);
+    bool                                                        listenersReleased() const;
+    std::atomic<std::uint64_t>                                  mLifecycleGeneration{0}, mDisableSerial{0};
+    std::atomic<std::uint64_t>                                  mLastTickMs{0};
     // QPC timestamps for the T9 overhead metric (tick thread only).
     std::uint64_t              mTickStartQpc     = 0;
     std::uint64_t              mPrevTickStartQpc = 0;
@@ -397,13 +393,13 @@ private:
         std::uint32_t inputSeq   = 0;
         // A new jumpSeq either requests a jump or cancels a pending one
         // (beginTask / internal-error reset); jumpCancel disambiguates.
-        bool            jumpCancel   = false;
-        std::uint32_t   jumpSeq      = 0;
-        bool            lookRelative = true;
-        float           lookYaw      = 0.0f;
-        float           lookPitch    = 0.0f;
-        int             lookTicks    = 0;
-        std::uint32_t   lookSeq      = 0;
+        bool          jumpCancel   = false;
+        std::uint32_t jumpSeq      = 0;
+        bool          lookRelative = true;
+        float         lookYaw      = 0.0f;
+        float         lookPitch    = 0.0f;
+        int           lookTicks    = 0;
+        std::uint32_t lookSeq      = 0;
     };
 
     template <typename Fn>
@@ -417,7 +413,7 @@ private:
     }
 
     detail::RequestMailbox<RequestBlock> mRequests;
-    RequestBlock mLastRequests{}; // Game-thread-owned fallback, never a partial copy.
+    RequestBlock                         mLastRequests{}; // Game-thread-owned fallback, never a partial copy.
 
     // safeTickPre/Post stage helpers; each keeps the exact ordering the
     // monolithic functions had (ProbeMod.cpp).
@@ -425,8 +421,8 @@ private:
     void drainFlight();
     void tickFlightAssertion(LocalPlayer& player);
     void cancelFlight(char const* reason, bool discard = false);
-    detail::FlightStage captureFlightStage(detail::FlightStage stage, detail::FlightQuery const& query,
-                                           detail::FlightSnapshot& out);
+    detail::FlightStage
+         captureFlightStage(detail::FlightStage stage, detail::FlightQuery const& query, detail::FlightSnapshot& out);
     void releaseMacroIfRequested();
     void tickMacroPlayback(ClientInstance& client, LocalPlayer& player);
     void consumeMovementRequests(ClientInstance& client, LocalPlayer& player, RequestBlock const& requests);
@@ -439,55 +435,55 @@ private:
     // Hardware origin, exactly like the guest's keyboard. The legacy
     // flag/queue/handler/impulse paths are explicit diagnostics only.
     struct KeyBindings {
-        int forward = 87;  // W fallback
-        int back    = 83;  // S
-        int left    = 65;  // A
-        int right   = 68;  // D
-        int sneak   = 16;  // Lshift
-        int jump    = 32;  // Space
-        int sprint  = 0;   // 0 = unassigned; use double-tap forward
+        int forward = 87; // W fallback
+        int back    = 83; // S
+        int left    = 65; // A
+        int right   = 68; // D
+        int sneak   = 16; // Lshift
+        int jump    = 32; // Space
+        int sprint  = 0;  // 0 = unassigned; use double-tap forward
     };
     detail::InputSession<ControlState, KeyBindings> mInputSession;
 
     // Written by enable()/config and read on the tick thread.
-    std::atomic_bool mBackgroundGuard{true};
-    std::atomic_bool mForeground{true};
-    detail::ParkourTracker mParkourTracker; // Tick-owned; reset on generation changes.
+    std::atomic_bool                             mBackgroundGuard{true};
+    std::atomic_bool                             mForeground{true};
+    detail::ParkourTracker                       mParkourTracker; // Tick-owned; reset on generation changes.
     detail::TickQueue<detail::ParkourEvent, 256> mParkourEvents;
-    std::atomic<std::uint64_t> mParkourGeneration{0};
-    std::uint64_t mParkourSeenGeneration = 0;
-    std::atomic<detail::StreamTest> mParkourTest{detail::StreamTest::None};
-    std::atomic<std::uint64_t> mParkourLost{0}, mParkourFaults{0}, mParkourFailures{0};
-    int                 mCursorShowCalls = 0;
+    std::atomic<std::uint64_t>                   mParkourGeneration{0};
+    std::uint64_t                                mParkourSeenGeneration = 0;
+    std::atomic<detail::StreamTest>              mParkourTest{detail::StreamTest::None};
+    std::atomic<std::uint64_t>                   mParkourLost{0}, mParkourFaults{0}, mParkourFailures{0};
+    int                                          mCursorShowCalls = 0;
 
     // Look requests live in RequestBlock above (mLookMutex removed in T9).
 
-    detail::StateCapture  mStateCapture;
-    detail::ButtonCapture mButtonCapture;
-    detail::BlockCapture  mBlockCapture;
-    detail::ScanCapture   mScanCapture;
+    detail::StateCapture     mStateCapture;
+    detail::ButtonCapture    mButtonCapture;
+    detail::BlockCapture     mBlockCapture;
+    detail::ScanCapture      mScanCapture;
     detail::InventoryCapture mInventoryCapture;
-    detail::SlotCapture mSlotCapture;
+    detail::SlotCapture      mSlotCapture;
     // UI work owns a bounded snapshot; the spool consumer owns timeout and JSON.
-    detail::ChatCapture mChatCapture;
-    detail::EntityCapture mEntityCapture;
-    detail::EcsCapture mEcsCapture;
+    detail::ChatCapture          mChatCapture;
+    detail::EntityCapture        mEntityCapture;
+    detail::EcsCapture           mEcsCapture;
     detail::TeleportRequestState mTeleport;
     detail::FlightRequestState   mFlight;
     struct ClickResult {
-        std::uint64_t reqId = 0;
-        int         button = 0, hitType = 0, x = 0, y = 0, z = 0, face = 0;
-        float       hitX = 0, hitY = 0, hitZ = 0;
-        bool        gameMode = false, hitValid = false;
-        char const* error = nullptr;
+        std::uint64_t reqId  = 0;
+        int           button = 0, hitType = 0, x = 0, y = 0, z = 0, face = 0;
+        float         hitX = 0, hitY = 0, hitZ = 0;
+        bool          gameMode = false, hitValid = false;
+        char const*   error = nullptr;
     };
     detail::TickQueue<ClickResult, 128> mClickResults;
     std::atomic<std::uint64_t>          mClickResultsLost{0};
     std::atomic<detail::CaptureTest>    mClickCaptureTest{detail::CaptureTest::None};
     std::atomic<int>                    mClickRequest{-1};
     std::atomic<std::uint64_t>          mClickReqId{0};
-    std::atomic<float>          mClickReach{5.5f};
-    std::atomic<int>            mSlotRequest{-1};
+    std::atomic<float>                  mClickReach{5.5f};
+    std::atomic<int>                    mSlotRequest{-1};
     // Non-default paths are accepted by input_cfg only with force=true.
 
 
@@ -505,31 +501,31 @@ private:
 
     // Tick publishes UUID values only; cold callbacks validate the world epoch
     // again before resolving the matching server-side player.
-    detail::PlayerIdentityStore mPlayerIdentity;
+    detail::PlayerIdentityStore      mPlayerIdentity;
     std::atomic<detail::CaptureTest> mPlayerIdentityTest{detail::CaptureTest::None};
-    detail::PlayerIdentity mPlayerIdentityRemembered; // Pipe-only selftest data.
-    detail::PlayerIdentity localPlayerIdentity() const;
-    void capturePlayerIdentity(LocalPlayer& player);
+    detail::PlayerIdentity           mPlayerIdentityRemembered; // Pipe-only selftest data.
+    detail::PlayerIdentity           localPlayerIdentity() const;
+    void                             capturePlayerIdentity(LocalPlayer& player);
 
     // MacroSession uniquely owns recording/playback state and the cold lock.
     detail::MacroSession mMacroSession;
-    bool applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
-    bool releaseMacroInputs();
-    void drainMacroRecording();
-    void drainMacroRecordingLocked();
+    bool                 applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick);
+    bool                 releaseMacroInputs();
+    void                 drainMacroRecording();
+    void                 drainMacroRecordingLocked();
 
-    std::mutex              mQueueMutex;
-    std::deque<std::string> mQueue;
-    std::size_t             mQueueBytes = 0;
+    std::mutex                 mQueueMutex;
+    std::deque<std::string>    mQueue;
+    std::size_t                mQueueBytes = 0;
     std::atomic<std::uint64_t> mQueueDropped{0};
     std::atomic<std::uint64_t> mPipeWriteTimeouts{0};
-    detail::TickRecovery mTickRecovery;
+    detail::TickRecovery       mTickRecovery;
     // Cold only; handleLine owns this outside its raw SEH frame, so dispatch
     // faults still release the lock. The spool recovery serializes admission.
-    std::mutex mTickRecoveryMutex;
-    std::uint64_t mLastInternalErrorMs = 0; // Spool-owned logger rate limit.
+    std::mutex                                        mTickRecoveryMutex;
+    std::uint64_t                                     mLastInternalErrorMs = 0; // Spool-owned logger rate limit.
     std::array<std::atomic<detail::TickErrorTest>, 2> mTickErrorTests{};
-    std::atomic<std::uint64_t> mTickRecoveryHoldUntilMs{0}; // Gated selftest only.
+    std::atomic<std::uint64_t>                        mTickRecoveryHoldUntilMs{0}; // Gated selftest only.
 
     // T1 spool. mSpoolBuffer/mSpoolDroppedMarked/mLastFlushMs are protected by
     // mQueueMutex (the tick path already takes it in enqueue); the file stream is
@@ -550,9 +546,9 @@ private:
     std::atomic<std::uint64_t> mSpoolFlushes{0};
     // F4: set by non-spool threads that need the next flush to be immediate
     // (world_left, panic_done) without doing file IO on the tick thread.
-    std::atomic_bool           mSpoolForce{false};
-    HANDLE                     mSpoolWakeEvent = nullptr;
-    void                       wakeSpool() {
+    std::atomic_bool mSpoolForce{false};
+    HANDLE           mSpoolWakeEvent = nullptr;
+    void             wakeSpool() {
         if (mSpoolWakeEvent) SetEvent(mSpoolWakeEvent);
     }
     std::atomic<std::uint64_t> mSpoolErrors{0};

@@ -80,10 +80,10 @@ bool ProbeMod::enable() {
         mChatCapture.reset();
         resetQueries();
         hookResetCalls();
-        bool const keyOk = setLifecycleKeyHook(true);
-        bool const mouseOk = setLifecycleMouseHook(true);
+        bool const keyOk    = setLifecycleKeyHook(true);
+        bool const mouseOk  = setLifecycleMouseHook(true);
         bool const playerOk = setLifecyclePlayerHook(true);
-        bool const turnOk = setLifecycleTurnHook(true);
+        bool const turnOk   = setLifecycleTurnHook(true);
         if (!(keyOk && mouseOk && playerOk && turnOk)) {
             cleanupOnError("enable: hook installation failed");
             return false;
@@ -99,9 +99,12 @@ bool ProbeMod::enable() {
                 int const data   = static_cast<int>(event.buttonData());
                 mInputSession.mouseEventCount.fetch_add(1, std::memory_order_relaxed);
                 mInputSession.mouseLastAction = action;
-                mInputSession.mouseLastData = data;
+                mInputSession.mouseLastData   = data;
                 if (action >= 0 && action < static_cast<int>(mInputSession.mouseActionCounts.size())) {
-                    mInputSession.mouseActionCounts[static_cast<size_t>(action)].fetch_add(1, std::memory_order_relaxed);
+                    mInputSession.mouseActionCounts[static_cast<size_t>(action)].fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
                 }
 
                 if (action == 1) {
@@ -144,13 +147,11 @@ bool ProbeMod::enable() {
             std::copy(modDir.begin(), modDir.end(), mModDirW);
             mModDirW[modDir.size()] = L'\0';
         }
-        mSpoolPath = modDirPath
-                   / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
+        mSpoolPath = modDirPath / ("spool-" + std::to_string(GetCurrentProcessId()) + ".jsonl");
         // F6: a reused PID must not append this session to an old spool file.
         {
             std::error_code spoolEc;
-            if (std::filesystem::exists(mSpoolPath, spoolEc)
-                && std::filesystem::file_size(mSpoolPath, spoolEc) > 0) {
+            if (std::filesystem::exists(mSpoolPath, spoolEc) && std::filesystem::file_size(mSpoolPath, spoolEc) > 0) {
                 auto const pid = std::to_string(GetCurrentProcessId());
                 for (int n = 1; n < 1000; ++n) {
                     auto candidate = modDirPath / ("spool-" + pid + "-" + std::to_string(n) + ".jsonl");
@@ -187,10 +188,13 @@ bool ProbeMod::enable() {
         // again. Rebind our overload on the server thread after LL disabled the old
         // DLL's factory. At the main menu there is no server; the event handles the
         // first world normally.
-        queueServerTask([this] {
-            if (!mRunning.load(std::memory_order_acquire)) return;
-            if (auto registry = ll::service::getCommandRegistry(false)) registerCommands(*registry);
-        }, [](char const*) {});
+        queueServerTask(
+            [this] {
+                if (!mRunning.load(std::memory_order_acquire)) return;
+                if (auto registry = ll::service::getCommandRegistry(false)) registerCommands(*registry);
+            },
+            [](char const*) {}
+        );
         loadCheckpoints();
 
         if (!mSpoolWakeEvent) mSpoolWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -211,10 +215,10 @@ bool ProbeMod::enable() {
 
 bool ProbeMod::stopLifecycleHooks(bool suspendThreads) {
     // No short-circuit: one failure must not leave the other hooks installed.
-    bool const keyOk = setLifecycleKeyHook(false, suspendThreads);
-    bool const mouseOk = setLifecycleMouseHook(false, suspendThreads);
+    bool const keyOk    = setLifecycleKeyHook(false, suspendThreads);
+    bool const mouseOk  = setLifecycleMouseHook(false, suspendThreads);
     bool const playerOk = setLifecyclePlayerHook(false, suspendThreads);
-    bool const turnOk = setLifecycleTurnHook(false, suspendThreads);
+    bool const turnOk   = setLifecycleTurnHook(false, suspendThreads);
     return keyOk && mouseOk && playerOk && turnOk;
 }
 
@@ -338,25 +342,25 @@ void ProbeMod::loadAutoConfig() {
             return;
         }
         auto readBool = [&](char const* key, bool fallback) {
-            bool invalid = false;
-            bool const val = safeJsonBool(config, key, fallback, &invalid);
+            bool       invalid = false;
+            bool const val     = safeJsonBool(config, key, fallback, &invalid);
             if (invalid) bootLog(std::string("config: bad field=") + key);
             return val;
         };
         auto readInt = [&](char const* key, int fallback) {
-            bool invalid = false;
-            int const val = safeJsonInt(config, key, fallback, &invalid);
+            bool      invalid = false;
+            int const val     = safeJsonInt(config, key, fallback, &invalid);
             if (invalid) bootLog(std::string("config: bad field=") + key);
             return val;
         };
         auto readString = [&](char const* key, std::string const& fallback) {
-            bool invalid = false;
-            std::string val = safeJsonString(config, key, fallback, &invalid);
+            bool        invalid = false;
+            std::string val     = safeJsonString(config, key, fallback, &invalid);
             if (invalid) bootLog(std::string("config: bad field=") + key);
             return val;
         };
-        auto const autoWorld   = readString("auto_enter", "");
-        auto const autoDelayMs = std::clamp(readInt("delay_ms", 2000), 0, 60000);
+        auto const  autoWorld   = readString("auto_enter", "");
+        auto const  autoDelayMs = std::clamp(readInt("delay_ms", 2000), 0, 60000);
         std::string autoOptions;
         mBackgroundGuard          = readBool("background_guard", true);
         mAllowMemoryRead          = readBool("allow_read", true);
@@ -376,14 +380,14 @@ void ProbeMod::loadAutoConfig() {
         mInputSession.hardwareLocked = false;
         mAllowVersionMismatch        = readBool("allow_version_mismatch", false);
         setAllowVersionMismatch(mAllowVersionMismatch.load());
-        mPipeToken                   = readString("pipe_token", "");
+        mPipeToken = readString("pipe_token", "");
         mPipeAuthed.store(mPipeToken.empty(), std::memory_order_release);
         mWorld.setSignInWaitMs(std::clamp(readInt("signin_wait_ms", 15000), 0, 120000));
         if (config.contains("options")) {
             if (config["options"].is_object()) {
                 for (auto it = config["options"].begin(); it != config["options"].end(); ++it) {
-                    std::string value = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
-                    autoOptions += it.key() + ":" + value + "\n";
+                    std::string value  = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+                    autoOptions       += it.key() + ":" + value + "\n";
                 }
             } else {
                 bootLog("config: bad field=options");
@@ -402,7 +406,7 @@ void ProbeMod::loadAutoConfig() {
 }
 
 void ProbeMod::onPlayerTick(LocalPlayer& player) {
-    mTickStartQpc = qpcNow();
+    mTickStartQpc                  = qpcNow();
     mInputSession.lifecycleCurrent = false;
     // A bug in our own code must not take the game down with it.
     try {
@@ -422,13 +426,13 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
         return;
     }
     mInputSession.jumpEdgeThisTick = false;
-    ClientInstance* client = nullptr;
-    bool current = false;
+    ClientInstance* client         = nullptr;
+    bool            current        = false;
     if (!guardedGameRead([&] {
-        injectTickError(TickPhase::Pre, true);
-        client = ll::service::getClientInstance();
-        current = client && client->getLocalPlayer() == &player;
-    })) {
+            injectTickError(TickPhase::Pre, true);
+            client  = ll::service::getClientInstance();
+            current = client && client->getLocalPlayer() == &player;
+        })) {
         reportInternalError(TickPhase::Pre, "client_player_read_fault");
         return;
     }
@@ -439,7 +443,7 @@ void ProbeMod::safeTickPre(LocalPlayer& player) {
     }
     mWorld.observePlayer(true);
     mInputSession.lifecycleCurrent = true;
-    mLastTickMs = GetTickCount64();
+    mLastTickMs                    = GetTickCount64();
     if (recoverTickControls(player)) return;
 
     capturePlayerIdentity(player);
@@ -485,18 +489,21 @@ bool ProbeMod::registerCommands(CommandRegistry& registry, CaptureTest test) {
     // Server-side only: the ability is server-authoritative, and a client-side
     // command would flip the client copy that the next sync overwrites.
     if (test == CaptureTest::None && mCommandRegistry == &registry) return true;
-    bool const registered = guardedSdkCall([&] {
-        auto& handle = ll::command::CommandRegistrar::getServerInstance().getOrCreateCommand(
-            "togglefly",
-            "grant/remove double-space flight (non-spectator)",
-            CommandPermissionLevel::Any,
-            CommandFlagValue::NotCheat
-        );
-        handle.overload().execute(
-            [this](CommandOrigin const& origin, CommandOutput& output) {
+    bool const registered = guardedSdkCall(
+        [&] {
+            auto& handle = ll::command::CommandRegistrar::getServerInstance().getOrCreateCommand(
+                "togglefly",
+                "grant/remove double-space flight (non-spectator)",
+                CommandPermissionLevel::Any,
+                CommandFlagValue::NotCheat
+            );
+            handle.overload().execute([this](CommandOrigin const& origin, CommandOutput& output) {
                 CallbackScope callback(gCallbacks, CallbackDomain::Command);
-                bool const ok = guardedSdkCall([&] {
-                    if (!callback.admitted()) { output.error("probe is quiescing"); return; }
+                bool const    ok = guardedSdkCall([&] {
+                    if (!callback.admitted()) {
+                        output.error("probe is quiescing");
+                        return;
+                    }
                     if (!mAllowToggleFly.load(std::memory_order_relaxed)) {
                         output.error("togglefly: disabled by allow_togglefly=false in harness.json");
                         return;
@@ -517,20 +524,19 @@ bool ProbeMod::registerCommands(CommandRegistry& registry, CaptureTest test) {
                     if (!target) {
                         player.setAbility(AbilitiesIndex::Flying, false);
                     }
-                    output.success(
-                        target ? "双击空格切换飞行：已开启" : "双击空格切换飞行：已关闭"
-                    );
+                    output.success(target ? "双击空格切换飞行：已开启" : "双击空格切换飞行：已关闭");
                 });
                 if (!ok) {
                     bootLog("command: togglefly execution failed");
                     // Output is another SDK call, with its own bounded guard.
                     guardedSdkCall([&] { output.error("togglefly: internal error"); });
                 }
-            }
-        );
-        mCommandRegistry = &registry;
-        bootLog("command: registered togglefly");
-    }, test);
+            });
+            mCommandRegistry = &registry;
+            bootLog("command: registered togglefly");
+        },
+        test
+    );
     if (!registered) bootLog("command: togglefly registration failed");
     return registered;
 }
@@ -559,15 +565,15 @@ void ProbeMod::consumeMovementRequests(ClientInstance& client, LocalPlayer& play
     }
     if (mInputSession.jumpRequestPending) {
         mInputSession.jumpRequestPending = false;
-        state.jump          = true;
-        state.active        = true;
-        apply               = true;
+        state.jump                       = true;
+        state.active                     = true;
+        apply                            = true;
     }
     if (!applyControls(client, player, apply ? state : ControlState{})) {
         // This sequence is consumed. Do not silently replay an unbounded
         // desired state after an uncertain edge; a new request may restart it.
-        mInputSession.activeInput = ControlState{};
-        mInputSession.activeInputTicks = 0;
+        mInputSession.activeInput        = ControlState{};
+        mInputSession.activeInputTicks   = 0;
         mInputSession.jumpRequestPending = false;
     }
 }
@@ -584,13 +590,18 @@ void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requ
     bool const lookActive = mInputSession.activeLookTicks != 0;
     if (lookActive) {
         Vec2 rot;
-        if (!guardedControl(ControlOp::LookRead, [&] { rot = player.getRotation(); return true; })) {
+        if (!guardedControl(ControlOp::LookRead, [&] {
+                rot = player.getRotation();
+                return true;
+            })) {
             mInputSession.activeLookTicks = 0;
             return;
         }
         // _applyTurnDelta uses the opposite pitch sign from ActorRotation.x.
-        float dy = mInputSession.activeLookRelative ? mInputSession.activeLookYaw : wrapDegrees(mInputSession.activeLookYaw - rot.y);
-        float dp = mInputSession.activeLookRelative ? -mInputSession.activeLookPitch : (rot.x - mInputSession.activeLookPitch);
+        float dy = mInputSession.activeLookRelative ? mInputSession.activeLookYaw
+                                                    : wrapDegrees(mInputSession.activeLookYaw - rot.y);
+        float dp =
+            mInputSession.activeLookRelative ? -mInputSession.activeLookPitch : (rot.x - mInputSession.activeLookPitch);
         if (mInputSession.activeLookTicks > 0) {
             --mInputSession.activeLookTicks;
         }
@@ -601,7 +612,7 @@ void ProbeMod::consumeLookRequests(LocalPlayer& player, RequestBlock const& requ
 }
 
 void ProbeMod::afterPlayerTick(LocalPlayer& player) {
-    std::uint64_t const postStart = qpcNow();
+    std::uint64_t const postStart  = qpcNow();
     mInputSession.lifecycleCurrent = false;
     try {
         safeTickPost(player);
@@ -614,8 +625,7 @@ void ProbeMod::afterPlayerTick(LocalPlayer& player) {
     mInputSession.publishLifecycle(mPoseEpoch.load());
     std::uint64_t const postEnd = qpcNow();
     std::uint64_t const hookUs  = mPreUs + qpcElapsedUs(postStart, postEnd);
-    std::uint64_t const tickUs =
-        mPrevTickStartQpc != 0 ? qpcElapsedUs(mPrevTickStartQpc, mTickStartQpc) : 0;
+    std::uint64_t const tickUs  = mPrevTickStartQpc != 0 ? qpcElapsedUs(mPrevTickStartQpc, mTickStartQpc) : 0;
     overheadRecord(
         static_cast<std::uint32_t>(std::min<std::uint64_t>(tickUs, 0xFFFFFFFFull)),
         static_cast<std::uint32_t>(std::min<std::uint64_t>(hookUs, 0xFFFFFFFFull))
@@ -627,13 +637,13 @@ void ProbeMod::safeTickPost(LocalPlayer& player) {
     if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
         return;
     }
-    ClientInstance* client = nullptr;
-    bool current = false;
+    ClientInstance* client  = nullptr;
+    bool            current = false;
     if (!guardedGameRead([&] {
-        injectTickError(TickPhase::Post, true);
-        client = ll::service::getClientInstance();
-        current = client && client->getLocalPlayer() == &player;
-    })) {
+            injectTickError(TickPhase::Post, true);
+            client  = ll::service::getClientInstance();
+            current = client && client->getLocalPlayer() == &player;
+        })) {
         reportInternalError(TickPhase::Post, "client_player_read_fault");
         return;
     }
@@ -710,28 +720,28 @@ void ProbeMod::recordTickPose(LocalPlayer& player) {
 }
 
 void ProbeMod::runCaptureRequests(ClientInstance& client, LocalPlayer& player) {
-    bool notify = false;
-    notify |= mStateCapture.advance([&](auto const& request, auto& out) {
+    bool notify  = false;
+    notify      |= mStateCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureState(client, player, request, out);
         return true;
     });
-    notify |= mButtonCapture.advance([&](auto const& request, auto& out) {
+    notify      |= mButtonCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureButtons(client, request, out);
         return true;
     });
-    notify |= mInventoryCapture.advance([&](auto const& request, auto& out) {
+    notify      |= mInventoryCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureInventory(player, request, out);
         return true;
     });
-    notify |= mBlockCapture.advance([&](auto const& request, auto& out) {
+    notify      |= mBlockCapture.advance([&](auto const& request, auto& out) {
         if (request.test == CaptureTest::Deferred) return false;
         captureBlocks(player, request, out);
         return true;
     });
-    notify |= mScanCapture.advance([&](auto const& request, auto& out) {
+    notify      |= mScanCapture.advance([&](auto const& request, auto& out) {
         return request.test != CaptureTest::Deferred && captureScan(player, request, out);
     });
     if (notify) wakeSpool();
@@ -757,7 +767,10 @@ bool ProbeMod::allowTurnDelta() const {
 
 bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
     InjectionCountScope injecting(mInputSession.injectingLook);
-    return guardedControl(ControlOp::Turn, [&] { player._applyTurnDelta(delta); return true; });
+    return guardedControl(ControlOp::Turn, [&] {
+        player._applyTurnDelta(delta);
+        return true;
+    });
 }
 
 void ProbeMod::updateFocusState() {
@@ -806,9 +819,9 @@ void ProbeMod::handleFatalException(EXCEPTION_POINTERS* info) {
 void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
     // Crash context: no allocation, no mutex, no C++ streams. Values are copied
     // from atomics and the fixed last-command buffer.
-    DWORD const       pid  = GetCurrentProcessId();
-    DWORD const       tid  = GetCurrentThreadId();
-    std::uint64_t     tick = mTick.load(std::memory_order_relaxed);
+    DWORD const   pid  = GetCurrentProcessId();
+    DWORD const   tid  = GetCurrentThreadId();
+    std::uint64_t tick = mTick.load(std::memory_order_relaxed);
 
     wchar_t dumpPath[1200]{};
     std::swprintf(
@@ -838,7 +851,7 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
     }
 
     unsigned const slot = mLastCommandSlot.load(std::memory_order_acquire) & 1u;
-    char command[512]{};
+    char           command[512]{};
     for (std::size_t i = 0; i < sizeof(command) - 1 && mLastCommand[slot][i] != '\0'; ++i) {
         command[i] = mLastCommand[slot][i];
     }
@@ -853,7 +866,7 @@ void ProbeMod::writeCrashArtifacts(EXCEPTION_POINTERS* info) noexcept {
     );
     PoseSnapshot pose;
     bool const   havePose = mPose.latest(pose);
-    char text[2048]{};
+    char         text[2048]{};
     std::snprintf(
         text,
         sizeof(text),
@@ -904,7 +917,10 @@ LL_TYPE_INSTANCE_HOOK(
     void
 ) {
     ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Tick);
-    if (!callback.admitted()) { origin(); return; }
+    if (!callback.admitted()) {
+        origin();
+        return;
+    }
     ::probe::ProbeMod::getInstance().callbackTestDelay(::probe::detail::CallbackDomain::Tick);
     ::probe::ProbeMod::getInstance().onPlayerTick(*this);
     origin();
@@ -947,7 +963,7 @@ LL_TYPE_INSTANCE_HOOK(
     Vec2 const& delta
 ) {
     ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Turn);
-    auto& mod = ::probe::ProbeMod::getInstance();
+    auto&                          mod = ::probe::ProbeMod::getInstance();
     if (!mod.allowTurnDelta()) {
         return;
     }

@@ -19,8 +19,8 @@ inline std::string attachReqId(std::string line, std::uint64_t reqId) {
     if (line.find("\"req_id\":") != std::string::npos) {
         return line;
     }
-    std::string suffix = line.size() == 2 ? "\"req_id\":" : ",\"req_id\":";
-    suffix += std::to_string(reqId);
+    std::string suffix  = line.size() == 2 ? "\"req_id\":" : ",\"req_id\":";
+    suffix             += std::to_string(reqId);
     suffix.push_back('}');
     line.pop_back();
     line.append(suffix);
@@ -35,10 +35,9 @@ std::uint64_t pushBoundedLine(
     std::size_t  maxCount = MaxQueueCount,
     std::size_t  maxBytes = MaxQueueBytes
 ) {
-    std::uint64_t dropped = 0;
+    std::uint64_t     dropped  = 0;
     std::size_t const nextSize = line.size();
-    while (!queue.empty()
-           && (queue.size() >= maxCount || nextSize > maxBytes || queueBytes > maxBytes - nextSize)) {
+    while (!queue.empty() && (queue.size() >= maxCount || nextSize > maxBytes || queueBytes > maxBytes - nextSize)) {
         std::size_t const frontSize = queue.front().size();
         queueBytes                  = queueBytes >= frontSize ? queueBytes - frontSize : 0;
         queue.pop_front();
@@ -51,17 +50,19 @@ std::uint64_t pushBoundedLine(
 
 // Pipe-thread owned; only the unfinished line is retained between reads.
 // Callbacks consume the line synchronously and must not retain its reference.
-template <std::size_t MaxLineBytes = (1u << 20)> class CommandFramer {
-  public:
+template <std::size_t MaxLineBytes = (1u << 20)>
+class CommandFramer {
+public:
     void reset() {
         mPartial.clear();
         mDiscard = false;
     }
 
-    template <class OnLine, class OnTooLong> void feed(std::string_view chunk, OnLine&& onLine, OnTooLong&& onTooLong) {
+    template <class OnLine, class OnTooLong>
+    void feed(std::string_view chunk, OnLine&& onLine, OnTooLong&& onTooLong) {
         while (!chunk.empty()) {
             auto const newline = chunk.find('\n');
-            auto const part = chunk.substr(0, newline);
+            auto const part    = chunk.substr(0, newline);
             if (!mDiscard) {
                 if (part.size() > MaxLineBytes - mPartial.size()) {
                     auto const bytes = mPartial.size() + part.size();
@@ -89,11 +90,11 @@ template <std::size_t MaxLineBytes = (1u << 20)> class CommandFramer {
     }
 
     std::size_t pendingBytes() const { return mPartial.size(); }
-    bool discarding() const { return mDiscard; }
+    bool        discarding() const { return mDiscard; }
 
-  private:
+private:
     std::string mPartial;
-    bool mDiscard = false;
+    bool        mDiscard = false;
 };
 
 // Reuse a bounded scratch buffer across iterations. Large rows already own
@@ -103,23 +104,18 @@ bool writeLineBatch(Rows& rows, std::string& buffer, Write&& write) {
     static_assert(MaxBatchBytes > 0);
     buffer.clear();
     auto flush = [&] {
-        if (buffer.empty())
-            return true;
-        if (!write(buffer))
-            return false;
+        if (buffer.empty()) return true;
+        if (!write(buffer)) return false;
         buffer.clear();
         return true;
     };
     for (auto& line : rows) {
         if (line.size() >= MaxBatchBytes) {
-            if (!flush())
-                return false;
+            if (!flush()) return false;
             line.push_back('\n');
-            if (!write(line))
-                return false;
+            if (!write(line)) return false;
         } else {
-            if (line.size() + 1 > MaxBatchBytes - buffer.size() && !flush())
-                return false;
+            if (line.size() + 1 > MaxBatchBytes - buffer.size() && !flush()) return false;
             buffer.append(line);
             buffer.push_back('\n');
         }

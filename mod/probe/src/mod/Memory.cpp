@@ -15,8 +15,8 @@ namespace {
 //   size_t size   [0x10, 0x18)
 //   size_t cap    [0x18, 0x20)
 constexpr std::uint64_t StdStringSizeOffset = 0x10;
-constexpr std::uint64_t StdStringSSOCap    = 15;
-constexpr std::size_t   MaxStringLength    = 4096;
+constexpr std::uint64_t StdStringSSOCap     = 15;
+constexpr std::size_t   MaxStringLength     = 4096;
 
 template <typename T>
 bool readValue(std::uint64_t addr, T& out) {
@@ -99,8 +99,7 @@ bool checkRange(std::uint64_t addr, std::size_t len, bool write) {
         if (!ok) {
             return false;
         }
-        std::uint64_t const regionEnd =
-            reinterpret_cast<std::uint64_t>(info.BaseAddress) + info.RegionSize;
+        std::uint64_t const regionEnd = reinterpret_cast<std::uint64_t>(info.BaseAddress) + info.RegionSize;
         if (regionEnd <= cursor) {
             return false;
         }
@@ -154,9 +153,8 @@ bool readMemory(std::uint64_t addr, void* dst, std::size_t len) {
     if (!readableRange(addr, len)) {
         return false;
     }
-    SIZE_T read = 0;
-    BOOL const ok =
-        ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(addr), dst, len, &read);
+    SIZE_T     read = 0;
+    BOOL const ok   = ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(addr), dst, len, &read);
     return ok != FALSE && read == len;
 }
 
@@ -167,9 +165,8 @@ bool writeMemory(std::uint64_t addr, void const* src, std::size_t len) {
     if (!writableRange(addr, len)) {
         return false;
     }
-    SIZE_T written = 0;
-    BOOL const ok =
-        WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<LPVOID>(addr), src, len, &written);
+    SIZE_T     written = 0;
+    BOOL const ok      = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<LPVOID>(addr), src, len, &written);
     return ok != FALSE && written == len;
 }
 
@@ -233,8 +230,8 @@ bool parseAddress(nlohmann::json const& value, std::uint64_t& out) {
         if (text.empty()) {
             return false;
         }
-        char*                   end   = nullptr;
-        errno                         = 0;
+        char* end                       = nullptr;
+        errno                           = 0;
         unsigned long long const parsed = std::strtoull(text.c_str(), &end, 0);
         if (text.front() == '-' || end == text.c_str() || end == nullptr || *end != '\0' || errno == ERANGE) {
             return false;
@@ -293,8 +290,7 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
     if (kind == "block") {
         std::uint64_t legacyOffset = 0;
         std::uint64_t nameOffset   = 0;
-        if (!structOffset("Block", "LegacyPointer", legacyOffset)
-            || !structOffset("BlockLegacy", "Name", nameOffset)) {
+        if (!structOffset("Block", "LegacyPointer", legacyOffset) || !structOffset("BlockLegacy", "Name", nameOffset)) {
             return nlohmann::json{
                 {"event",  "error"            },
                 {"reason", "no_offset"        },
@@ -330,14 +326,12 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
         std::uint64_t aOff    = 0;
         std::uint64_t bOff    = 0;
         std::uint64_t nameOff = 0;
-        if (!structOffset("BlockLegacy", "NameHash", hashOff)
-            || !structOffset("BlockLegacy", "BlockId", idOff)
-            || !structOffset("BlockLegacy", "FloatA", aOff)
-            || !structOffset("BlockLegacy", "FloatB", bOff)
+        if (!structOffset("BlockLegacy", "NameHash", hashOff) || !structOffset("BlockLegacy", "BlockId", idOff)
+            || !structOffset("BlockLegacy", "FloatA", aOff) || !structOffset("BlockLegacy", "FloatB", bOff)
             || !structOffset("BlockLegacy", "Name", nameOff)) {
             return nlohmann::json{
-                {"event",  "error"     },
-                {"reason", "no_offset" },
+                {"event",  "error"      },
+                {"reason", "no_offset"  },
                 {"struct", "BlockLegacy"},
             };
         }
@@ -350,15 +344,9 @@ nlohmann::json probeMemory(std::uint64_t addr, std::string const& kind, std::siz
         std::uint64_t floatAAdr = 0;
         std::uint64_t floatBAdr = 0;
         std::uint64_t nameAddr  = 0;
-        if (!addOffset(addr, hashOff, hashAddr)
-            || !addOffset(addr, idOff, idAddr)
-            || !addOffset(addr, aOff, floatAAdr)
-            || !addOffset(addr, bOff, floatBAdr)
-            || !addOffset(addr, nameOff, nameAddr)
-            || !readValue(hashAddr, hash)
-            || !readValue(idAddr, blockId)
-            || !readValue(floatAAdr, valueA)
-            || !readValue(floatBAdr, valueB)) {
+        if (!addOffset(addr, hashOff, hashAddr) || !addOffset(addr, idOff, idAddr) || !addOffset(addr, aOff, floatAAdr)
+            || !addOffset(addr, bOff, floatBAdr) || !addOffset(addr, nameOff, nameAddr) || !readValue(hashAddr, hash)
+            || !readValue(idAddr, blockId) || !readValue(floatAAdr, valueA) || !readValue(floatBAdr, valueB)) {
             out["ok"]     = false;
             out["reason"] = "bad_addr";
             return out;

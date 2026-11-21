@@ -10,7 +10,7 @@ namespace probe::detail {
 // Values only: never retain a client or server Player across threads/worlds.
 struct PlayerIdentity {
     std::uint64_t uuidA = 0, uuidB = 0, epoch = 0, tick = 0, valid = 0;
-    bool matches(std::uint64_t currentEpoch, bool inWorld) const {
+    bool          matches(std::uint64_t currentEpoch, bool inWorld) const {
         return valid && inWorld && epoch == currentEpoch && (uuidA || uuidB);
     }
 };
@@ -21,6 +21,7 @@ class PlayerIdentityStore {
     using Words = std::array<std::uint64_t, 5>;
     static_assert(sizeof(PlayerIdentity) == sizeof(Words));
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+
 public:
     template <class Read>
     void capture(std::uint64_t epoch, std::uint64_t tick, Read&& read) {
@@ -28,11 +29,17 @@ public:
         try {
             next.valid = read(next);
             if (!next.valid) ++mFaults;
-            else if (!(next.uuidA || next.uuidB)) { next.valid = 0; ++mEmpty; }
-        } catch (...) { next.valid = 0; ++mCpp; }
-        next.epoch = epoch;
-        next.tick = tick;
-        auto const words = std::bit_cast<Words>(next);
+            else if (!(next.uuidA || next.uuidB)) {
+                next.valid = 0;
+                ++mEmpty;
+            }
+        } catch (...) {
+            next.valid = 0;
+            ++mCpp;
+        }
+        next.epoch          = epoch;
+        next.tick           = tick;
+        auto const words    = std::bit_cast<Words>(next);
         auto const sequence = mSequence.load();
         mSequence.store(sequence + 1);
         for (std::size_t i = 0; i < words.size(); ++i) mWords[i].store(words[i]);
@@ -52,10 +59,13 @@ public:
         }
         return false;
     }
-    struct Failures { std::uint64_t fault = 0, cpp = 0, empty = 0; };
+    struct Failures {
+        std::uint64_t fault = 0, cpp = 0, empty = 0;
+    };
     Failures failures() const { return {mFaults.load(), mCpp.load(), mEmpty.load()}; }
+
 private:
-    std::atomic<std::uint64_t> mSequence{0}, mFaults{0}, mCpp{0}, mEmpty{0};
+    std::atomic<std::uint64_t>                mSequence{0}, mFaults{0}, mCpp{0}, mEmpty{0};
     std::array<std::atomic<std::uint64_t>, 5> mWords{};
 };
 

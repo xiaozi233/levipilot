@@ -9,8 +9,8 @@ namespace {
 bool failControls(TaskStep& step) {
     step.finished = true;
     step.waypoint = step.useReady = false;
-    step.outcome.ok = false;
-    step.outcome.reason = "input_failed";
+    step.outcome.ok               = false;
+    step.outcome.reason           = "input_failed";
     return true;
 }
 
@@ -19,9 +19,7 @@ TaskStep taskTickWithSeh(Advance&& advance) {
     TaskStep step;
     __try {
         step = advance();
-    } __except (
-        isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
-    ) {
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         // Catch inside the controller's lock scope, so an AV cannot strand
         // the task mutex under /EHsc. The next idle tick releases inputs.
         step.finished       = true;

@@ -8,7 +8,7 @@ void ProbeMod::reportInternalError(TickPhase phase, char const* message) noexcep
     mTickRecovery.fail(phase, message, mTick.load(std::memory_order_relaxed));
     mInputSession.failStop();
     mClickRequest = -1;
-    mSlotRequest = -1;
+    mSlotRequest  = -1;
     mMacroSession.cancelPlayback(MacroEnd::InternalError);
     // These helpers have their own per-call SEH/C++ boundaries. A failed
     // release retains its held edge for the recovery ticks to retry.
@@ -29,7 +29,8 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
                 auto client = ll::service::getClientInstance();
                 return client && client->getLocalPlayer() == &player
                     && applyLegacyControls(*client, player, ControlState{});
-            })) released = false;
+            }))
+            released = false;
     }
     releaseMacroIfRequested();
     if (mMacroSession.playback.releasePending() || mInputSession.controlCleanupPending.load()) released = false;
@@ -40,10 +41,10 @@ bool ProbeMod::recoverTickControls(LocalPlayer& player) {
     // validated mailbox before admitting commands again.
     RequestBlock requests;
     if (!mRequests.read(requests)) return true;
-    mLastRequests = requests;
+    mLastRequests              = requests;
     mInputSession.seenInputSeq = requests.inputSeq;
-    mInputSession.seenJumpSeq = requests.jumpSeq;
-    mInputSession.seenLookSeq = requests.lookSeq;
+    mInputSession.seenJumpSeq  = requests.jumpSeq;
+    mInputSession.seenLookSeq  = requests.lookSeq;
     mInputSession.resetButtons();
     mTickRecovery.finish(state.id, released, true);
     return true; // Resume on the following tick, with a new command only.
@@ -53,10 +54,10 @@ void ProbeMod::drainInternalErrors() {
     if (mTickRecovery.snapshot().phase == TickRecovery::Phase::Pending
         && GetTickCount64() >= mTickRecoveryHoldUntilMs.load()) {
         std::lock_guard admission(mTickRecoveryMutex);
-        auto const state = mTickRecovery.snapshot();
+        auto const      state = mTickRecovery.snapshot();
         if (state.phase == TickRecovery::Phase::Pending) {
             updateRequests([](RequestBlock& request) {
-                request.input = ControlState{};
+                request.input      = ControlState{};
                 request.inputTicks = request.lookTicks = 0;
                 ++request.inputSeq;
                 request.jumpCancel = true;
@@ -79,11 +80,17 @@ void ProbeMod::drainInternalErrors() {
 
     TickFailure row;
     while (mTickRecovery.pop(row)) {
-        enqueue(nlohmann::json{
-            {"event", "error"}, {"reason", "internal_error"}, {"phase", tickPhaseName(row.phase)},
-            {"message", row.message.c_str()}, {"truncated", row.truncated},
-            {"recovery_id", row.id}, {"tick", row.tick}
-        }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+        enqueue(
+            nlohmann::json{
+                {"event",       "error"                 },
+                {"reason",      "internal_error"        },
+                {"phase",       tickPhaseName(row.phase)},
+                {"message",     row.message.c_str()     },
+                {"truncated",   row.truncated           },
+                {"recovery_id", row.id                  },
+                {"tick",        row.tick                }
+        }.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)
+        );
         auto const now = GetTickCount64();
         if (mLastInternalErrorMs == 0 || now - mLastInternalErrorMs >= 1000) {
             mLastInternalErrorMs = now;
@@ -91,7 +98,13 @@ void ProbeMod::drainInternalErrors() {
         }
     }
     if (auto lost = mTickRecovery.takeLost())
-        enqueue(nlohmann::json{{"event", "tick_error_diagnostic"}, {"reason", "buffer_full"}, {"lost", lost}}.dump());
+        enqueue(
+            nlohmann::json{
+                {"event",  "tick_error_diagnostic"},
+                {"reason", "buffer_full"          },
+                {"lost",   lost                   }
+        }.dump()
+        );
 }
 
 void ProbeMod::injectTickError(TickPhase phase, bool clientRead) {
@@ -112,12 +125,12 @@ void ProbeMod::injectTickError(TickPhase phase, bool clientRead) {
         struct LongError : std::exception {
             char const* what() const noexcept override {
                 return "selftest tick recovery "
-                    "01234567890123456789012345678901234567890123456789"
-                    "01234567890123456789012345678901234567890123456789"
-                    "01234567890123456789012345678901234567890123456789"
-                    "01234567890123456789012345678901234567890123456789"
-                    "01234567890123456789012345678901234567890123456789"
-                    "01234567890123456789012345678901234567890123456789";
+                       "01234567890123456789012345678901234567890123456789"
+                       "01234567890123456789012345678901234567890123456789"
+                       "01234567890123456789012345678901234567890123456789"
+                       "01234567890123456789012345678901234567890123456789"
+                       "01234567890123456789012345678901234567890123456789"
+                       "01234567890123456789012345678901234567890123456789";
             }
         };
         throw LongError{};

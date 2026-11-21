@@ -202,17 +202,14 @@ bool isDeniedPacketId(std::int32_t id) {
 
 } // namespace
 
-void PacketTap::peerTick() {
-    mPeerCount.fetch_add(1, std::memory_order_relaxed);
-}
+void PacketTap::peerTick() { mPeerCount.fetch_add(1, std::memory_order_relaxed); }
 
 void PacketTap::onSent(Packet& packet, std::uint64_t tick) {
     detail::CallbackGate::Guard scope{mWriters};
     if (!scope) {
         return;
     }
-    if (!mCapture.load(std::memory_order_relaxed) ||
-        !mSendEnabled.load(std::memory_order_relaxed)) {
+    if (!mCapture.load(std::memory_order_relaxed) || !mSendEnabled.load(std::memory_order_relaxed)) {
         return;
     }
     std::int32_t id = 0;
@@ -227,8 +224,7 @@ void PacketTap::onReceived(Packet const& packet, std::size_t anchor, std::uint64
     if (anchor < kRecvAnchorCount) {
         mRecvHits[anchor].fetch_add(1, std::memory_order_relaxed);
     }
-    if (!mCapture.load(std::memory_order_relaxed) ||
-        !mRecvEnabled.load(std::memory_order_relaxed)) {
+    if (!mCapture.load(std::memory_order_relaxed) || !mRecvEnabled.load(std::memory_order_relaxed)) {
         return;
     }
     // Both recv layers can fire for one delivery (a helper calling the loopback
@@ -258,7 +254,7 @@ bool PacketTap::armTest(TestFault fault) {
 }
 
 void PacketTap::injectTestFault(bool bytes) {
-    auto fault = mTestFault.load(std::memory_order_relaxed);
+    auto       fault   = mTestFault.load(std::memory_order_relaxed);
     bool const matches = bytes ? (fault == TestFault::BytesSeh || fault == TestFault::BytesCpp)
                                : (fault == TestFault::IdSeh || fault == TestFault::IdCpp);
     if (!matches || !mTestFault.compare_exchange_strong(fault, TestFault::None)) return;
@@ -269,9 +265,10 @@ void PacketTap::injectTestFault(bool bytes) {
 bool PacketTap::readPacketId(Packet const& packet, std::int32_t& id) noexcept {
     try {
         if (guardedGameRead([&] {
-            injectTestFault(false);
-            id = static_cast<std::int32_t>(packet.getId());
-        })) return true;
+                injectTestFault(false);
+                id = static_cast<std::int32_t>(packet.getId());
+            }))
+            return true;
     } catch (...) {}
     mIdFaults.fetch_add(1, std::memory_order_relaxed);
     return false;
@@ -303,7 +300,7 @@ void PacketTap::recordPacket(Packet const& packet, std::int32_t id, std::uint8_t
     if (!mRing) {
         return;
     }
-    auto reservation = mRing->reserve();
+    auto         reservation = mRing->reserve();
     PacketRecord record{};
     record.order    = order;
     record.tick     = tick;
@@ -331,10 +328,10 @@ void PacketTap::recordPacket(Packet const& packet, std::int32_t id, std::uint8_t
 
 void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record) noexcept {
     PacketBytes bytes{};
-    bytes.order = record.order;
-    bytes.id    = static_cast<std::uint32_t>(record.id);
-    bytes.tid   = record.tid;
-    bytes.dir   = record.dir;
+    bytes.order         = record.order;
+    bytes.id            = static_cast<std::uint32_t>(record.id);
+    bytes.tid           = record.tid;
+    bytes.dir           = record.dir;
     auto const budgetUs = mSerializeBudgetUs.load(std::memory_order_relaxed);
     if (budgetUs != 0 && mSerializeUs.load(std::memory_order_relaxed) >= budgetUs) {
         // Budget exhausted: publish the cut-off row and stop reserializing, so a
@@ -344,8 +341,8 @@ void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record
         mByteRing->reserve().publish(bytes);
         return;
     }
-    std::uint64_t const startedQpc = qpcNow();
-    static thread_local bool busy = false;
+    std::uint64_t const      startedQpc = qpcNow();
+    static thread_local bool busy       = false;
     if (!PacketSerializationGuard::enter(busy)) bytes.error = ByteError::Reentrant;
     else {
         PacketSerializationGuard scope{busy};
@@ -358,21 +355,22 @@ void PacketTap::serializePacket(Packet const& packet, PacketRecord const& record
             buffer.clear();
             BinaryStream stream{buffer};
             if (!guardedGameRead([&] {
-                packet.write(stream);
-                injectTestFault(true); // Also exercise discarding a completed payload.
-                copyPacketBytes(bytes, buffer);
-            })) bytes.error = ByteError::Seh;
-        } catch (...) { bytes.error = ByteError::Cpp; }
+                    packet.write(stream);
+                    injectTestFault(true); // Also exercise discarding a completed payload.
+                    copyPacketBytes(bytes, buffer);
+                }))
+                bytes.error = ByteError::Seh;
+        } catch (...) {
+            bytes.error = ByteError::Cpp;
+        }
     }
     auto const elapsedUs = qpcElapsedUs(startedQpc, qpcNow());
     mSerializeSamples.fetch_add(1, std::memory_order_relaxed);
     mSerializeUs.fetch_add(elapsedUs, std::memory_order_relaxed);
     std::uint64_t previous = mSerializeMaxUs.load(std::memory_order_relaxed);
     while (elapsedUs > previous
-           && !mSerializeMaxUs.compare_exchange_weak(
-               previous, elapsedUs, std::memory_order_relaxed, std::memory_order_relaxed
-           )) {
-    }
+           && !mSerializeMaxUs
+                   .compare_exchange_weak(previous, elapsedUs, std::memory_order_relaxed, std::memory_order_relaxed)) {}
     if (bytes.error != ByteError::None) {
         bytes.size = 0;
         std::memset(bytes.data, 0, sizeof(bytes.data));
@@ -408,9 +406,9 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
             }
             if (isDeniedPacketId(id)) {
                 return nlohmann::json{
-                    {"event",  "error"   },
+                    {"event",  "error"    },
                     {"reason", "denied_id"},
-                    {"id",     id        },
+                    {"id",     id         },
                 };
             }
             if (idCount >= ids.size()) {
@@ -422,8 +420,7 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
             ids[idCount++] = id;
         }
     }
-    std::uint32_t const sample =
-        std::clamp<std::uint32_t>(args.value("sample", 1u), 1, 10000);
+    std::uint32_t const sample = std::clamp<std::uint32_t>(args.value("sample", 1u), 1, 10000);
 
     std::array<std::int32_t, 4> serializeIds{};
     std::size_t                 serializeCount = 0;
@@ -438,9 +435,9 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
             std::int32_t const id = item.get<std::int32_t>();
             if (id < 0 || id > 2000 || isDeniedPacketId(id) || serializeCount >= serializeIds.size()) {
                 return nlohmann::json{
-                    {"event",  "error"    },
+                    {"event",  "error"                                      },
                     {"reason", isDeniedPacketId(id) ? "denied_id" : "bad_id"},
-                    {"id",     id          },
+                    {"id",     id                                           },
                 };
             }
             serializeIds[serializeCount++] = id;
@@ -509,8 +506,8 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     mSeq.store(0, std::memory_order_relaxed);
     mPeerCount.store(0, std::memory_order_relaxed);
     mDenied.store(0, std::memory_order_relaxed);
-    mIds      = ids;
-    mIdCount  = idCount;
+    mIds            = ids;
+    mIdCount        = idCount;
     mSerializeIds   = serializeIds;
     mSerializeCount = serializeCount;
     if (mByteRing) {
@@ -541,9 +538,9 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     mSendEnabled.store(sendEnabled, std::memory_order_release);
     if (sendEnabled && !sendHooked) {
         return nlohmann::json{
-            {"event",  "error"       },
-            {"reason", "hook_failed" },
-            {"code",   sendStatus    },
+            {"event",  "error"      },
+            {"reason", "hook_failed"},
+            {"code",   sendStatus   },
         };
     }
 
@@ -601,26 +598,27 @@ nlohmann::json PacketTap::start(bool enable, nlohmann::json const& args) {
     }
 
     return nlohmann::json{
-        {"event",       "packet_capture"        },
-        {"active",      true                    },
-        {"send_hooked", sendHooked              },
-        {"send_enabled",  sendEnabled                    },
-        {"recv_enabled",  recvEnabled                    },
-        {"recv_hooked",   recvHookedCount > 0            },
-        {"recv_anchors",  std::move(recvAnchors)         },
-        {"peer_hooked", peerHooked              },
-        {"peer_reason", "peer_send_packet_zero_traffic"},
-        {"sample",      sample                  },
-        {"ids",         status()["ids"]},
-        {"serialize_ids", [&] {
-            nlohmann::json list = nlohmann::json::array();
-            for (std::size_t slot = 0; slot < serializeCount; ++slot) {
-                list.push_back(serializeIds[slot]);
-            }
-            return serializeCount == 0 ? nlohmann::json(nullptr) : list;
-        }()},
+        {"event",         "packet_capture"                                       },
+        {"active",        true                                                   },
+        {"send_hooked",   sendHooked                                             },
+        {"send_enabled",  sendEnabled                                            },
+        {"recv_enabled",  recvEnabled                                            },
+        {"recv_hooked",   recvHookedCount > 0                                    },
+        {"recv_anchors",  std::move(recvAnchors)                                 },
+        {"peer_hooked",   peerHooked                                             },
+        {"peer_reason",   "peer_send_packet_zero_traffic"                        },
+        {"sample",        sample                                                 },
+        {"ids",           status()["ids"]                                        },
+        {"serialize_ids",
+         [&] {
+             nlohmann::json list = nlohmann::json::array();
+             for (std::size_t slot = 0; slot < serializeCount; ++slot) {
+                 list.push_back(serializeIds[slot]);
+             }
+             return serializeCount == 0 ? nlohmann::json(nullptr) : list;
+         }()                                                                     },
         {"serialization", serializeCount ? "sdk_hot_path_diagnostic" : "disabled"},
-        {"diagnostic", serializeCount != 0},
+        {"diagnostic",    serializeCount != 0                                    },
     };
 }
 
@@ -668,37 +666,37 @@ nlohmann::json PacketTap::status() {
             ++recvHooks;
         }
         anchors[recvAnchorName(anchor)] = nlohmann::json{
-            {"hooked", hooked                                                 },
+            {"hooked", hooked                                           },
             {"hits",   mRecvHits[anchor].load(std::memory_order_relaxed)},
         };
     }
     return nlohmann::json{
-        {"event",        "packet_stats"                                        },
-        {"active",       mCapture.load(std::memory_order_relaxed)        },
-        {"records",      head                                                  },
-        {"dropped",      head > kRing ? head - kRing : 0           },
-        {"peer_sends",   mPeerCount.load(std::memory_order_relaxed)      },
-        {"denied",       mDenied.load(std::memory_order_relaxed)         },
-        {"sample",       mSample.load(std::memory_order_relaxed)         },
-        {"send_hooked",  mSendHooked.load(std::memory_order_relaxed)     },
-        {"send_enabled", mSendEnabled.load(std::memory_order_relaxed)},
-        {"recv_enabled", mRecvEnabled.load(std::memory_order_relaxed)},
-        {"recv_hooked",  recvHooks > 0                                     },
-        {"recv_hooks",   recvHooks                                         },
-        {"recv_records", mRecvRecords.load(std::memory_order_relaxed)},
-        {"id_faults", mIdFaults.load(std::memory_order_relaxed)},
-        {"byte_faults", mByteFaults.load(std::memory_order_relaxed)},
-        {"fault_pending", mTestFault.load(std::memory_order_relaxed) != TestFault::None},
-        {"recv_anchors", std::move(anchors)                                },
-        {"peer_hooked",  mPeerHooked.load(std::memory_order_relaxed)     },
-        {"ids",          std::move(ids)                                        },
-        {"serialize_ids", std::move(serializeIds)},
-        {"serialize_samples", mSerializeSamples.load(std::memory_order_relaxed)},
-        {"serialize_us", mSerializeUs.load(std::memory_order_relaxed)},
-        {"serialize_max_us", mSerializeMaxUs.load(std::memory_order_relaxed)},
-        {"serialize_skipped", mSerializeSkipped.load(std::memory_order_relaxed)},
-        {"serialize_budget_us", mSerializeBudgetUs.load(std::memory_order_relaxed)},
-        {"serialization", mSerializeCount ? "sdk_hot_path_diagnostic" : "disabled"},
+        {"event",               "packet_stats"                                               },
+        {"active",              mCapture.load(std::memory_order_relaxed)                     },
+        {"records",             head                                                         },
+        {"dropped",             head > kRing ? head - kRing : 0                              },
+        {"peer_sends",          mPeerCount.load(std::memory_order_relaxed)                   },
+        {"denied",              mDenied.load(std::memory_order_relaxed)                      },
+        {"sample",              mSample.load(std::memory_order_relaxed)                      },
+        {"send_hooked",         mSendHooked.load(std::memory_order_relaxed)                  },
+        {"send_enabled",        mSendEnabled.load(std::memory_order_relaxed)                 },
+        {"recv_enabled",        mRecvEnabled.load(std::memory_order_relaxed)                 },
+        {"recv_hooked",         recvHooks > 0                                                },
+        {"recv_hooks",          recvHooks                                                    },
+        {"recv_records",        mRecvRecords.load(std::memory_order_relaxed)                 },
+        {"id_faults",           mIdFaults.load(std::memory_order_relaxed)                    },
+        {"byte_faults",         mByteFaults.load(std::memory_order_relaxed)                  },
+        {"fault_pending",       mTestFault.load(std::memory_order_relaxed) != TestFault::None},
+        {"recv_anchors",        std::move(anchors)                                           },
+        {"peer_hooked",         mPeerHooked.load(std::memory_order_relaxed)                  },
+        {"ids",                 std::move(ids)                                               },
+        {"serialize_ids",       std::move(serializeIds)                                      },
+        {"serialize_samples",   mSerializeSamples.load(std::memory_order_relaxed)            },
+        {"serialize_us",        mSerializeUs.load(std::memory_order_relaxed)                 },
+        {"serialize_max_us",    mSerializeMaxUs.load(std::memory_order_relaxed)              },
+        {"serialize_skipped",   mSerializeSkipped.load(std::memory_order_relaxed)            },
+        {"serialize_budget_us", mSerializeBudgetUs.load(std::memory_order_relaxed)           },
+        {"serialization",       mSerializeCount ? "sdk_hot_path_diagnostic" : "disabled"     },
     };
 }
 
@@ -717,15 +715,19 @@ nlohmann::json PacketTap::drain(std::uint64_t since, std::size_t limit) {
     if (limit == 0) {
         limit = 4096;
     }
-    nlohmann::json      rows  = nlohmann::json::array();
-    std::size_t         count = 0;
+    nlohmann::json rows  = nlohmann::json::array();
+    std::size_t    count = 0;
     if (!mRing) {
-        return nlohmann::json{{"event", "packet_drain"}, {"hits", nlohmann::json::array()}, {"count", 0}};
+        return nlohmann::json{
+            {"event", "packet_drain"         },
+            {"hits",  nlohmann::json::array()},
+            {"count", 0                      }
+        };
     }
     std::uint64_t cursor = start;
     for (std::uint64_t index = start; index < head && count < limit; ++index) {
         PacketRecord record{};
-        auto const read = mRing->read(index, record);
+        auto const   read = mRing->read(index, record);
         if (read == RecordRing::ReadResult::pending) {
             cursor = index;
             break;
@@ -741,25 +743,25 @@ nlohmann::json PacketTap::drain(std::uint64_t since, std::size_t limit) {
             continue;
         }
         rows.push_back({
-            {"index",    index + 1        },
-            {"seq",      record.order     },
-            {"tick",     record.tick      },
-            {"id",       record.id        },
-            {"tid",      record.tid       },
+            {"index",    index + 1                            },
+            {"seq",      record.order                         },
+            {"tick",     record.tick                          },
+            {"id",       record.id                            },
+            {"tid",      record.tid                           },
             {"dir",      record.dir == kRecv ? "recv" : "send"},
-            {"injected", record.injected != 0},
+            {"injected", record.injected != 0                 },
         });
         ++count;
         cursor = index + 1;
     }
     return nlohmann::json{
-        {"event", "packet_drain"               },
-        {"since", since                        },
-        {"next",  cursor                       },
-        {"head",  head                         },
-        {"lost",  lost                         },
-        {"hits",  std::move(rows)              },
-        {"count", count                        },
+        {"event", "packet_drain" },
+        {"since", since          },
+        {"next",  cursor         },
+        {"head",  head           },
+        {"lost",  lost           },
+        {"hits",  std::move(rows)},
+        {"count", count          },
     };
 }
 
@@ -778,15 +780,19 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
     if (limit == 0) {
         limit = 1024;
     }
-    nlohmann::json      rows  = nlohmann::json::array();
-    std::size_t         count = 0;
+    nlohmann::json rows  = nlohmann::json::array();
+    std::size_t    count = 0;
     if (!mByteRing) {
-        return nlohmann::json{{"event", "packet_bytes"}, {"hits", std::move(rows)}, {"count", 0}};
+        return nlohmann::json{
+            {"event", "packet_bytes" },
+            {"hits",  std::move(rows)},
+            {"count", 0              }
+        };
     }
     std::uint64_t cursor = start;
     for (std::uint64_t index = start; index < head && count < limit; ++index) {
         PacketBytes record{};
-        auto const read = mByteRing->read(index, record);
+        auto const  read = mByteRing->read(index, record);
         if (read == ByteRing::ReadResult::pending) {
             cursor = index;
             break;
@@ -803,13 +809,13 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
         }
         std::size_t const shown = std::min<std::size_t>(record.size, sizeof(record.data));
         rows.push_back({
-            {"index",      index + 1     },
-            {"seq",        record.order  },
-            {"id",         record.id     },
-            {"size",       record.size   },
-            {"tid",        record.tid    },
+            {"index", index + 1},
+            {"seq", record.order},
+            {"id", record.id},
+            {"size", record.size},
+            {"tid", record.tid},
             {"dir", record.dir == kRecv ? "recv" : "send"},
-            {"hex",        hexEncode(record.data, shown)},
+            {"hex", hexEncode(record.data, shown)},
             {"captured_size", shown},
             {"truncated", record.size > sizeof(record.data)},
             {"source", "sdk_reserialized"},
@@ -817,18 +823,19 @@ nlohmann::json PacketTap::bytesDrain(std::uint64_t since, std::size_t limit) {
         });
         if (record.error != ByteError::None) {
             rows.back()["reason"] = record.error == ByteError::Seh ? "packet_serialize_fault"
-                : record.error == ByteError::Cpp ? "packet_serialize_failed" : "packet_serialize_reentrant";
+                                  : record.error == ByteError::Cpp ? "packet_serialize_failed"
+                                                                   : "packet_serialize_reentrant";
         }
         ++count;
         cursor = index + 1;
     }
     return nlohmann::json{
-        {"event", "packet_bytes"},
-        {"since", since         },
-        {"next",  cursor        },
-        {"head",  head          },
-        {"lost",  lost          },
-        {"count", count         },
+        {"event", "packet_bytes" },
+        {"since", since          },
+        {"next",  cursor         },
+        {"head",  head           },
+        {"lost",  lost           },
+        {"count", count          },
         {"hits",  std::move(rows)},
     };
 }

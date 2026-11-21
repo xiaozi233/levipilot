@@ -17,18 +17,19 @@ namespace probe::detail {
 // the public sequence order; publication can complete out of order. Payload
 // words are atomic so wrapping writers and a concurrent pipe-thread reader do
 // not race on ordinary C++ objects.
-template <class Entry, std::size_t Capacity> class AtomicRing {
+template <class Entry, std::size_t Capacity>
+class AtomicRing {
     static_assert(Capacity > 0);
     static_assert(std::is_trivially_copyable_v<Entry>);
     static_assert(sizeof(Entry) % sizeof(std::uint64_t) == 0);
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
     static constexpr std::size_t kWordCount = sizeof(Entry) / sizeof(std::uint64_t);
-    using Words = std::array<std::uint64_t, kWordCount>;
+    using Words                             = std::array<std::uint64_t, kWordCount>;
 
     struct Slot {
         // 4 * sequence is committed, +1 is an active writer, +2 is a tombstone.
-        std::atomic<std::uint64_t> state{0};
+        std::atomic<std::uint64_t>                         state{0};
         std::array<std::atomic<std::uint64_t>, kWordCount> words{};
     };
 
@@ -37,10 +38,11 @@ public:
 
     class Reservation {
     public:
-        Reservation(Reservation const&) = delete;
+        Reservation(Reservation const&)            = delete;
         Reservation& operator=(Reservation const&) = delete;
         Reservation(Reservation&& other) noexcept
-            : mOwner(std::exchange(other.mOwner, nullptr)), mIndex(other.mIndex) {}
+        : mOwner(std::exchange(other.mOwner, nullptr)),
+          mIndex(other.mIndex) {}
 
         ~Reservation() {
             if (mOwner != nullptr) {
@@ -68,7 +70,7 @@ public:
     private:
         friend class AtomicRing;
         Reservation(AtomicRing* owner, std::uint64_t index) : mOwner(owner), mIndex(index) {}
-        AtomicRing* mOwner;
+        AtomicRing*   mOwner;
         std::uint64_t mIndex;
     };
 
@@ -91,7 +93,7 @@ public:
         mHead.store(0, std::memory_order_relaxed);
     }
 
-    [[nodiscard]] explicit operator bool() const { return mSlots != nullptr; }
+    [[nodiscard]] explicit      operator bool() const { return mSlots != nullptr; }
     [[nodiscard]] std::uint64_t head() const { return mHead.load(std::memory_order_acquire); }
 
     Reservation reserve() {
@@ -105,10 +107,10 @@ public:
         if (!mSlots) {
             return ReadResult::pending;
         }
-        Slot const& slot = mSlots[index % Capacity];
+        Slot const&         slot   = mSlots[index % Capacity];
         std::uint64_t const wanted = index + 1;
-        std::uint64_t before = slot.state.load(std::memory_order_acquire);
-        ReadResult result = classify(before, wanted);
+        std::uint64_t       before = slot.state.load(std::memory_order_acquire);
+        ReadResult          result = classify(before, wanted);
         if (result != ReadResult::ready) {
             return result;
         }
@@ -140,10 +142,10 @@ private:
     }
 
     bool publish(std::uint64_t index, Entry const& entry) {
-        Slot& slot = mSlots[index % Capacity];
+        Slot&               slot     = mSlots[index % Capacity];
         std::uint64_t const sequence = index + 1;
-        std::uint64_t const writing = sequence * 4 + 1;
-        std::uint64_t state = slot.state.load(std::memory_order_acquire);
+        std::uint64_t const writing  = sequence * 4 + 1;
+        std::uint64_t       state    = slot.state.load(std::memory_order_acquire);
         for (;;) {
             if ((state & 3u) == 1) {
                 // Only same-slot writers contend here. Let the current short
@@ -155,12 +157,8 @@ private:
             if ((state >> 2) > sequence) {
                 return false;
             }
-            if (slot.state.compare_exchange_weak(
-                    state,
-                    writing,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire
-                )) {
+            if (slot.state
+                    .compare_exchange_weak(state, writing, std::memory_order_acq_rel, std::memory_order_acquire)) {
                 break;
             }
         }
@@ -174,10 +172,10 @@ private:
     }
 
     void abandon(std::uint64_t index) {
-        Slot& slot = mSlots[index % Capacity];
+        Slot&               slot      = mSlots[index % Capacity];
         std::uint64_t const sequence  = index + 1;
         std::uint64_t const tombstone = sequence * 4 + 2;
-        std::uint64_t state = slot.state.load(std::memory_order_acquire);
+        std::uint64_t       state     = slot.state.load(std::memory_order_acquire);
         for (;;) {
             if ((state >> 2) > sequence) {
                 return;
@@ -187,18 +185,14 @@ private:
                 state = slot.state.load(std::memory_order_acquire);
                 continue;
             }
-            if (slot.state.compare_exchange_weak(
-                    state,
-                    tombstone,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire
-                )) {
+            if (slot.state
+                    .compare_exchange_weak(state, tombstone, std::memory_order_acq_rel, std::memory_order_acquire)) {
                 return;
             }
         }
     }
 
-    std::unique_ptr<Slot[]> mSlots;
+    std::unique_ptr<Slot[]>    mSlots;
     std::atomic<std::uint64_t> mHead{0};
 };
 

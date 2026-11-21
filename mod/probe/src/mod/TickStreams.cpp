@@ -70,9 +70,9 @@ bool ProbeMod::startLegacy(std::uint64_t maxTicks, std::size_t capacity, StreamT
     mLegacy.stream.begin(maxTicks, capacity);
     enqueue(
         nlohmann::json{
-            {"event",     "started"               },
+            {"event",     "started"                },
             {"record_id", mLegacy.stream.recordId()},
-            {"max_ticks", maxTicks                }
+            {"max_ticks", maxTicks                 }
     }.dump()
     );
     return true;

@@ -22,15 +22,15 @@ constexpr std::size_t kSnapshotCount = 3;
 constexpr std::size_t kSnapshotBytes = 64;
 
 struct SnapshotSpec {
-    std::uint32_t reg = 0;
+    std::uint32_t reg  = 0;
     std::uint32_t size = 0;
 };
 
 struct SnapshotValue {
-    SnapshotSpec spec{};
+    SnapshotSpec  spec{};
     std::uint64_t address = 0;
-    bool ok = false;
-    std::uint8_t bytes[kSnapshotBytes]{};
+    bool          ok      = false;
+    std::uint8_t  bytes[kSnapshotBytes]{};
 };
 
 constexpr char const* kArgumentRegisters[] = {"rcx", "rdx", "r8", "r9"};
@@ -39,15 +39,15 @@ struct Watch {
     std::atomic_bool           used{false};
     std::atomic<std::uint32_t> id{0};
     std::atomic<std::uint64_t> hits{0};
-    std::uint64_t              addr      = 0;
-    std::uint32_t              size      = 1;
-    std::uint32_t              depth     = static_cast<std::uint32_t>(kDefaultFrames);
-    bool                       readWrite = false;
-    bool                       sample = false;
-    bool                       execute = false;
+    std::uint64_t              addr          = 0;
+    std::uint32_t              size          = 1;
+    std::uint32_t              depth         = static_cast<std::uint32_t>(kDefaultFrames);
+    bool                       readWrite     = false;
+    bool                       sample        = false;
+    bool                       execute       = false;
     std::uint32_t              snapshotCount = 0;
     SnapshotSpec               snapshots[kSnapshotCount]{};
-    int                        slot      = -1;
+    int                        slot = -1;
     std::string                tag;
 
     // Threads armed with this slot's DR. Mutated only on the pipe thread
@@ -71,8 +71,8 @@ struct Watch {
     void disarmAll() { armedCount.store(0, std::memory_order_release); }
 
     std::vector<DWORD> armedList() const {
-        std::vector<DWORD>  out;
-        std::size_t const   count = armedCount.load(std::memory_order_acquire);
+        std::vector<DWORD> out;
+        std::size_t const  count = armedCount.load(std::memory_order_acquire);
         out.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
             out.push_back(armed[i]);
@@ -94,30 +94,30 @@ struct Watch {
 };
 
 struct HitRecord {
-    std::uint32_t              watchId    = 0;
-    std::uint32_t              tid        = 0;
-    std::uint64_t              tick       = 0;
-    std::uint64_t              rip        = 0;
-    std::uint32_t              frameCount = 0;
-    std::uint32_t              pad        = 0;
-    std::uint64_t              frames[kMaxFrames]{};
-    std::uint64_t              qpc = 0;
-    std::uint64_t              value = 0;
-    std::uint32_t              valueSize = 0;
-    bool                       valueOk = false;
-    bool                       execute = false;
-    std::uint32_t              snapshotCount = 0;
-    SnapshotValue              snapshots[kSnapshotCount]{};
+    std::uint32_t watchId    = 0;
+    std::uint32_t tid        = 0;
+    std::uint64_t tick       = 0;
+    std::uint64_t rip        = 0;
+    std::uint32_t frameCount = 0;
+    std::uint32_t pad        = 0;
+    std::uint64_t frames[kMaxFrames]{};
+    std::uint64_t qpc           = 0;
+    std::uint64_t value         = 0;
+    std::uint32_t valueSize     = 0;
+    bool          valueOk       = false;
+    bool          execute       = false;
+    std::uint32_t snapshotCount = 0;
+    SnapshotValue snapshots[kSnapshotCount]{};
 };
 
-std::unique_ptr<Watch>              gWatches[kSlotCount];
+std::unique_ptr<Watch> gWatches[kSlotCount];
 using WatchRing = AtomicRing<HitRecord, kRingCapacity>;
-std::unique_ptr<WatchRing>           gRing;
-std::atomic<std::uint64_t>          gTotalHits{0};
-std::atomic<std::uint64_t>          gForeignHits{0};
-std::atomic<std::uint32_t>          gNextId{1};
-std::atomic_bool                    gInitialized{false};
-PVOID                               gVehHandle = nullptr;
+std::unique_ptr<WatchRing> gRing;
+std::atomic<std::uint64_t> gTotalHits{0};
+std::atomic<std::uint64_t> gForeignHits{0};
+std::atomic<std::uint32_t> gNextId{1};
+std::atomic_bool           gInitialized{false};
+PVOID                      gVehHandle = nullptr;
 
 std::uint64_t lengthBits(std::uint32_t size) {
     switch (size) {
@@ -146,12 +146,20 @@ std::uint64_t* debugRegister(CONTEXT& context, int slot) {
     }
 }
 
-void applySlot(CONTEXT& context, int slot, std::uint64_t addr, std::uint32_t size, bool readWrite, bool enable, bool execute = false) {
+void applySlot(
+    CONTEXT&      context,
+    int           slot,
+    std::uint64_t addr,
+    std::uint32_t size,
+    bool          readWrite,
+    bool          enable,
+    bool          execute = false
+) {
     *debugRegister(context, slot) = enable ? addr : 0;
 
-    std::uint64_t const shift = 16 + static_cast<std::uint64_t>(slot) * 4;
-    context.Dr7 &= ~(0xFull << shift);
-    context.Dr7 &= ~(0x3ull << (static_cast<std::uint64_t>(slot) * 2));
+    std::uint64_t const shift  = 16 + static_cast<std::uint64_t>(slot) * 4;
+    context.Dr7               &= ~(0xFull << shift);
+    context.Dr7               &= ~(0x3ull << (static_cast<std::uint64_t>(slot) * 2));
     if (enable) {
         context.Dr7 |= 1ull << (static_cast<std::uint64_t>(slot) * 2); // local enable
         context.Dr7 |= (execute ? 0ull : readWrite ? 0b11ull : 0b01ull) << shift;
@@ -194,8 +202,7 @@ bool installOnThread(
     if (ok) {
         // F7: only this slot matters. A debugger occupying another DR slot
         // must not block every watch install.
-        std::uint64_t const slotBits =
-            (context.Dr7 >> (static_cast<std::uint64_t>(slot) * 2)) & 0x3ull;
+        std::uint64_t const slotBits = (context.Dr7 >> (static_cast<std::uint64_t>(slot) * 2)) & 0x3ull;
         if (slotBits != 0) {
             error = "dr_busy";
             ok    = false;
@@ -236,8 +243,7 @@ bool clearOnThread(DWORD tid, int slot) {
     if (!self && SuspendThread(thread) == static_cast<DWORD>(-1)) {
         // Not suspended: logging here is safe.
         ProbeMod::getInstance().bootLog(
-            "watch: clear suspend failed tid=" + std::to_string(tid) + " err="
-            + std::to_string(GetLastError())
+            "watch: clear suspend failed tid=" + std::to_string(tid) + " err=" + std::to_string(GetLastError())
         );
         CloseHandle(thread);
         return false;
@@ -245,11 +251,11 @@ bool clearOnThread(DWORD tid, int slot) {
     // While the target is suspended nothing here may allocate: the suspended
     // thread can hold the heap lock, and bootLog builds std::strings. Record
     // the error codes and log them only after ResumeThread.
-    DWORD getError = 0;
-    DWORD setError = 0;
+    DWORD   getError = 0;
+    DWORD   setError = 0;
     CONTEXT context{};
     context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_CONTROL;
-    bool ok = GetThreadContext(thread, &context) != FALSE;
+    bool ok              = GetThreadContext(thread, &context) != FALSE;
     if (!ok) {
         getError = GetLastError();
     }
@@ -265,14 +271,13 @@ bool clearOnThread(DWORD tid, int slot) {
     }
     if (getError != 0) {
         ProbeMod::getInstance().bootLog(
-            "watch: clear get context failed tid=" + std::to_string(tid) + " err="
-            + std::to_string(getError)
+            "watch: clear get context failed tid=" + std::to_string(tid) + " err=" + std::to_string(getError)
         );
     }
     if (setError != 0) {
         ProbeMod::getInstance().bootLog(
-            "watch: clear set context failed tid=" + std::to_string(tid) + " slot="
-            + std::to_string(slot) + " err=" + std::to_string(setError)
+            "watch: clear set context failed tid=" + std::to_string(tid) + " slot=" + std::to_string(slot)
+            + " err=" + std::to_string(setError)
         );
     }
     CloseHandle(thread);
@@ -284,7 +289,7 @@ void storeHit(int slot, CONTEXT& context) {
         return;
     }
     pathCount(PathCounter::Watch);
-    auto reservation = gRing->reserve();
+    auto      reservation = gRing->reserve();
     HitRecord record{};
     record.watchId = gWatches[slot] ? gWatches[slot]->id.load(std::memory_order_relaxed) : 0;
     record.tid     = GetCurrentThreadId();
@@ -293,31 +298,39 @@ void storeHit(int slot, CONTEXT& context) {
     record.execute = gWatches[slot] && gWatches[slot]->execute;
     if (gWatches[slot] && gWatches[slot]->sample) {
         auto const& watch = *gWatches[slot];
-        record.qpc = qpcNow();
-        record.valueSize = watch.execute ? 0 : watch.size;
-        SIZE_T copied = 0;
+        record.qpc        = qpcNow();
+        record.valueSize  = watch.execute ? 0 : watch.size;
+        SIZE_T copied     = 0;
         // Kernel-side copy avoids issuing a user-mode load against our own
         // rw debug register from inside its VEH. Fixed storage, opt-in only.
-        record.valueOk = !watch.execute && ReadProcessMemory(
-            GetCurrentProcess(), reinterpret_cast<LPCVOID>(watch.addr),
-            &record.value, watch.size, &copied
-        ) != FALSE && copied == watch.size;
+        record.valueOk             = !watch.execute
+                                  && ReadProcessMemory(
+                                         GetCurrentProcess(),
+                                         reinterpret_cast<LPCVOID>(watch.addr),
+                                         &record.value,
+                                         watch.size,
+                                         &copied
+                                     ) != FALSE
+                                  && copied == watch.size;
         std::uint64_t const args[] = {context.Rcx, context.Rdx, context.R8, context.R9};
-        record.snapshotCount = watch.snapshotCount;
+        record.snapshotCount       = watch.snapshotCount;
         for (std::uint32_t i = 0; i < watch.snapshotCount; ++i) {
-            auto& value = record.snapshots[i];
-            value.spec = watch.snapshots[i];
+            auto& value   = record.snapshots[i];
+            value.spec    = watch.snapshots[i];
             value.address = args[value.spec.reg];
-            copied = 0;
-            value.ok = ReadProcessMemory(
-                GetCurrentProcess(), reinterpret_cast<LPCVOID>(value.address),
-                value.bytes, value.spec.size, &copied
-            ) != FALSE && copied == value.spec.size;
+            copied        = 0;
+            value.ok      = ReadProcessMemory(
+                                GetCurrentProcess(),
+                                reinterpret_cast<LPCVOID>(value.address),
+                                value.bytes,
+                                value.spec.size,
+                                &copied
+                            ) != FALSE
+                         && copied == value.spec.size;
         }
     }
-    std::size_t const depth =
-        gWatches[slot] ? static_cast<std::size_t>(gWatches[slot]->depth) : kDefaultFrames;
-    record.frameCount = static_cast<std::uint32_t>(
+    std::size_t const depth = gWatches[slot] ? static_cast<std::size_t>(gWatches[slot]->depth) : kDefaultFrames;
+    record.frameCount       = static_cast<std::uint32_t>(
         RtlCaptureStackBackTrace(0, depth, reinterpret_cast<PVOID*>(record.frames), nullptr)
     );
     reservation.publish(record);
@@ -344,9 +357,9 @@ LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
     if (code != EXCEPTION_SINGLE_STEP) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    CONTEXT&   context = *info->ContextRecord;
-    DWORD const tid    = GetCurrentThreadId();
-    bool       matched = false;
+    CONTEXT&    context = *info->ContextRecord;
+    DWORD const tid     = GetCurrentThreadId();
+    bool        matched = false;
     for (int slot = 0; slot < static_cast<int>(kSlotCount); ++slot) {
         std::uint64_t const bit = 1ull << slot;
         if ((context.Dr6 & bit) == 0) {
@@ -382,7 +395,7 @@ LONG CALLBACK watchVeh(EXCEPTION_POINTERS* info) {
 
 nlohmann::json errorJson(char const* reason) {
     return nlohmann::json{
-        {"event", "error" },
+        {"event",  "error"},
         {"reason", reason },
     };
 }
@@ -419,14 +432,14 @@ bool watchShutdown() {
 }
 
 nlohmann::json watchInstall(
-    std::uint64_t      addr,
-    std::uint32_t      size,
-    bool               readWrite,
-    std::string const& thread,
-    std::string const& tag,
-    std::uint32_t      depth,
-    bool               sample,
-    bool               execute,
+    std::uint64_t         addr,
+    std::uint32_t         size,
+    bool                  readWrite,
+    std::string const&    thread,
+    std::string const&    tag,
+    std::uint32_t         depth,
+    bool                  sample,
+    bool                  execute,
     nlohmann::json const& snapshots
 ) {
     watchInit();
@@ -437,14 +450,15 @@ nlohmann::json watchInstall(
         return errorJson("bad_depth");
     }
     if (execute && size != 1) return errorJson("execute_size_one");
-    if (!snapshots.is_array() || snapshots.size() > kSnapshotCount
-        || (!snapshots.empty() && (!execute || !sample))) return errorJson("bad_snapshots");
+    if (!snapshots.is_array() || snapshots.size() > kSnapshotCount || (!snapshots.empty() && (!execute || !sample)))
+        return errorJson("bad_snapshots");
     SnapshotSpec specs[kSnapshotCount]{};
     for (std::size_t i = 0; i < snapshots.size(); ++i) {
         auto const& spec = snapshots[i];
-        if (!spec.is_object() || !spec.contains("reg") || !spec["reg"].is_string()
-            || !spec.contains("size") || !spec["size"].is_number_unsigned()) return errorJson("bad_snapshots");
-        auto reg = spec["reg"].get<std::string>();
+        if (!spec.is_object() || !spec.contains("reg") || !spec["reg"].is_string() || !spec.contains("size")
+            || !spec["size"].is_number_unsigned())
+            return errorJson("bad_snapshots");
+        auto          reg   = spec["reg"].get<std::string>();
         std::uint32_t index = 0;
         while (index < 4 && reg != kArgumentRegisters[index]) ++index;
         auto length = spec["size"].get<std::uint64_t>();
@@ -490,8 +504,8 @@ nlohmann::json watchInstall(
             return errorJson("no_threads");
         }
     } else {
-        char*                   end    = nullptr;
-        unsigned long const     parsed = std::strtoul(thread.c_str(), &end, 0);
+        char*               end    = nullptr;
+        unsigned long const parsed = std::strtoul(thread.c_str(), &end, 0);
         if (end == thread.c_str() || end == nullptr || *end != '\0' || parsed == 0) {
             return errorJson("bad_thread");
         }
@@ -512,17 +526,17 @@ nlohmann::json watchInstall(
         return errorJson("no_free_slot");
     }
 
-    Watch& watch   = *gWatches[slot];
-    watch.addr     = addr;
-    watch.size     = size;
-    watch.depth    = depth;
-    watch.readWrite = readWrite;
-    watch.sample    = sample;
-    watch.execute   = execute;
+    Watch& watch        = *gWatches[slot];
+    watch.addr          = addr;
+    watch.size          = size;
+    watch.depth         = depth;
+    watch.readWrite     = readWrite;
+    watch.sample        = sample;
+    watch.execute       = execute;
     watch.snapshotCount = static_cast<std::uint32_t>(snapshots.size());
     std::copy_n(specs, kSnapshotCount, watch.snapshots);
-    watch.slot     = slot;
-    watch.tag      = tag;
+    watch.slot = slot;
+    watch.tag  = tag;
     watch.hits.store(0, std::memory_order_relaxed);
     watch.id.store(gNextId.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
     watch.disarmAll();
@@ -554,20 +568,25 @@ nlohmann::json watchInstall(
     watch.used.store(true, std::memory_order_release);
 
     nlohmann::json out;
-    out["event"]   = "watch_installed";
-    out["id"]      = watch.id.load(std::memory_order_relaxed);
-    out["slot"]    = slot;
-    out["addr"]    = addr;
-    out["size"]    = size;
-    out["mode"]    = execute ? "x" : readWrite ? "rw" : "w";
+    out["event"] = "watch_installed";
+    out["id"]    = watch.id.load(std::memory_order_relaxed);
+    out["slot"]  = slot;
+    out["addr"]  = addr;
+    out["size"]  = size;
+    out["mode"]  = execute ? "x" : readWrite ? "rw" : "w";
     if (execute) out["snapshots"] = snapshots;
-    out["tag"]     = tag;
-    out["depth"]   = depth;
-    out["sample"]  = sample;
+    out["tag"]    = tag;
+    out["depth"]  = depth;
+    out["sample"] = sample;
     if (execute) {
         char audit[160]{};
-        std::snprintf(audit, sizeof(audit), "watch: execute addr=0x%llx snapshots=%u",
-            static_cast<unsigned long long>(addr), watch.snapshotCount);
+        std::snprintf(
+            audit,
+            sizeof(audit),
+            "watch: execute addr=0x%llx snapshots=%u",
+            static_cast<unsigned long long>(addr),
+            watch.snapshotCount
+        );
         ProbeMod::getInstance().bootLog(audit);
     }
     out["threads"] = nlohmann::json::array();
@@ -587,8 +606,8 @@ nlohmann::json watchRemove(int id) {
         if (static_cast<int>(watch->id.load(std::memory_order_relaxed)) != id) {
             continue;
         }
-        bool cleared = true;
-        std::vector<DWORD> const tids = watch->armedList();
+        bool                     cleared = true;
+        std::vector<DWORD> const tids    = watch->armedList();
         for (DWORD tid : tids) {
             cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
         }
@@ -602,8 +621,8 @@ nlohmann::json watchRemove(int id) {
         watch->used.store(false, std::memory_order_release);
         return nlohmann::json{
             {"event", "watch_cleared"},
-            {"id", id               },
-            {"slot", slot           },
+            {"id",    id             },
+            {"slot",  slot           },
         };
     }
     return errorJson("not_found");
@@ -616,8 +635,8 @@ bool watchRemoveAll() {
         if (!watch || !watch->used.load(std::memory_order_acquire)) {
             continue;
         }
-        bool cleared = true;
-        std::vector<DWORD> const tids = watch->armedList();
+        bool                     cleared = true;
+        std::vector<DWORD> const tids    = watch->armedList();
         for (DWORD tid : tids) {
             cleared = clearOnThread(tid, static_cast<int>(slot)) && cleared;
         }
@@ -642,24 +661,24 @@ nlohmann::json watchListJson() {
             continue;
         }
         nlohmann::json row;
-        row["id"]   = watch->id.load(std::memory_order_relaxed);
-        row["slot"] = slot;
-        row["addr"] = watch->addr;
-        row["size"] = watch->size;
-        row["mode"] = watch->execute ? "x" : watch->readWrite ? "rw" : "w";
-        row["sample"] = watch->sample;
-        row["tag"]  = watch->tag;
-        row["hits"] = watch->hits.load(std::memory_order_relaxed);
+        row["id"]      = watch->id.load(std::memory_order_relaxed);
+        row["slot"]    = slot;
+        row["addr"]    = watch->addr;
+        row["size"]    = watch->size;
+        row["mode"]    = watch->execute ? "x" : watch->readWrite ? "rw" : "w";
+        row["sample"]  = watch->sample;
+        row["tag"]     = watch->tag;
+        row["hits"]    = watch->hits.load(std::memory_order_relaxed);
         row["threads"] = nlohmann::json::array();
         for (DWORD tid : watch->armedList()) {
             row["threads"].push_back(tid);
         }
         out["watches"].push_back(std::move(row));
     }
-    out["hits"]    = gTotalHits.load(std::memory_order_relaxed);
+    out["hits"]         = gTotalHits.load(std::memory_order_relaxed);
     out["foreign_hits"] = gForeignHits.load(std::memory_order_relaxed);
-    out["dropped"] = watchDroppedHits();
-    out["head"]    = gRing ? gRing->head() : 0;
+    out["dropped"]      = watchDroppedHits();
+    out["head"]         = gRing ? gRing->head() : 0;
     return out;
 }
 
@@ -679,11 +698,11 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
         limit = 4096;
     }
 
-    nlohmann::json hits = nlohmann::json::array();
+    nlohmann::json hits   = nlohmann::json::array();
     std::size_t    count  = 0;
     std::uint64_t  cursor = start;
     for (std::uint64_t index = start; index < head && count < limit; ++index) {
-        HitRecord record{};
+        HitRecord  record{};
         auto const read = gRing ? gRing->read(index, record) : WatchRing::ReadResult::pending;
         if (read == WatchRing::ReadResult::pending) {
             cursor = index; // preserve this reservation for the next drain
@@ -701,40 +720,42 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
         }
         std::string tag;
         for (std::size_t slot = 0; slot < kSlotCount; ++slot) {
-            if (gWatches[slot]
-                && gWatches[slot]->id.load(std::memory_order_relaxed) == record.watchId) {
+            if (gWatches[slot] && gWatches[slot]->id.load(std::memory_order_relaxed) == record.watchId) {
                 tag = gWatches[slot]->tag;
                 break;
             }
         }
         nlohmann::json row{
-            {"seq",   index + 1                        },
-            {"watch", record.watchId                   },
-            {"tag",   tag                              },
-            {"tid",   record.tid                       },
-            {"tick",  record.tick                      },
-            {"rip",   record.rip                       },
-            {"stack", nlohmann::json::array()          },
+            {"seq",   index + 1              },
+            {"watch", record.watchId         },
+            {"tag",   tag                    },
+            {"tid",   record.tid             },
+            {"tick",  record.tick            },
+            {"rip",   record.rip             },
+            {"stack", nlohmann::json::array()},
         };
         if (record.execute) {
             row["rip_semantics"] = "current_instruction";
-            row["qpc"] = record.qpc;
-            row["snapshots"] = nlohmann::json::array();
+            row["qpc"]           = record.qpc;
+            row["snapshots"]     = nlohmann::json::array();
             for (std::uint32_t i = 0; i < record.snapshotCount; ++i) {
-                auto const& value = record.snapshots[i];
-                nlohmann::json snapshot = {{"reg", kArgumentRegisters[value.spec.reg]},
-                    {"address", value.address}, {"size", value.spec.size}, {"ok", value.ok}};
+                auto const&    value    = record.snapshots[i];
+                nlohmann::json snapshot = {
+                    {"reg",     kArgumentRegisters[value.spec.reg]},
+                    {"address", value.address                     },
+                    {"size",    value.spec.size                   },
+                    {"ok",      value.ok                          }
+                };
                 if (value.ok) snapshot["hex"] = hexEncode(value.bytes, value.spec.size);
                 row["snapshots"].push_back(std::move(snapshot));
             }
         }
         if (record.valueSize) {
-            row["qpc"] = record.qpc;
-            row["value_ok"] = record.valueOk;
+            row["qpc"]        = record.qpc;
+            row["value_ok"]   = record.valueOk;
             row["value_size"] = record.valueSize;
-            if (record.valueOk) row["value_hex"] = hexEncode(
-                reinterpret_cast<std::uint8_t const*>(&record.value), record.valueSize
-            );
+            if (record.valueOk)
+                row["value_hex"] = hexEncode(reinterpret_cast<std::uint8_t const*>(&record.value), record.valueSize);
         }
         // F7: data breakpoints trap after the store. Give the caller the bytes
         // right before rip so the writing instruction can be decoded offline.
@@ -753,21 +774,22 @@ nlohmann::json watchDrainJson(std::uint64_t since, std::size_t limit) {
     }
 
     nlohmann::json out;
-    out["event"] = "watch_hits";
-    out["since"] = since;
-    out["next"]  = cursor;
-    out["head"]  = head;
-    out["lost"]  = lost;
+    out["event"]         = "watch_hits";
+    out["since"]         = since;
+    out["next"]          = cursor;
+    out["head"]          = head;
+    out["lost"]          = lost;
     out["rip_semantics"] = "next_instruction";
     if (std::any_of(hits.begin(), hits.end(), [](auto const& hit) { return hit.contains("snapshots"); })) {
         out["rip_semantics"] = "per_hit";
-        for (auto& hit : hits) if (!hit.contains("rip_semantics")) hit["rip_semantics"] = "next_instruction";
+        for (auto& hit : hits)
+            if (!hit.contains("rip_semantics")) hit["rip_semantics"] = "next_instruction";
     }
     LARGE_INTEGER frequency{};
     QueryPerformanceFrequency(&frequency);
-    out["qpc_frequency"] = frequency.QuadPart;
+    out["qpc_frequency"]   = frequency.QuadPart;
     out["value_semantics"] = "memory_after_instruction_not_atomic_with_other_threads";
-    out["hits"]  = std::move(hits);
+    out["hits"]            = std::move(hits);
     return out;
 }
 

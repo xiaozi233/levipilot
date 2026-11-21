@@ -25,17 +25,17 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         auto const target   = j.value("target", std::string{"state"});
-        auto const  now      = GetTickCount64();
-        auto const  timeout  = static_cast<std::uint64_t>(std::clamp(j.value("timeout_ms", 250), 1, 10000));
-        auto const  reqId    = activeReqId();
-        bool        accepted = false;
+        auto const now      = GetTickCount64();
+        auto const timeout  = static_cast<std::uint64_t>(std::clamp(j.value("timeout_ms", 250), 1, 10000));
+        auto const reqId    = activeReqId();
+        bool       accepted = false;
         if (target == "state") accepted = mStateCapture.begin({test}, now, timeout, reqId);
         else if (target == "buttons") accepted = mButtonCapture.begin({test}, now, timeout, reqId);
         else if (target == "inventory") accepted = mInventoryCapture.begin({test}, now, timeout, reqId);
         else if (target == "select_slot") accepted = mSlotCapture.begin({0, test}, now, timeout, reqId);
         else if (target == "ecs") {
             EcsQuery query;
-            query.test = test;
+            query.test       = test;
             auto const stage = j.value("stage", std::string{"client"});
             if (stage == "client") query.testStage = EcsStage::Client;
             else if (stage == "server") query.testStage = EcsStage::Server;
@@ -44,13 +44,11 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
                 return true;
             }
             query.runtimeId = j.value("runtime_id", std::uint64_t{0});
-            query.operation = query.testStage == EcsStage::Client
-                ? EcsOperation::Registries : EcsOperation::Components;
-            accepted = bool(mEcsCapture.begin(query, now, timeout, reqId));
-        }
-        else if (target == "entities") {
+            query.operation = query.testStage == EcsStage::Client ? EcsOperation::Registries : EcsOperation::Components;
+            accepted        = bool(mEcsCapture.begin(query, now, timeout, reqId));
+        } else if (target == "entities") {
             EntityQuery query;
-            query.test = test;
+            query.test       = test;
             auto const stage = j.value("stage", std::string{"client"});
             if (stage == "client") query.testStage = EntityStage::Client;
             else if (stage == "server") query.testStage = EntityStage::Server;
@@ -63,8 +61,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
                 return true;
             }
             accepted = bool(mEntityCapture.begin(query, now, timeout, reqId));
-        }
-        else if (target == "blocks") {
+        } else if (target == "blocks") {
             BlockRequest request;
             request.test = test;
             accepted     = mBlockCapture.begin(request, now, timeout, reqId);
@@ -88,7 +85,8 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         if (!mWorld.inWorld() || (mLastTickMs.load() != 0 && now - mLastTickMs.load() > 1000)) {
             enqueue(R"({"event":"state","in_world":false})");
         } else {
-            if (!mStateCapture.begin({}, now, 2000, activeReqId())) enqueue(R"({"event":"error","reason":"state_busy"})");
+            if (!mStateCapture.begin({}, now, 2000, activeReqId()))
+                enqueue(R"({"event":"error","reason":"state_busy"})");
         }
         return true;
     }
@@ -99,7 +97,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         }
         EntityQuery request;
         request.radius = j.value("radius", 16.0f);
-        request.limit = std::clamp(j.value("limit", 64), 1, 512);
+        request.limit  = std::clamp(j.value("limit", 64), 1, 512);
         if (!std::isfinite(request.radius) || request.radius < 0) {
             enqueue(R"({"event":"error","reason":"bad_radius"})");
             return true;
@@ -235,19 +233,24 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         queueClearInventory();
         return true;
     }
-    if (cmd == "ecs_registries" || cmd == "ecs_entity" || cmd == "ecs_components"
-        || cmd == "ecs_component" || cmd == "ecs_context") {
+    if (cmd == "ecs_registries" || cmd == "ecs_entity" || cmd == "ecs_components" || cmd == "ecs_component"
+        || cmd == "ecs_context") {
         auto const epoch = mPoseEpoch.load();
         if (!mWorld.inWorld() || !hooksAllowed()) {
-            enqueue(nlohmann::json{{"event", "error"},
-                {"reason", mWorld.inWorld() ? "version_mismatch" : "not_in_world"}}.dump());
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"                                               },
+                    {"reason", mWorld.inWorld() ? "version_mismatch" : "not_in_world"}
+            }
+                    .dump()
+            );
             return true;
         }
         EcsQuery query;
-        query.runtimeId = j.value("runtime_id", std::uint64_t{0});
+        query.runtimeId   = j.value("runtime_id", std::uint64_t{0});
         query.componentId = j.value("component_id", std::uint32_t{0});
         if (cmd == "ecs_registries") {
-            query.operation = EcsOperation::Registries;
+            query.operation  = EcsOperation::Registries;
             auto const scope = j.value("scope", std::string{"client"});
             if (scope == "client") query.scope = EcsScope::Client;
             else if (scope == "server") query.scope = EcsScope::Server;
@@ -266,7 +269,7 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
             }
         } else {
             query.operation = EcsOperation::Component;
-            query.length = j.value("len", std::uint32_t{0});
+            query.length    = j.value("len", std::uint32_t{0});
         }
         if (auto request = mEcsCapture.begin(query, GetTickCount64(), 2000, activeReqId())) {
             if (!mWorld.inWorld() || mPoseEpoch.load() != epoch) request->cancel("world_left");

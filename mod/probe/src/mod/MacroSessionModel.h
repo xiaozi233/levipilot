@@ -25,13 +25,13 @@ public:
         recording.stop(recordReason);
     }
 
-    std::mutex mutex;
-    MacroPlayback playback;
-    MacroRecordSession recording;
+    std::mutex               mutex;
+    MacroPlayback            playback;
+    MacroRecordSession       recording;
     std::atomic<CaptureTest> playbackTest{CaptureTest::None};
     std::atomic<CaptureTest> releaseTest{CaptureTest::None};
     std::atomic<CaptureTest> recordTest{CaptureTest::None};
-    std::atomic_bool recordWorldLeft{false};
+    std::atomic_bool         recordWorldLeft{false};
 };
 
 } // namespace probe::detail

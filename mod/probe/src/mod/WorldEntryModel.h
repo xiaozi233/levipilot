@@ -10,17 +10,17 @@ namespace probe::detail {
 // retained and no game calls or event delivery take place under this lock.
 class WorldEntryModel {
 public:
-    static constexpr std::uint64_t TimeoutMs = 30000;
+    static constexpr std::uint64_t TimeoutMs        = 30000;
     static constexpr std::uint64_t RecoveryStableMs = 500;
     enum class Phase { Idle, Starting, Quarantined };
     struct Snapshot {
         std::uint64_t id = 0, deadline = 0;
-        Phase phase = Phase::Idle;
+        Phase         phase = Phase::Idle;
     };
     struct Completion {
         std::uint64_t id;
-        bool ok;
-        char const* reason; // Static literals owned by the caller.
+        bool          ok;
+        char const*   reason; // Static literals owned by the caller.
     };
 
     std::uint64_t begin(std::uint64_t now, std::uint64_t timeout = TimeoutMs) {
@@ -74,12 +74,10 @@ public:
     }
 
 private:
-    bool current(std::uint64_t id) const {
-        return id != 0 && id == mState.id && mState.phase != Phase::Idle;
-    }
-    mutable std::mutex mMutex;
-    Snapshot mState;
-    std::uint64_t mGeneration = 0;
+    bool current(std::uint64_t id) const { return id != 0 && id == mState.id && mState.phase != Phase::Idle; }
+    mutable std::mutex           mMutex;
+    Snapshot                     mState;
+    std::uint64_t                mGeneration = 0;
     std::optional<std::uint64_t> mReadySince;
 };
 

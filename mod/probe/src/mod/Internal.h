@@ -3,9 +3,9 @@
 #include "mod/AtomicRing.h"
 #include "mod/CallbackLifecycleModel.h"
 #include "mod/LifecycleModel.h"
-#include "mod/SendProbeModel.h"
 #include "mod/ProbeMod.h"
 #include "mod/RecordModel.h"
+#include "mod/SendProbeModel.h"
 #include "mod/ViolationWatchModel.h"
 
 #include "ll/api/event/EventBus.h"
@@ -26,9 +26,9 @@
 #include "mc/client/game/IGameServerStartup.h"
 #include "mc/client/game/IMinecraftGame.h"
 #include "mc/client/gui/GuiData.h"
-#include "mc/client/options/IOptionRegistry.h"
 #include "mc/client/input/KeyboardRemappingLayout.h"
 #include "mc/client/input/Keymapping.h"
+#include "mc/client/options/IOptionRegistry.h"
 
 #include "mc/client/game/StartIntent.h"
 #include "mc/client/input/ClientMoveInputHandler.h"
@@ -70,8 +70,8 @@
 #include "mc/platform/brstd/bitset.h"
 #include "mc/server/ServerInstance.h"
 #include "mc/server/ServerLevel.h"
-#include "mc/server/commands/CommandContext.h"
 #include "mc/server/commands/ClientAutomationCommandOrigin.h"
+#include "mc/server/commands/CommandContext.h"
 #include "mc/server/commands/CommandOriginData.h"
 #include "mc/server/commands/CommandOriginType.h"
 #include "mc/server/commands/CommandPermissionLevel.h"
@@ -80,12 +80,11 @@
 #include "mc/server/commands/PlayerCommandOrigin.h"
 #include "mc/server/commands/ServerCommandOrigin.h"
 #include "mc/world/ContainerID.h"
-#include "mc/world/level/GameType.h"
 #include "mc/world/Minecraft.h"
 #include "mc/world/actor/Actor.h"
 #include "mc/world/actor/player/AbilitiesIndex.h"
-#include "mc/world/actor/player/LayeredAbilities.h"
 #include "mc/world/actor/player/Inventory.h"
+#include "mc/world/actor/player/LayeredAbilities.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/actor/player/PlayerInventory.h"
 #include "mc/world/actor/provider/MobJump.h"
@@ -100,6 +99,7 @@
 #include "mc/world/item/registry/ItemRegistryRef.h"
 #include "mc/world/level/BlockPos.h"
 #include "mc/world/level/BlockSource.h"
+#include "mc/world/level/GameType.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/LevelSettings.h"
 #include "mc/world/level/block/Block.h"
@@ -157,12 +157,14 @@ namespace probe::detail {
 // the client snapshot's world epoch; never retain these pointers in a request.
 struct ServerPlayerContext {
     Minecraft* minecraft = nullptr;
-    Level* level = nullptr;
-    Player* player = nullptr;
+    Level*     level     = nullptr;
+    Player*    player    = nullptr;
 };
 ServerPlayerContext serverPlayerContext(
-    PlayerIdentity const& identity, std::uint64_t currentEpoch, bool inWorld,
-    std::string const* explicitName = nullptr
+    PlayerIdentity const& identity,
+    std::uint64_t         currentEpoch,
+    bool                  inWorld,
+    std::string const*    explicitName = nullptr
 );
 
 // Keep this guard outside functions containing __try (/EHsc). Restore nested
@@ -220,7 +222,10 @@ inline void injectCaptureFault(CaptureTest test) {
 template <class Call>
 bool guardedSdkCall(Call const& call, CaptureTest test = CaptureTest::None, std::string* message = nullptr) {
     try {
-        bool const ok = guardedGameRead([&] { injectCaptureFault(test); call(); });
+        bool const ok = guardedGameRead([&] {
+            injectCaptureFault(test);
+            call();
+        });
         if (!ok && message) *message = "seh";
         return ok;
     } catch (std::exception const& error) {
@@ -271,8 +276,8 @@ struct InputSnapshot {
     float moveY  = 0.0f;
 };
 
-float       finiteOrZero(float value);
-float       wrapDegrees(float value);
+float finiteOrZero(float value);
+float wrapDegrees(float value);
 // Shared aim math (degrees, Bedrock convention): yaw from a horizontal delta,
 // pitch from a vertical delta over horizontal distance.
 float       yawTo(double dx, double dz);
@@ -283,9 +288,9 @@ std::string formatFloat(float value);
 
 nlohmann::json itemJson(ItemStack const& item);
 // Snapshot copying runs on the item's owning thread; formatting is cold-side.
-void captureItem(ItemStack const& item, ItemSnapshot& out, bool& truncated);
+void           captureItem(ItemStack const& item, ItemSnapshot& out, bool& truncated);
 nlohmann::json itemJson(ItemSnapshot const& item);
-bool makeItemStack(
+bool           makeItemStack(
     Level&             level,
     std::string const& name,
     int                count,
@@ -338,14 +343,13 @@ bool numberJson(nlohmann::json const& j, char const* key, double low, double hig
 bool numberValue(nlohmann::json const& value, double low, double high, double& out);
 
 inline constexpr int MaxInputTicks = 200000;
-bool parseInputTicks(nlohmann::json const& j, char const* key, int fallback, int& out);
+bool                 parseInputTicks(nlohmann::json const& j, char const* key, int fallback, int& out);
 
 // Non-throwing JSON accessors for startup config, overrides, and checkpoints.
-bool        safeJsonBool(nlohmann::json const& j, char const* key, bool fallback, bool* invalid = nullptr);
-int         safeJsonInt(nlohmann::json const& j, char const* key, int fallback, bool* invalid = nullptr);
-std::string safeJsonString(
-    nlohmann::json const& j, char const* key, std::string const& fallback, bool* invalid = nullptr
-);
+bool safeJsonBool(nlohmann::json const& j, char const* key, bool fallback, bool* invalid = nullptr);
+int  safeJsonInt(nlohmann::json const& j, char const* key, int fallback, bool* invalid = nullptr);
+std::string
+safeJsonString(nlohmann::json const& j, char const* key, std::string const& fallback, bool* invalid = nullptr);
 bool safeJsonFloat(nlohmann::json const& j, char const* key, float fallback, float& out);
 
 // Incremental per-request correlation IDs (pipe/task thread-local + cold JSON).
@@ -385,22 +389,21 @@ extern std::atomic<std::uint64_t> gWatchTick;
 extern std::atomic<std::uint32_t> gTickThreadId;
 extern std::atomic<std::uint32_t> gServerThreadId;
 
-void watchInit();
-bool watchShutdown();
-bool watchReady();
-bool diagnosticCallbacksInstalled();
-bool inboundCallbacksInstalled();
-bool sendCallbacksInstalled();
-nlohmann::json
-watchInstall(
-    std::uint64_t      addr,
-    std::uint32_t      size,
-    bool               readWrite,
-    std::string const& thread,
-    std::string const& tag,
-    std::uint32_t      depth,
-    bool               sample = false,
-    bool               execute = false,
+void           watchInit();
+bool           watchShutdown();
+bool           watchReady();
+bool           diagnosticCallbacksInstalled();
+bool           inboundCallbacksInstalled();
+bool           sendCallbacksInstalled();
+nlohmann::json watchInstall(
+    std::uint64_t         addr,
+    std::uint32_t         size,
+    bool                  readWrite,
+    std::string const&    thread,
+    std::string const&    tag,
+    std::uint32_t         depth,
+    bool                  sample    = false,
+    bool                  execute   = false,
     nlohmann::json const& snapshots = nlohmann::json::array()
 );
 nlohmann::json watchRemove(int id);
@@ -466,13 +469,13 @@ bool           recordStart(std::uint32_t period, std::string& error, std::option
 void           recordStop(RecordEnd reason = RecordEnd::Client);
 void           recordCancel(RecordEnd reason);
 nlohmann::json recordStateJson();
-bool          recordActive();
-std::uint64_t recordHead();
-std::uint64_t recordRows();
-std::uint32_t recordPeriod();
+bool           recordActive();
+std::uint64_t  recordHead();
+std::uint64_t  recordRows();
+std::uint32_t  recordPeriod();
 std::optional<nlohmann::json> recordTakeFailure(); // Consumed/formatted on the cold side.
 bool                          recordArmTest(CaptureTest test);
-void          recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
+void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);
 
 // format: "jsonl" (decoded rows) or "hex" ("bin" is accepted as an alias).
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary);
@@ -496,10 +499,10 @@ struct HookMemSpec {
     std::uint32_t arg    = 0; // 0..3 = rcx/rdx/r8/r9
     std::int32_t  offset = 0; // -4096..4096; negative reaches the base of a
                               // struct from a pointer to one of its members
-    std::uint32_t size   = 0; // 0, or a multiple of 4 no larger than 128
+    std::uint32_t size = 0;   // 0, or a multiple of 4 no larger than 128
     // Read a pointer at arg+offset first, then snapshot from the pointee. Use
     // it for vectors/arrays reached through a member (e.g. a shape list).
-    bool          deref  = false;
+    bool deref = false;
 };
 
 nlohmann::json hookInstall(
@@ -535,12 +538,16 @@ void                          hookResetCalls();
 // docs/roles (never a constant in the .cpp); the watch is off by default and
 // gated on allow_hook_va.
 // ---------------------------------------------------------------------------
-nlohmann::json violationWatchStart(std::uint64_t address, bool allowVa, bool inWorld,
-                                   std::uint64_t loopAddress = 0,
-                                   std::uint64_t assignAddress = 0,
-                                   std::uint64_t dispatchAddress = 0);
+nlohmann::json violationWatchStart(
+    std::uint64_t address,
+    bool          allowVa,
+    bool          inWorld,
+    std::uint64_t loopAddress     = 0,
+    std::uint64_t assignAddress   = 0,
+    std::uint64_t dispatchAddress = 0
+);
 // Base the running game image is mapped at (ASLR / rewritten preferred base).
-std::uint64_t gameModuleBase();
+std::uint64_t  gameModuleBase();
 nlohmann::json violationWatchStop();
 nlohmann::json violationWatchStats();
 nlohmann::json violationDrainJson(std::uint64_t since, std::size_t limit);
@@ -550,8 +557,8 @@ nlohmann::json violationTextJson(std::uint64_t since, std::size_t limit);
 nlohmann::json memmoveProbeJson(bool on, int packetId);
 // Send-path suspect probe: writes frames whose length never appears in healthy
 // traffic to <modDir>/suspect-<pid>.jsonl, with a stack. Read-only.
-nlohmann::json sendProbeJson(bool on, bool allowVa, bool inWorld, std::uint64_t address,
-                             std::uint64_t serializeAddress = 0);
+nlohmann::json
+sendProbeJson(bool on, bool allowVa, bool inWorld, std::uint64_t address, std::uint64_t serializeAddress = 0);
 nlohmann::json violationWatchSynthetic();
 nlohmann::json disconnectRouteProbe(int reason, std::string const& codeword, std::string const& details);
 
@@ -605,7 +612,7 @@ template <class Apply>
 bool ProbeMod::guardedControl(detail::ControlOp op, Apply&& apply) {
     using namespace detail;
     auto const test = mInputSession.controlTests[static_cast<unsigned>(op)].exchange(ControlTest::None);
-    bool ok = false;
+    bool       ok   = false;
     try {
         if (!guardedGameRead([&] {
                 if (test == ControlTest::SehBefore) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);

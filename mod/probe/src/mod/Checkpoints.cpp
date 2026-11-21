@@ -4,9 +4,7 @@ using namespace probe::detail;
 
 namespace probe {
 
-std::filesystem::path ProbeMod::checkpointsPath() const {
-    return getSelf().getModDir() / "checkpoints.json";
-}
+std::filesystem::path ProbeMod::checkpointsPath() const { return getSelf().getModDir() / "checkpoints.json"; }
 
 void ProbeMod::loadCheckpoints() {
     try {
@@ -26,10 +24,8 @@ void ProbeMod::loadCheckpoints() {
                 continue;
             }
             Checkpoint point;
-            if (!safeJsonFloat(it.value(), "x", 0.0f, point.x)
-                || !safeJsonFloat(it.value(), "y", 0.0f, point.y)
-                || !safeJsonFloat(it.value(), "z", 0.0f, point.z)
-                || !safeJsonFloat(it.value(), "yaw", 0.0f, point.yaw)
+            if (!safeJsonFloat(it.value(), "x", 0.0f, point.x) || !safeJsonFloat(it.value(), "y", 0.0f, point.y)
+                || !safeJsonFloat(it.value(), "z", 0.0f, point.z) || !safeJsonFloat(it.value(), "yaw", 0.0f, point.yaw)
                 || !safeJsonFloat(it.value(), "pitch", 0.0f, point.pitch)) {
                 bootLog("checkpoints: skipping invalid entry " + it.key());
                 continue;
@@ -59,9 +55,9 @@ bool ProbeMod::saveCheckpoints(std::string& error) {
         }
     }
 
-    auto                path = checkpointsPath();
-    auto                temp = path;
-    temp += ".tmp";
+    auto path  = checkpointsPath();
+    auto temp  = path;
+    temp      += ".tmp";
     std::ofstream file(temp, std::ios::binary | std::ios::trunc);
     if (!file) {
         error = "open_failed";
@@ -73,11 +69,7 @@ bool ProbeMod::saveCheckpoints(std::string& error) {
         error = "write_failed";
         return false;
     }
-    if (!MoveFileExW(
-            temp.c_str(),
-            path.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-        )) {
+    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         error = "replace_failed";
         return false;
     }
@@ -109,8 +101,8 @@ void ProbeMod::checkpointSave(std::string const& name) {
     if (!saveCheckpoints(error)) {
         enqueue(
             nlohmann::json{
-                {"event",  "error"      },
-                {"reason", error        },
+                {"event",  "error"},
+                {"reason", error  },
         }
                 .dump()
         );
@@ -146,9 +138,9 @@ void ProbeMod::checkpointLoad(std::string const& name) {
     if (!found) {
         enqueue(
             nlohmann::json{
-                {"event",  "error"     },
-                {"reason", "not_found" },
-                {"name",   name        },
+                {"event",  "error"    },
+                {"reason", "not_found"},
+                {"name",   name       },
         }
                 .dump()
         );
@@ -160,14 +152,14 @@ void ProbeMod::checkpointLoad(std::string const& name) {
     if (!teleportId) return;
     enqueue(
         nlohmann::json{
-            {"event", "checkpoint_loaded"},
-            {"teleport_id", teleportId},
-            {"name",  name               },
-            {"x",     point.x            },
-            {"y",     point.y            },
-            {"z",     point.z            },
-            {"yaw",   point.yaw          },
-            {"pitch", point.pitch        },
+            {"event",       "checkpoint_loaded"},
+            {"teleport_id", teleportId         },
+            {"name",        name               },
+            {"x",           point.x            },
+            {"y",           point.y            },
+            {"z",           point.z            },
+            {"yaw",         point.yaw          },
+            {"pitch",       point.pitch        },
     }
             .dump()
     );
@@ -180,12 +172,12 @@ void ProbeMod::checkpointList() {
     std::lock_guard lock(mCheckpointMutex);
     for (auto const& [name, point] : mCheckpoints) {
         out["checkpoints"].push_back({
-            {"name",  name        },
-            {"x",     point.x     },
-            {"y",     point.y     },
-            {"z",     point.z     },
-            {"yaw",   point.yaw   },
-            {"pitch", point.pitch },
+            {"name",  name       },
+            {"x",     point.x    },
+            {"y",     point.y    },
+            {"z",     point.z    },
+            {"yaw",   point.yaw  },
+            {"pitch", point.pitch},
         });
     }
     enqueue(out.dump());
@@ -200,9 +192,9 @@ void ProbeMod::checkpointDelete(std::string const& name) {
     if (!removed) {
         enqueue(
             nlohmann::json{
-                {"event",  "error"     },
-                {"reason", "not_found" },
-                {"name",   name        },
+                {"event",  "error"    },
+                {"reason", "not_found"},
+                {"name",   name       },
         }
                 .dump()
         );
@@ -212,8 +204,8 @@ void ProbeMod::checkpointDelete(std::string const& name) {
     if (!saveCheckpoints(error)) {
         enqueue(
             nlohmann::json{
-                {"event",  "error"      },
-                {"reason", error        },
+                {"event",  "error"},
+                {"reason", error  },
         }
                 .dump()
         );

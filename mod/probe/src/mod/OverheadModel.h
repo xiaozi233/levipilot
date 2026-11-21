@@ -16,13 +16,14 @@ struct OverheadSample {
 // Initialization is cold and completes before sampling is admitted. Producers
 // only publish a fixed atomic record; readers retry a bounded number of times
 // and never calculate percentiles from an unverified window.
-template <std::size_t Capacity> class OverheadWindow {
+template <std::size_t Capacity>
+class OverheadWindow {
 public:
     struct Snapshot {
         std::array<OverheadSample, Capacity> rows{};
-        std::uint64_t head = 0;
-        std::size_t count = 0;
-        bool consistent = false;
+        std::uint64_t                        head       = 0;
+        std::size_t                          count      = 0;
+        bool                                 consistent = false;
     };
     bool initialize() {
         if (!mRing.initialize()) return false;
@@ -39,9 +40,9 @@ public:
         Snapshot result;
         if (!available()) return result;
         for (unsigned attempt = 0; attempt < attempts; ++attempt) {
-            result.head = mRing.head();
-            auto const count = static_cast<std::size_t>(std::min<std::uint64_t>(result.head, Capacity));
-            bool complete = true;
+            result.head         = mRing.head();
+            auto const count    = static_cast<std::size_t>(std::min<std::uint64_t>(result.head, Capacity));
+            bool       complete = true;
             for (std::size_t i = 0; i < count; ++i) {
                 if (mRing.read(result.head - count + i, result.rows[i]) != Ring::ReadResult::ready) {
                     complete = false;
@@ -49,7 +50,7 @@ public:
                 }
             }
             if (complete && mRing.head() == result.head) {
-                result.count = count;
+                result.count      = count;
                 result.consistent = true;
                 return result;
             }
@@ -59,13 +60,15 @@ public:
 
 private:
     using Ring = AtomicRing<OverheadSample, Capacity>;
-    Ring mRing;
+    Ring             mRing;
     std::atomic_bool mAvailable{false};
 };
 
 class PathRateCounter {
 public:
-    struct Snapshot { std::uint64_t total, startedMs; };
+    struct Snapshot {
+        std::uint64_t total, startedMs;
+    };
     void record(std::uint64_t now) {
         std::uint64_t empty = 0;
         mStartedMs.compare_exchange_strong(empty, now, std::memory_order_relaxed);
@@ -74,6 +77,7 @@ public:
     Snapshot snapshot() const {
         return {mTotal.load(std::memory_order_relaxed), mStartedMs.load(std::memory_order_relaxed)};
     }
+
 private:
     std::atomic<std::uint64_t> mTotal{0}, mStartedMs{0};
 };

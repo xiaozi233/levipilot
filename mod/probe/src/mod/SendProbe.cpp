@@ -74,13 +74,13 @@ void dumpSendRing() {
     if (handle == INVALID_HANDLE_VALUE) {
         return;
     }
-    auto const head = gSendRing.head();
+    auto const head  = gSendRing.head();
     auto const begin = head > 64 ? head - 64 : 0;
-    char                line[256];
+    char       line[256];
     for (auto index = begin; index < head; ++index) {
         SendProbeRecord rec;
         if (gSendRing.read(index, rec) != SendProbeHistory::ReadResult::ready) continue;
-        int const      length = std::snprintf(
+        int const length = std::snprintf(
             line,
             sizeof line,
             "{\"kind\":\"ring\",\"tick\":%llu,\"tid\":%lu,\"net\":\"%p\","
@@ -235,7 +235,7 @@ void writeSerializeHit(void* netSystem, std::uint32_t before, std::uint32_t afte
 }
 
 std::uint64_t detourSerialize(void* netSystem, void* packet, void* peer, void* mode) {
-    CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
+    CallbackScope       callback(gCallbacks, CallbackDomain::Diagnostic);
     std::uint32_t const before = frameLength(netSystem);
     std::uint64_t       result = 0;
     if (gSerializeOrigin != nullptr) {
@@ -255,11 +255,11 @@ nlohmann::json sendProbeStart(std::uint64_t address, std::uint64_t serializeAddr
     if (!hookAddressExecutable(address)) return errorJson("not_executable");
     if (gSendInstalled.load(std::memory_order_acquire)) {
         return nlohmann::json{
-            {"event",   "send_probe"},
-            {"active",  true        },
-            {"already", true        },
-            {"dumps", gSendDumps.load(std::memory_order_relaxed)},
-            {"history_records", gSendRing.head()}
+            {"event",           "send_probe"                              },
+            {"active",          true                                      },
+            {"already",         true                                      },
+            {"dumps",           gSendDumps.load(std::memory_order_relaxed)},
+            {"history_records", gSendRing.head()                          }
         };
     }
     if (!gSendRing.initialize()) return errorJson("send_probe_allocation_failed");
@@ -296,13 +296,13 @@ nlohmann::json sendProbeStart(std::uint64_t address, std::uint64_t serializeAddr
         }
     }
     return nlohmann::json{
-        {"event",            "send_probe"   },
-        {"active",           true           },
-        {"path",             gSuspectPath   },
-        {"hits",             gSendHits.load(std::memory_order_relaxed)},
+        {"event",            "send_probe"                              },
+        {"active",           true                                      },
+        {"path",             gSuspectPath                              },
+        {"hits",             gSendHits.load(std::memory_order_relaxed) },
         {"dumps",            gSendDumps.load(std::memory_order_relaxed)},
-        {"serialize_hooked", serializeHooked},
-        {"history_records", gSendRing.head()},
+        {"serialize_hooked", serializeHooked                           },
+        {"history_records",  gSendRing.head()                          },
     };
 }
 
@@ -326,11 +326,11 @@ nlohmann::json sendProbeStop() {
         }
     }
     return nlohmann::json{
-        {"event",  "send_probe"                                  },
-        {"active", gSendInstalled.load(std::memory_order_acquire)},
-        {"hits",   gSendHits.load(std::memory_order_relaxed)     },
-        {"dumps",  gSendDumps.load(std::memory_order_relaxed)    },
-        {"history_records", gSendRing.head()}
+        {"event",           "send_probe"                                  },
+        {"active",          gSendInstalled.load(std::memory_order_acquire)},
+        {"hits",            gSendHits.load(std::memory_order_relaxed)     },
+        {"dumps",           gSendDumps.load(std::memory_order_relaxed)    },
+        {"history_records", gSendRing.head()                              }
     };
 }
 

@@ -8,93 +8,135 @@ namespace probe {
 bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json& j) {
     if (cmd == "selftest_sdk") {
         if (!mAllowSelftestStress.load()) {
-            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})"); return true;
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
         }
         auto const target = j.value("target", std::string{});
-        auto const phase = j.value("phase", std::string{"run"});
-        auto const mode = j.value("mode", std::string{"none"});
+        auto const phase  = j.value("phase", std::string{"run"});
+        auto const mode   = j.value("mode", std::string{"none"});
         if ((target != "client" && target != "server" && target != "registration" && target != "command_boundary")
             || (phase != "lookup" && phase != "submit" && phase != "run")
             || (mode != "none" && mode != "seh" && mode != "cpp")) {
-            enqueue(R"({"event":"error","reason":"bad_sdk_test"})"); return true;
+            enqueue(R"({"event":"error","reason":"bad_sdk_test"})");
+            return true;
         }
         bootLog("selftest_sdk: target=" + target + " phase=" + phase + " mode=" + mode);
         auto const fault = mode == "seh" ? CaptureTest::Fault : mode == "cpp" ? CaptureTest::Cpp : CaptureTest::None;
-        auto const stage = phase == "lookup" ? SdkTaskPhase::Lookup : phase == "submit" ? SdkTaskPhase::Submit : SdkTaskPhase::Run;
-        auto reply = [this, target, phase, mode](bool ok, char const* reason = "") {
-            enqueue(nlohmann::json{{"event", "sdk_test_result"}, {"target", target}, {"phase", phase},
-                                  {"mode", mode}, {"ok", ok}, {"reason", reason}}.dump());
+        auto const stage = phase == "lookup" ? SdkTaskPhase::Lookup
+                         : phase == "submit" ? SdkTaskPhase::Submit
+                                             : SdkTaskPhase::Run;
+        auto       reply = [this, target, phase, mode](bool ok, char const* reason = "") {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "sdk_test_result"},
+                    {"target", target           },
+                    {"phase",  phase            },
+                    {"mode",   mode             },
+                    {"ok",     ok               },
+                    {"reason", reason           }
+            }.dump()
+            );
         };
         if (target == "client" || target == "server") {
-            auto run = [reply] { reply(true); };
+            auto run  = [reply] { reply(true); };
             auto fail = [reply](char const* reason) { reply(false, reason); };
             if (target == "client") queueClientTask(run, fail, {stage, fault});
             else queueServerTask(run, fail, false, {stage, fault});
         } else {
-            queueServerTask([this, target, fault, reply] {
-                if (target == "registration") {
-                    auto registry = ll::service::getCommandRegistry(false);
-                    if (!registry) { reply(false, "no_command_registry"); return; }
-                    reply(registerCommands(*registry, fault));
-                } else {
-                    // Synthetic boundary check only; the live suite separately
-                    // invokes the real /togglefly and verifies ability readback.
-                    CallbackScope callback(gCallbacks, CallbackDomain::Command);
-                    reply(guardedSdkCall([] {}, fault));
-                }
-            }, [reply](char const* reason) { reply(false, reason); });
+            queueServerTask(
+                [this, target, fault, reply] {
+                    if (target == "registration") {
+                        auto registry = ll::service::getCommandRegistry(false);
+                        if (!registry) {
+                            reply(false, "no_command_registry");
+                            return;
+                        }
+                        reply(registerCommands(*registry, fault));
+                    } else {
+                        // Synthetic boundary check only; the live suite separately
+                        // invokes the real /togglefly and verifies ability readback.
+                        CallbackScope callback(gCallbacks, CallbackDomain::Command);
+                        reply(guardedSdkCall([] {}, fault));
+                    }
+                },
+                [reply](char const* reason) { reply(false, reason); }
+            );
         }
         return true;
     }
     if (cmd == "selftest_callback") {
         if (!mAllowSelftestStress.load()) {
-            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})"); return true;
+            enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
+            return true;
         }
         auto const action = j.value("action", std::string{"delay"});
         if (action == "clear") {
             for (auto& delay : mCallbackDelayMs) delay = 0;
-            enqueue(R"({"event":"callback_test_cleared"})"); return true;
+            enqueue(R"({"event":"callback_test_cleared"})");
+            return true;
         }
         if (action == "drain") {
             if (mCallbackTestActive.exchange(true)) {
-                enqueue(R"({"event":"error","reason":"callback_test_active"})"); return true;
+                enqueue(R"({"event":"error","reason":"callback_test_active"})");
+                return true;
             }
             if (mCallbackTestThread.joinable()) mCallbackTestThread.join();
             auto const timeout = std::clamp(j.value("timeout_ms", 100), 1, 1500);
             try {
                 mCallbackTestThread = std::thread([this, timeout] {
-                    nlohmann::json result{{"event", "callback_drain_test"}};
+                    nlohmann::json result{
+                        {"event", "callback_drain_test"}
+                    };
                     bool const quiescing = mQuiescing.exchange(true);
-                    bool const closed = gCallbacks.close();
+                    bool const closed    = gCallbacks.close();
                     try {
-                        result["ok"] = closed && gCallbacks.wait(std::chrono::milliseconds(timeout), [] { return true; });
+                        result["ok"] =
+                            closed && gCallbacks.wait(std::chrono::milliseconds(timeout), [] { return true; });
                         result["callbacks"] = callbackStatus();
-                    } catch (...) { result["ok"] = false; }
+                    } catch (...) {
+                        result["ok"] = false;
+                    }
                     if (closed) gCallbacks.reopen();
-                    mQuiescing = quiescing;
-                    result["reopened"] = !gCallbacks.closed();
+                    mQuiescing          = quiescing;
+                    result["reopened"]  = !gCallbacks.closed();
                     mCallbackTestActive = false;
-                    try { enqueue(result.dump()); } catch (...) {}
+                    try {
+                        enqueue(result.dump());
+                    } catch (...) {}
                 });
-            } catch (...) { mCallbackTestActive = false; throw; }
+            } catch (...) {
+                mCallbackTestActive = false;
+                throw;
+            }
             return true;
         }
         auto const domain = j.value("domain", std::string{});
-        auto const ms = j.value("delay_ms", 0);
-        if ((action != "delay" && action != "after_send") || ms < 1 || ms > 2000 || (domain != "client" && domain != "server" && domain != "tick")) {
-            enqueue(R"({"event":"error","reason":"bad_callback_test"})"); return true;
+        auto const ms     = j.value("delay_ms", 0);
+        if ((action != "delay" && action != "after_send") || ms < 1 || ms > 2000
+            || (domain != "client" && domain != "server" && domain != "tick")) {
+            enqueue(R"({"event":"error","reason":"bad_callback_test"})");
+            return true;
         }
-        auto const d = domain == "client" ? CallbackDomain::Client : domain == "server" ? CallbackDomain::Server : CallbackDomain::Tick;
+        auto const d = domain == "client" ? CallbackDomain::Client
+                     : domain == "server" ? CallbackDomain::Server
+                                          : CallbackDomain::Tick;
         auto const i = static_cast<unsigned>(d);
         if (mCallbackDelayMs[i].load() || mCallbackTestEntered[i].load() != mCallbackTestCompleted[i].load()) {
-            enqueue(R"({"event":"error","reason":"callback_test_active"})"); return true;
+            enqueue(R"({"event":"error","reason":"callback_test_active"})");
+            return true;
         }
         mCallbackDelayMs[i] = static_cast<unsigned>(ms) | (action == "after_send" ? 1u << 31 : 0);
         if (action == "delay") {
             if (d == CallbackDomain::Client) queueClientTask([this, d] { callbackTestDelay(d); });
             if (d == CallbackDomain::Server) queueServerTask([this, d] { callbackTestDelay(d); });
         }
-        enqueue(nlohmann::json{{"event", "callback_test_armed"}, {"domain", domain}, {"delay_ms", ms}}.dump());
+        enqueue(
+            nlohmann::json{
+                {"event",    "callback_test_armed"},
+                {"domain",   domain               },
+                {"delay_ms", ms                   }
+        }.dump()
+        );
         return true;
     }
     if (cmd == "selftest_tick_error") {
@@ -122,9 +164,12 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             else if (mode == "long") test = TickErrorTest::LongMessage;
             else if (mode == "invalid") test = TickErrorTest::InvalidMessage;
             else if (mode == "client_read") test = TickErrorTest::ClientRead;
-            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
-            auto const hold = std::clamp(j.value("hold_ms", 0), 0, 2000);
-            mTickRecoveryHoldUntilMs = GetTickCount64() + hold;
+            else {
+                enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+                return true;
+            }
+            auto const hold                         = std::clamp(j.value("hold_ms", 0), 0, 2000);
+            mTickRecoveryHoldUntilMs                = GetTickCount64() + hold;
             mTickErrorTests[phase == "pre" ? 0 : 1] = test;
         }
         enqueue(R"({"event":"tick_error_test_armed"})");
@@ -198,7 +243,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                 {"mod",          "probe"                   },
                 {"protocol",     4                         },
                 {"capabilities", protocolCapabilitiesJson()},
-            }
+        }
                 .dump()
         );
         return true;
@@ -216,7 +261,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         out["commands"]        = mc.has_value() && static_cast<bool>(mc->mCommands);
         // Roles are static VAs under docs/roles' documented image base; this is
         // where the running image actually sits (ASLR / packed preferred base).
-        out["module_base"]     = gameModuleBase();
+        out["module_base"] = gameModuleBase();
         enqueue(out.dump());
         return true;
     }
@@ -300,7 +345,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                     loopAddress,
                     assignAddress,
                     dispatchAddress
-        ).dump());
+        )
+                    .dump());
         return true;
     }
     if (cmd == "disconnect_route") {
@@ -308,7 +354,8 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                     j.value("reason", 90),
                     j.value("codeword", std::string{"Block"}),
                     j.value("details", std::string{})
-        ).dump());
+        )
+                    .dump());
         return true;
     }
     if (cmd == "inbound_dump") {
@@ -318,13 +365,24 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         std::string const path = j.value("path", std::string{"inbound-dump.json"});
         std::ofstream     file(path, std::ios::binary | std::ios::trunc);
         if (!file) {
-            enqueue(nlohmann::json{{"event", "error"}, {"reason", "open_failed"},
-                                   {"path", path}}.dump());
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"      },
+                    {"reason", "open_failed"},
+                    {"path",   path         }
+            }.dump()
+            );
             return true;
         }
         file << inboundDrainJson(0, 1024).dump();
         file.flush();
-        enqueue(nlohmann::json{{"event", "inbound_dump"}, {"ok", true}, {"path", path}}.dump());
+        enqueue(
+            nlohmann::json{
+                {"event", "inbound_dump"},
+                {"ok",    true          },
+                {"path",  path          }
+        }.dump()
+        );
         return true;
     }
     if (cmd == "inbound_drain") {
@@ -375,13 +433,10 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
                 serializeAddress = value.get<std::uint64_t>();
             }
         }
-        enqueue(sendProbeJson(
-                    on,
-                    mAllowHookVa.load(std::memory_order_relaxed),
-                    mWorld.inWorld(),
-                    address,
-                    serializeAddress
-        ).dump());
+        enqueue(
+            sendProbeJson(on, mAllowHookVa.load(std::memory_order_relaxed), mWorld.inWorld(), address, serializeAddress)
+                .dump()
+        );
         return true;
     }
     if (cmd == "violation_stats") {
@@ -407,34 +462,27 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         return true;
     }
     if (cmd == "signature_check") {
-        enqueue(
-            signatureCheck(
-                j.value("name", std::string{}),
-                j.value("expected_hex", std::string{})
-            )
-                .dump()
-        );
+        enqueue(signatureCheck(j.value("name", std::string{}), j.value("expected_hex", std::string{})).dump());
         return true;
     }
     if (cmd == "panic" || cmd == "unhook_all") {
-        std::string const level =
-            cmd == "unhook_all" ? std::string{"hooks"} : j.value("level", std::string{"all"});
+        std::string const level = cmd == "unhook_all" ? std::string{"hooks"} : j.value("level", std::string{"all"});
         if (level != "hooks" && level != "tasks" && level != "all") {
             enqueue(R"({"event":"error","reason":"bad_panic_level","levels":["hooks","tasks","all"]})");
             return true;
         }
-        bool const        hooksLevel = level == "hooks" || level == "all";
-        bool const        tasksLevel = level == "tasks" || level == "all";
-        std::size_t const watchesBefore = hooksLevel ? watchCount() : 0;
-        int const         hooksRemoved  = hooksLevel ? hookRemoveAll() : 0;
-        std::size_t       watchesRemoved = 0;
-        bool              watchesOk      = true;
+        bool const        hooksLevel       = level == "hooks" || level == "all";
+        bool const        tasksLevel       = level == "tasks" || level == "all";
+        std::size_t const watchesBefore    = hooksLevel ? watchCount() : 0;
+        int const         hooksRemoved     = hooksLevel ? hookRemoveAll() : 0;
+        std::size_t       watchesRemoved   = 0;
+        bool              watchesOk        = true;
         bool              violationStopped = true;
         if (hooksLevel) {
             packetCaptureStop();
             violationStopped = !violationWatchStop().value("active", true);
-            watchesOk      = watchRemoveAll();
-            watchesRemoved = watchesOk ? watchesBefore : 0;
+            watchesOk        = watchRemoveAll();
+            watchesRemoved   = watchesOk ? watchesBefore : 0;
         }
         if (tasksLevel) {
             cancelPacketInjection("panic");
@@ -449,15 +497,15 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         bool const          flushOk      = mSpoolErrors.load(std::memory_order_relaxed) == errorsBefore;
         enqueue(
             nlohmann::json{
-                {"event",            "panic_done"       },
-                {"level",            level              },
-                {"ok",               watchesOk && violationStopped},
-                {"violation_watch_stopped", violationStopped},
-                {"hooks_removed",    hooksRemoved       },
-                {"watches_cleared",  watchesRemoved     },
-                {"tasks_cancelled",  tasksLevel         },
-                {"flushed_rows",     flushedRows        },
-                {"flush_ok",         flushOk            },
+                {"event",                   "panic_done"                 },
+                {"level",                   level                        },
+                {"ok",                      watchesOk && violationStopped},
+                {"violation_watch_stopped", violationStopped             },
+                {"hooks_removed",           hooksRemoved                 },
+                {"watches_cleared",         watchesRemoved               },
+                {"tasks_cancelled",         tasksLevel                   },
+                {"flushed_rows",            flushedRows                  },
+                {"flush_ok",                flushOk                      },
         }
                 .dump()
         );
@@ -469,9 +517,9 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         flushSpool(true);
         enqueue(
             nlohmann::json{
-                {"event", "spool_flushed"      },
-                {"path",  mSpoolPath.string()  },
-                {"rows",  mSpoolRows.load()    },
+                {"event", "spool_flushed"    },
+                {"path",  mSpoolPath.string()},
+                {"rows",  mSpoolRows.load()  },
         }
                 .dump()
         );
@@ -530,9 +578,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
     if (cmd == "selftest_busy") {
         // F10: this can stall the tick for ~1 s, so it needs an explicit opt-in.
         if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {
-            enqueue(
-                R"({"event":"error","reason":"stress_disabled","hint":"set allow_selftest_stress=true"})"
-            );
+            enqueue(R"({"event":"error","reason":"stress_disabled","hint":"set allow_selftest_stress=true"})");
             return true;
         }
         std::uint32_t const us    = std::clamp(j.value("us", 1000), 1, 5000);
@@ -556,24 +602,44 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         auto const mode = j.value("mode", std::string{});
         if (mode == "remember") {
             auto const identity = localPlayerIdentity();
-            if (!identity.valid) { enqueue(R"({"event":"error","reason":"identity_unavailable"})"); return true; }
+            if (!identity.valid) {
+                enqueue(R"({"event":"error","reason":"identity_unavailable"})");
+                return true;
+            }
             mPlayerIdentityRemembered = identity;
-            enqueue(nlohmann::json{{"event", "identity_remembered"}, {"epoch", identity.epoch}}.dump());
+            enqueue(
+                nlohmann::json{
+                    {"event", "identity_remembered"},
+                    {"epoch", identity.epoch       }
+            }.dump()
+            );
         } else if (mode == "resolve") {
             auto const identity = mPlayerIdentityRemembered;
             queueServerTask([this, identity] {
                 auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
-                enqueue(nlohmann::json{{"event", "identity_resolved"}, {"ok", context.player != nullptr},
-                    {"epoch", identity.epoch}, {"current_epoch", mPoseEpoch.load()}}.dump());
+                enqueue(
+                    nlohmann::json{
+                        {"event",         "identity_resolved"      },
+                        {"ok",            context.player != nullptr},
+                        {"epoch",         identity.epoch           },
+                        {"current_epoch", mPoseEpoch.load()        }
+                }.dump()
+                );
             });
         } else {
-            if (!mWorld.inWorld()) { enqueue(R"({"event":"error","reason":"not_in_world"})"); return true; }
+            if (!mWorld.inWorld()) {
+                enqueue(R"({"event":"error","reason":"not_in_world"})");
+                return true;
+            }
             CaptureTest test;
             if (mode == "seh") test = CaptureTest::Fault;
             else if (mode == "cpp") test = CaptureTest::Cpp;
             else if (mode == "zero") test = CaptureTest::Partial;
             else if (mode == "off") test = CaptureTest::None;
-            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            else {
+                enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+                return true;
+            }
             mPlayerIdentityTest = test;
             enqueue(R"({"event":"identity_test_armed"})");
         }
@@ -581,21 +647,22 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
     }
     if (cmd == "status") {
         nlohmann::json out;
-        out["event"]           = "status";
-        out["in_world"]        = mWorld.inWorld();
+        out["event"]     = "status";
+        out["in_world"]  = mWorld.inWorld();
         out["lifecycle"] = {
             {"generation", mLifecycleGeneration.load()},
             {"disable_id", mDisableSerial.load()      },
             {"running",    mRunning.load()            },
-            {"hooks", {{"key", mLifecycleKeyHooked.load()},
-                       {"mouse", mLifecycleMouseHooked.load()},
-                       {"player", mLifecyclePlayerHooked.load()},
-                       {"turn", mLifecycleTurnHooked.load()}}}
+            {"hooks",
+             {{"key", mLifecycleKeyHooked.load()},
+              {"mouse", mLifecycleMouseHooked.load()},
+              {"player", mLifecyclePlayerHooked.load()},
+              {"turn", mLifecycleTurnHooked.load()}}  }
         };
         out["lifecycle"]["callbacks"] = callbackStatus();
-        auto const identity = localPlayerIdentity();
-        auto const identityFailures = mPlayerIdentity.failures();
-        out["player_identity"]      = {
+        auto const identity           = localPlayerIdentity();
+        auto const identityFailures   = mPlayerIdentity.failures();
+        out["player_identity"]        = {
             {"valid",       identity.valid != 0   },
             {"epoch",       mPoseEpoch.load()     },
             {"sample_tick", identity.tick         },
@@ -611,7 +678,7 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
             {"cleanup_pending", mInputSession.controlCleanupPending.load()},
             {"held_mask",       mInputSession.controlHeldMask.load()      }
         };
-        auto const recovery = mTickRecovery.snapshot();
+        auto const recovery  = mTickRecovery.snapshot();
         out["tick_recovery"] = {
             {"recovery_id", recovery.id                                   },
             {"active",      recovery.phase != TickRecovery::Phase::Running},
@@ -620,59 +687,59 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
              : recovery.phase == TickRecovery::Phase::Pending ? "pending"
                                                               : "prepared"}
         };
-        out["world_entry"]       = mWorld.entryStatus();
-        out["recording"]         = mLegacy.stream.active();
-        out["tick"]              = mTick.load();
-        out["macro_playing"]     = mMacroSession.playback.active();
-        out["macro_index"]       = mMacroSession.playback.index();
-        out["macro_recording"]   = mMacroSession.recording.active();
-        out["queue_dropped"]     = mQueueDropped.load();
-        out["pipe_write_timeouts"] = mPipeWriteTimeouts.load();
-        out["pipe_write_timeout_ms"] = PipeChannel::DefaultTimeoutMs;
-        out["spool"]               = mSpoolPath.string();
-        out["spool_rows"]          = mSpoolRows.load();
-        out["spool_flushes"]       = mSpoolFlushes.load();
-        out["allow_read"]          = mAllowMemoryRead.load();
-        out["allow_write"]         = mAllowMemoryWrite.load();
-        out["allow_togglefly"]     = mAllowToggleFly.load();
-        out["auth_required"]       = !mPipeToken.empty();
-        out["tick_thread_id"]      = mTickThreadId.load();
-        out["server_thread_id"]    = gServerThreadId.load();
-        out["packet_capture"]      = mPackets.capturing();
-        out["packet_records"]      = mPackets.records();
-        out["packet_recv_records"] = mPackets.recvRecords();
-        out["packet_recv_hooked"]  = mPackets.recvEnabled();
-        out["packet_peer_sends"]   = mPackets.peerSends();
-        out["packet_inject"]       = mAllowPacketInject.load();
+        out["world_entry"]               = mWorld.entryStatus();
+        out["recording"]                 = mLegacy.stream.active();
+        out["tick"]                      = mTick.load();
+        out["macro_playing"]             = mMacroSession.playback.active();
+        out["macro_index"]               = mMacroSession.playback.index();
+        out["macro_recording"]           = mMacroSession.recording.active();
+        out["queue_dropped"]             = mQueueDropped.load();
+        out["pipe_write_timeouts"]       = mPipeWriteTimeouts.load();
+        out["pipe_write_timeout_ms"]     = PipeChannel::DefaultTimeoutMs;
+        out["spool"]                     = mSpoolPath.string();
+        out["spool_rows"]                = mSpoolRows.load();
+        out["spool_flushes"]             = mSpoolFlushes.load();
+        out["allow_read"]                = mAllowMemoryRead.load();
+        out["allow_write"]               = mAllowMemoryWrite.load();
+        out["allow_togglefly"]           = mAllowToggleFly.load();
+        out["auth_required"]             = !mPipeToken.empty();
+        out["tick_thread_id"]            = mTickThreadId.load();
+        out["server_thread_id"]          = gServerThreadId.load();
+        out["packet_capture"]            = mPackets.capturing();
+        out["packet_records"]            = mPackets.records();
+        out["packet_recv_records"]       = mPackets.recvRecords();
+        out["packet_recv_hooked"]        = mPackets.recvEnabled();
+        out["packet_peer_sends"]         = mPackets.peerSends();
+        out["packet_inject"]             = mAllowPacketInject.load();
         out["chat_sent"]                 = mPacketRequests.chatSent.load();
         out["command_template_attempts"] = mPacketRequests.templates.attempts();
         out["command_template_faults"]   = mPacketRequests.templateFaults.load();
         // Cold pipe-thread snapshot: use the same admission check as chat_send.
         // Attempt/fault counters do not describe TooLong, NoOwner or stale rows.
         CommandTemplate commandTemplate;
-        auto const templateError = mPacketRequests.templates
-                                       .latest(commandTemplate, identity, mPacketRequests.generation.load());
-        out["command_template"]  = {
+        auto const      templateError =
+            mPacketRequests.templates.latest(commandTemplate, identity, mPacketRequests.generation.load());
+        out["command_template"] = {
             {"ready",  templateError == nullptr          },
             {"reason", templateError ? templateError : ""}
         };
         out["tick_probe_addr"]  = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&mTickProbe));
-        out["watch_count"]   = watchCount();
-        out["watch_hits"]    = watchTotalHits();
-        out["watch_dropped"] = watchDroppedHits();
-        out["record_active"]   = recordActive();
+        out["watch_count"]      = watchCount();
+        out["watch_hits"]       = watchTotalHits();
+        out["watch_dropped"]    = watchDroppedHits();
+        out["record_active"]    = recordActive();
         out["record"]           = recordStateJson();
-        out["record_rows"]     = recordRows();
-        out["record_head"]     = recordHead();
-        out["record_period"]   = recordPeriod();
-        out["record_capacity"] = RecordCapacity;
-        out["overhead"]        = overheadJson();
-        out["build_id"]        = buildId();
-        out["version_ok"]      = versionOk();
-        out["hooks_allowed"]   = hooksAllowed();
-        out["compat"]          = mAllowVersionMismatch.load();
-        out["profile"]         = profileJson();
-        out["capabilities"]    = capabilitiesJson();
+        out["record_rows"]      = recordRows();
+        out["record_head"]      = recordHead();
+        out["record_period"]    = recordPeriod();
+        out["record_capacity"]  = RecordCapacity;
+        out["overhead"]         = overheadJson();
+        out["build_id"]         = buildId();
+        out["version_ok"]       = versionOk();
+        out["hooks_allowed"]    = hooksAllowed();
+        out["compat"]           = mAllowVersionMismatch.load();
+        out["profile"]          = profileJson();
+        out["capabilities"]     = capabilitiesJson();
         out["version_failures"] = nlohmann::json::array();
         {
             auto diagnostics = diagnoseJson();

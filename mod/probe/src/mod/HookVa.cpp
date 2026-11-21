@@ -15,32 +15,32 @@ constexpr std::size_t kHookSlots        = 4;
 constexpr std::size_t kHookRingCapacity = 1u << 12;
 constexpr std::size_t kHookMaxFrames    = 4;
 // One AABB is 24 B and a Vec3 is 12 B; 64 B also covers a small struct header.
-constexpr std::size_t kHookMemMax       = 128; // includes one deref hop
+constexpr std::size_t kHookMemMax        = 128; // includes one deref hop
 constexpr char const* kJumpPendingSymbol = "MobJump::setJumpPendingScale";
 
 using SetJumpPendingScaleFn = void (*)(EntityContext&, float);
 using GenericFn             = std::uint64_t (*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 
 struct HookHit {
-    std::uint32_t              hookId     = 0;
-    std::uint32_t              tid        = 0;
-    std::uint64_t              tick       = 0;
-    std::uint64_t              a          = 0;
-    std::uint64_t              b          = 0;
-    std::uint64_t              c          = 0;
-    std::uint64_t              d          = 0;
-    std::uint64_t              ret        = 0;
-    std::uint32_t              frameCount = 0;
-    std::uint32_t              pad        = 0;
-    std::uint64_t              frames[kHookMaxFrames]{};
+    std::uint32_t hookId     = 0;
+    std::uint32_t tid        = 0;
+    std::uint64_t tick       = 0;
+    std::uint64_t a          = 0;
+    std::uint64_t b          = 0;
+    std::uint64_t c          = 0;
+    std::uint64_t d          = 0;
+    std::uint64_t ret        = 0;
+    std::uint32_t frameCount = 0;
+    std::uint32_t pad        = 0;
+    std::uint64_t frames[kHookMaxFrames]{};
     // Optional snapshot of arg[memArg] + memOff, taken while the buffer is
     // still alive. memLen == 0 means "this hit did not ask for memory".
-    std::uint32_t              memArg  = 0;
-    std::int32_t               memOff  = 0;
-    std::uint32_t              memLen  = 0;
-    std::uint32_t              memOk   = 0;
-    std::uint64_t              memAddr = 0;
-    std::uint8_t               mem[kHookMemMax]{};
+    std::uint32_t memArg  = 0;
+    std::int32_t  memOff  = 0;
+    std::uint32_t memLen  = 0;
+    std::uint32_t memOk   = 0;
+    std::uint64_t memAddr = 0;
+    std::uint8_t  mem[kHookMemMax]{};
 };
 
 struct HookSlot {
@@ -51,27 +51,27 @@ struct HookSlot {
     // F2: set once the origin (and everything captureHit reads) is published.
     // A detour that runs between the patch and this flag spins briefly instead
     // of silently returning 0.
-    std::atomic_bool           ready{false};
-    bool                       symbol = false;
-    std::string                tag;
-    std::string                name;
-    std::uint64_t              address = 0;
-    std::atomic<std::uint32_t> sample{1};
-    std::atomic<std::uint32_t> memArg{0};
-    std::atomic<std::int32_t>  memOff{0};
-    std::atomic<std::uint32_t> memLen{0};
-    std::atomic_bool           memDeref{false};
-    ll::memory::FuncPtr        target = nullptr;
-    ll::memory::FuncPtr        detour = nullptr;
+    std::atomic_bool                   ready{false};
+    bool                               symbol = false;
+    std::string                        tag;
+    std::string                        name;
+    std::uint64_t                      address = 0;
+    std::atomic<std::uint32_t>         sample{1};
+    std::atomic<std::uint32_t>         memArg{0};
+    std::atomic<std::int32_t>          memOff{0};
+    std::atomic<std::uint32_t>         memLen{0};
+    std::atomic_bool                   memDeref{false};
+    ll::memory::FuncPtr                target = nullptr;
+    ll::memory::FuncPtr                detour = nullptr;
     std::atomic<SetJumpPendingScaleFn> originTyped{nullptr};
 };
 
 using HookRing = AtomicRing<HookHit, kHookRingCapacity>;
-std::unique_ptr<HookRing>           gRing;
-std::atomic<std::uint32_t>          gNextId{1};
-HookSlot                            gSlots[kHookSlots];
-std::atomic<GenericFn>              gGenericOrigins[kHookSlots]{};
-std::mutex                          gHookMutex;
+std::unique_ptr<HookRing>  gRing;
+std::atomic<std::uint32_t> gNextId{1};
+HookSlot                   gSlots[kHookSlots];
+std::atomic<GenericFn>     gGenericOrigins[kHookSlots]{};
+std::mutex                 gHookMutex;
 
 // Bounded wait for the install window. 200k pauses is a few milliseconds on
 // current CPUs and far longer than publishing an origin takes.
@@ -95,15 +95,15 @@ std::uint32_t floatBits(float value) {
 }
 
 float bitsFloat(std::uint64_t value) {
-    std::uint32_t raw  = static_cast<std::uint32_t>(value);
-    float         out  = 0.0f;
+    std::uint32_t raw = static_cast<std::uint32_t>(value);
+    float         out = 0.0f;
     std::memcpy(&out, &raw, sizeof(out));
     return out;
 }
 
 nlohmann::json errorJson(char const* reason) {
     return nlohmann::json{
-        {"event", "error" },
+        {"event",  "error"},
         {"reason", reason },
     };
 }
@@ -121,24 +121,24 @@ void captureHit(std::size_t slot, std::uint64_t a, std::uint64_t b, std::uint64_
     if (!gRing || slot >= kHookSlots) {
         return;
     }
-    HookSlot&                  watch = gSlots[slot];
+    HookSlot& watch = gSlots[slot];
     pathCount(PathCounter::Hook);
-    std::uint64_t const        hit   = watch.hits.fetch_add(1, std::memory_order_relaxed) + 1;
-    std::uint32_t const        sample = watch.sample.load(std::memory_order_relaxed);
+    std::uint64_t const hit    = watch.hits.fetch_add(1, std::memory_order_relaxed) + 1;
+    std::uint32_t const sample = watch.sample.load(std::memory_order_relaxed);
     if (sample > 1 && (hit % sample) != 0) {
         return;
     }
-    auto reservation = gRing->reserve();
+    auto    reservation = gRing->reserve();
     HookHit record{};
-    record.hookId = watch.id.load(std::memory_order_relaxed);
-    record.tid    = GetCurrentThreadId();
-    record.tick   = gWatchTick.load(std::memory_order_relaxed);
-    record.a      = a;
-    record.b      = b;
-    record.c      = c;
-    record.d      = d;
-    record.ret    = reinterpret_cast<std::uint64_t>(_ReturnAddress());
-    record.frameCount          = static_cast<std::uint32_t>(
+    record.hookId     = watch.id.load(std::memory_order_relaxed);
+    record.tid        = GetCurrentThreadId();
+    record.tick       = gWatchTick.load(std::memory_order_relaxed);
+    record.a          = a;
+    record.b          = b;
+    record.c          = c;
+    record.d          = d;
+    record.ret        = reinterpret_cast<std::uint64_t>(_ReturnAddress());
+    record.frameCount = static_cast<std::uint32_t>(
         RtlCaptureStackBackTrace(0, kHookMaxFrames, reinterpret_cast<PVOID*>(record.frames), nullptr)
     );
     // Memory snapshot: only when the install asked for it. readMemory() checks
@@ -175,13 +175,7 @@ void detourSetJumpPendingScale(EntityContext& context, float scale) {
     // than returning a fake result. The spin is bounded and install failure
     // sets ready before removing the patch.
     waitReady(static_cast<std::size_t>(Slot));
-    captureHit(
-        static_cast<std::size_t>(Slot),
-        reinterpret_cast<std::uint64_t>(&context),
-        floatBits(scale),
-        0,
-        0
-    );
+    captureHit(static_cast<std::size_t>(Slot), reinterpret_cast<std::uint64_t>(&context), floatBits(scale), 0, 0);
     if (auto origin = gSlots[Slot].originTyped.load(std::memory_order_acquire)) {
         origin(context, scale);
     }
@@ -268,8 +262,7 @@ nlohmann::json hookInstall(
     HookMemSpec const& mem
 ) {
     if (mem.size != 0
-        && (mem.arg > 3 || mem.size % 4 != 0 || mem.size > kHookMemMax || mem.offset > 4096
-            || mem.offset < -4096)) {
+        && (mem.arg > 3 || mem.size % 4 != 0 || mem.size > kHookMemMax || mem.offset > 4096 || mem.offset < -4096)) {
         return errorJson("bad_mem_spec");
     }
     std::uint64_t targetAddress = 0;
@@ -288,15 +281,20 @@ nlohmann::json hookInstall(
     bool const executable = hookAddressExecutable(targetAddress);
     if (dryRun) {
         nlohmann::json out{
-            {"event",      "hook_dry_run"                       },
-            {"address",    targetAddress                        },
-            {"executable", executable                           },
-            {"abi",        useVa ? "generic4-int" : "typed"     },
-            {"instruction_boundary", useVa ? "unverified" : "symbol"},
+            {"event",                "hook_dry_run"                  },
+            {"address",              targetAddress                   },
+            {"executable",           executable                      },
+            {"abi",                  useVa ? "generic4-int" : "typed"},
+            {"instruction_boundary", useVa ? "unverified" : "symbol" },
         };
         out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
         out["va"]     = useVa ? nlohmann::json(targetAddress) : nlohmann::json(nullptr);
-        out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}, {"deref", mem.deref}};
+        out["mem"]    = {
+            {"arg",    mem.arg   },
+            {"offset", mem.offset},
+            {"size",   mem.size  },
+            {"deref",  mem.deref }
+        };
         return out;
     }
     if (!executable) {
@@ -311,7 +309,7 @@ nlohmann::json hookInstall(
         return errorJson("not_in_world");
     }
 
-    int                slot   = -1;
+    int                 slot   = -1;
     ll::memory::FuncPtr target = nullptr;
     ll::memory::FuncPtr detour = nullptr;
     {
@@ -340,8 +338,8 @@ nlohmann::json hookInstall(
         watch.memLen.store(mem.size, std::memory_order_relaxed);
         watch.memDeref.store(mem.deref, std::memory_order_relaxed);
         watch.target = reinterpret_cast<ll::memory::FuncPtr>(targetAddress);
-        watch.detour = useVa ? genericDetour(static_cast<std::size_t>(slot))
-                             : typedDetour(static_cast<std::size_t>(slot));
+        watch.detour =
+            useVa ? genericDetour(static_cast<std::size_t>(slot)) : typedDetour(static_cast<std::size_t>(slot));
         watch.id.store(gNextId.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
         watch.hits.store(0, std::memory_order_relaxed);
         watch.captured.store(0, std::memory_order_relaxed);
@@ -358,13 +356,7 @@ nlohmann::json hookInstall(
     // F2: do not hold gHookMutex across hook(). It suspends the other threads
     // and may allocate the trampoline while a suspended thread owns the heap.
     ll::memory::FuncPtr originRaw = nullptr;
-    int const           status    = ll::memory::hook(
-        target,
-        detour,
-        &originRaw,
-        ll::memory::HookPriority::Normal,
-        true
-    );
+    int const           status = ll::memory::hook(target, detour, &originRaw, ll::memory::HookPriority::Normal, true);
 
     HookSlot& watch = gSlots[static_cast<std::size_t>(slot)];
     if (status == 0 && originRaw != nullptr && injectFail) {
@@ -379,15 +371,15 @@ nlohmann::json hookInstall(
         // The patch was never applied, so nothing can be executing the detour.
         watch.ready.store(true, std::memory_order_release);
         watch.used.store(false, std::memory_order_release);
-        watch.target = nullptr;
-        watch.detour = nullptr;
+        watch.target  = nullptr;
+        watch.detour  = nullptr;
         watch.address = 0;
         watch.tag.clear();
         watch.name.clear();
         return nlohmann::json{
-            {"event",  "error"       },
-            {"reason", "hook_failed" },
-            {"code",   status        },
+            {"event",  "error"      },
+            {"reason", "hook_failed"},
+            {"code",   status       },
         };
     }
     if (originRaw == nullptr) {
@@ -399,24 +391,21 @@ nlohmann::json hookInstall(
             return errorJson("unhook_failed");
         }
         watch.used.store(false, std::memory_order_release);
-        watch.target = nullptr;
-        watch.detour = nullptr;
+        watch.target  = nullptr;
+        watch.detour  = nullptr;
         watch.address = 0;
         watch.tag.clear();
         watch.name.clear();
         return nlohmann::json{
-            {"event",  "error"       },
-            {"reason", "hook_failed" },
-            {"code",   status        },
+            {"event",  "error"      },
+            {"reason", "hook_failed"},
+            {"code",   status       },
         };
     }
     if (useVa) {
         gGenericOrigins[slot].store(reinterpret_cast<GenericFn>(originRaw), std::memory_order_release);
     } else {
-        watch.originTyped.store(
-            reinterpret_cast<SetJumpPendingScaleFn>(originRaw),
-            std::memory_order_release
-        );
+        watch.originTyped.store(reinterpret_cast<SetJumpPendingScaleFn>(originRaw), std::memory_order_release);
     }
     // Publish last: every field captureHit reads is visible before a detour
     // stops spinning.
@@ -441,17 +430,22 @@ nlohmann::json hookInstall(
     }
 
     nlohmann::json out{
-        {"event",   "hook_installed"},
-        {"id",      watch.id.load() },
-        {"slot",    slot            },
-        {"address", targetAddress   },
-        {"tag",     tag             },
-        {"sample",  watch.sample.load() },
+        {"event",   "hook_installed"                },
+        {"id",      watch.id.load()                 },
+        {"slot",    slot                            },
+        {"address", targetAddress                   },
+        {"tag",     tag                             },
+        {"sample",  watch.sample.load()             },
         {"abi",     useVa ? "generic4-int" : "typed"},
     };
     out["symbol"] = useVa ? nlohmann::json(nullptr) : nlohmann::json(symbol);
     out["va"]     = useVa ? nlohmann::json(targetAddress) : nlohmann::json(nullptr);
-    out["mem"]    = {{"arg", mem.arg}, {"offset", mem.offset}, {"size", mem.size}, {"deref", mem.deref}};
+    out["mem"]    = {
+        {"arg",    mem.arg   },
+        {"offset", mem.offset},
+        {"size",   mem.size  },
+        {"deref",  mem.deref }
+    };
     return out;
 }
 
@@ -477,8 +471,8 @@ nlohmann::json hookRemove(int id) {
         gGenericOrigins[slot].store(nullptr, std::memory_order_relaxed);
         return nlohmann::json{
             {"event", "hook_removed"},
-            {"id",    id           },
-            {"ok",    true         },
+            {"id",    id            },
+            {"ok",    true          },
         };
     }
     return errorJson("not_found");
@@ -510,31 +504,31 @@ int hookRemoveAll() {
 
 nlohmann::json hookListJson() {
     std::lock_guard lock(gHookMutex);
-    nlohmann::json out;
-    out["event"]  = "hook_list";
-    out["hooks"]  = nlohmann::json::array();
-    out["head"]   = gRing ? gRing->head() : 0;
+    nlohmann::json  out;
+    out["event"]             = "hook_list";
+    out["hooks"]             = nlohmann::json::array();
+    out["head"]              = gRing ? gRing->head() : 0;
     std::uint64_t const head = out["head"].get<std::uint64_t>();
-    out["dropped"] = head > kHookRingCapacity ? head - kHookRingCapacity : 0;
+    out["dropped"]           = head > kHookRingCapacity ? head - kHookRingCapacity : 0;
     for (std::size_t slot = 0; slot < kHookSlots; ++slot) {
         HookSlot& watch = gSlots[slot];
         if (!watch.used.load(std::memory_order_acquire)) {
             continue;
         }
         out["hooks"].push_back({
-            {"id",       watch.id.load()              },
-            {"slot",     slot                         },
-            {"symbol",   watch.symbol ? nlohmann::json(watch.name) : nlohmann::json(nullptr)},
-            {"va",       watch.symbol ? nlohmann::json(nullptr) : nlohmann::json(watch.address)},
-            {"address",  watch.address                },
-            {"tag",      watch.tag                    },
-            {"sample",   watch.sample.load()          },
-            {"mem_arg",  watch.memArg.load()          },
-            {"mem_off",  watch.memOff.load()          },
-            {"mem_len",  watch.memLen.load()          },
-            {"mem_deref", watch.memDeref.load()        },
-            {"hits",     watch.hits.load()            },
-            {"captured", watch.captured.load()        },
+            {"id",        watch.id.load()                                                       },
+            {"slot",      slot                                                                  },
+            {"symbol",    watch.symbol ? nlohmann::json(watch.name) : nlohmann::json(nullptr)   },
+            {"va",        watch.symbol ? nlohmann::json(nullptr) : nlohmann::json(watch.address)},
+            {"address",   watch.address                                                         },
+            {"tag",       watch.tag                                                             },
+            {"sample",    watch.sample.load()                                                   },
+            {"mem_arg",   watch.memArg.load()                                                   },
+            {"mem_off",   watch.memOff.load()                                                   },
+            {"mem_len",   watch.memLen.load()                                                   },
+            {"mem_deref", watch.memDeref.load()                                                 },
+            {"hits",      watch.hits.load()                                                     },
+            {"captured",  watch.captured.load()                                                 },
         });
     }
     return out;
@@ -556,11 +550,11 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
     if (limit == 0) {
         limit = 4096;
     }
-    std::uint64_t const end   = std::min(head, start + limit);
+    std::uint64_t const end    = std::min(head, start + limit);
     std::uint64_t       cursor = start;
-    nlohmann::json      hits  = nlohmann::json::array();
+    nlohmann::json      hits   = nlohmann::json::array();
     for (std::uint64_t index = start; index < end; ++index) {
-        HookHit record{};
+        HookHit    record{};
         auto const read = gRing ? gRing->read(index, record) : HookRing::ReadResult::pending;
         if (read == HookRing::ReadResult::pending) {
             cursor = index;
@@ -586,28 +580,28 @@ nlohmann::json hookDrainJson(std::uint64_t since, std::size_t limit) {
             }
         }
         nlohmann::json row{
-            {"seq",     index + 1                       },
-            {"hook",    record.hookId                   },
-            {"tag",     tag                             },
-            {"tid",     record.tid                      },
-            {"tick",    record.tick                     },
+            {"seq",     index + 1                               },
+            {"hook",    record.hookId                           },
+            {"tag",     tag                                     },
+            {"tid",     record.tid                              },
+            {"tick",    record.tick                             },
             {"args",    {record.a, record.b, record.c, record.d}},
-            {"b_float", bitsFloat(record.b)             },
-            {"ret",     record.ret                      },
-            {"stack",   nlohmann::json::array()         },
+            {"b_float", bitsFloat(record.b)                     },
+            {"ret",     record.ret                              },
+            {"stack",   nlohmann::json::array()                 },
         };
         for (std::uint32_t frame = 0; frame < record.frameCount && frame < kHookMaxFrames; ++frame) {
             row["stack"].push_back(record.frames[frame]);
         }
         if (record.memLen > 0) {
             nlohmann::json mem{
-                {"arg",    record.memArg                  },
-                {"offset", record.memOff                  },
-                {"len",    record.memLen                  },
-                {"ok",     record.memOk != 0              },
-                {"deref",  deref                          },
-                {"addr",   record.memAddr                 },
-                {"hex",    hexEncode(record.mem, record.memLen)},
+                {"arg", record.memArg},
+                {"offset", record.memOff},
+                {"len", record.memLen},
+                {"ok", record.memOk != 0},
+                {"deref", deref},
+                {"addr", record.memAddr},
+                {"hex", hexEncode(record.mem, record.memLen)},
             };
             if (record.memLen % 4 == 0) {
                 nlohmann::json f32 = nlohmann::json::array();

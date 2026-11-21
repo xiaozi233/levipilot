@@ -17,7 +17,8 @@ public:
     explicit StagedCapture(char const* invalidStage = "capture_stage_invalid")
     : StagedCapture(Stage::Client, invalidStage) {}
     explicit StagedCapture(Stage firstStage, char const* invalidStage = "capture_stage_invalid")
-    : mFirstStage(firstStage), mInvalidStage(invalidStage) {}
+    : mFirstStage(firstStage),
+      mInvalidStage(invalidStage) {}
 
     struct Request {
         Request(
@@ -55,8 +56,10 @@ public:
             } catch (...) {
                 cancel("capture_failed");
             }
-            phase.store(stage == Stage::Complete || snapshot.error ? Phase::Ready : Phase::Pending,
-                        std::memory_order_release);
+            phase.store(
+                stage == Stage::Complete || snapshot.error ? Phase::Ready : Phase::Pending,
+                std::memory_order_release
+            );
         }
 
         void cancel(char const* reason) {
@@ -71,57 +74,59 @@ public:
     private:
         friend class StagedCapture;
         enum class Phase { Pending, Queued, Running, Ready, Cancelled };
-        std::uint64_t const deadline;
-        char const* const stageError;
-        std::atomic<Phase> phase{Phase::Pending};
+        std::uint64_t const      deadline;
+        char const* const        stageError;
+        std::atomic<Phase>       phase{Phase::Pending};
         std::atomic<char const*> failure{nullptr};
-        std::atomic_bool consuming{false};
-        Stage stage;
+        std::atomic_bool         consuming{false};
+        Stage                    stage;
     };
 
     struct Completion {
-        Completion() = default;
-        Completion(Completion const&) = delete;
+        Completion()                             = default;
+        Completion(Completion const&)            = delete;
         Completion& operator=(Completion const&) = delete;
         Completion(Completion&& other) noexcept
-        : request(std::move(other.request)), error(other.error), owner(std::exchange(other.owner, nullptr)) {}
+        : request(std::move(other.request)),
+          error(other.error),
+          owner(std::exchange(other.owner, nullptr)) {}
         Completion& operator=(Completion&& other) noexcept {
             release();
             request = std::move(other.request);
-            error = other.error;
-            owner = std::exchange(other.owner, nullptr);
+            error   = other.error;
+            owner   = std::exchange(other.owner, nullptr);
             return *this;
         }
         ~Completion() { release(); }
         bool release() {
             if (!owner) return false;
-            auto* active = std::exchange(owner, nullptr);
-            auto expected = request;
+            auto* active   = std::exchange(owner, nullptr);
+            auto  expected = request;
             return active->mCurrent.compare_exchange_strong(expected, {});
         }
         std::shared_ptr<Request> request;
-        char const* error = nullptr;
+        char const*              error = nullptr;
+
     private:
         friend class StagedCapture;
         Completion(StagedCapture* source, std::shared_ptr<Request> value, char const* reason)
-        : request(std::move(value)), error(reason), owner(source) {}
+        : request(std::move(value)),
+          error(reason),
+          owner(source) {}
         StagedCapture* owner = nullptr;
     };
 
-    std::shared_ptr<Request> begin(
-        Query         query,
-        std::uint64_t now,
-        std::uint64_t timeout = 2000,
-        std::uint64_t reqId   = 0
-    ) {
+    std::shared_ptr<Request>
+    begin(Query query, std::uint64_t now, std::uint64_t timeout = 2000, std::uint64_t reqId = 0) {
         if (mCurrent.load(std::memory_order_acquire)) return {};
-        std::shared_ptr<Request> request = std::make_unique<Request>(query, now, timeout, mInvalidStage, mFirstStage, reqId);
+        std::shared_ptr<Request> request =
+            std::make_unique<Request>(query, now, timeout, mInvalidStage, mFirstStage, reqId);
         std::shared_ptr<Request> expected;
         if (!mCurrent.compare_exchange_strong(expected, request)) return {};
         return request;
     }
     std::shared_ptr<Request> current() const { return mCurrent.load(std::memory_order_acquire); }
-    Completion take(std::uint64_t now) {
+    Completion               take(std::uint64_t now) {
         auto request = current();
         if (!request) return {};
         auto phase = request->phase.load(std::memory_order_acquire);
@@ -137,13 +142,17 @@ public:
         // publication permits the consumer to read snapshot.
         return {this, std::move(request), error};
     }
-    void cancel(char const* reason) { if (auto request = current()) request->cancel(reason); }
-    void reset() { if (auto request = mCurrent.exchange({})) request->cancel("capture_cancelled"); }
+    void cancel(char const* reason) {
+        if (auto request = current()) request->cancel(reason);
+    }
+    void reset() {
+        if (auto request = mCurrent.exchange({})) request->cancel("capture_cancelled");
+    }
 
 private:
     std::atomic<std::shared_ptr<Request>> mCurrent;
-    Stage const mFirstStage;
-    char const* const mInvalidStage;
+    Stage const                           mFirstStage;
+    char const* const                     mInvalidStage;
 };
 
 } // namespace probe::detail

@@ -20,12 +20,7 @@ public:
             if ((state & kClosed) != 0 || (state & kCountMask) == kCountMask) {
                 return false;
             }
-            if (mState.compare_exchange_weak(
-                    state,
-                    state + 1,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire
-                )) {
+            if (mState.compare_exchange_weak(state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
                 return true;
             }
         }
@@ -46,7 +41,7 @@ public:
     class Guard {
     public:
         explicit Guard(CallbackGate& gate) noexcept : mGate(gate.enter() ? &gate : nullptr) {}
-        Guard(Guard const&) = delete;
+        Guard(Guard const&)            = delete;
         Guard& operator=(Guard const&) = delete;
         ~Guard() {
             if (mGate != nullptr) {

@@ -74,10 +74,10 @@ void ProbeMod::spoolThreadLoop() {
                 faultReported = true;
                 enqueue(
                     nlohmann::json{
-                        {"event",   "error"          },
-                        {"reason",  "internal_error" },
-                        {"phase",   "spool_thread"   },
-                        {"message", e.what()         },
+                        {"event",   "error"         },
+                        {"reason",  "internal_error"},
+                        {"phase",   "spool_thread"  },
+                        {"message", e.what()        },
                 }
                         .dump()
                 );
@@ -103,8 +103,7 @@ void ProbeMod::spoolThreadLoop() {
         if (auto result = hookTakeCallResult()) enqueue(result->dump());
         reportPoseFaults();
         reportRecordFault();
-    } catch (...) {
-    }
+    } catch (...) {}
     flushSpool(true);
 }
 
@@ -226,15 +225,15 @@ void ProbeMod::queueServerTask(
     std::function<void()>            fn,
     std::function<void(char const*)> onFailure,
     bool                             rejectQueueForSelftest,
-    SdkTaskTest                       test
+    SdkTaskTest                      test
 ) {
     std::uint64_t const reqId = activeReqId();
-    auto fail = [this, onFailure, reqId](char const* reason, char const* message = "") {
+    auto                fail  = [this, onFailure, reqId](char const* reason, char const* message = "") {
         if (onFailure) {
             if (!guardedSdkCall([&] { onFailure(reason); })) bootLog("server task: failure handler failed");
         } else {
             ActiveReqIdScope reqScope(reqId);
-            nlohmann::json error{
+            nlohmann::json   error{
                 {"event",  "error"},
                 {"reason", reason }
             };
@@ -242,19 +241,36 @@ void ProbeMod::queueServerTask(
             enqueue(error.dump());
         }
     };
-    auto tracked = detail::trackedCallback(detail::gCallbacks, detail::CallbackDomain::Server, [fn = std::move(fn), fail, test, reqId] {
-        gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
-        ActiveReqIdScope reqScope(reqId);
-        std::string message;
-        if (!guardedSdkCall([&] { injectSdkTaskFault(test, SdkTaskPhase::Run); fn(); }, CaptureTest::None, &message))
-            fail("server_task_failed", message.c_str());
-    });
-    if (!tracked) { fail("quiescing"); return; }
+    auto tracked = detail::trackedCallback(
+        detail::gCallbacks,
+        detail::CallbackDomain::Server,
+        [fn = std::move(fn), fail, test, reqId] {
+            gServerThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+            ActiveReqIdScope reqScope(reqId);
+            std::string      message;
+            if (!guardedSdkCall(
+                    [&] {
+                        injectSdkTaskFault(test, SdkTaskPhase::Run);
+                        fn();
+                    },
+                    CaptureTest::None,
+                    &message
+                ))
+                fail("server_task_failed", message.c_str());
+        }
+    );
+    if (!tracked) {
+        fail("quiescing");
+        return;
+    }
     decltype(ll::service::bedrock::getServerInstance()) server;
     if (!guardedSdkCall([&] {
-        injectSdkTaskFault(test, SdkTaskPhase::Lookup);
-        server = ll::service::bedrock::getServerInstance();
-    })) { fail("server_task_queue_failed"); return; }
+            injectSdkTaskFault(test, SdkTaskPhase::Lookup);
+            server = ll::service::bedrock::getServerInstance();
+        })) {
+        fail("server_task_queue_failed");
+        return;
+    }
     if (!server) {
         fail("no_server_instance");
         return;
@@ -264,19 +280,23 @@ void ProbeMod::queueServerTask(
     // task the same failure path as a callback fault, without leaking a second
     // uncorrelated protocol error or leaving its active slot occupied.
     std::string message;
-    bool const submitted = guardedSdkCall([&] {
-        injectSdkTaskFault(test, SdkTaskPhase::Submit);
-        if (rejectQueueForSelftest) throw std::runtime_error("selftest queue rejection");
-        server->queueForServerThread(task);
-    }, CaptureTest::None, &message);
+    bool const  submitted = guardedSdkCall(
+        [&] {
+            injectSdkTaskFault(test, SdkTaskPhase::Submit);
+            if (rejectQueueForSelftest) throw std::runtime_error("selftest queue rejection");
+            server->queueForServerThread(task);
+        },
+        CaptureTest::None,
+        &message
+    );
     if (!submitted) fail("server_task_queue_failed", message.c_str());
 }
 
 void ProbeMod::serverLoop() {
-    PipeChannel pipe;
-    bool   connected = false;
+    PipeChannel     pipe;
+    bool            connected = false;
     CommandFramer<> commands;
-    std::string writeBuffer;
+    std::string     writeBuffer;
     writeBuffer.reserve(PipeBuffer);
     auto writeFailed = [this] {
         auto const error = GetLastError();
@@ -328,7 +348,7 @@ void ProbeMod::serverLoop() {
                     pipe.close();
                     continue;
                 }
-                connected = true;
+                connected               = true;
                 bool const authRequired = !mPipeToken.empty();
                 mPipeAuthed.store(!authRequired, std::memory_order_release);
                 bootLog("pipe: client connected");
@@ -396,7 +416,8 @@ void ProbeMod::serverLoop() {
                                 {"event",  "error"        },
                                 {"reason", "line_too_long"},
                                 {"bytes",  bytes          },
-                            }.dump()
+                        }
+                                .dump()
                         );
                     }
                 );

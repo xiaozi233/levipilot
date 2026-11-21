@@ -10,32 +10,32 @@ namespace probe::detail {
 
 namespace {
 
-constexpr std::size_t kAnchorCount    = 4;
-constexpr std::size_t kSignatureBytes = 24;
+constexpr std::size_t kAnchorCount     = 4;
+constexpr std::size_t kSignatureBytes  = 24;
 constexpr std::size_t kMaxStructFields = 64;
 constexpr std::size_t kMaxComponents   = 64;
 
 struct Anchor {
-    char const*                name = nullptr;
-    std::uint64_t              address = 0;
-    std::uint64_t              resolved = 0;
+    char const*                               name     = nullptr;
+    std::uint64_t                             address  = 0;
+    std::uint64_t                             resolved = 0;
     std::array<std::uint8_t, kSignatureBytes> expected{};
-    std::size_t                expectedLength = 0;
-    bool                       configured     = false;
-    bool                       match          = true;
-    std::uint64_t              elapsedUs      = 0;
+    std::size_t                               expectedLength = 0;
+    bool                                      configured     = false;
+    bool                                      match          = true;
+    std::uint64_t                             elapsedUs      = 0;
 };
 
 struct VersionInfo {
     std::string buildId;
-    int         major = 0;
-    int         minor = 0;
-    int         build = 0;
-    int         revision = 0;
+    int         major        = 0;
+    int         minor        = 0;
+    int         build        = 0;
+    int         revision     = 0;
     bool        profileFound = false;
     std::string profileVersion;
     std::string profileBuildId;
-    char const* matchSource = "none";
+    char const* matchSource  = "none";
     bool        signaturesOk = true;
 };
 
@@ -49,19 +49,19 @@ struct StructField {
 };
 
 struct ComponentEntry {
-    std::uint32_t id         = 0;
-    std::uint32_t size       = 0;
+    std::uint32_t id   = 0;
+    std::uint32_t size = 0;
     std::string   name;
-    bool          overridden = false;
+    bool          overridden  = false;
     bool          fromProfile = false;
 };
 
-Anchor         gAnchors[kAnchorCount] = {};
-VersionInfo    gVersion;
+Anchor           gAnchors[kAnchorCount] = {};
+VersionInfo      gVersion;
 std::atomic_bool gVersionOk{false};
 std::atomic_bool gHooksAllowed{false};
 std::atomic_bool gAllowVersionMismatch{false};
-std::string    gOffsetSource = "builtin";
+std::string      gOffsetSource = "builtin";
 
 StructField    gStructFields[kMaxStructFields];
 std::size_t    gStructFieldCount = 0;
@@ -107,8 +107,8 @@ bool parseOffsetValue(nlohmann::json const& value, std::uint64_t& out) {
         if (text.empty() || text.front() == '-') {
             return false;
         }
-        char*                   end    = nullptr;
-        errno                          = 0;
+        char* end                       = nullptr;
+        errno                           = 0;
         unsigned long long const parsed = std::strtoull(text.c_str(), &end, 0);
         if (end == text.c_str() || end == nullptr || *end != '\0' || errno == ERANGE) {
             return false;
@@ -119,11 +119,7 @@ bool parseOffsetValue(nlohmann::json const& value, std::uint64_t& out) {
     return false;
 }
 
-bool parseHexInto(
-    std::string const&                         text,
-    std::array<std::uint8_t, kSignatureBytes>& out,
-    std::size_t&                               length
-) {
+bool parseHexInto(std::string const& text, std::array<std::uint8_t, kSignatureBytes>& out, std::size_t& length) {
     std::vector<std::uint8_t> bytes;
     std::string               cleaned;
     for (char ch : text) {
@@ -192,14 +188,13 @@ void loadProfileAnchors(VersionProfile const& profile) {
 }
 
 void loadProfileFields(VersionProfile const& profile) {
-    for (std::size_t slot = 0; slot < profile.fieldCount && gStructFieldCount < kMaxStructFields;
-         ++slot) {
+    for (std::size_t slot = 0; slot < profile.fieldCount && gStructFieldCount < kMaxStructFields; ++slot) {
         auto const& source = profile.fields[slot];
         if (source.offset == nullptr) {
             continue;
         }
-        char*                end    = nullptr;
-        errno                       = 0;
+        char* end                       = nullptr;
+        errno                           = 0;
         unsigned long long const parsed = std::strtoull(source.offset, &end, 0);
         if (end == source.offset || *end != '\0' || errno == ERANGE) {
             continue;
@@ -216,9 +211,8 @@ void loadProfileFields(VersionProfile const& profile) {
 }
 
 void loadProfileComponents(VersionProfile const& profile) {
-    for (std::size_t slot = 0; slot < profile.componentCount && gComponentCount < kMaxComponents;
-         ++slot) {
-        auto const& source = profile.components[slot];
+    for (std::size_t slot = 0; slot < profile.componentCount && gComponentCount < kMaxComponents; ++slot) {
+        auto const& source             = profile.components[slot];
         gComponents[gComponentCount++] = ComponentEntry{
             source.id,
             source.size,
@@ -262,9 +256,7 @@ void loadStructOverrides(nlohmann::json const& root) {
             bool const    remove = fieldIt.value().is_null();
             std::uint64_t offset = 0;
             if (!remove && !parseOffsetValue(fieldIt.value(), offset)) {
-                ProbeMod::getInstance().bootLog(
-                    "resolve: bad offset " + typeIt.key() + "." + fieldIt.key()
-                );
+                ProbeMod::getInstance().bootLog("resolve: bad offset " + typeIt.key() + "." + fieldIt.key());
                 continue;
             }
             if (auto* existing = findStructField(typeIt.key(), fieldIt.key())) {
@@ -344,10 +336,7 @@ void recomputeGates() {
     gVersion.signaturesOk = signaturesOk;
     bool const versionOk  = gVersion.profileFound && signaturesOk;
     gVersionOk.store(versionOk, std::memory_order_release);
-    gHooksAllowed.store(
-        versionOk || gAllowVersionMismatch.load(std::memory_order_relaxed),
-        std::memory_order_release
-    );
+    gHooksAllowed.store(versionOk || gAllowVersionMismatch.load(std::memory_order_relaxed), std::memory_order_release);
 }
 
 std::uint64_t anchorAddress(std::size_t index) {
@@ -394,7 +383,7 @@ std::uint64_t followThunkChain(std::uint64_t address, int maxHops, int& hopsOut)
         if (target == 0) {
             break;
         }
-        real = target;
+        real    = target;
         hopsOut = hops + 1;
     }
     return real;
@@ -420,7 +409,7 @@ VersionInfo readVersion() {
     if (!GetFileVersionInfoW(path, 0, size, data.data())) {
         return out;
     }
-    VS_FIXEDFILEINFO* info = nullptr;
+    VS_FIXEDFILEINFO* info   = nullptr;
     UINT              length = 0;
     if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &length) || info == nullptr
         || length < sizeof(VS_FIXEDFILEINFO)) {
@@ -430,8 +419,8 @@ VersionInfo readVersion() {
     out.minor    = static_cast<int>(LOWORD(info->dwFileVersionMS));
     out.build    = static_cast<int>(HIWORD(info->dwFileVersionLS));
     out.revision = static_cast<int>(LOWORD(info->dwFileVersionLS));
-    out.buildId  = std::to_string(out.major) + "." + std::to_string(out.minor) + "."
-                + std::to_string(out.build) + "." + std::to_string(out.revision);
+    out.buildId  = std::to_string(out.major) + "." + std::to_string(out.minor) + "." + std::to_string(out.build) + "."
+                 + std::to_string(out.revision);
     return out;
 }
 
@@ -487,7 +476,7 @@ void loadOffsetsFile(std::filesystem::path const& path) {
 } // namespace
 
 void resolveInit(std::filesystem::path const& modDir) {
-    gVersion = readVersion();
+    gVersion      = readVersion();
     gOffsetSource = "builtin";
 
     static constexpr char const* Names[kAnchorCount] = {
@@ -497,10 +486,10 @@ void resolveInit(std::filesystem::path const& modDir) {
         "Actor::isOnGround",
     };
     for (std::size_t index = 0; index < kAnchorCount; ++index) {
-        Anchor& anchor        = gAnchors[index];
-        anchor.name           = Names[index];
-        anchor.address        = anchorAddress(index);
-        anchor.resolved       = followThunk(anchor.address);
+        Anchor& anchor  = gAnchors[index];
+        anchor.name     = Names[index];
+        anchor.address  = anchorAddress(index);
+        anchor.resolved = followThunk(anchor.address);
         anchor.expected.fill(0);
         anchor.expectedLength = 0;
         anchor.configured     = false;
@@ -527,20 +516,18 @@ void resolveInit(std::filesystem::path const& modDir) {
         if (!anchor.configured) {
             continue;
         }
-        std::uint64_t const start = qpcNow();
+        std::uint64_t const                       start = qpcNow();
         std::array<std::uint8_t, kSignatureBytes> actual{};
         bool const readable = readMemory(anchor.resolved, actual.data(), anchor.expectedLength);
         anchor.elapsedUs    = qpcElapsedUs(start, qpcNow());
-        anchor.match        = readable
-                       && std::memcmp(actual.data(), anchor.expected.data(), anchor.expectedLength) == 0;
+        anchor.match = readable && std::memcmp(actual.data(), anchor.expected.data(), anchor.expectedLength) == 0;
     }
 
     recomputeGates();
     ProbeMod::getInstance().bootLog(
-        "resolve: version=" + gVersion.buildId
-        + " profile=" + (gVersion.profileFound ? gVersion.profileVersion : std::string{"none"})
-        + " match=" + gVersion.matchSource + " ok=" + (versionOk() ? "1" : "0")
-        + " hooks=" + (hooksAllowed() ? "1" : "0") + " source=" + gOffsetSource
+        "resolve: version=" + gVersion.buildId + " profile="
+        + (gVersion.profileFound ? gVersion.profileVersion : std::string{"none"}) + " match=" + gVersion.matchSource
+        + " ok=" + (versionOk() ? "1" : "0") + " hooks=" + (hooksAllowed() ? "1" : "0") + " source=" + gOffsetSource
     );
 }
 
@@ -552,9 +539,7 @@ void setAllowVersionMismatch(bool allow) {
     gAllowVersionMismatch.store(allow, std::memory_order_release);
     recomputeGates();
     if (allow && !versionOk()) {
-        ProbeMod::getInstance().bootLog(
-            "resolve: compat mode enabled; hooked features run without a matching profile"
-        );
+        ProbeMod::getInstance().bootLog("resolve: compat mode enabled; hooked features run without a matching profile");
     }
 }
 
@@ -602,11 +587,11 @@ nlohmann::json structTableJson() {
     for (std::size_t index = 0; index < gStructFieldCount; ++index) {
         auto const& entry = gStructFields[index];
         fields.push_back({
-            {"struct",     entry.type      },
-            {"field",      entry.field     },
-            {"offset",     entry.offset    },
-            {"overridden", entry.overridden},
-            {"present",    entry.present   },
+            {"struct",     entry.type       },
+            {"field",      entry.field      },
+            {"offset",     entry.offset     },
+            {"overridden", entry.overridden },
+            {"present",    entry.present    },
             {"builtin",    entry.fromProfile},
         });
     }
@@ -627,15 +612,15 @@ nlohmann::json structTableJson() {
         lastMissing = gLastMissing;
     }
     return nlohmann::json{
-        {"source",             gOffsetSource          },
-        {"profile_found",      gVersion.profileFound  },
-        {"profile_version",    gVersion.profileVersion},
-        {"struct_fields",      std::move(fields)      },
-        {"struct_field_count", gStructFieldCount      },
-        {"components",         std::move(components)  },
-        {"component_count",    gComponentCount        },
+        {"source",             gOffsetSource                                 },
+        {"profile_found",      gVersion.profileFound                         },
+        {"profile_version",    gVersion.profileVersion                       },
+        {"struct_fields",      std::move(fields)                             },
+        {"struct_field_count", gStructFieldCount                             },
+        {"components",         std::move(components)                         },
+        {"component_count",    gComponentCount                               },
         {"missing_lookups",    gMissingFields.load(std::memory_order_relaxed)},
-        {"last_missing",       lastMissing            },
+        {"last_missing",       lastMissing                                   },
     };
 }
 
@@ -653,39 +638,38 @@ nlohmann::json profileJson() {
     }
     return nlohmann::json{
         // Legacy diagnose fields kept for older clients.
-        {"expected",          gVersion.profileFound ? gVersion.profileVersion
-                                                    : std::string{"unknown"}},
-        {"file",              gVersion.buildId                  },
-        {"prefix_ok",         gVersion.profileFound             },
-        {"version",           gVersion.buildId                  },
-        {"profile_found",     gVersion.profileFound             },
-        {"profile_version",   gVersion.profileVersion           },
-        {"profile_build_id",  gVersion.profileBuildId           },
-        {"match",             gVersion.matchSource              },
-        {"version_ok",        versionOk()                       },
-        {"signatures_ok",     gVersion.signaturesOk             },
-        {"compat",            allowVersionMismatch()            },
-        {"hooks_allowed",     hooksAllowed()                    },
-        {"anchors_configured", configured                       },
-        {"anchors_matched",   matched                           },
-        {"offset_source",     gOffsetSource                     },
-        {"struct_fields",     gStructFieldCount                 },
-        {"components",        gComponentCount                   },
+        {"expected",           gVersion.profileFound ? gVersion.profileVersion : std::string{"unknown"}},
+        {"file",               gVersion.buildId                                                        },
+        {"prefix_ok",          gVersion.profileFound                                                   },
+        {"version",            gVersion.buildId                                                        },
+        {"profile_found",      gVersion.profileFound                                                   },
+        {"profile_version",    gVersion.profileVersion                                                 },
+        {"profile_build_id",   gVersion.profileBuildId                                                 },
+        {"match",              gVersion.matchSource                                                    },
+        {"version_ok",         versionOk()                                                             },
+        {"signatures_ok",      gVersion.signaturesOk                                                   },
+        {"compat",             allowVersionMismatch()                                                  },
+        {"hooks_allowed",      hooksAllowed()                                                          },
+        {"anchors_configured", configured                                                              },
+        {"anchors_matched",    matched                                                                 },
+        {"offset_source",      gOffsetSource                                                           },
+        {"struct_fields",      gStructFieldCount                                                       },
+        {"components",         gComponentCount                                                         },
     };
 }
 
 nlohmann::json capabilitiesJson() {
-    bool const hooks = hooksAllowed();
+    bool const hooks   = hooksAllowed();
     bool const offsets = gStructFieldCount > 0 || gComponentCount > 0;
     return nlohmann::json{
-        {"hooks",      hooks          },
-        {"input",      hooks          },
-        {"watch",      hooks          },
-        {"record",     hooks          },
-        {"packets",    hooks          },
-        {"offsets",    offsets        },
-        {"components", gComponentCount > 0},
-        {"profile",    gVersion.profileFound},
+        {"hooks",      hooks                 },
+        {"input",      hooks                 },
+        {"watch",      hooks                 },
+        {"record",     hooks                 },
+        {"packets",    hooks                 },
+        {"offsets",    offsets               },
+        {"components", gComponentCount > 0   },
+        {"profile",    gVersion.profileFound },
         {"compat",     allowVersionMismatch()},
     };
 }
@@ -693,12 +677,11 @@ nlohmann::json capabilitiesJson() {
 nlohmann::json profileDump() {
     nlohmann::json anchors = nlohmann::json::object();
     for (auto const& anchor : gAnchors) {
-        std::size_t const length =
-            anchor.expectedLength > 0 ? anchor.expectedLength : kSignatureBytes;
+        std::size_t const length = anchor.expectedLength > 0 ? anchor.expectedLength : kSignatureBytes;
         std::array<std::uint8_t, kSignatureBytes> actual{};
-        bool const readable = readMemory(anchor.resolved, actual.data(), length);
-        anchors[anchor.name] = {
-            {"kind",         "symbol"                                   },
+        bool const                                readable = readMemory(anchor.resolved, actual.data(), length);
+        anchors[anchor.name]                               = {
+            {"kind", "symbol"},
             {"expected_hex", readable ? hexEncode(actual.data(), length) : ""},
         };
     }
@@ -712,7 +695,7 @@ nlohmann::json profileDump() {
 
     nlohmann::json components = nlohmann::json::object();
     for (std::size_t index = 0; index < gComponentCount; ++index) {
-        auto const& entry = gComponents[index];
+        auto const& entry      = gComponents[index];
         components[entry.name] = {
             {"id",   entry.id  },
             {"size", entry.size},
@@ -720,50 +703,50 @@ nlohmann::json profileDump() {
     }
 
     std::string const versionPrefix =
-        std::to_string(gVersion.major) + "." + std::to_string(gVersion.minor) + "."
-        + std::to_string(gVersion.build);
+        std::to_string(gVersion.major) + "." + std::to_string(gVersion.minor) + "." + std::to_string(gVersion.build);
 
     nlohmann::json profile = {
-        {"runtime",        true                  },
-        {"version",        gVersion.buildId      },
-        {"build_id",       gVersion.buildId      },
-        {"version_prefix", versionPrefix         },
-        {"note",           "Generated by profile_dump; save as docs/offsets/<version>.json and "
-                           "run driver/gen_profiles.py."},
-        {"anchors",        anchors               },
-        {"structs",        structs               },
-        {"components",     components            },
+        {"runtime",        true            },
+        {"version",        gVersion.buildId},
+        {"build_id",       gVersion.buildId},
+        {"version_prefix", versionPrefix   },
+        {"note",
+         "Generated by profile_dump; save as docs/offsets/<version>.json and "
+         "run driver/gen_profiles.py."     },
+        {"anchors",        anchors         },
+        {"structs",        structs         },
+        {"components",     components      },
     };
 
     return nlohmann::json{
-        {"event",         "profile_dump"            },
-        {"version",       gVersion.buildId          },
-        {"build_id",      gVersion.buildId          },
-        {"version_prefix", versionPrefix            },
-        {"profile_found", gVersion.profileFound     },
-        {"profile_version", gVersion.profileVersion },
+        {"event",            "profile_dump"         },
+        {"version",          gVersion.buildId       },
+        {"build_id",         gVersion.buildId       },
+        {"version_prefix",   versionPrefix          },
+        {"profile_found",    gVersion.profileFound  },
+        {"profile_version",  gVersion.profileVersion},
         {"profile_build_id", gVersion.profileBuildId},
-        {"match",         gVersion.matchSource      },
-        {"version_ok",    versionOk()               },
-        {"compat",        allowVersionMismatch()    },
-        {"anchors",       anchors                   },
-        {"structs",       structs                   },
-        {"components",    components                },
-        {"profile",       profile                   },
+        {"match",            gVersion.matchSource   },
+        {"version_ok",       versionOk()            },
+        {"compat",           allowVersionMismatch() },
+        {"anchors",          anchors                },
+        {"structs",          structs                },
+        {"components",       components             },
+        {"profile",          profile                },
     };
 }
 
 nlohmann::json profileProbe(std::string const& buildId) {
     VersionInfo probe;
-    probe.buildId = buildId;
+    probe.buildId                 = buildId;
     VersionProfile const* profile = selectProfile(probe);
-    nlohmann::json out{
-        {"event",         "profile_probe"                     },
-        {"build_id",      buildId                             },
-        {"profile_found", profile != nullptr                  },
-        {"match",         probe.matchSource                   },
-        {"simulated",     buildId != gVersion.buildId         },
-        {"current",       gVersion.buildId                    },
+    nlohmann::json        out{
+        {"event",         "profile_probe"            },
+        {"build_id",      buildId                    },
+        {"profile_found", profile != nullptr         },
+        {"match",         probe.matchSource          },
+        {"simulated",     buildId != gVersion.buildId},
+        {"current",       gVersion.buildId           },
     };
     if (profile != nullptr) {
         out["profile_version"]  = profile->version;
@@ -784,17 +767,11 @@ nlohmann::json symbolResolve(std::string const& name) {
     // exposes; SymbolView alone does not resolve game imports.
     std::uint64_t anchor = 0;
     if (name == "BatchedNetworkPeer::$sendPacket") {
-        anchor = reinterpret_cast<std::uint64_t>(
-            ll::memory::toFuncPtr(&BatchedNetworkPeer::$sendPacket)
-        );
+        anchor = reinterpret_cast<std::uint64_t>(ll::memory::toFuncPtr(&BatchedNetworkPeer::$sendPacket));
     } else if (name == "NetworkConnection::receivePacket") {
-        anchor = reinterpret_cast<std::uint64_t>(
-            ll::memory::toFuncPtr(&NetworkConnection::receivePacket)
-        );
+        anchor = reinterpret_cast<std::uint64_t>(ll::memory::toFuncPtr(&NetworkConnection::receivePacket));
     } else if (name == "LoopbackPacketSender::$sendToServer") {
-        anchor = reinterpret_cast<std::uint64_t>(
-            ll::memory::toFuncPtr(&LoopbackPacketSender::$sendToServer)
-        );
+        anchor = reinterpret_cast<std::uint64_t>(ll::memory::toFuncPtr(&LoopbackPacketSender::$sendToServer));
     } else {
         try {
             anchor = reinterpret_cast<std::uint64_t>(ll::memory::SymbolView{name}.resolve());
@@ -811,10 +788,10 @@ nlohmann::json symbolResolve(std::string const& name) {
     // Follow import stubs / relative thunks to the real function.
     int           hops = 0;
     std::uint64_t real = followThunkChain(anchor, 4, hops);
-    out["real"]       = real;
-    out["thunk_hops"] = hops;
-    out["thunked"]    = real != anchor;
-    out["executable"] = hookAddressExecutable(real);
+    out["real"]        = real;
+    out["thunk_hops"]  = hops;
+    out["thunked"]     = real != anchor;
+    out["executable"]  = hookAddressExecutable(real);
 
     HMODULE module = nullptr;
     if (GetModuleHandleExW(
@@ -835,22 +812,22 @@ nlohmann::json symbolResolve(std::string const& name) {
 
 nlohmann::json diagnoseJson() {
     nlohmann::json out;
-    out["event"]      = "diagnose";
-    out["version"]    = profileJson();
-    out["version_ok"] = versionOk();
-    out["source"]     = gOffsetSource;
+    out["event"]        = "diagnose";
+    out["version"]      = profileJson();
+    out["version_ok"]   = versionOk();
+    out["source"]       = gOffsetSource;
     out["capabilities"] = capabilitiesJson();
-    out["structs"]    = structTableJson();
-    out["anchors"]    = nlohmann::json::array();
+    out["structs"]      = structTableJson();
+    out["anchors"]      = nlohmann::json::array();
     for (auto const& anchor : gAnchors) {
         out["anchors"].push_back({
-            {"name",       anchor.name                     },
-            {"address",    anchor.address                  },
-            {"resolved",   anchor.resolved                 },
-            {"configured", anchor.configured               },
-            {"match",      anchor.match                    },
-            {"signature_bytes", anchor.expectedLength      },
-            {"elapsed_us", anchor.elapsedUs                },
+            {"name",            anchor.name          },
+            {"address",         anchor.address       },
+            {"resolved",        anchor.resolved      },
+            {"configured",      anchor.configured    },
+            {"match",           anchor.match         },
+            {"signature_bytes", anchor.expectedLength},
+            {"elapsed_us",      anchor.elapsedUs     },
         });
     }
     return out;
@@ -865,21 +842,21 @@ nlohmann::json signatureCheck(std::string const& name, std::string const& expect
         std::size_t                               length = 0;
         if (!parseHexInto(expectedHex, expected, length)) {
             return nlohmann::json{
-                {"event",  "error"      },
-                {"reason", "bad_hex"    },
+                {"event",  "error"  },
+                {"reason", "bad_hex"},
             };
         }
         std::array<std::uint8_t, kSignatureBytes> actual{};
-        bool const readable = readMemory(anchor.resolved, actual.data(), length);
-        bool const match    = readable && std::memcmp(actual.data(), expected.data(), length) == 0;
+        bool const                                readable = readMemory(anchor.resolved, actual.data(), length);
+        bool const match = readable && std::memcmp(actual.data(), expected.data(), length) == 0;
         return nlohmann::json{
-            {"event",   "signature_check"          },
-            {"name",    name                       },
-            {"address", anchor.address             },
-            {"resolved", anchor.resolved           },
-            {"length",  length                     },
-            {"match",   match                      },
-            {"readable", readable                  },
+            {"event", "signature_check"},
+            {"name", name},
+            {"address", anchor.address},
+            {"resolved", anchor.resolved},
+            {"length", length},
+            {"match", match},
+            {"readable", readable},
             {"actual_hex", readable ? hexEncode(actual.data(), length) : ""},
         };
     }

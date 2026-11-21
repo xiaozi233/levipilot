@@ -100,13 +100,9 @@ bool numberValue(nlohmann::json const& value, double low, double high, double& o
     return true;
 }
 
-float yawTo(double dx, double dz) {
-    return static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232);
-}
+float yawTo(double dx, double dz) { return static_cast<float>(std::atan2(-dx, dz) * 57.29577951308232); }
 
-float pitchTo(double dy, double horiz) {
-    return static_cast<float>(-std::atan2(dy, horiz) * 57.29577951308232);
-}
+float pitchTo(double dy, double horiz) { return static_cast<float>(-std::atan2(dy, horiz) * 57.29577951308232); }
 
 bool numberJson(nlohmann::json const& j, char const* key, double low, double high, double fallback, double& out) {
     auto const it = j.find(key);
@@ -194,9 +190,7 @@ int safeJsonInt(nlohmann::json const& j, char const* key, int fallback, bool* in
     return fallback;
 }
 
-std::string safeJsonString(
-    nlohmann::json const& j, char const* key, std::string const& fallback, bool* invalid
-) {
+std::string safeJsonString(nlohmann::json const& j, char const* key, std::string const& fallback, bool* invalid) {
     if (!j.is_object()) {
         if (invalid) *invalid = true;
         return fallback;
@@ -251,16 +245,7 @@ void attachReqId(nlohmann::json& out, std::uint64_t reqId) {
 
 nlohmann::json protocolCapabilitiesJson() {
     return nlohmann::json::array(
-        {"tick_json",
-         "bin_record",
-         "mem",
-         "watch",
-         "signin",
-         "hook",
-         "ecs",
-         "task_lifecycle",
-         "chat_history",
-         "req_id"}
+        {"tick_json", "bin_record", "mem", "watch", "signin", "hook", "ecs", "task_lifecycle", "chat_history", "req_id"}
     );
 }
 
@@ -312,12 +297,12 @@ nlohmann::json itemJson(ItemStack const& item) {
         return nullptr;
     }
     return {
-        {"type",       item.getTypeName()                    },
-        {"name",       item.getName()                        },
-        {"count",      static_cast<int>(item.mCount)         },
-        {"aux",        static_cast<int>(item.mAuxValue)      },
+        {"type",       item.getTypeName()                     },
+        {"name",       item.getName()                         },
+        {"count",      static_cast<int>(item.mCount)          },
+        {"aux",        static_cast<int>(item.mAuxValue)       },
         {"damage",     static_cast<int>(item.getDamageValue())},
-        {"max_damage", itemMaxDamage(item)                   },
+        {"max_damage", itemMaxDamage(item)                    },
     };
 }
 
@@ -369,9 +354,8 @@ bool makeItemStack(
     }
     out.reinit(*item, count, itemAux);
     if (damage >= 0) {
-        auto const clampedDamage = static_cast<short>(
-            std::clamp(damage, 0, static_cast<int>(std::numeric_limits<short>::max()))
-        );
+        auto const clampedDamage =
+            static_cast<short>(std::clamp(damage, 0, static_cast<int>(std::numeric_limits<short>::max())));
         std::string sdkError;
         if (!guardedSdkCall([&] { out.setDamageValue(clampedDamage); }, CaptureTest::None, &sdkError)) {
             error = sdkError.empty() ? "item_damage_failed" : ("item_damage_failed: " + sdkError);

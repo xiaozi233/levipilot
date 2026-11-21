@@ -40,11 +40,11 @@ bool queryXblSignedIn(bool& signedIn) {
 namespace probe {
 
 void WorldSession::signInOnClient() {
-    bool signedIn = false;
-    bool const known = detail::queryXblSignedIn(signedIn);
+    bool           signedIn = false;
+    bool const     known    = detail::queryXblSignedIn(signedIn);
     nlohmann::json out{
-        {"event", "signin"                         },
-        {"known", known                            },
+        {"event", "signin"},
+        {"known", known   },
     };
     if (known) {
         out["signed_in"] = signedIn;

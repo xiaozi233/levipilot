@@ -126,11 +126,11 @@ void ProbeMod::captureState(
     auto const start = qpcNow();
     auto const ok    = guardedGameRead([&] {
         injectCaptureFault(request.test);
-        out.tick       = mTick.load(std::memory_order_relaxed);
-        out.pos        = vectorSnapshot(player.getPosition());
-        out.feet       = vectorSnapshot(player.getFeetPos());
-        out.head       = vectorSnapshot(player.getHeadPos());
-        out.velocity   = vectorSnapshot(player.getVelocity());
+        out.tick     = mTick.load(std::memory_order_relaxed);
+        out.pos      = vectorSnapshot(player.getPosition());
+        out.feet     = vectorSnapshot(player.getFeetPos());
+        out.head     = vectorSnapshot(player.getHeadPos());
+        out.velocity = vectorSnapshot(player.getVelocity());
         if (auto sv = player.getEntityContext().tryGetComponent<StateVectorComponent>()) {
             out.posDelta = vectorSnapshot(*sv->mPosDelta);
         } else {
@@ -146,8 +146,8 @@ void ProbeMod::captureState(
             out.prevYaw   = out.yaw;
             out.prevPitch = out.pitch;
         }
-        auto const in  = readInput(client);
-        out.input      = {
+        auto const in = readInput(client);
+        out.input     = {
             in.w,
             in.a,
             in.s,
@@ -356,9 +356,22 @@ void ProbeMod::drainQueries() {
         if (auto error = done.error ? done.error : s.error) emitFailure(done, "select_slot", error);
         else {
             nlohmann::json item = nullptr;
-            if (s.present) item = {{"type", s.type.c_str()}, {"count", s.count}};
-            publish(done, {{"event", "select_slot_done"}, {"slot", s.slot}, {"applied", s.applied},
-                           {"ok", s.slot == s.applied}, {"item", std::move(item)}, {"truncated", s.truncated}});
+            if (s.present)
+                item = {
+                    {"type",  s.type.c_str()},
+                    {"count", s.count       }
+                };
+            publish(
+                done,
+                {
+                    {"event",     "select_slot_done" },
+                    {"slot",      s.slot             },
+                    {"applied",   s.applied          },
+                    {"ok",        s.slot == s.applied},
+                    {"item",      std::move(item)    },
+                    {"truncated", s.truncated        }
+            }
+            );
         }
     }
     if (auto done = mStateCapture.take(now)) {

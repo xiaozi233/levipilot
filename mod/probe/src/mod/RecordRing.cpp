@@ -10,7 +10,7 @@ namespace probe::detail {
 namespace {
 
 RecordBuffer<RecordEntry, RecordCapacity> gRecords;
-std::mutex gRingMutex; // Command-side lifecycle and dumps; never taken by tick.
+std::mutex                                gRingMutex; // Command-side lifecycle and dumps; never taken by tick.
 std::atomic<CaptureTest>                  gSampleTest{CaptureTest::None};
 
 // Liquid hashes are resolved on the command side and remain plain tick loads.
@@ -21,21 +21,21 @@ std::atomic<std::uint32_t> gFlowingLavaHash{0};
 
 nlohmann::json entryJson(RecordEntry const& entry) {
     return {
-        {"tick",     entry.tick                  },
-        {"x",        finiteOrZero(entry.x)       },
-        {"y",        finiteOrZero(entry.y)       },
-        {"z",        finiteOrZero(entry.z)       },
-        {"vx",       finiteOrZero(entry.vx)      },
-        {"vy",       finiteOrZero(entry.vy)      },
-        {"vz",       finiteOrZero(entry.vz)      },
-        {"yaw",      finiteOrZero(entry.yaw)     },
-        {"pitch",    finiteOrZero(entry.pitch)   },
-        {"feet_y",   finiteOrZero(entry.feetY)   },
-        {"flags",    entry.flags                 },
-        {"block_below", entry.blockBelow         },
-        {"block_feet",  entry.blockFeet          },
-        {"block_head",  entry.blockHead          },
-        {"health_milli", entry.healthMilli       },
+        {"tick",         entry.tick               },
+        {"x",            finiteOrZero(entry.x)    },
+        {"y",            finiteOrZero(entry.y)    },
+        {"z",            finiteOrZero(entry.z)    },
+        {"vx",           finiteOrZero(entry.vx)   },
+        {"vy",           finiteOrZero(entry.vy)   },
+        {"vz",           finiteOrZero(entry.vz)   },
+        {"yaw",          finiteOrZero(entry.yaw)  },
+        {"pitch",        finiteOrZero(entry.pitch)},
+        {"feet_y",       finiteOrZero(entry.feetY)},
+        {"flags",        entry.flags              },
+        {"block_below",  entry.blockBelow         },
+        {"block_feet",   entry.blockFeet          },
+        {"block_head",   entry.blockHead          },
+        {"health_milli", entry.healthMilli        },
     };
 }
 
@@ -71,14 +71,13 @@ constexpr int kMaxSampleY = 319;
 // tick path must do neither, so the block offsets are resolved once per
 // recording session on the command thread, before captures are admitted.
 std::uint64_t gBlockLegacyPointerOffset = 0;
-std::uint64_t gBlockLegacyIdOffset     = 0;
+std::uint64_t gBlockLegacyIdOffset      = 0;
 
 void resolveBlockOffsets() {
     gBlockLegacyPointerOffset = gBlockLegacyIdOffset = 0;
-    std::uint64_t legacyOffset = 0;
-    std::uint64_t idOffset     = 0;
-    if (structOffset("Block", "LegacyPointer", legacyOffset)
-        && structOffset("BlockLegacy", "BlockId", idOffset)) {
+    std::uint64_t legacyOffset                       = 0;
+    std::uint64_t idOffset                           = 0;
+    if (structOffset("Block", "LegacyPointer", legacyOffset) && structOffset("BlockLegacy", "BlockId", idOffset)) {
         gBlockLegacyPointerOffset = legacyOffset;
         gBlockLegacyIdOffset      = idOffset;
     }
@@ -189,14 +188,18 @@ bool recordArmTest(CaptureTest test) {
 namespace {
 
 void captureTickEntry(
-    LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge, RecordEntry& entry
+    LocalPlayer&    player,
+    ClientInstance& client,
+    std::uint64_t   tick,
+    bool            jumpEdge,
+    RecordEntry&    entry
 ) {
     injectCaptureFault(gSampleTest.exchange(CaptureTest::None));
     entry.tick = tick;
 
-    auto const& pos = player.getPosition();
-    auto        vel = player.getVelocity();
-    auto const& rot = player.getRotation();
+    auto const& pos  = player.getPosition();
+    auto        vel  = player.getVelocity();
+    auto const& rot  = player.getRotation();
     auto const  feet = player.getFeetPos();
     auto        in   = readInput(client);
 
@@ -257,12 +260,12 @@ void captureTickEntry(
     int const   fy     = static_cast<int>(std::floor(feet.y));
     int const   fz     = static_cast<int>(std::floor(feet.z));
     int const   hy     = static_cast<int>(std::floor(feet.y + 1.8f));
-    if (fy - 1 < kMinSampleY || fy < kMinSampleY || hy < kMinSampleY
-        || fy - 1 > kMaxSampleY || fy > kMaxSampleY || hy > kMaxSampleY) {
-        entry.blockBelow = 0;
-        entry.blockFeet  = 0;
-        entry.blockHead  = 0;
-        entry.flags |= RecordFlagBlockOob;
+    if (fy - 1 < kMinSampleY || fy < kMinSampleY || hy < kMinSampleY || fy - 1 > kMaxSampleY || fy > kMaxSampleY
+        || hy > kMaxSampleY) {
+        entry.blockBelow  = 0;
+        entry.blockFeet   = 0;
+        entry.blockHead   = 0;
+        entry.flags      |= RecordFlagBlockOob;
     } else {
         entry.blockBelow = blockHashAt(source, fx, fy - 1, fz);
         entry.blockFeet  = blockHashAt(source, fx, fy, fz);
@@ -294,7 +297,11 @@ void captureTickEntry(
 // an access violation; converting it here lets the owner always release its
 // admission lease and prevents a later record_start/stop from waiting forever.
 __declspec(noinline) bool captureEntryWithSeh(
-    LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge, RecordEntry& entry
+    LocalPlayer&    player,
+    ClientInstance& client,
+    std::uint64_t   tick,
+    bool            jumpEdge,
+    RecordEntry&    entry
 ) {
 #if defined(_MSC_VER)
     __try {
@@ -331,7 +338,7 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
 }
 
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary) {
-    std::lock_guard lock(gRingMutex);
+    std::lock_guard     lock(gRingMutex);
     std::uint64_t const head   = gRecords.head();
     std::uint64_t const oldest = head > RecordCapacity ? head - RecordCapacity : 0;
     std::uint64_t       start  = since;
@@ -346,19 +353,19 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
     if (limit == 0) {
         limit = 1024;
     }
-    limit = std::clamp<std::size_t>(limit, 1, 8192);
+    limit                   = std::clamp<std::size_t>(limit, 1, 8192);
     std::uint64_t const end = std::min(head, start + limit);
 
     nlohmann::json out;
-    out["event"]      = "record_dump";
-    out["since"]      = since;
-    out["next"]       = end;
-    out["head"]       = head;
-    out["lost"]       = lost;
-    out["count"]      = end - start;
-    out["entry_size"] = RecordSize;
-    out["active"]     = recordActive();
-    out["period"]     = recordPeriod();
+    out["event"]       = "record_dump";
+    out["since"]       = since;
+    out["next"]        = end;
+    out["head"]        = head;
+    out["lost"]        = lost;
+    out["count"]       = end - start;
+    out["entry_size"]  = RecordSize;
+    out["active"]      = recordActive();
+    out["period"]      = recordPeriod();
     auto const outcome = gRecords.outcome();
     out["record_id"]   = outcome.recordId;
     out["ok"]          = outcome.ok();
@@ -400,7 +407,7 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
         }
     }
     out["count"] = out["rows"].size();
-    out["lost"] = lost;
+    out["lost"]  = lost;
     return out;
 }
 

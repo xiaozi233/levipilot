@@ -65,12 +65,12 @@ void ProbeMod::drainMacroPlaybackLocked(bool wait) {
         if (done->ok() && done->reason != MacroEnd::End) return;
         enqueue(
             nlohmann::json{
-                {"event",  "macro_done"              },
-                {"name",   mMacroSession.playback.name()     },
-                {"reason", macroEndName(done->reason)},
-                {"index",  done->index               },
-                {"run_id", done->runId               },
-                {"ok",     done->ok()                }
+                {"event",  "macro_done"                 },
+                {"name",   mMacroSession.playback.name()},
+                {"reason", macroEndName(done->reason)   },
+                {"index",  done->index                  },
+                {"run_id", done->runId                  },
+                {"ok",     done->ok()                   }
         }.dump()
         );
     }
@@ -92,7 +92,7 @@ void ProbeMod::releaseMacroIfRequested() {
     });
     // SEH can bypass injection guards inside game APIs. Restore the harness
     // flags after returning through the local boundary, including failed releases.
-    mInputSession.injecting = false;
+    mInputSession.injecting      = false;
     mInputSession.injectingClick = false;
 }
 
@@ -102,7 +102,7 @@ void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
             if (first) {
                 mInputSession.prevSprint = mInputSession.prevSneak = false;
                 mInputSession.prevMacroRmb = mInputSession.prevMacroLmb = false;
-                mInputSession.injected = false;
+                mInputSession.injected                                  = false;
             }
             bool applied = false;
             return guardedGameRead([&] {
@@ -120,7 +120,7 @@ void ProbeMod::tickMacroPlayback(ClientInstance& client, LocalPlayer& player) {
                 && released;
         }
     );
-    mInputSession.injecting = false;
+    mInputSession.injecting      = false;
     mInputSession.injectingClick = false;
 }
 
@@ -246,12 +246,12 @@ bool ProbeMod::saveMacroFile(std::filesystem::path const& path, Macro const& mac
     if (!macroToJson(macro, value, error)) {
         return false;
     }
-    auto const data = value.dump(2);
+    auto const                        data = value.dump(2);
     static std::atomic<std::uint64_t> tempSerial{0};
-    auto temp = path;
-    temp += ".tmp-" + std::to_string(GetCurrentProcessId()) + "-"
-        + std::to_string(tempSerial.fetch_add(1, std::memory_order_relaxed) + 1);
-    auto fail = [&](char const* action) {
+    auto                              temp  = path;
+    temp                                   += ".tmp-" + std::to_string(GetCurrentProcessId()) + "-"
+                                            + std::to_string(tempSerial.fetch_add(1, std::memory_order_relaxed) + 1);
+    auto fail                               = [&](char const* action) {
         error = "cannot " + std::string(action) + " " + path.string();
         std::error_code cleanup;
         std::filesystem::remove(temp, cleanup);

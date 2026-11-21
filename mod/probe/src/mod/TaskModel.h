@@ -66,9 +66,9 @@ struct JumpTask {
 
 struct RouteWaypoint {
     float    x = 0, z = 0, tolerance = 0.35f;
-    int      maxTicks     = 600;
-    JumpMode jumpMode     = JumpMode::Auto;
-    float    jumpDistance = 1;
+    int      maxTicks      = 600;
+    JumpMode jumpMode      = JumpMode::Auto;
+    float    jumpDistance  = 1;
     float    edgeLookahead = 0.55f;
 };
 
@@ -96,15 +96,15 @@ struct PlaceTask {
     int                 face = -1, slot = -1;
     detail::FixedText<> expected;
     int                 maxTicks = 30, elapsed = 0, verifyAt = 0;
-    PlacePhase          phase = PlacePhase::Prepare;
+    PlacePhase          phase       = PlacePhase::Prepare;
     bool                autoAgainst = true;
 };
 
 struct UseTask {
     static constexpr std::uint64_t ServerTimeoutMs = 5000;
     enum class TestMode { None, DropCallback, QueueFailure, CallbackSeh, CallbackCpp, EffectSeh };
-    int  ticks = 1, elapsed = 0;
-    bool dispatched = false;
+    int           ticks = 1, elapsed = 0;
+    bool          dispatched       = false;
     std::uint64_t serverDeadlineMs = 0;
     std::uint64_t serverTimeoutMs  = ServerTimeoutMs;
     TestMode      testMode         = TestMode::None; // Only installed by gated selftests.

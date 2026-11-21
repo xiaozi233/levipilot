@@ -16,9 +16,7 @@ void ProbeMod::requestChatHistory(int limit, bool deferForSelftest) {
     try {
         queueClientTask([this, weak = std::weak_ptr{request}, limit] {
             if (auto active = weak.lock()) {
-                active->run(GetTickCount64(), [limit](auto& snapshot) {
-                    captureChatHistory(snapshot, limit);
-                });
+                active->run(GetTickCount64(), [limit](auto& snapshot) { captureChatHistory(snapshot, limit); });
                 wakeSpool();
             }
         });
@@ -44,7 +42,7 @@ void ProbeMod::captureChatHistory(detail::ChatCapture::Snapshot& snapshot, int l
             snapshot.error = "no_player";
             return;
         }
-        auto gui = client->getGuiData();
+        auto        gui      = client->getGuiData();
         auto const& messages = *gui->mGuiMessages;
         snapshot.total       = messages.size();
         auto const count     = std::min(messages.size(), static_cast<std::size_t>(limit));
@@ -73,10 +71,10 @@ void ProbeMod::captureChatHistory(detail::ChatCapture::Snapshot& snapshot, int l
 void ProbeMod::drainChatHistory() {
     auto completion = mChatCapture.take(GetTickCount64());
     if (!completion.request) return;
-    auto const& snapshot = completion.request->snapshot;
-    auto const error = completion.error ? completion.error : snapshot.error;
+    auto const&    snapshot = completion.request->snapshot;
+    auto const     error    = completion.error ? completion.error : snapshot.error;
     nlohmann::json result{
-        {"event", "chat_history"                },
+        {"event", "chat_history"  },
         {"ok",    error == nullptr}
     };
     if (error) {

@@ -152,10 +152,8 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             return true;
         }
         double dist = 0.6, fwd = 0.0, yawVal = 0.0, afterVal = 1.0, maxTicksVal = 60.0, edgeVal = 0.55;
-        if (!numberJson(j, "distance", 0.0, 1e6, 0.6, dist)
-            || !numberJson(j, "forward", -1e6, 1e6, 0.0, fwd)
-            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yawVal)
-            || !numberJson(j, "after_ticks", -1e9, 1e9, 1.0, afterVal)
+        if (!numberJson(j, "distance", 0.0, 1e6, 0.6, dist) || !numberJson(j, "forward", -1e6, 1e6, 0.0, fwd)
+            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yawVal) || !numberJson(j, "after_ticks", -1e9, 1e9, 1.0, afterVal)
             || !numberJson(j, "max_ticks", -1e9, 1e9, 60.0, maxTicksVal)
             || !numberJson(j, "edge_lookahead", 0.0, 1e6, 0.55, edgeVal)) {
             enqueue(R"({"event":"error","reason":"bad_param"})");
@@ -244,8 +242,8 @@ bool ProbeMod::dispatchTasksCommand(std::string const& cmd, nlohmann::json& j) {
             } else if (jump == "never") {
                 point.jumpMode = JumpMode::Never;
             }
-            point.jumpDistance     = std::clamp(static_cast<float>(jumpDist), 0.1f, 8.0f);
-            point.edgeLookahead    = std::clamp(static_cast<float>(edgeVal), 0.2f, 1.5f);
+            point.jumpDistance        = std::clamp(static_cast<float>(jumpDist), 0.1f, 8.0f);
+            point.edgeLookahead       = std::clamp(static_cast<float>(edgeVal), 0.2f, 1.5f);
             task.points[task.count++] = point;
         }
         if (task.count == 0) {

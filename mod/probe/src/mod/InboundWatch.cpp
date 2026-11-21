@@ -309,7 +309,7 @@ void detourReadBoundary(void* a, void* b, void* c, void* d, void* e) {
 
 std::int64_t detourAssign(void* target, void* a2, void* a3, void* a4) {
     CallbackScope callback(gCallbacks, CallbackDomain::Diagnostic);
-    std::int64_t result = 0;
+    std::int64_t  result = 0;
     if (gAssignOrigin != nullptr) {
         result = reinterpret_cast<AssignFn>(gAssignOrigin)(target, a2, a3, a4);
     }
@@ -396,8 +396,8 @@ void* detourMemcpy(void* dst, void const* src, std::size_t length) {
 void inboundWatchFreeze() { gInboundFrozen.store(true, std::memory_order_release); }
 
 bool inboundCallbacksInstalled() {
-    return gLoopInstalled.load() || gDispatchInstalled.load() || gAssignInstalled.load()
-        || gInboundInstalled.load() || gMemcpyInstalled.load() || gMemmoveInstalled.load();
+    return gLoopInstalled.load() || gDispatchInstalled.load() || gAssignInstalled.load() || gInboundInstalled.load()
+        || gMemcpyInstalled.load() || gMemmoveInstalled.load();
 }
 
 void inboundWatchReset() { gInboundFrozen.store(false, std::memory_order_release); }
@@ -494,7 +494,7 @@ nlohmann::json inboundWatchStop() {
     remove(gMemcpyInstalled, &memcpy, &detourMemcpy);
     gMemmoveEnabled.store(false);
     return nlohmann::json{
-        {"inbound_before", before                                           },
+        {"inbound_before", before                     },
         {"inbound_hooked", inboundCallbacksInstalled()},
     };
 }

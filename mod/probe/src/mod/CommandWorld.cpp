@@ -26,9 +26,9 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
         }
         std::string const name = j.value("player", std::string{});
         queueServerTask([this, command, name, identity] {
-            auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld(), &name);
-            auto* minecraft = context.minecraft;
-            auto* level = context.level;
+            auto const context   = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld(), &name);
+            auto*      minecraft = context.minecraft;
+            auto*      level     = context.level;
             if (level == nullptr || !minecraft->mCommands) {
                 enqueue(R"({"event":"error","reason":"command_no_server_level"})");
                 return;
@@ -75,7 +75,7 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             enqueue(R"({"event":"error","reason":"missing_world"})");
             return true;
         }
-        EntryTest test = EntryTest::None;
+        EntryTest  test     = EntryTest::None;
         auto const testMode = j.value("_selftest", std::string{});
         if (!testMode.empty()) {
             if (!mAllowSelftestStress.load(std::memory_order_relaxed)) {
@@ -91,13 +91,7 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
                 return true;
             }
         }
-        mWorld.enter(
-            name,
-            id,
-            std::clamp(j.value("intent", 0), 0, 16),
-            j.value("force", false),
-            test
-        );
+        mWorld.enter(name, id, std::clamp(j.value("intent", 0), 0, 16), j.value("force", false), test);
         return true;
     }
     if (cmd == "signin") {
@@ -141,19 +135,18 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
         if (!numberJson(j, "x", -CoordHorizonLimit, CoordHorizonLimit, 0.0, x)
             || !numberJson(j, "y", -CoordHorizonLimit, CoordHorizonLimit, 0.0, y)
             || !numberJson(j, "z", -CoordHorizonLimit, CoordHorizonLimit, 0.0, z)
-            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw)
-            || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
+            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw) || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"x|y|z|yaw|pitch"})");
             return true;
         }
         TeleportQuery query;
-        query.x = static_cast<float>(x);
-        query.y = static_cast<float>(y);
-        query.z = static_cast<float>(z);
-        query.hasRotation = j.contains("yaw") || j.contains("pitch");
-        query.yaw = static_cast<float>(yaw);
-        query.pitch = static_cast<float>(pitch);
-        bool reset = false;
+        query.x               = static_cast<float>(x);
+        query.y               = static_cast<float>(y);
+        query.z               = static_cast<float>(z);
+        query.hasRotation     = j.contains("yaw") || j.contains("pitch");
+        query.yaw             = static_cast<float>(yaw);
+        query.pitch           = static_cast<float>(pitch);
+        bool          reset   = false;
         std::uint64_t timeout = 2000;
         if (cmd == "selftest_teleport") {
             if (!mAllowSelftestStress.load()) {
@@ -168,14 +161,17 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
             else if (mode == "after_effects") query.test = TeleportTest::AfterEffects;
             else if (mode == "after_teleport") query.test = TeleportTest::AfterTeleport;
             else if (mode == "stale_epoch") query.test = TeleportTest::Obsolete;
-            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            else {
+                enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+                return true;
+            }
             auto const testTimeout = j.value("timeout_ms", 250);
             if (testTimeout < 100 || testTimeout > 10000) {
                 enqueue(R"({"event":"error","reason":"bad_test_timeout"})");
                 return true;
             }
-            timeout = static_cast<std::uint64_t>(testTimeout);
-            reset = j.value("reset", false);
+            timeout            = static_cast<std::uint64_t>(testTimeout);
+            reset              = j.value("reset", false);
             query.clearEffects = reset;
         }
         // A fresh value keeps reset's clearEffects flag out of later teleports.
@@ -189,8 +185,7 @@ bool ProbeMod::dispatchWorldCommand(std::string const& cmd, nlohmann::json& j) {
         if (!numberJson(j, "x", -CoordHorizonLimit, CoordHorizonLimit, 0.0, x)
             || !numberJson(j, "y", -CoordHorizonLimit, CoordHorizonLimit, 0.0, y)
             || !numberJson(j, "z", -CoordHorizonLimit, CoordHorizonLimit, 0.0, z)
-            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw)
-            || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
+            || !numberJson(j, "yaw", -1e9, 1e9, 0.0, yaw) || !numberJson(j, "pitch", -1e9, 1e9, 0.0, pitch)) {
             enqueue(R"({"event":"error","reason":"bad_param","param":"x|y|z|yaw|pitch"})");
             return true;
         }

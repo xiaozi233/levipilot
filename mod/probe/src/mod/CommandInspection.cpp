@@ -11,7 +11,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             return true;
         }
         nlohmann::json out;
-        out["event"] = "mem_read";
+        out["event"]       = "mem_read";
         std::uint64_t addr = 0;
         if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
             out["ok"]     = false;
@@ -19,7 +19,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             enqueue(out.dump());
             return true;
         }
-        std::size_t len = std::clamp<std::size_t>(j.value("len", 16), 1, 4096);
+        std::size_t               len = std::clamp<std::size_t>(j.value("len", 16), 1, 4096);
         std::vector<std::uint8_t> bytes(len);
         out["addr"] = addr;
         out["len"]  = len;
@@ -39,7 +39,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             return true;
         }
         nlohmann::json out;
-        out["event"] = "mem_write";
+        out["event"]       = "mem_write";
         std::uint64_t addr = 0;
         if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
             out["ok"]     = false;
@@ -82,7 +82,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             return true;
         }
         nlohmann::json out;
-        out["event"] = "probe";
+        out["event"]       = "probe";
         std::uint64_t addr = 0;
         if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
             out["ok"]     = false;
@@ -105,7 +105,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             return true;
         }
         nlohmann::json out;
-        out["event"] = "watch_set";
+        out["event"]       = "watch_set";
         std::uint64_t addr = 0;
         if (!j.contains("addr") || !parseAddress(j["addr"], addr)) {
             out["ok"]     = false;
@@ -129,7 +129,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             enqueue(R"({"event":"error","reason":"hook_va_disabled"})");
             return true;
         }
-        std::string       thread = "tick";
+        std::string thread = "tick";
         if (j.contains("thread")) {
             if (j["thread"].is_string()) {
                 thread = j["thread"].get<std::string>();
@@ -137,7 +137,7 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
                 thread = std::to_string(j["thread"].get<long long>());
             }
         }
-        std::string const tag = j.value("tag", std::string{});
+        std::string const tag   = j.value("tag", std::string{});
         std::uint32_t     depth = 8;
         if (j.contains("depth")) {
             if (!j["depth"].is_number_integer()) {
@@ -148,8 +148,18 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             }
             depth = j["depth"].get<std::uint32_t>();
         }
-        enqueue(watchInstall(addr, size, mode == "rw", thread, tag, depth, j.value("sample", false),
-            mode == "x", j.value("snapshots", nlohmann::json::array())).dump());
+        enqueue(watchInstall(
+                    addr,
+                    size,
+                    mode == "rw",
+                    thread,
+                    tag,
+                    depth,
+                    j.value("sample", false),
+                    mode == "x",
+                    j.value("snapshots", nlohmann::json::array())
+        )
+                    .dump());
         return true;
     }
     if (cmd == "watch_clear") {
@@ -174,10 +184,8 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
         return true;
     }
     if (cmd == "watch_drain") {
-        std::uint64_t const since =
-            j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
-        std::size_t const limit =
-            std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
+        std::uint64_t const since = j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
         enqueue(watchDrainJson(since, limit).dump());
         return true;
     }
@@ -186,9 +194,9 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return true;
         }
-        bool const  useVa  = j.contains("va") && !j["va"].is_null();
-        std::string symbol = j.value("symbol", std::string{});
-        std::uint64_t va   = 0;
+        bool const    useVa  = j.contains("va") && !j["va"].is_null();
+        std::string   symbol = j.value("symbol", std::string{});
+        std::uint64_t va     = 0;
         if (useVa && !parseAddress(j["va"], va)) {
             enqueue(R"({"event":"error","reason":"bad_va"})");
             return true;
@@ -197,40 +205,35 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
             enqueue(R"({"event":"error","reason":"missing_symbol"})");
             return true;
         }
-        std::uint32_t const sample =
-            std::clamp(j.value("sample", 1), 1, 1000000);
-        bool const dryRun = j.value("dry_run", false);
-        std::string const tag = j.value("tag", std::string{});
-        HookMemSpec mem;
+        std::uint32_t const sample = std::clamp(j.value("sample", 1), 1, 1000000);
+        bool const          dryRun = j.value("dry_run", false);
+        std::string const   tag    = j.value("tag", std::string{});
+        HookMemSpec         mem;
         if (j.contains("mem_size")) {
             mem.arg    = j.value("mem_arg", 0u);
             mem.offset = j.value("mem_offset", 0);
             mem.size   = j.value("mem_size", 0u);
             mem.deref  = j.value("mem_deref", false);
-            if (mem.arg > 3 || mem.size % 4 != 0 || mem.size > 128 || mem.offset > 4096
-                || mem.offset < -4096) {
+            if (mem.arg > 3 || mem.size % 4 != 0 || mem.size > 128 || mem.offset > 4096 || mem.offset < -4096) {
                 enqueue(
                     R"({"event":"error","reason":"bad_mem_spec","hint":"mem_arg 0..3, mem_size 4..128 step 4, mem_offset -4096..4096"})"
                 );
                 return true;
             }
         }
-        enqueue(
-            hookInstall(
-                symbol,
-                va,
-                useVa,
-                tag,
-                sample,
-                dryRun,
-                mAllowHookVa.load(std::memory_order_relaxed),
-                mWorld.inWorld(),
-                j.value("inject_fail", false)
-                    && mAllowHookVa.load(std::memory_order_relaxed),
-                mem
-            )
-                .dump()
-        );
+        enqueue(hookInstall(
+                    symbol,
+                    va,
+                    useVa,
+                    tag,
+                    sample,
+                    dryRun,
+                    mAllowHookVa.load(std::memory_order_relaxed),
+                    mWorld.inWorld(),
+                    j.value("inject_fail", false) && mAllowHookVa.load(std::memory_order_relaxed),
+                    mem
+        )
+                    .dump());
         return true;
     }
     if (cmd == "hook_rm") {
@@ -242,9 +245,8 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
         return true;
     }
     if (cmd == "hook_drain") {
-        std::uint64_t const since =
-            j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
-        std::size_t const limit = std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
+        std::uint64_t const since = j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
+        std::size_t const   limit = std::clamp<std::size_t>(j.value("limit", 4096), 1, 65536);
         enqueue(hookDrainJson(since, limit).dump());
         return true;
     }
@@ -280,8 +282,8 @@ bool ProbeMod::dispatchInspectionCommand(std::string const& cmd, nlohmann::json&
         if (!hookRequestCall(symbol, scale, error, test)) {
             enqueue(
                 nlohmann::json{
-                    {"event",  "error"      },
-                    {"reason", error        },
+                    {"event",  "error"},
+                    {"reason", error  },
             }
                     .dump()
             );

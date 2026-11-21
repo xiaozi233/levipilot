@@ -9,8 +9,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
 #include <nlohmann/json_fwd.hpp>
+#include <string>
 
 namespace probe {
 class ProbeMod;
@@ -33,14 +33,14 @@ public:
         }
     }
     void setSignInWaitMs(int milliseconds) { mSignInWaitMs.store(milliseconds); }
-    void enter(std::string name, std::string id, int intent, bool force,
-               detail::EntryTest test = detail::EntryTest::None);
-    void pollEntry(); // Spool wall-clock deadline; game inspection is queued.
+    void
+    enter(std::string name, std::string id, int intent, bool force, detail::EntryTest test = detail::EntryTest::None);
+    void           pollEntry(); // Spool wall-clock deadline; game inspection is queued.
     nlohmann::json entryStatus() const;
-    void leave();
-    void list();
-    void signIn();
-    void autoEnter(std::string name, std::string options, int delayMs);
+    void           leave();
+    void           list();
+    void           signIn();
+    void           autoEnter(std::string name, std::string options, int delayMs);
 
 private:
     enum class Phase { Menu, Entering, Playing, Leaving };
@@ -51,7 +51,7 @@ private:
         bool               force,
         bool               automatic,
         std::uint64_t      deadline,
-        detail::EntryTest   test = detail::EntryTest::None
+        detail::EntryTest  test = detail::EntryTest::None
     );
     void leaveOnClient();
     void listOnClient();
@@ -59,17 +59,17 @@ private:
     void autoEnterOnClient(std::string const& name, std::string const& options, int delayMs, std::uint64_t deadline);
     void post(std::function<void()> task);
     std::shared_ptr<ll::data::CancellableCallback> after(std::function<void()> task, int milliseconds);
-    void settleEntry(bool ok, char const* reason);
-    void emitEntryCompletion(std::optional<detail::WorldEntryModel::Completion> const& completion);
-    bool replyEntryBusy();
-    void probeEntryOnClient(std::uint64_t id);
-    bool menuReadyOnClient() const;
-    nlohmann::json menuDiagnosticsOnClient() const;
+    void                                           settleEntry(bool ok, char const* reason);
+    void                      emitEntryCompletion(std::optional<detail::WorldEntryModel::Completion> const& completion);
+    bool                      replyEntryBusy();
+    void                      probeEntryOnClient(std::uint64_t id);
+    bool                      menuReadyOnClient() const;
+    nlohmann::json            menuDiagnosticsOnClient() const;
     [[nodiscard]] char const* phaseName() const;
 
-    ProbeMod&                                                   mOwner;
-    std::atomic_bool                                            mInWorld{false};
-    std::atomic<Phase>                                          mPhase{Phase::Menu};
+    ProbeMod&          mOwner;
+    std::atomic_bool   mInWorld{false};
+    std::atomic<Phase> mPhase{Phase::Menu};
     // One local-server start at a time. Both the explicit enter command and
     // auto_enter go through it; a second start while the first is still
     // loading corrupts the UI transition and crashes the client.
@@ -78,7 +78,7 @@ private:
     std::atomic<std::uint64_t>                                  mEntryProbeQueued{0};
     std::atomic<std::uint32_t>                                  mEntryProbeErrors{0};
     std::atomic<char const*>                                    mEntryProbeError{nullptr};
-    std::atomic<detail::EntryTest>                               mEntryTest{detail::EntryTest::None};
+    std::atomic<detail::EntryTest>                              mEntryTest{detail::EntryTest::None};
     std::atomic_bool                                            mEntryProbeFault{false};
     std::atomic<std::uint64_t>                                  mEntryUnsafeUntil{0};
     std::atomic<int>                                            mSignInWaitMs{15000};

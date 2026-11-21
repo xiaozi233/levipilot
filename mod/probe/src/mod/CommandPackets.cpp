@@ -10,14 +10,17 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             enqueue(R"({"event":"error","reason":"selftest_stress_disabled"})");
             return true;
         }
-        auto const mode = j.value("mode", std::string{});
+        auto const           mode = j.value("mode", std::string{});
         PacketTap::TestFault fault;
         if (mode == "off") fault = PacketTap::TestFault::None;
         else if (mode == "id_seh") fault = PacketTap::TestFault::IdSeh;
         else if (mode == "id_cpp") fault = PacketTap::TestFault::IdCpp;
         else if (mode == "bytes_seh") fault = PacketTap::TestFault::BytesSeh;
         else if (mode == "bytes_cpp") fault = PacketTap::TestFault::BytesCpp;
-        else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+        else {
+            enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+            return true;
+        }
         if (!mPackets.armTest(fault)) {
             enqueue(R"({"event":"error","reason":"packet_capture_inactive"})");
             return true;
@@ -35,11 +38,11 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             enqueue(R"({"event":"error","reason":"packet_inject_disabled"})");
             return true;
         }
-        int const level = std::clamp(j.value("level", 4), 0, 4);
+        int const  level    = std::clamp(j.value("level", 4), 0, 4);
         auto const identity = localPlayerIdentity();
         queueServerTask([this, identity, level] {
             auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
-            auto* target = context.player;
+            auto*      target  = context.player;
             if (target == nullptr) {
                 enqueue(R"({"event":"error","reason":"player_not_found"})");
                 return;
@@ -47,11 +50,11 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             target->setCommandPermissions(static_cast<CommandPermissionLevel>(level));
             enqueue(
                 nlohmann::json{
-                    {"event", "op_self"},
-                    {"ok",    true    },
-                    {"level", level   },
+                    {"event", "op_self"            },
+                    {"ok",    true                 },
+                    {"level", level                },
                     {"name",  target->getRealName()},
-                }
+            }
                     .dump()
             );
         });
@@ -76,7 +79,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
                     {"event",   "commands_enabled"},
                     {"enabled", enabled           },
                     {"changed", set               },
-                }
+            }
                     .dump()
             );
         });
@@ -105,9 +108,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             return true;
         }
         if (!mAllowPacketInject.load(std::memory_order_relaxed)) {
-            enqueue(
-                R"({"event":"error","reason":"packet_inject_disabled","hint":"set allow_packet_inject=true"})"
-            );
+            enqueue(R"({"event":"error","reason":"packet_inject_disabled","hint":"set allow_packet_inject=true"})");
             return true;
         }
         if (!mWorld.inWorld()) {
@@ -120,7 +121,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             return true;
         }
         PacketInjectionQuery query;
-        query.text = std::move(text);
+        query.text            = std::move(text);
         std::uint64_t timeout = 2000;
         if (cmd == "selftest_packet_injection") {
             if (!mAllowSelftestStress.load()) {
@@ -135,7 +136,10 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             else if (mode == "after_send") query.test = PacketInjectionTest::AfterSend;
             else if (mode == "stale_epoch") query.test = PacketInjectionTest::Obsolete;
             else if (mode == "wrong_owner") query.test = PacketInjectionTest::WrongOwner;
-            else { enqueue(R"({"event":"error","reason":"bad_test_mode"})"); return true; }
+            else {
+                enqueue(R"({"event":"error","reason":"bad_test_mode"})");
+                return true;
+            }
             timeout = std::clamp<std::uint64_t>(j.value("timeout_ms", 250), 100, 10000);
         }
         queuePacketInjection(std::move(query), timeout);
@@ -152,9 +156,7 @@ bool ProbeMod::dispatchPacketsCommand(std::string const& cmd, nlohmann::json& j)
             return true;
         }
         if (enable && !mAllowPacketCapture.load(std::memory_order_relaxed)) {
-            enqueue(
-                R"({"event":"error","reason":"packet_capture_disabled","hint":"set allow_packet_capture=true"})"
-            );
+            enqueue(R"({"event":"error","reason":"packet_capture_disabled","hint":"set allow_packet_capture=true"})");
             return true;
         }
         enqueue(mPackets.start(enable, j).dump());

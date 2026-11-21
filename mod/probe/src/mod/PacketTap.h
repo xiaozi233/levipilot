@@ -44,9 +44,10 @@ public:
 
     nlohmann::json start(bool enable, nlohmann::json const& args);
     void           stop();
-    bool hooksInstalled() const {
+    bool           hooksInstalled() const {
         if (mSendHooked.load() || mPeerHooked.load()) return true;
-        for (auto const& hooked : mRecvHooked) if (hooked.load()) return true;
+        for (auto const& hooked : mRecvHooked)
+            if (hooked.load()) return true;
         return false;
     }
     nlohmann::json status();
@@ -59,36 +60,24 @@ public:
     // Cold-side, explicitly gated by allow_selftest_stress + packet capture.
     bool armTest(TestFault fault);
 
-    [[nodiscard]] bool capturing() const {
-        return mCapture.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] bool sendActive() const {
-        return capturing() && mSendEnabled.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] bool recvEnabled() const {
-        return mRecvEnabled.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] std::uint64_t records() const {
-        return mRing ? mRing->head() : 0;
-    }
-    [[nodiscard]] std::uint64_t recvRecords() const {
-        return mRecvRecords.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] std::uint64_t peerSends() const {
-        return mPeerCount.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] bool capturing() const { return mCapture.load(std::memory_order_relaxed); }
+    [[nodiscard]] bool sendActive() const { return capturing() && mSendEnabled.load(std::memory_order_relaxed); }
+    [[nodiscard]] bool recvEnabled() const { return mRecvEnabled.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t records() const { return mRing ? mRing->head() : 0; }
+    [[nodiscard]] std::uint64_t recvRecords() const { return mRecvRecords.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t peerSends() const { return mPeerCount.load(std::memory_order_relaxed); }
 
 private:
-    using ByteError = detail::PacketByteError;
+    using ByteError   = detail::PacketByteError;
     using PacketBytes = detail::PacketByteRecord;
     struct PacketRecord {
-        std::uint64_t              order    = 0;
-        std::uint64_t              tick     = 0;
-        std::int32_t               id       = 0;
-        std::uint32_t              tid      = 0;
-        std::uint8_t               dir      = kSend;
-        std::uint8_t               injected = 0;
-        std::uint8_t               pad[2]{};
+        std::uint64_t order    = 0;
+        std::uint64_t tick     = 0;
+        std::int32_t  id       = 0;
+        std::uint32_t tid      = 0;
+        std::uint8_t  dir      = kSend;
+        std::uint8_t  injected = 0;
+        std::uint8_t  pad[2]{};
     };
 
     bool readPacketId(Packet const& packet, std::int32_t& id) noexcept;
@@ -98,40 +87,40 @@ private:
 
     static constexpr std::size_t kRing     = 1u << 14;
     static constexpr std::size_t kByteRing = 1u << 12;
-    using RecordRing = detail::AtomicRing<PacketRecord, kRing>;
-    using ByteRing   = detail::AtomicRing<PacketBytes, kByteRing>;
-    std::unique_ptr<RecordRing>      mRing;
-    std::unique_ptr<ByteRing>        mByteRing;
-    std::atomic<std::uint64_t>      mSeq{0};
-    std::atomic<std::uint64_t>      mPeerCount{0};
-    std::atomic<std::uint64_t>      mDenied{0};
-    std::atomic<std::uint64_t>      mRecvRecords{0};
-    std::atomic<std::uint64_t>      mIdFaults{0}, mByteFaults{0};
+    using RecordRing                       = detail::AtomicRing<PacketRecord, kRing>;
+    using ByteRing                         = detail::AtomicRing<PacketBytes, kByteRing>;
+    std::unique_ptr<RecordRing> mRing;
+    std::unique_ptr<ByteRing>   mByteRing;
+    std::atomic<std::uint64_t>  mSeq{0};
+    std::atomic<std::uint64_t>  mPeerCount{0};
+    std::atomic<std::uint64_t>  mDenied{0};
+    std::atomic<std::uint64_t>  mRecvRecords{0};
+    std::atomic<std::uint64_t>  mIdFaults{0}, mByteFaults{0};
     // serialize_ids is an explicit diagnostic with a hard sampling budget: once
     // the accumulated reserialization time passes it, later samples are cut.
-    std::atomic<std::uint64_t>      mSerializeSamples{0};
-    std::atomic<std::uint64_t>      mSerializeUs{0};
-    std::atomic<std::uint64_t>      mSerializeMaxUs{0};
-    std::atomic<std::uint64_t>      mSerializeSkipped{0};
+    std::atomic<std::uint64_t> mSerializeSamples{0};
+    std::atomic<std::uint64_t> mSerializeUs{0};
+    std::atomic<std::uint64_t> mSerializeMaxUs{0};
+    std::atomic<std::uint64_t> mSerializeSkipped{0};
     // 1 s covers every current capture window (40 ticks of PlayerAuthInput is
     // ~35 ms of reserialization) while still bounding a runaway session.
-    std::atomic<std::uint64_t>      mSerializeBudgetUs{1000000};
-    std::atomic<TestFault>          mTestFault{TestFault::None};
+    std::atomic<std::uint64_t> mSerializeBudgetUs{1000000};
+    std::atomic<TestFault>     mTestFault{TestFault::None};
     // Stop closes callback entry before waiting, so it cannot miss a callback
     // paused between entry and an ordinary in-flight counter increment.
-    detail::CallbackGate            mWriters;
-    std::atomic_bool                mCapture{false};
-    std::atomic_bool                mSendHooked{false};
-    std::atomic_bool                mPeerHooked{false};
-    std::atomic_bool                mSendEnabled{false};
-    std::atomic_bool                mRecvEnabled{false};
+    detail::CallbackGate                                     mWriters;
+    std::atomic_bool                                         mCapture{false};
+    std::atomic_bool                                         mSendHooked{false};
+    std::atomic_bool                                         mPeerHooked{false};
+    std::atomic_bool                                         mSendEnabled{false};
+    std::atomic_bool                                         mRecvEnabled{false};
     std::array<std::atomic_bool, kRecvAnchorCount>           mRecvHooked{};
     std::array<std::atomic<std::uint64_t>, kRecvAnchorCount> mRecvHits{};
-    std::array<std::int32_t, 4>     mSerializeIds{};
-    std::size_t                     mSerializeCount = 0;
-    std::array<std::int32_t, 64>    mIds{};
-    std::size_t                     mIdCount = 0;
-    std::atomic<std::uint32_t>      mSample{1};
+    std::array<std::int32_t, 4>                              mSerializeIds{};
+    std::size_t                                              mSerializeCount = 0;
+    std::array<std::int32_t, 64>                             mIds{};
+    std::size_t                                              mIdCount = 0;
+    std::atomic<std::uint32_t>                               mSample{1};
 };
 
 } // namespace probe

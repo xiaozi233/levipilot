@@ -7,8 +7,9 @@ namespace probe {
 
 bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& j) {
     if (cmd == "start") {
-        if (j.contains("max_ticks") && (!j["max_ticks"].is_number_integer()
-            || (!j["max_ticks"].is_number_unsigned() && j["max_ticks"].get<std::int64_t>() < 0))) {
+        if (j.contains("max_ticks")
+            && (!j["max_ticks"].is_number_integer()
+                || (!j["max_ticks"].is_number_unsigned() && j["max_ticks"].get<std::int64_t>() < 0))) {
             enqueue(R"({"event":"error","reason":"bad_param"})");
             return true;
         }
@@ -105,11 +106,10 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         return true;
     }
     if (cmd == "record_dump") {
-        std::uint64_t const since =
-            j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
-        std::size_t const limit = std::clamp<std::size_t>(j.value("limit", 1024), 1, 8192);
-        std::string const format = j.value("format", std::string{"jsonl"});
-        bool const        binary = format == "bin" || format == "hex" || format == "binary";
+        std::uint64_t const since  = j.contains("since") ? j.value("since", std::uint64_t{0}) : std::uint64_t{0};
+        std::size_t const   limit  = std::clamp<std::size_t>(j.value("limit", 1024), 1, 8192);
+        std::string const   format = j.value("format", std::string{"jsonl"});
+        bool const          binary = format == "bin" || format == "hex" || format == "binary";
         enqueue(recordDumpJson(since, limit, binary).dump());
         return true;
     }
@@ -171,19 +171,20 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         else if (mMacroSession.recording.active()) enqueue(R"({"event":"error","reason":"macro_recording_active"})");
         else if (mMacroSession.playback.active()) enqueue(R"({"event":"error","reason":"macro_already_playing"})");
         else {
-            int const start    = std::clamp(requestedStart, 0, size - 1);
-            int const end      = std::clamp(j.contains("end") ? requestedEnd : size, start + 1, size);
+            int const start            = std::clamp(requestedStart, 0, size - 1);
+            int const end              = std::clamp(j.contains("end") ? requestedEnd : size, start + 1, size);
             mMacroSession.playbackTest = mMacroSession.releaseTest = CaptureTest::None;
             mMacroSession.playback.begin(start, end, loop, eventLevel);
-            if (!mWorld.inWorld() || mPoseEpoch.load() != worldEpoch) mMacroSession.playback.cancel(MacroEnd::WorldLeft);
+            if (!mWorld.inWorld() || mPoseEpoch.load() != worldEpoch)
+                mMacroSession.playback.cancel(MacroEnd::WorldLeft);
             enqueue(
                 nlohmann::json{
-                    {"event",       "macro_started"       },
-                    {"start",       start                 },
-                    {"end",         end                   },
-                    {"ticks",       end - start           },
-                    {"loop",        loop                  },
-                    {"event_level", eventLevel            },
+                    {"event",       "macro_started"               },
+                    {"start",       start                         },
+                    {"end",         end                           },
+                    {"ticks",       end - start                   },
+                    {"loop",        loop                          },
+                    {"event_level", eventLevel                    },
                     {"run_id",      mMacroSession.playback.runId()}
             }.dump()
             );
@@ -196,8 +197,8 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         drainMacroPlaybackLocked(true);
         enqueue(
             nlohmann::json{
-                {"event",           "macro_stopped"                },
-                {"reason",          "client"                       },
+                {"event",           "macro_stopped"                        },
+                {"reason",          "client"                               },
                 {"run_id",          mMacroSession.playback.runId()         },
                 {"release_pending", mMacroSession.playback.releasePending()}
         }.dump()
@@ -208,8 +209,8 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         std::lock_guard lock(mMacroSession.mutex);
         enqueue(
             nlohmann::json{
-                {"event",           "macro_status"                 },
-                {"in_world",        mWorld.inWorld()               },
+                {"event",           "macro_status"                         },
+                {"in_world",        mWorld.inWorld()                       },
                 {"playing",         mMacroSession.playback.active()        },
                 {"index",           mMacroSession.playback.index()         },
                 {"loaded",          mMacroSession.playback.size() != 0     },
@@ -292,8 +293,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         // Validate and reserve before replacing a buffered session. A bad
         // parameter/allocation must not silently discard its recorded rows.
         auto const value = j.value("max_ticks", nlohmann::json(0));
-        if (!value.is_number_integer()
-            || (!value.is_number_unsigned() && value.get<std::int64_t>() < 0)) {
+        if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<std::int64_t>() < 0)) {
             enqueue(R"({"event":"error","reason":"bad_param","field":"max_ticks"})");
             return true;
         }
@@ -329,9 +329,9 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             });
             enqueue(
                 nlohmann::json{
-                    {"event",      "macro_rec_started"       },
-                    {"max_ticks",  limit                     },
-                    {"hard_limit", MaxMacroRecordedTicks     },
+                    {"event",      "macro_rec_started"               },
+                    {"max_ticks",  limit                             },
+                    {"hard_limit", MaxMacroRecordedTicks             },
                     {"record_id",  mMacroSession.recording.recordId()}
             }.dump()
             );
@@ -339,7 +339,7 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         return true;
     }
     if (cmd == "macro_rec_stop") {
-        std::string name = j.value("name", std::string{"recorded"});
+        std::string                  name = j.value("name", std::string{"recorded"});
         MacroRecordSession::Snapshot snapshot;
         {
             std::lock_guard lock(mMacroSession.mutex);

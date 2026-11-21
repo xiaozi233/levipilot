@@ -12,9 +12,7 @@ namespace {
 HIDControllerGameCoreDesktop* gamecoreHid(void* shim) {
     __try {
         return static_cast<Bedrock::Platform_GameCore*>(shim)->mHIDController.get();
-    } __except (
-        isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH
-    ) {
+    } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         return nullptr;
     }
 }
@@ -81,32 +79,43 @@ char const* ProbeMod::applyInputEvent(InputInjection const& item) {
     auto const previous = mInputSession.injecting.exchange(item.kind != InputKind::Raw);
     try {
         if (!guardedGameRead([&] {
-            injectCaptureFault(item.test);
-            if (item.kind == InputKind::Queue) {
-                auto& states = Keyboard::_states();
-                KeyboardAction action{};
-                action.state = item.data ? KeyboardAction::Keydown : KeyboardAction::Keyup;
-                action.key = item.code;
-                action.controllerId = Keyboard::_gameControllerId();
-                action.lshiftState = states[Keyboard::Lshift];
-                action.controlState = states[Keyboard::Control];
-                action.menuState = states[Keyboard::Menu];
-                action.isRepeatedEvent = item.repeat;
-                Keyboard::_inputs().push_back(action);
-            } else if (item.kind != InputKind::Mouse) {
-                error = hidKeyEdge(item.code, item.data != 0, item.kind != InputKind::Hid);
-            } else {
-                auto& device = Mouse::_instance();
-                device.feed(static_cast<char>(item.code), static_cast<schar>(item.data),
-                            item.hasPos ? item.x : device._x, item.hasPos ? item.y : device._y,
-                            item.dx, item.dy, false);
-                mInputSession.mouseInjected.fetch_add(1, std::memory_order_relaxed);
-                if ((item.code == 0 || item.code == 7) && (item.dx || item.dy))
-                    mInputSession.injectTurnUntilTick.store(mTick.load(std::memory_order_relaxed) + 2,
-                                              std::memory_order_relaxed);
-            }
-        })) error = "input_fault";
-    } catch (...) { error = "input_failed"; }
+                injectCaptureFault(item.test);
+                if (item.kind == InputKind::Queue) {
+                    auto&          states = Keyboard::_states();
+                    KeyboardAction action{};
+                    action.state           = item.data ? KeyboardAction::Keydown : KeyboardAction::Keyup;
+                    action.key             = item.code;
+                    action.controllerId    = Keyboard::_gameControllerId();
+                    action.lshiftState     = states[Keyboard::Lshift];
+                    action.controlState    = states[Keyboard::Control];
+                    action.menuState       = states[Keyboard::Menu];
+                    action.isRepeatedEvent = item.repeat;
+                    Keyboard::_inputs().push_back(action);
+                } else if (item.kind != InputKind::Mouse) {
+                    error = hidKeyEdge(item.code, item.data != 0, item.kind != InputKind::Hid);
+                } else {
+                    auto& device = Mouse::_instance();
+                    device.feed(
+                        static_cast<char>(item.code),
+                        static_cast<schar>(item.data),
+                        item.hasPos ? item.x : device._x,
+                        item.hasPos ? item.y : device._y,
+                        item.dx,
+                        item.dy,
+                        false
+                    );
+                    mInputSession.mouseInjected.fetch_add(1, std::memory_order_relaxed);
+                    if ((item.code == 0 || item.code == 7) && (item.dx || item.dy))
+                        mInputSession.injectTurnUntilTick.store(
+                            mTick.load(std::memory_order_relaxed) + 2,
+                            std::memory_order_relaxed
+                        );
+                }
+            }))
+            error = "input_fault";
+    } catch (...) {
+        error = "input_failed";
+    }
     mInputSession.injecting.store(previous, std::memory_order_release);
     return error;
 }
@@ -131,24 +140,29 @@ void ProbeMod::tickInputInjection() {
         if (!releaseInputEvents()) return; // Retry failed releases before admitting new input.
         mInputSession.eventGeneration = generation;
     }
-    mInputSession.events.tick([&](InputInjection const& item) {
-        std::size_t const slot = item.kind == InputKind::Mouse ? 256 + item.code : item.code;
-        bool const track = item.kind != InputKind::Mouse
-            || (item.code != 0 && item.code != 4 && item.code != 7);
-        // A fault may happen after an edge reaches the SDK. Keep its release
-        // even if the call reports failure; an extra key-up is harmless.
-        if (track && item.data) mInputSession.heldEvents[slot] = item;
-        auto error = applyInputEvent(item);
-        if (track && !item.data && !error) mInputSession.heldEvents[slot].reset();
-        return error;
-    }, mInputSession.eventGeneration);
+    mInputSession.events.tick(
+        [&](InputInjection const& item) {
+            std::size_t const slot = item.kind == InputKind::Mouse ? 256 + item.code : item.code;
+            bool const track = item.kind != InputKind::Mouse || (item.code != 0 && item.code != 4 && item.code != 7);
+            // A fault may happen after an edge reaches the SDK. Keep its release
+            // even if the call reports failure; an extra key-up is harmless.
+            if (track && item.data) mInputSession.heldEvents[slot] = item;
+            auto error = applyInputEvent(item);
+            if (track && !item.data && !error) mInputSession.heldEvents[slot].reset();
+            return error;
+        },
+        mInputSession.eventGeneration
+    );
 }
 
 bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
     std::lock_guard lock(mInputSession.eventMutex);
-    TextQuery query{std::move(text), mInputSession.events.nextId(), mInputSession.events.generation(), test};
-    auto request = mInputSession.textCapture.begin(std::move(query), GetTickCount64(), 2000, activeReqId());
-    if (!request) { enqueue(R"({"event":"error","reason":"text_input_busy"})"); return false; }
+    TextQuery       query{std::move(text), mInputSession.events.nextId(), mInputSession.events.generation(), test};
+    auto            request = mInputSession.textCapture.begin(std::move(query), GetTickCount64(), 2000, activeReqId());
+    if (!request) {
+        enqueue(R"({"event":"error","reason":"text_input_busy"})");
+        return false;
+    }
     InputInjection barrier;
     barrier.kind = InputKind::Text;
     if (!mInputSession.events.push(barrier)) {
@@ -156,7 +170,12 @@ bool ProbeMod::queueTextInput(std::string text, CaptureTest test) {
         enqueue(R"({"event":"error","reason":"inject_queue_full"})");
         return false;
     }
-    enqueue(nlohmann::json{{"event", "text_input_queued"}, {"input_id", request->query.id}}.dump());
+    enqueue(
+        nlohmann::json{
+            {"event",    "text_input_queued"},
+            {"input_id", request->query.id  }
+    }.dump()
+    );
     return true;
 }
 
@@ -172,45 +191,65 @@ void ProbeMod::cancelInputEvents(char const* reason) { mInputSession.cancelEvent
 
 void ProbeMod::drainInputEvents() {
     std::lock_guard lock(mInputSession.eventMutex);
-    InputOutcome row;
+    InputOutcome    row;
     while (mInputSession.events.pop(row)) {
         if (row.kind == InputKind::Text || row.generation < mInputSession.replyGeneration) continue;
-        nlohmann::json out{{"event", "input_event_done"}, {"input_id", row.id}, {"ok", !row.error}};
+        nlohmann::json out{
+            {"event",    "input_event_done"},
+            {"input_id", row.id            },
+            {"ok",       !row.error        }
+        };
         if (row.error) out["reason"] = row.error;
         enqueue(out.dump());
     }
-    if (auto request = mInputSession.textCapture.current(); request && mInputSession.events.textReady(request->query.id)) {
+    if (auto request = mInputSession.textCapture.current();
+        request && mInputSession.events.textReady(request->query.id)) {
         if (auto stage = request->dispatch(); stage && request->query.test != CaptureTest::Deferred) {
-            auto weak = std::weak_ptr{request};
-            auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
+            auto weak   = std::weak_ptr{request};
+            auto failed = [weak](char const* error) {
+                if (auto active = weak.lock()) active->cancel(error);
+            };
             try {
-                queueClientTask([this, weak, stage = *stage] {
-                    if (auto active = weak.lock()) {
-                        active->run(stage, GetTickCount64(), [&](TextSnapshot& out) {
-                            if (stage == InputStage::Flush)
-                                return mInputSession.tickSerial.load(std::memory_order_acquire) >= out.resumeTick
-                                    ? InputStage::Complete : InputStage::Flush;
-                            std::string error;
-                            if (!guardedGameRead([&] {
-                                injectCaptureFault(active->query.test);
-                                if (active->query.generation != mInputSession.events.generation() || !mWorld.inWorld())
-                                    out.error = "world_left";
-                                else if (!hidTextInput(active->query.text, error)) out.error = "text_input_failed";
-                            })) out.error = "text_input_fault";
-                            // onTextInput queues UI work. Cross two player tick
-                            // boundaries before releasing a following Enter edge.
-                            out.resumeTick = mInputSession.tickSerial.load(std::memory_order_acquire) + 2;
-                            return out.error ? InputStage::Complete : InputStage::Flush;
-                        });
-                        wakeSpool();
-                    }
-                }, failed);
-            } catch (...) { request->cancel("text_input_queue_failed"); }
+                queueClientTask(
+                    [this, weak, stage = *stage] {
+                        if (auto active = weak.lock()) {
+                            active->run(stage, GetTickCount64(), [&](TextSnapshot& out) {
+                                if (stage == InputStage::Flush)
+                                    return mInputSession.tickSerial.load(std::memory_order_acquire) >= out.resumeTick
+                                             ? InputStage::Complete
+                                             : InputStage::Flush;
+                                std::string error;
+                                if (!guardedGameRead([&] {
+                                        injectCaptureFault(active->query.test);
+                                        if (active->query.generation != mInputSession.events.generation()
+                                            || !mWorld.inWorld())
+                                            out.error = "world_left";
+                                        else if (!hidTextInput(active->query.text, error))
+                                            out.error = "text_input_failed";
+                                    }))
+                                    out.error = "text_input_fault";
+                                // onTextInput queues UI work. Cross two player tick
+                                // boundaries before releasing a following Enter edge.
+                                out.resumeTick = mInputSession.tickSerial.load(std::memory_order_acquire) + 2;
+                                return out.error ? InputStage::Complete : InputStage::Flush;
+                            });
+                            wakeSpool();
+                        }
+                    },
+                    failed
+                );
+            } catch (...) {
+                request->cancel("text_input_queue_failed");
+            }
         }
     }
     if (auto done = mInputSession.textCapture.take(GetTickCount64()); done.request) {
-        auto error = done.error ? done.error : done.request->snapshot.error;
-        nlohmann::json out{{"event", "text_input_done"}, {"input_id", done.request->query.id}, {"ok", !error}};
+        auto           error = done.error ? done.error : done.request->snapshot.error;
+        nlohmann::json out{
+            {"event",    "text_input_done"     },
+            {"input_id", done.request->query.id},
+            {"ok",       !error                }
+        };
         if (error) out["reason"] = error;
         attachReqId(out, done.request->reqId);
         auto line = out.dump();
@@ -223,50 +262,79 @@ void ProbeMod::drainInputEvents() {
     }
     if (auto request = mInputSession.uiCapture.current()) {
         if (auto stage = request->dispatch(); stage && request->query.test != CaptureTest::Deferred) {
-            auto weak = std::weak_ptr{request};
-            auto failed = [weak](char const* error) { if (auto active = weak.lock()) active->cancel(error); };
+            auto weak   = std::weak_ptr{request};
+            auto failed = [weak](char const* error) {
+                if (auto active = weak.lock()) active->cancel(error);
+            };
             try {
-                queueClientTask([this, weak] {
-                    if (auto active = weak.lock()) {
-                        active->run(InputStage::Client, GetTickCount64(), [&](UiSnapshot& out) {
-                            std::string name;
-                            if (!guardedGameRead([&] {
-                                injectCaptureFault(active->query.test);
-                                out.inWorld = mWorld.inWorld();
-                                if (active->query.operation == UiOperation::Screen) {
-                                    auto client = ll::service::getClientInstance();
-                                    if (client) name = client->getScreenName();
-                                    out.name.assign(name);
-                                    out.truncated = out.name.view().size() != name.size();
-                                } else {
-                                    if (!out.inWorld) { out.error = "not_in_world"; return; }
-                                    out.down = Keyboard::_states()[active->query.code] != 0;
-                                    out.events = mInputSession.keyEventCount.load();
-                                    out.injectedSeen = mInputSession.keyInjectedSeen.load();
-                                    out.lastCode = mInputSession.keyLastCode.load();
-                                    out.lastAction = mInputSession.keyLastAction.load();
-                                    out.pending = mInputSession.events.pending();
-                                }
-                            })) out.error = "ui_query_fault";
-                            return InputStage::Complete;
-                        });
-                        wakeSpool();
-                    }
-                }, failed);
-            } catch (...) { request->cancel("ui_query_queue_failed"); }
+                queueClientTask(
+                    [this, weak] {
+                        if (auto active = weak.lock()) {
+                            active->run(InputStage::Client, GetTickCount64(), [&](UiSnapshot& out) {
+                                std::string name;
+                                if (!guardedGameRead([&] {
+                                        injectCaptureFault(active->query.test);
+                                        out.inWorld = mWorld.inWorld();
+                                        if (active->query.operation == UiOperation::Screen) {
+                                            auto client = ll::service::getClientInstance();
+                                            if (client) name = client->getScreenName();
+                                            out.name.assign(name);
+                                            out.truncated = out.name.view().size() != name.size();
+                                        } else {
+                                            if (!out.inWorld) {
+                                                out.error = "not_in_world";
+                                                return;
+                                            }
+                                            out.down         = Keyboard::_states()[active->query.code] != 0;
+                                            out.events       = mInputSession.keyEventCount.load();
+                                            out.injectedSeen = mInputSession.keyInjectedSeen.load();
+                                            out.lastCode     = mInputSession.keyLastCode.load();
+                                            out.lastAction   = mInputSession.keyLastAction.load();
+                                            out.pending      = mInputSession.events.pending();
+                                        }
+                                    }))
+                                    out.error = "ui_query_fault";
+                                return InputStage::Complete;
+                            });
+                            wakeSpool();
+                        }
+                    },
+                    failed
+                );
+            } catch (...) {
+                request->cancel("ui_query_queue_failed");
+            }
         }
     }
     if (auto done = mInputSession.uiCapture.take(GetTickCount64()); done.request) {
-        auto error = done.error ? done.error : done.request->snapshot.error;
+        auto           error = done.error ? done.error : done.request->snapshot.error;
         nlohmann::json out;
-        if (error) out = {{"event", "error"}, {"phase", "ui_query"}, {"reason", error}};
+        if (error)
+            out = {
+                {"event",  "error"   },
+                {"phase",  "ui_query"},
+                {"reason", error     }
+            };
         else {
             auto const& s = done.request->snapshot;
             if (done.request->query.operation == UiOperation::Screen)
-                out = {{"event", "screen"}, {"name", s.name.c_str()}, {"in_world", s.inWorld}, {"truncated", s.truncated}};
-            else out = {{"event", "key_state"}, {"code", done.request->query.code}, {"down", s.down},
-                        {"events", s.events}, {"injected_seen", s.injectedSeen}, {"last_code", s.lastCode},
-                        {"last_action", s.lastAction}, {"pending", s.pending}};
+                out = {
+                    {"event",     "screen"      },
+                    {"name",      s.name.c_str()},
+                    {"in_world",  s.inWorld     },
+                    {"truncated", s.truncated   }
+                };
+            else
+                out = {
+                    {"event",         "key_state"             },
+                    {"code",          done.request->query.code},
+                    {"down",          s.down                  },
+                    {"events",        s.events                },
+                    {"injected_seen", s.injectedSeen          },
+                    {"last_code",     s.lastCode              },
+                    {"last_action",   s.lastAction            },
+                    {"pending",       s.pending               }
+                };
         }
         attachReqId(out, done.request->reqId);
         auto line = out.dump();
@@ -283,17 +351,16 @@ LL_TYPE_INSTANCE_HOOK(
     HIDControllerGameCoreDesktop,
     &HIDControllerGameCoreDesktop::$onKeyDown,
     void,
-    int keyCode,
+    int                                                 keyCode,
     Bedrock::Input::KeyboardEventProcessor::InputOrigin inputOrigin
 ) {
     ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Key);
-    auto& mod = ::probe::ProbeMod::getInstance();
+    auto&                          mod = ::probe::ProbeMod::getInstance();
     // Origin is the whole test: a real key press is Hardware. Scripted presses
     // that must reproduce one (double-space flight only reacts to the Hardware
     // path) arrive through the inject ring under mInputSession.injecting, so they pass
     // while the guest's own keyboard is dropped.
-    if (mod.hardwareInputLocked()
-        && inputOrigin == Bedrock::Input::KeyboardEventProcessor::InputOrigin::Hardware
+    if (mod.hardwareInputLocked() && inputOrigin == Bedrock::Input::KeyboardEventProcessor::InputOrigin::Hardware
         && !mod.injectingInput()) {
         return;
     }
@@ -317,7 +384,7 @@ LL_TYPE_INSTANCE_HOOK(
     bool  forceMotionlessPointer
 ) {
     ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Mouse);
-    auto& mod = ::probe::ProbeMod::getInstance();
+    auto&                          mod = ::probe::ProbeMod::getInstance();
     if (mod.hardwareInputLocked() && !mod.injectingInput()) {
         return;
     }

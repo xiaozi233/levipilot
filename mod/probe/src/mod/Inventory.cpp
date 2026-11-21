@@ -13,16 +13,17 @@ void ProbeMod::applySlotRequest(LocalPlayer& player, SlotQuery const& request, S
             injectCaptureFault(request.test);
             bool const applied = player.mInventory && player.mInventory->selectSlot(out.slot, ContainerID::Inventory);
             if (!applied) player.setSelectedSlot(out.slot);
-            out.applied = player.getSelectedItemSlot();
+            out.applied      = player.getSelectedItemSlot();
             auto const& item = player.getSelectedItem();
             if (!item.isNull()) {
                 type = item.getTypeName();
                 out.type.assign(type);
-                out.present = true;
-                out.count = static_cast<int>(item.mCount);
+                out.present   = true;
+                out.count     = static_cast<int>(item.mCount);
                 out.truncated = out.type.view().size() != type.size();
             }
-        })) out.error = "select_slot_fault";
+        }))
+        out.error = "select_slot_fault";
 }
 
 
@@ -79,8 +80,8 @@ void ProbeMod::queueInventoryWrite(
 
     queueServerTask([this, identity, container, slot, itemName, count, aux, damage, flight] {
         auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
-        auto* level = context.level;
-        auto* player = context.player;
+        auto*      level   = context.level;
+        auto*      player  = context.player;
         if (level == nullptr || player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
@@ -145,7 +146,7 @@ void ProbeMod::queueEquip(std::string const& target, int slot) {
 
     queueServerTask([this, identity, target, slot] {
         auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
-        auto* player = context.player;
+        auto*      player  = context.player;
         if (player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
@@ -217,8 +218,8 @@ void ProbeMod::queueGive(std::string const& itemName, int count, int aux, int da
 
     queueServerTask([this, identity, itemName, count, aux, damage, flight] {
         auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
-        auto* level = context.level;
-        auto* player = context.player;
+        auto*      level   = context.level;
+        auto*      player  = context.player;
         if (level == nullptr || player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;
@@ -265,7 +266,7 @@ void ProbeMod::queueClearInventory() {
 
     queueServerTask([this, identity] {
         auto const context = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
-        auto* player = context.player;
+        auto*      player  = context.player;
         if (player == nullptr) {
             enqueue(R"({"event":"error","reason":"inventory_player_not_found"})");
             return;

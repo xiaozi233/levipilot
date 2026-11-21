@@ -21,9 +21,9 @@ constexpr std::array<std::uint32_t, 9>
 
 // Physical key actions, in the same order as ControlState's digital inputs.
 // The actual key codes come from the guest's keyboard remapping at runtime.
-constexpr size_t KeyForward = 0;
-constexpr size_t KeyJump    = 5;
-constexpr size_t KeyCount   = 7;
+constexpr size_t KeyForward        = 0;
+constexpr size_t KeyJump           = 5;
+constexpr size_t KeyCount          = 7;
 constexpr int    kBindRefreshTicks = 20;
 // Construct SDK lookup keys before any tick; the SDK accepts const string refs.
 std::array<std::string, 7> const
@@ -73,7 +73,8 @@ bool ProbeMod::refreshBindings(bool releaseOnChange) {
 
 void ProbeMod::publishHeldInput() {
     std::uint32_t mask = 0;
-    for (unsigned i = 0; i < KeyCount; ++i) if (mInputSession.heldKeys[i]) mask |= 1u << i;
+    for (unsigned i = 0; i < KeyCount; ++i)
+        if (mInputSession.heldKeys[i]) mask |= 1u << i;
     if (mInputSession.heldLmb) mask |= 1u << 7;
     if (mInputSession.heldRmb) mask |= 1u << 8;
     mInputSession.controlHeldMask.store(mask);
@@ -97,7 +98,8 @@ bool ProbeMod::releaseRealInput() {
         }
         if (!trackedInputEdge(mInputSession.heldKeys[i], false, [&] {
                 return guardedControl(ControlOp::KeyUp, [&] { return hidKeyEdge(codes[i], false, true) == nullptr; });
-            })) released = false;
+            }))
+            released = false;
     }
     auto releaseMouse = [&](int button, bool& held) {
         return trackedInputEdge(held, false, [&] {
@@ -118,8 +120,8 @@ bool ProbeMod::releaseRealInput() {
 
 bool ProbeMod::performClick(LocalPlayer& player, int button) {
     ClickResult result;
-    result.reqId  = mClickReqId.exchange(0, std::memory_order_acquire);
-    result.button = button;
+    result.reqId                 = mClickReqId.exchange(0, std::memory_order_acquire);
+    result.button                = button;
     mInputSession.injectingClick = true;
     try {
         if (!guardedGameRead([&] {
@@ -196,11 +198,18 @@ void ProbeMod::drainClicks() {
 
 void ProbeMod::drainControlDiagnostics() {
     for (unsigned i = 0; i < ControlDiagnostics::Operations; ++i) {
-        auto const op = static_cast<ControlOp>(i);
+        auto const op     = static_cast<ControlOp>(i);
         auto const counts = mInputSession.controlDiagnostics.take(op);
         if (!(counts[0] || counts[1] || counts[2])) continue;
-        enqueue(nlohmann::json{{"event", "control_error"}, {"operation", controlOpName(op)},
-            {"faults", counts[0]}, {"failures", counts[1]}, {"unavailable", counts[2]}}.dump());
+        enqueue(
+            nlohmann::json{
+                {"event",       "control_error"  },
+                {"operation",   controlOpName(op)},
+                {"faults",      counts[0]        },
+                {"failures",    counts[1]        },
+                {"unavailable", counts[2]        }
+        }.dump()
+        );
     }
 }
 
@@ -209,7 +218,10 @@ bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
     if (mInputSession.controlCleanupPending.load() && !releaseRealInput()) return false;
     std::uint64_t const tick = mTick.load(std::memory_order_relaxed);
     if (!mInputSession.bindingsValid || tick - mInputSession.bindingsTick >= kBindRefreshTicks) {
-        if (!refreshBindings(true)) { mInputSession.controlCleanupPending = true; return false; }
+        if (!refreshBindings(true)) {
+            mInputSession.controlCleanupPending = true;
+            return false;
+        }
     }
 
     // If the guest has a sprint key (currently often R), press it. If sprint is
@@ -223,8 +235,7 @@ bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
     } else {
         mInputSession.sprintTapPhase = 0;
     }
-    bool const wantW = state.forward > 0.0f
-                    && (!sprintRequested || !sprintBound || mInputSession.sprintTapPhase != 2);
+    bool const wantW = state.forward > 0.0f && (!sprintRequested || !sprintBound || mInputSession.sprintTapPhase != 2);
 
     bool const want[KeyCount] = {
         wantW,
@@ -244,7 +255,7 @@ bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
         mInputSession.bindings.jump,
         mInputSession.bindings.sprint,
     };
-    bool applied = true;
+    bool           applied = true;
     InjectionScope injecting(mInputSession.injecting);
     for (size_t i = 0; i < KeyCount; ++i) {
         if (mInputSession.heldKeys[i] == want[i] || codes[i] == 0) {
@@ -254,9 +265,13 @@ bool ProbeMod::applyRealInput(LocalPlayer&, ControlState const& state) {
         // guard above keeps input_lock from dropping our own edge.
         if (i == KeyJump && want[i]) mInputSession.jumpEdgeThisTick = true;
         if (!trackedInputEdge(mInputSession.heldKeys[i], want[i], [&] {
-                return guardedControl(want[i] ? ControlOp::KeyDown : ControlOp::KeyUp,
-                    [&] { return hidKeyEdge(codes[i], want[i], true) == nullptr; });
-            })) { applied = false; break; }
+                return guardedControl(want[i] ? ControlOp::KeyDown : ControlOp::KeyUp, [&] {
+                    return hidKeyEdge(codes[i], want[i], true) == nullptr;
+                });
+            })) {
+            applied = false;
+            break;
+        }
     }
     if (!sprintBound && sprintRequested) {
         if (mInputSession.sprintTapPhase == 1) {
@@ -328,8 +343,8 @@ bool ProbeMod::applyLegacyControls(ClientInstance& client, LocalPlayer& player, 
             stateFlags.set(MoveInputStateSprintDown, engaged && state.sprint);
             stateFlags.set(MoveInputStateJumpDown, jumpNow);
             stateFlags.set(24, !jumpNow && mInputSession.prevJump); // JumpInputWasReleased
-            stateFlags.set(25, jumpEdge);              // JumpInputWasPressed
-            stateFlags.set(26, jumpNow);               // JumpInputCurrentlyDown
+            stateFlags.set(25, jumpEdge);                           // JumpInputWasPressed
+            stateFlags.set(26, jumpNow);                            // JumpInputCurrentlyDown
         }
         if (engaged) {
             player.setSneaking(state.sneak);
@@ -429,18 +444,17 @@ bool ProbeMod::applyMacroTickEvents(LocalPlayer& player, MacroTick const& tick) 
     // digital key states through Hardware HID, including the double-tap-W
     // sprint gesture. No MoveInput flags are written here.
     ControlState state;
-    state.forward = tick.forward();
-    state.strafe  = tick.strafe();
-    state.sprint  = tick.sprint;
-    state.sneak   = tick.sneak;
-    state.jump    = tick.jump;
-    state.lmb     = tick.lmb;
-    state.rmb     = tick.rmb;
+    state.forward      = tick.forward();
+    state.strafe       = tick.strafe();
+    state.sprint       = tick.sprint;
+    state.sneak        = tick.sneak;
+    state.jump         = tick.jump;
+    state.lmb          = tick.lmb;
+    state.rmb          = tick.rmb;
     state.active       = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak || tick.jump;
     bool const applied = applyRealInput(player, state);
 
-    return applied && ((tick.yaw == 0.0f && tick.pitch == 0.0f)
-                       || applyTurnDelta(player, Vec2{tick.pitch, tick.yaw}));
+    return applied && ((tick.yaw == 0.0f && tick.pitch == 0.0f) || applyTurnDelta(player, Vec2{tick.pitch, tick.yaw}));
 }
 
 bool ProbeMod::releaseMacroInputs() { return releaseRealInput(); }
@@ -474,10 +488,11 @@ bool ProbeMod::applyMacroTick(ClientInstance& client, LocalPlayer& player, Macro
     state.active     = tick.w || tick.a || tick.s || tick.d || tick.sprint || tick.sneak || tick.jump;
     state.yawDelta   = tick.yaw;
     state.pitchDelta = tick.pitch;
-    if (mInputSession.inputMode.load() == ControlInputMode::Hardware && mInputSession.jumpImpulseMode.load() == JumpImpulse::None) {
+    if (mInputSession.inputMode.load() == ControlInputMode::Hardware
+        && mInputSession.jumpImpulseMode.load() == JumpImpulse::None) {
         bool const applied = applyRealInput(player, state);
-        return applied && ((tick.yaw == 0.0f && tick.pitch == 0.0f)
-                           || applyTurnDelta(player, Vec2{tick.pitch, tick.yaw}));
+        return applied
+            && ((tick.yaw == 0.0f && tick.pitch == 0.0f) || applyTurnDelta(player, Vec2{tick.pitch, tick.yaw}));
     }
     return applyControls(client, player, state);
 }

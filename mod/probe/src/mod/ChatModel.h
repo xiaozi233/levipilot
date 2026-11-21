@@ -17,17 +17,18 @@ public:
     struct Snapshot {
         struct Line {
             FixedText<2048> text;
-            int             type = 0;
+            int             type      = 0;
             bool            truncated = false;
         };
         std::array<Line, 64> lines{};
-        std::size_t         count = 0, total = 0;
-        char const*         error = nullptr;
+        std::size_t          count = 0, total = 0;
+        char const*          error = nullptr;
     };
 
     struct Request {
         explicit Request(std::uint64_t now, std::uint64_t reqIdValue = 0)
-        : reqId(reqIdValue), deadline(now + TimeoutMs) {}
+        : reqId(reqIdValue),
+          deadline(now + TimeoutMs) {}
 
         template <typename Capture>
         void run(std::uint64_t now, Capture&& capture) {
@@ -83,7 +84,7 @@ public:
         // Acquire publication before checking failure: a throwing capture
         // publishes failure before Ready, and must never look successful.
         auto const phase = request->phase.load(std::memory_order_acquire);
-        auto error = request->failure.load(std::memory_order_acquire);
+        auto       error = request->failure.load(std::memory_order_acquire);
         if (!error && phase != Request::Phase::Ready) {
             if (now < request->deadline) return {};
             error = "chat_history_timeout";

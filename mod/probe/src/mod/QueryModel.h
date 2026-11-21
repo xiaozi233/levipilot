@@ -82,14 +82,14 @@ struct InventorySnapshot {
 };
 
 struct SlotQuery {
-    int slot = 0;
+    int         slot = 0;
     CaptureTest test = CaptureTest::None;
 };
 struct SlotSnapshot {
     FixedText<256> type;
-    int slot = 0, applied = -1, count = 0;
-    bool present = false, truncated = false;
-    char const* error = nullptr;
+    int            slot = 0, applied = -1, count = 0;
+    bool           present = false, truncated = false;
+    char const*    error = nullptr;
 };
 
 struct BlockPoint {
@@ -134,9 +134,9 @@ inline constexpr std::int64_t ScanMaxVolume = 32768;
 
 constexpr bool scanVolumeWithinLimit(BlockPoint from, BlockPoint to, std::int64_t limit = ScanMaxVolume) noexcept {
     if (limit <= 0) return false;
-    auto const loX = std::min(from.x, to.x), hiX = std::max(from.x, to.x);
-    auto const loY = std::min(from.y, to.y), hiY = std::max(from.y, to.y);
-    auto const loZ = std::min(from.z, to.z), hiZ = std::max(from.z, to.z);
+    auto const         loX = std::min(from.x, to.x), hiX = std::max(from.x, to.x);
+    auto const         loY = std::min(from.y, to.y), hiY = std::max(from.y, to.y);
+    auto const         loZ = std::min(from.z, to.z), hiZ = std::max(from.z, to.z);
     std::int64_t const dx = static_cast<std::int64_t>(hiX) - loX + 1;
     std::int64_t const dy = static_cast<std::int64_t>(hiY) - loY + 1;
     std::int64_t const dz = static_cast<std::int64_t>(hiZ) - loZ + 1;
@@ -165,9 +165,9 @@ bool advanceScan(ScanQuery const& request, ScanSnapshot& out, std::uint64_t tick
         out.error = "bad_region";
         return true;
     }
-    auto const dx = std::int64_t(out.to.x) - out.from.x + 1;
-    auto const dy = std::int64_t(out.to.y) - out.from.y + 1;
-    auto const dz = std::int64_t(out.to.z) - out.from.z + 1;
+    auto const dx    = std::int64_t(out.to.x) - out.from.x + 1;
+    auto const dy    = std::int64_t(out.to.y) - out.from.y + 1;
+    auto const dz    = std::int64_t(out.to.z) - out.from.z + 1;
     auto const total = static_cast<std::size_t>(dx * dy * dz);
     auto const limit = static_cast<std::size_t>(std::clamp(request.limit, 1, static_cast<int>(ScanSnapshot::Capacity)));
     ++out.batches;

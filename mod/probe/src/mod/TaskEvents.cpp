@@ -5,13 +5,14 @@ using namespace probe::detail;
 namespace probe {
 
 namespace {
-TaskOutcome useOnServerImpl(PlayerIdentity const& identity, std::uint64_t epoch, bool inWorld, UseTask::TestMode testMode) {
+TaskOutcome
+useOnServerImpl(PlayerIdentity const& identity, std::uint64_t epoch, bool inWorld, UseTask::TestMode testMode) {
     if (testMode == UseTask::TestMode::EffectSeh) RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, nullptr);
     TaskOutcome result;
-    result.reason    = "player_not_found";
+    result.reason      = "player_not_found";
     auto const context = serverPlayerContext(identity, epoch, inWorld);
-    auto* level = context.level;
-    auto* player = context.player;
+    auto*      level   = context.level;
+    auto*      player  = context.player;
     if (!player) return result;
     auto& inventory = player->getInventory();
     auto  stack     = inventory.getItemNonConst(player->getSelectedItemSlot());
@@ -59,8 +60,8 @@ nlohmann::json ProbeMod::taskStatusJson() {
                 out["active"]  = taskName(snapshot.state);
                 out["elapsed"] = task.elapsed;
                 if constexpr (std::is_same_v<T, UseTask>) {
-                    out["ticks"] = task.ticks;
-                    out["phase"] = task.dispatched ? "server_pending" : "waiting";
+                    out["ticks"]             = task.ticks;
+                    out["phase"]             = task.dispatched ? "server_pending" : "waiting";
                     out["server_timeout_ms"] = task.serverTimeoutMs;
                 } else if constexpr (std::is_same_v<T, RouteTask>) {
                     out["waypoint"]  = task.index;
@@ -212,9 +213,11 @@ void ProbeMod::dispatchUseTask(std::uint64_t id) {
             if (testMode == UseTask::TestMode::CallbackSeh)
                 RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, nullptr);
             if (testMode == UseTask::TestMode::CallbackCpp) throw std::runtime_error("selftest server callback");
-            mTasks.completeUse(id, [] { return GetTickCount64(); }, [&] {
-                return useOnServer(identity, mPoseEpoch.load(), mWorld.inWorld(), testMode);
-            });
+            mTasks.completeUse(
+                id,
+                [] { return GetTickCount64(); },
+                [&] { return useOnServer(identity, mPoseEpoch.load(), mWorld.inWorld(), testMode); }
+            );
         },
         [this, id](char const* reason) { mTasks.failUse(id, reason); },
         testMode == UseTask::TestMode::QueueFailure

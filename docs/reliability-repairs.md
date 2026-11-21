@@ -11,66 +11,40 @@
 - 保存状态不确定时保留游戏进程；只有明确放弃未保存更改才允许 force-stop。
 - 原生模型中的零分配、并发和容量结论，不证明真实游戏中的性能或所有 SDK 边界安全。
 
-## 验收基线与后续局部验证
+## 验收基线与局部专项
 
-下表完整离线与完整现场数字属于既有基线。可选 `watch_set sample=true` 增量修改后，
-已重新构建并正常保存重启，观察点现场 canary **26/26**，相关 Python 单测 **22/22**；
-ruff check/format 与 mypy 通过。覆盖 1/2/4/8 字节、变化值、QPC、tick 相位、默认关闭及撤销。
-证据为 `liquid-blip/probes/r14-042` 与 `out/liquid-blip-dynamic-review/watch-offline.log`；
-液体测量另见 [动态复核](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-raw-velocity-review.md)。
-随后执行观察点增量已构建并正常保存重启，准入/撤销现场 **11/11**（`r17-055`），相关
-Python 单测 **23/23**（`out/liquid-blip-dynamic-review/entry-watch-offline.log`）；ruff
-check/format 与 mypy 通过。六条件同步入口测量共 202 条，两侧实参与完整公式见
-[运算顺序动态对质](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-operation-order.md)。
-液体诊断的现场覆盖仍以这些专项为限，本轮未重跑完整现场；完整离线结果见下表，其执行记录
-独立于本轮液体实验。
+以下数字只在对应代码、游戏版本（`1.26.51.01`）与权限前提下有效；任何代码或配置变更后都应按影响范围重新运行，不能把旧基线当作未来提交的保证。
 
-Python 观察游标与被动采集器的局部回归 **51/51**：覆盖 Harness 默认/显式游标、hook/watch
-交替安装、全局分页后过滤、分轴范围、部分安装失败、context 改变、首错/清理失败与丢失统计。
-运行范围为 `test_hooks`、`test_delta_watch`、`test_landing`、`test_scenario`，证据见
-`out/liquid-blip-engineering-tests.log`；ruff check/format、mypy 与账本/字段守卫通过。
-新 `driver.delta_watch` 尚未现场重采，这些回归不新增游戏机制或完整现场验收结论。
-
-| 范围 | 当前结果 | 覆盖重点 |
+| 范围 | 当前结果 | 覆盖重点与前提 |
 | --- | --- | --- |
 | 完整离线 | **459/459** | Python、native 模型、CLI、协议与资源生命周期；含回调排空、SDK 失败回执/恢复、效果保留、首错保护与探针候选语义回归 |
-| 静态检查 | ruff check/format、mypy（120 files）、profiles、roles（56/63）、lint_public 通过 | 另经 LLVM 22 C++ 构建 |
+| 静态与文档检查 | `driver/check.py` 全部通过 | `ruff check`/`format`、`mypy`（120 files）、`profiles`、`roles`（56/63）、`lint_public`、机制守卫、Markdown 相对链接；另经 LLVM 22 C++ 构建 |
 | 完整现场 `--require-complete` | **1171/1171**，0 fail、0 skip、0 required skip | 当前默认全套，含新增 69 项 SDK 边界与权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
 | SDK 局部边界 | **69/69** | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；注册与命令边界是调用前合成故障 |
 | 领域效果保留 | **126/126**；进入/退档 **35/35** | 夜视跨查询/聊天退档、宏播放、任务及世界进入恢复仍存在，结束只清理测试效果 |
 | 朝向/传送专项 | **45/45** | 保持 0.1° 容差与连续三个 tick；移除 state 快照之后的额外延迟 |
-| 有界查询/重连 | **8/8** | 四轮共 1040 次查询，约 24–25 次/秒，显式关闭并重连；仅本轮未复现失联 |
+| 有界查询/重连 | **8/8** | 四轮共 1040 次查询，约 24–25 次/秒，显式关闭并重连；仅该专项内未复现失联 |
 | `lifecycle-prepare-only` | **10/10** | 持续/到期输入、未消费序号、事件持键、hook 恢复与姿态恢复 |
 | 受控空闲真实热重载 | **22/22 × 4**，0 fail、0 skip | 竞争专项内在同一 PID 反复完成受控重载；完整停用/启用日志、四 hook、tick、命令能力变化与恢复 |
-| 守望开启时的真实重载 | **25/25**，0 fail、0 skip | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止；generation 398→399 |
-| 在途回调竞争专项 | **132/132**，0 fail、0 skip、0 required skip | client/tick 在执行时排空并重载，server 排队未执行时超时拒绝/恢复再重载；各域同线程卸载拒绝，游戏包通道的持键 busy/活跃诊断拒绝，以及旧代次隔离和姿态/能力/输入恢复 |
+| 守望开启时的真实重载 | **25/25**，0 fail、0 skip | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止 |
+| 在途回调竞争专项 | **132/132**，0 fail、0 skip、0 required skip | client/tick 在执行时排空并重载，server 排队未执行时超时拒绝/恢复再重载；各域同线程卸载拒绝，持键 busy/活跃诊断拒绝，以及旧代次隔离和姿态/能力/输入恢复 |
 | 输入事件专项 | **46/46** | 真实键状态、raw/注入对照、标记恢复和输入释放 |
 | tick 客户端读取恢复 | **55/55** | pre/post 局部 SEH 与既有恢复链，不是整个 tick 的 SEH |
-| 世界进入/退档 | **32/32** | leave_id、菜单快照和正常恢复；异常 HBUI 根因不在覆盖内 |
+| 世界进入/退档 | **32/32** | `leave_id`、菜单快照和正常恢复；异常 HBUI 根因不在覆盖内 |
 | 飞行短/长复验 | **50/50** | 效果保留、自然到期、哨兵占用与姿态恢复 |
-| 长录制 | **9/9**（既有记录，本轮未复跑） | 同一 record_id 的 200000 tick、保存、重载与等待器接续 |
-| 最终环境恢复 | **17/17** | 原四键配置逐字节恢复并重启加载，姿态/能力/效果/背包/输入回读，四 hook、空回调所有权、DLL 一致和 124 个 crash 文件无变化 |
+| 长录制 | **9/9**（既有记录，近期未复跑） | 同一 `record_id` 的 200000 tick、保存、重载与等待器接续 |
+| 最终环境恢复 | **17/17** | 原配置逐字节恢复并重启加载，姿态/能力/效果/背包/输入回读，四 hook、空回调所有权、DLL 一致和 crash 文件无变化 |
+| 观察点采样与准入专项 | canary **26/26**；准入/撤销 **11/11**；离线回归 **22/22** / **23/23** | `watch_set sample=true`（1/2/4/8 字节、变化值、QPC、tick 相位、默认关闭及撤销），六条件同步入口 202 条；未在全套完整现场中重跑，详见[动态复核](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-raw-velocity-review.md)与[运算顺序动态对质](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-operation-order.md) |
+| 游标与被动采集器离线回归 | **51/51** | `test_hooks`、`test_delta_watch`、`test_landing`、`test_scenario`：默认/显式游标、交替安装、全局分页后过滤、分轴范围、部分安装失败、context 改变、首错/清理失败与丢失统计；`driver.delta_watch` 尚未现场重采 |
 
-这些结果只在对应代码、游戏版本和权限前提下有效。文档或后续代码变更需要按影响范围重跑，
-不能把这些数字解释成未来提交永久全绿。
+常用复核入口：
 
-主要入口：`py -3.11 driver/selftest.py --sdk-boundaries-only --require-complete`；
-回调竞争使用 `--callback-drain-only`，权限同真实热重载专项。
-最终完整现场、离线日志分别为 `out/final-engineering-full-delivery.log`、
-`out/final-engineering-offline-release.log`；SDK、效果与查询证据分别为
-`out/final-engineering-sdk-live.log`、`out/final-engineering-fixture-effects.log`、
-`out/final-engineering-entry-effect.log`、`out/final-engineering-query-soak.json`。
-本轮回调复验为 `out/final-engineering-callbacks.log`，最终配置与状态恢复报告为
-`out/final-engineering-integrity.json`。首次恢复时 yaw 差 0.0055°，保留在
-`out/final-engineering-integrity-first.json`；正常 `look` 校正后与原值一致，最终 17/17。
-其余专项若未列本轮日志，沿用原范围的既有验收，
-未当作本轮重新运行；200000 tick 长录制未重复执行。
-
-保留两轮未通过记录：`out/final-engineering-full.log` 为 1168/1169，启动回执缺少 dumps
-基线字段，已增量补齐；`out/final-engineering-full-final.log` 在朝向等待中断，角度正确但
-额外 sleep 增加漏采 tick 的机会。移除后专项与完整重跑通过，未放宽角度/连续 tick 判据。
-构建中遗漏的函数重命名
-引用已修正，最终产物构建日志为 `out/final-sdk-build4.log`。
+```bash
+py -3.11 driver/check.py
+py -3.11 driver/selftest.py --require-complete
+py -3.11 driver/selftest.py --sdk-boundaries-only --require-complete
+py -3.11 driver/selftest.py --callback-drain-only --require-complete
+```
 
 ## 仍未覆盖或未闭合
 

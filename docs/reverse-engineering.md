@@ -36,8 +36,9 @@
 
 1. 开库会解包出 `.id0`（约 4.5 GB）+ `.id1`（约 1.2 GB）**到库所在盘**；
    先 `df` 确认可用空间 ≥ `.i64` 的 6 倍。
-2. 收工顺序：`taskkill` supervisor 和 `idalib_server` → 再删解包的
-   `.id0/.id1/.id2/.nam/.til`；进程没退时删会 `Device or resource busy`。
+2. 收工顺序：先 `idb_close(save=true)` 并确认 worker 已退出，再删解包的
+   `.id0/.id1/.id2/.nam/.til`，最后才停 supervisor；**绝不要对正打开 `.i64` 的
+   IDA/idalib 进程 `taskkill /F`**（会把数据库写坏，详见 [`ida-mcp-troubleshooting.md`](ida-mcp-troubleshooting.md)）。
 3. 千万别为了“绕开库损坏”去复制 900 MB 的 `.i64`：每份再配 6 GB 解包，
    几轮就能把盘塞爆。
 
@@ -173,11 +174,11 @@ for ea in idautils.Heads(func_start, func_end):
 2. 顺序结论必须落在**同一个执行体**（同一线程、同一 pass、同一函数链）里；
    观察点跨线程/跨 pass 的“先后”不算数。
 3. 调用栈是首选证据，但要**能落到 dispatcher/调用者**；
-   栈被截断时，先用可控手段加深（本轮把 `kMaxFrames` 提到 20 才看到
+   栈被截断时，用 `watch_set(..., depth=...)` 加深（`kMaxFrames` 提高到 20 后才看到
    `0x1463B0C27` = E14 主 dispatcher），再回静态。
 4. 频率类结论（每 tick 跑几次、哪些 pass 存在）用**入口钩子 + tick 戳**，不靠猜。
 
-**反例（本轮真实教训）**：8 帧观察点栈里前 4 帧是 VEH 噪声，只看得到
+**反例（观察点栈深度不足导致的误判）**：8 帧观察点栈里前 4 帧是 VEH 噪声，只看得到
 `setSprinting ← handler ← wrapper`，于是把“阻力写在写位之前”当成了调度顺序；
 把栈加深到 20 帧后，链里出现 `0x1463B0C27`（E14 主 pass）与
 `0x141177915`（`tickEntitySystems`），而集合实现（追加 + 正序）证明主 pass 内
@@ -204,8 +205,14 @@ ActionSprintTrigger 注册在先 ⇒ **写位先于阻力**。旧结论撤回。
    `mov reg, [reg+0x18]` 这类指令里；搜 `call [reg+18h]` 一定找不到。
 4. **`insn_query` 的操作数只匹配立即数**，不能按内存位移或文本匹配。
 5. **`RtlCaptureStackBackTrace` 前几帧是异常处理器噪声**；8 帧只剩 3 层真实调用者。
-   现在 `watch_set(depth=…)` 可配（1..32，默认 8），但深度越大，VEH 每次命中越贵、
-   环内存越大（32 帧约 20 MB）。
+   `watch_set(depth=...)` 可配 1..32（默认 8，记录固定 32 槽），例如：
+
+   ```python
+   w = client.watch_set(adf_addr, size=1, mode="w", thread="both", tag="adf", depth=20)
+   ```
+
+   深度越大，VEH 每命中一次的回溯成本越高，环形缓冲占用也越大（`65536 × (48 + 8×depth) B`，
+   32 帧约 20 MB）；目前由 Python API 与管道协议暴露，CLI 暂未添加 `--depth`。
 6. **钩子只有 4 个槽**（`no_free_slot`）；先规划钩谁，必要时先 `hook_rm`。
 7. **VA 钩子要运行时地址**（`base + (static - 0x140000000)`），传静态 VA 会
    `not_executable`；`base` 用 Toolhelp32/psapi 枚举模块。
@@ -234,18 +241,4 @@ ActionSprintTrigger 注册在先 ⇒ **写位先于阻力**。旧结论撤回。
 - 结论表之外单独维护“**已撤回**”表：旧结论、现状、依据。
 - 详细地址与反编译放在 [notes/](notes/)（仓库文档只放可公开的结论与复核方法）。
 - 改完机制相关代码/文档：离线单测 + 必要时 live selftest，并把限制/基线写回
-  `mod/README.md`、`docs/mod-internals.md`。
-
----
-
-## 8. 本轮新增的取证能力
-
-`watch_set` 现在支持每观察点的栈深：
-
-```python
-w = client.watch_set(adf_addr, size=1, mode="w", thread="both", tag="adf", depth=20)
-```
-
-- `depth` 范围 1..32，默认 8；记录固定 32 槽，超出部分不写。
-- 深度越大，VEH 每命中一次的回溯成本越高，环形缓冲占用越大（65536 条 × (48 + 8×depth) B）。
-- CLI 暂未暴露 `--depth`（保持原 CLI 基线快照不变）；Python API 与管道协议已支持。
+  `mod/README.md`、`docs/mod-internals.md` 与 `docs/reliability-repairs.md`。

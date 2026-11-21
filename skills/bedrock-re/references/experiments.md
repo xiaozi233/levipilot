@@ -147,10 +147,10 @@ with ModClient() as client:
   `block_below/feet/head`（方块名 FNV-1a 32）。
 - 位：`on_ground/in_air/jump_edge/sprint/sneak/action_sprint/输入 W A S D Jump/
   block_oob/in_water/in_lava`。
-- `vx/vy/vz` 来自 `Actor::getVelocity()`，等于**下一 tick 的位移**（液体里 `Δfeet_y ≈ vy`，
-  地面也实测比值 1.0）。别把它和 `mem_read` 读到的 `StateVectorComponent+0x18` 混：
-  后者是另一个内部字段，地面约是位移的 0.546 倍（位移 0.2159 → 字段 0.1179，
-  且站着时 vy 仍留着 −0.0784）。
+- `vx/vy/vz` 来自 `Actor::getVelocity()`（即 `mPos - mPosPrev` **已完成位移**，`RecordEntry.completed_delta`
+  同理）。不要把它和 `StateVectorComponent+0x18`（即 `mPosDelta`，waiting-to-apply 的**待执行位移**，
+  现已通过 `state.pos_delta_x/y/z` 直接导出）混淆：地表行走时 `mPosDelta` 约为 **0.546 × 实际位移**
+  （实际位移 `0.2159` 时该字段约 `0.1179`，原地静止时仍保留 `−0.0784`）；真实速度始终以相邻 tick 位置差为准。
 - 传送/场景的 `pos.y` 是**脚部**；`RecordEntry` 的 `y` 是位置基准，本版本原地站立/蹲姿
   对照均为脚部 + 1.6200101，不等同于随姿态变化的 `state.head_y`，更不能直接当渲染镜头高度。
   AABB 高度也会随蹲姿变化，液体检测不能固定使用站立高度；原始对照见 liquid-blip 的 `r20-066`。
@@ -163,8 +163,8 @@ with ModClient() as client:
 - 每轮用 `driver/landing.py` 落盘：`begin` → `probe` → `claim` → `end`；
   结案跑 `close`（lint + profile 检查）。
 - 改了 mod 命令/行为：按 `AGENTS.md` 流程补 `tests/` 单测 + `driver/selftest.py` 检查 +
-  `mod/README.md` 的「实测/限制」；最新通过/失败、缺测与基线数字以该处及
-  `docs/mod-internals.md` 为准，不在本参考页重复维护历史计数。
+  同步 `mod/README.md` 与 `docs/mod-internals.md`；最新验收基线与未覆盖范围以
+  [`docs/reliability-repairs.md`](../../../docs/reliability-repairs.md) 为准，不在本参考页重复维护历史计数。
 - 跨版本复核静态结论用 `tools/ida.py` + [docs/notes/](../../../docs/notes/)；不要复制/重开 `.i64`。
 
 ## 6. 收尾检查清单
@@ -175,5 +175,5 @@ with ModClient() as client:
 - [ ] 每步前 `settle`，走/跑对照 `input_sprint=False`
 - [ ] 脚本上锁并在异常路径解锁
 - [ ] 新增代码跑过 `unittest`、`ruff check`、`ruff format --check`、`mypy`
-- [ ] live 侧补了 selftest 检查；基线数字同步到 `mod/README.md`
+- [ ] live 侧补了 selftest 检查；基线数字同步到 `docs/reliability-repairs.md`（与 `mod/README.md`）
 - [ ] 本轮结论已 `claim`（confirmed 有静态闭环）并 `end`

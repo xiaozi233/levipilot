@@ -52,22 +52,22 @@ py -3.11 driver/dev.py run --write-config --world "超平坦测试"
 py -3.11 driver/dev.py recover --world "超平坦测试"
 # 保存门禁不能确认时默认保留进程；明确放弃未保存更改才添加 --force
 
-# 常用操作
-py -3.11 driver/transport_mod.py ping
-py -3.11 driver/transport_mod.py state
-py -3.11 driver/transport_mod.py chat-history --limit 32
-py -3.11 driver/transport_mod.py worlds
-py -3.11 driver/transport_mod.py enter-world --name "超平坦测试" --wait
-py -3.11 driver/transport_mod.py leave-world
-py -3.11 driver/transport_mod.py options-set --set gfx_gamma=0.8
-py -3.11 driver/transport_mod.py set --forward 1 --ticks 40
-py -3.11 driver/transport_mod.py look --yaw 90 --pitch 0 --absolute
-py -3.11 driver/transport_mod.py teleport 0.5 -49 0.5 --yaw 0 --pitch 0
-py -3.11 driver/transport_mod.py command "fill -4 -60 -4 4 -60 4 stone"
-py -3.11 driver/transport_mod.py slot 3
-py -3.11 driver/transport_mod.py click left
-py -3.11 driver/transport_mod.py macro load --name default
-py -3.11 driver/transport_mod.py macro run
+# 常用操作（主入口 `driver.harness.cli`；兼容旧脚本 `driver/transport_mod.py` 仍可用）
+py -3.11 -m driver.harness.cli ping
+py -3.11 -m driver.harness.cli state
+py -3.11 -m driver.harness.cli chat-history --limit 32
+py -3.11 -m driver.harness.cli worlds
+py -3.11 -m driver.harness.cli enter-world --name "超平坦测试" --wait
+py -3.11 -m driver.harness.cli leave-world
+py -3.11 -m driver.harness.cli options-set --set gfx_gamma=0.8
+py -3.11 -m driver.harness.cli set --forward 1 --ticks 40
+py -3.11 -m driver.harness.cli look --yaw 90 --pitch 0 --absolute
+py -3.11 -m driver.harness.cli teleport 0.5 -49 0.5 --yaw 0 --pitch 0
+py -3.11 -m driver.harness.cli command "fill -4 -60 -4 4 -60 4 stone"
+py -3.11 -m driver.harness.cli slot 3
+py -3.11 -m driver.harness.cli click left
+py -3.11 -m driver.harness.cli macro load --name default
+py -3.11 -m driver.harness.cli macro run
 
 # 跑酷：录制一次 macro 跑法 → 跳跃分析 → 对比 → 重复尝试
 py -3.11 driver/parkour.py record --macro p0_forward --max-ticks 80 --out out/run.jsonl
@@ -93,16 +93,18 @@ py -3.11 driver/pe_map.py --rtti <va_or_name>
 | 路径 | 内容 |
 | --- | --- |
 | `mod/probe/` | LeviLamina 客户端 mod（C++），命名管道 `\\.\pipe\mcbe-harness` |
-| `driver/harness/` | Python 客户端包：连接 `connection`、按领域 mixin 组成的 `commands/`、脚本门面 `facade`、兼容导出 `client`、实验辅助 `lab`（回读验证建场 / 录制会话 / 逐 tick 拟合） |
-| `driver/transport_mod.py` | 兼容入口（旧导入与 `python driver/transport_mod.py ...` 仍可用） |
+| `driver/harness/` | Python 客户端包：`connection`、`commands/`、`facade`、`client`、`cli`、`lab` |
+| `driver/transport_mod.py` | 向后兼容入口（保留旧模块导入与 CLI 调用） |
+| `driver/dev.py`, `driver/check.py` | 游戏受控运行/附着/恢复与统一离线校验 |
+| `driver/pe_map.py`, `driver/ida.py`, `driver/landing.py` | 离线 PE 分析、IDA MCP 客户端与逆向账本 |
 | `driver/mod_agent.py`, `driver/run_mod.py` | 场景 DSL 适配器与执行入口 |
 | `driver/macro.py` | dmf-mpk macro 文件工具 |
 | `driver/selftest.py`, `driver/selftest_*.py` | live 自检入口、默认套件、共享夹具与领域检查 |
 | `scenarios/` | 场景 JSON |
-| `reverse/` | dmf-mpk 逆向报告与 IDA 导出脚本 |
-| `docs/` | 现行指南与逆向证据 |
-| `skills/` | 逆向实验（`bedrock-re`）与文档规范（`project-docs`）；ZCode 通过 `.zcode/skills/` 联接发现 |
-| `tests/` | 不依赖游戏的单元测试 |
+| `reverse/` | dmf-mpk 逆向分析与 IDA 导出脚本 |
+| `docs/` | 现行指南、机制 wiki 与逆向证据 |
+| `skills/` | 逆向实验（`bedrock-re`）与文档规范（`project-docs`）；`.zcode/skills/` 为本地目录联接 |
+| `tests/` | 不依赖游戏的 Python 与 native 模型单元测试 |
 
 ## 文档
 
@@ -111,7 +113,7 @@ py -3.11 driver/pe_map.py --rtti <va_or_name>
 - 子系统实现与诊断语义：[`docs/mod-internals.md`](docs/mod-internals.md)
 - 当前验收与未覆盖范围：[`docs/reliability-repairs.md`](docs/reliability-repairs.md)
 - 跑酷、场景 DSL：[`docs/parkour.md`](docs/parkour.md)、[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
-- 流体机制：[`docs/fluid-movement.md`](docs/fluid-movement.md)；wiki 精简版：[`docs/fluid-wiki.md`](docs/fluid-wiki.md)
+- 机制研究（流体、鞘翅、角度/正弦表）：[`docs/fluid-movement.md`](docs/fluid-movement.md)、[`docs/elytra-movement.md`](docs/elytra-movement.md)、[`docs/angles-wiki.md`](docs/angles-wiki.md)
 - 逆向方法与证据：[`docs/reverse-engineering.md`](docs/reverse-engineering.md)、[`docs/notes/`](docs/notes/) 与 [`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 逆向实验与文档规范：[`skills/bedrock-re/`](skills/bedrock-re/)、[`skills/project-docs/`](skills/project-docs/)
 - UI 与 IDA 排障：[`docs/ui-automation.md`](docs/ui-automation.md)、[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)
@@ -120,20 +122,13 @@ py -3.11 driver/pe_map.py --rtti <va_or_name>
 
 ## 状态与限制
 
-- 已在 1.26.51.01 创作存档内实测：状态读取、移动/视角/跳跃/飞行、左右键、快捷栏、
-  服务端传送、服务端命令、macro 播放/录制、真实鼠标按键、场景 DSL，以及
-  `navigate` / `mine` / `place` / `use` 四个 mod 内闭环任务。
-- 脚本运行可锁真实键鼠（`dev.py --lock-input` / `input-lock`），游泳/跳跃/双击空格飞行等状态用
-  热键驱动（`swim --drive` / `jump-key` / `lab.double_space_fly`）；`/togglefly` 是游戏内命令，
-  玩家自己在聊天框输入就能开关双击空格飞行。细节见 `mod/README.md` 与实验手册 skill。
-- 步行注入峰值 **0.2159 格/tick**（原版 4.317 m/s）。
-- 闭环任务在客户端 tick 内推进，不依赖 Python 逐 tick 下发；同一时间只跑一个任务。
-- `command` 的方块类命令是 deferred，`success=false` 不代表失败，效果以 `blocks`/verify 为准。
-- `interact_entity` 是转向 + 注入使用按钮（best effort）；直接调用游戏的实体交互函数会崩溃。
-- Python 客户端每次请求都有超时，断线抛 `ModDisconnected`，可用 `reconnect()` /
-  `wait_ready()` 在游戏重启后恢复。
-- `smoothMacro` / `frameBasedRotation` 未复刻，实现是逐 tick 的。
-- 只对应 **1.26.51.01**，游戏升级后需要重新构建。
+- **已实测能力**（1.26.51.01 创作/测试存档）：状态读取、Hardware HID 移动/视角/跳跃/游泳/双击空格飞行（含游戏内 `/togglefly`）、左右键、快捷栏、服务端传送、命令执行、macro 播放/录制、场景 DSL，以及 `navigate` / `mine` / `place` / `use` 闭环任务（完整基线见 [`docs/reliability-repairs.md`](docs/reliability-repairs.md)）。
+- **核心使用边界**：
+  - 闭环任务在客户端 tick 内推进，同一时间只运行一个任务；注入步行峰值 **0.2159 格/tick**（原版 4.317 m/s），实验运行可锁定真实键鼠（`dev.py --lock-input` / `input-lock`）。
+  - `command` 的方块操作是 deferred，`success=false` 不代表失败，最终效果以 `blocks`/`verify` 回读为准；`interact_entity` 仅转向并注入使用按钮（best effort）。
+  - Python 客户端每次请求均有超时，断线抛 `ModDisconnected`，可在重启后通过 `reconnect()` / `wait_ready()` 恢复。
+  - `smoothMacro` 与 `frameBasedRotation` 尚未复刻（当前均为逐 tick 实现）；版本数据与偏移绑定 **1.26.51.01**，升级版本见 [`docs/porting.md`](docs/porting.md)。
+  - 更多限制与字段细节见 [`mod/README.md`](mod/README.md) 与 [`skills/bedrock-re/references/experiments.md`](skills/bedrock-re/references/experiments.md)。
 
 ## 测试
 

@@ -8,7 +8,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [`architecture.md`](architecture.md) | 分层、线程模型、协议、生命周期和扩展步骤 |
-| [`mod-internals.md`](mod-internals.md) | 子系统实现细节、容量/预算、诊断语义和当前验收 |
+| [`mod-internals.md`](mod-internals.md) | 子系统实现细节、容量/预算与诊断语义（验收数字见 [`reliability-repairs.md`](reliability-repairs.md)） |
 | [`../mod/README.md`](../mod/README.md) | mod 构建、安装、API、配置与使用限制 |
 | [`mod-build-environment.md`](mod-build-environment.md) | 本机与 CI 的 LLVM 22、xmake、SDK 补丁和构建故障排查 |
 | [`porting.md`](porting.md) | 新版本 profile、生成头文件、兼容模式和验收流程 |

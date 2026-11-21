@@ -919,10 +919,7 @@ Java 26.2 对照下最值得注意的两条差异：**Java 的判定盒只内缩
     不再用裸 `sleep` 当前提。`swim_start_still` 与 `sprint_no_jump` 已进 live selftest。
   - **场地**：水 `(300,300)` 石底/石壁 `y=-64..-41`、水 `y=-49..-41`（水面顶 −40）；
     岩浆 `(330,300)` 同规格。干地起步平台 `(997..1005, -61, 1000)`。
-  - **本轮修复的 harness bug**：`set_input(sprint=True)` 曾在默认模式下把 sprint 当按钮
-    送进 queue/handler，触发 0.42 跳跃；已在 `Input.cpp` 里跳过该按钮（mode 1 同时开启时），
-    并用 `sprint_no_jump` 回归。旧的 sprint 系游泳/岩浆数据已重测或撤回。
-  - live selftest 基线：**221/221**（新增 `swim_start_still`、`sprint_no_jump`）。
+  - 本轮同时在 `Input.cpp` 修复了默认模式下 `set_input(sprint=True)` 触发 0.42 跳跃的问题，并用 `sprint_no_jump` 回归；旧的 sprint 系游泳/岩浆数据已重测或撤回。
+  - 当前全套回归与验收基线统一见 [`reliability-repairs.md`](reliability-repairs.md)。
 
-> 本文档同时是 MCBE_Parkour_wiki `Water`/`Lava` 小节的素材库：§0–§7 可直接改写进 wiki
-> （英文版翻译时保留公式与证据标签即可）。
+> 本文档完整保留反编译与实测验证过程；精简版（可直接对照阅读）见 [`fluid-wiki.md`](fluid-wiki.md)。

@@ -84,7 +84,7 @@ py -3.11 driver/dev.py run --world "超平坦测试" --build
 py -3.11 -m unittest discover -s tests -v
 py -3.11 -m ruff check driver tests && py -3.11 -m mypy
 
-# 带游戏回归（最新通过/失败与缺测范围见 mod/README.md、docs/mod-internals.md）
+# 带游戏回归（最新验收基线与未覆盖范围见 docs/reliability-repairs.md）
 py -3.11 driver/selftest.py
 
 # 版本数据

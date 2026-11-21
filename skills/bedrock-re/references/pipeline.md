@@ -57,8 +57,8 @@
 ## 4. 读状态时先问三个问题
 
 1. 这个字段是**记录位**（客户端状态）还是**阻力/物理读的位**（ADF）？
-2. 这个值是 `Actor::getVelocity()`（等于下一 tick 位移）还是 `StateVectorComponent`
-   的原始字段（地表约 0.546×位移，站着 vy 还可能留残值）？
+2. 这个值是 `Actor::getVelocity()`（已完成位移 `mPos - mPosPrev`）还是 `StateVectorComponent::mPosDelta`
+   （待执行位移，地表约 0.546 × 位移，站着 vy 还可能留残值）？
 3. 这个“先后”是同一线程/同一 pass 内，还是跨线程/跨 pass 的观测？
 
 答不上来就先回静态，不要用 tick 差值补机制。

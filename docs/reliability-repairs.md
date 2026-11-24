@@ -17,9 +17,9 @@
 
 | 范围 | 当前结果 | 覆盖重点与前提 |
 | --- | --- | --- |
-| 完整离线 | **480/480**（另 native ASAN **3/3**） | Python、native 模型、CLI、协议、安全/格式化检查与资源生命周期；含 `LEVIPILOT_NATIVE_ASAN=1` 原生回归 |
-| 静态与文档检查 | `driver/check.py --cpp-format-all`（**15/15**） | `ruff check`/`format`、`mypy`、`profiles`、`roles`、`lint_public`、`command docs`、机制守卫、89/89 C++ `clang-format 22.1.8`、Markdown 相对链接；另经 LLVM 22 C++ 构建 |
-| 完整现场 `--require-complete` | **1171/1171**，0 fail、0 skip、0 required skip | 当前默认全套，含权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP` |
+| 完整离线 | **496/496**（native ASAN **3/3** 为既有基线，本轮未设 `LEVIPILOT_NATIVE_ASAN`） | Python、native 模型、CLI、协议、安全/格式化检查与资源生命周期；ASAN 回归需显式开启 |
+| 静态与文档检查 | `driver/check.py --cpp-format`（**16/16**） | `ruff check`/`format`、`mypy`、`profiles`、`roles`、`lint_public`、`command docs`、机制守卫、`probes ruff`、C++ `clang-format 22.1.8`、Markdown 相对链接；另经 LLVM 22 C++ 构建 |
+| 完整现场 `--require-complete` | **1173/1173**，0 fail、0 skip、0 required skip | 当前默认全套，含权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP`；`packets` 段行走后复位到本段起点，行走不再把跳跃/落地检查带到有顶棚或水中的位置 |
 | 安全与鉴权 `--security-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip | 最终 DLL 实测：管道 1-ACE DACL、`pipe_token` 未认证/错令牌拒止、`allow_mem_read=false` 与 `allow_togglefly=false` 及两次热重载完整还原 |
 | 受控空闲真实热重载 `--hot-reload-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip | 最终 DLL 实测：拒绝不存在模块、静默准入、`/ll reload probe` 同 PID 切换代次/日志/四 hook/tick/`/togglefly` 恢复及配置/DLL/crash 一致 |
 | 连接生命周期 `--connection-only --require-complete` | **11/11**，0 fail、0 skip、0 required skip | 最终 DLL 实测：弃用句柄、正常与异常退出后的管道释放与重连 |

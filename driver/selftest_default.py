@@ -536,6 +536,10 @@ def _section_packets(ctx: DefaultSuiteContext) -> None:
     checks = ctx.checks
     observation = ctx.observation
     wait_ticks = ctx.wait_ticks
+    # The checks below walk the player to force movement packets. The pose is
+    # restored at the end because `memory_watch` captures the run-wide pose
+    # from the live state, and later jump arcs require headroom there.
+    section_pose = client.state()
     # -- H1 stage A: packet identity tap --------------------------------
     packet_enabled = True
     try:
@@ -785,6 +789,15 @@ def _section_packets(ctx: DefaultSuiteContext) -> None:
             int(client.packet_stats().get("records", 0)) == quiet,
             f"records={quiet}",
         )
+
+    client.teleport(
+        float(section_pose["feet_x"]),
+        float(section_pose["feet_y"]),
+        float(section_pose["feet_z"]),
+        yaw=float(section_pose.get("yaw", 0.0)),
+        pitch=float(section_pose.get("pitch", 0.0)),
+    )
+    wait_ticks(client, 8)
 
 
 def _section_version_diagnostics(ctx: DefaultSuiteContext) -> None:

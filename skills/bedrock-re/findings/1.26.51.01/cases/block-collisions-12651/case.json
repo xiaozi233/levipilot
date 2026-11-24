@@ -1,0 +1,10 @@
+{
+  "case": "block-collisions-12651",
+  "version": "1.26.51.01",
+  "goal": "自动导出 1.26.51.01 全游戏方块及典型实体精确 float32 碰撞箱，并与 MCBE_Parkour_wiki/Pages/blocks_collisions.md 逐项校对及静态复核关键差异",
+  "environment": "",
+  "current_round": 2,
+  "status": "closed",
+  "created_at": "2026-11-24T05:41:00Z",
+  "updated_at": "2026-11-24T13:44:08Z"
+}

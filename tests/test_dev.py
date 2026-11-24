@@ -602,6 +602,35 @@ class RunAttachAndExecTests(unittest.TestCase):
         client.close.assert_called_once_with()
         kill_game.assert_called_once_with(exe)
 
+    def test_exec_subcommand_and_background_flags(self) -> None:
+        events: list[str] = []
+        exe = Path("D:/game/Minecraft.Windows.exe")
+        client = MagicMock()
+        client.status.return_value = {"in_world": True}
+        client.focus_cfg.side_effect = lambda **kw: (
+            events.append(f"focus_cfg:{sorted(kw.items())}") or {"ok": True}
+        )
+        client.close.side_effect = lambda: events.append("close")
+
+        with (
+            patch.object(dev, "game_pids", return_value=[123]),
+            patch.object(dev, "ModClient") as factory,
+            patch.object(
+                dev.subprocess, "run", return_value=subprocess.CompletedProcess("echo hi", 0)
+            ) as sub_run,
+        ):
+            factory.return_value.connect.return_value = client
+            code = dev.main(["exec", "echo hi", "--exe", str(exe), "--background"])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            events,
+            ["focus_cfg:[('suppress_cursor_grab', True), ('suppress_focus_pause', True)]", "close"],
+        )
+        sub_run.assert_called_once_with("echo hi", shell=True)
+
+        allow = dev._parse_kv_allow([], lock_input=False, background=True)
+        self.assertEqual(allow, {"suppress_cursor_grab": True, "suppress_focus_pause": True})
+
 
 class BuildEnvTests(unittest.TestCase):
     def test_build_xmake_env_preserves_caller_vars_and_uses_existing_tool_dirs(self) -> None:

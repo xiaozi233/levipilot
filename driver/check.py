@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
@@ -274,6 +275,73 @@ def check_cpp_format(root: Path = REPO_ROOT, *, all_files: bool = False) -> tupl
     return True, f"cpp format: ok ({len(collected)} files checked)"
 
 
+def check_probes_ruff(root: Path = REPO_ROOT) -> tuple[bool, str]:
+    """Run targeted ruff syntax/undefined checks on all case probes and full ruff on changed ones."""
+    findings = root / "skills" / "bedrock-re" / "findings"
+    if not findings.is_dir():
+        return True, "probes ruff: ok (no findings directory)"
+    probe_files = sorted(
+        path for path in findings.rglob("*.py") if path.is_file() and path.parent.name == "probes"
+    )
+    if not probe_files:
+        return True, "probes ruff: ok (no probe files)"
+
+    py = sys.executable
+    syntax = subprocess.run(
+        [py, "-m", "ruff", "check", "--select", "E9,F63,F7,F82", *(str(p) for p in probe_files)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if syntax.returncode != 0:
+        out = "\n".join(part.rstrip() for part in (syntax.stdout, syntax.stderr) if part.strip())
+        return False, out or "ruff probe syntax check failed"
+
+    changed_rel: set[str] = set()
+    for git_cmd in (
+        ["git", "diff", "--name-only", "HEAD", "--", "skills/bedrock-re/findings"],
+        ["git", "ls-files", "--others", "--exclude-standard", "--", "skills/bedrock-re/findings"],
+    ):
+        proc = subprocess.run(
+            git_cmd,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if proc.returncode == 0:
+            changed_rel.update(line.strip() for line in proc.stdout.splitlines() if line.strip())
+
+    changed_probes = sorted(
+        root / rel
+        for rel in changed_rel
+        if rel.endswith(".py") and (root / rel).is_file() and (root / rel).parent.name == "probes"
+    )
+    if changed_probes:
+        full = subprocess.run(
+            [py, "-m", "ruff", "check", *(str(p) for p in changed_probes)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if full.returncode != 0:
+            out = "\n".join(part.rstrip() for part in (full.stdout, full.stderr) if part.strip())
+            return False, out or "ruff changed probe check failed"
+
+    return (
+        True,
+        f"probes ruff: ok ({len(probe_files)} scanned, {len(changed_probes)} strict-checked)",
+    )
+
+
 def build_checks(
     *,
     docs_only: bool = False,
@@ -322,6 +390,7 @@ def build_checks(
                 command=[py, str(root / "driver" / "gen_profiles.py"), "--check"],
             )
         )
+        checks.append(CheckSpec("probes ruff", fn=check_probes_ruff))
 
     if cpp_format or cpp_format_all:
         checks.append(
@@ -406,7 +475,30 @@ def run_checks(
         root=root,
     )
     results: list[CheckResult] = []
-    for spec in specs:
+    sequential_names = {"unittest"}
+    parallel_specs = [spec for spec in specs if spec.name not in sequential_names]
+    sequential_specs = [spec for spec in specs if spec.name in sequential_names]
+
+    future_by_index: dict[int, Future[CheckResult]] = {}
+    max_workers = max(1, min(8, len(parallel_specs)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for idx, spec in enumerate(specs):
+            if spec.name not in sequential_names:
+                future_by_index[idx] = pool.submit(_run_spec, spec, root)
+
+        for idx, spec in enumerate(specs):
+            if spec.name in sequential_names:
+                continue
+            _print_safe(f"[RUN ] {spec.name}")
+            result = future_by_index[idx].result()
+            results.append(result)
+            tag = "PASS" if result.passed else "FAIL"
+            _print_safe(f"[{tag}] {result.name} ({result.duration:.2f}s)")
+            if not result.passed and result.output:
+                for line in result.output.splitlines():
+                    _print_safe(f"  {line}")
+
+    for spec in sequential_specs:
         _print_safe(f"[RUN ] {spec.name}")
         result = _run_spec(spec, root)
         results.append(result)

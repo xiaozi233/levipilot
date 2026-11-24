@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import mmap
 import os
+import re
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -122,6 +123,18 @@ class RttiResult:
     type_desc_va: int
     methods: tuple[int, ...]
     xrefs: tuple[RipXref, ...]
+
+
+@dataclass(frozen=True)
+class EcsComponentInfo:
+    hash_id: int
+    name: str
+    desc_va: int
+    func_span: tuple[int, int] | None
+
+    @property
+    def func_label(self) -> str:
+        return _format_func_label(*self.func_span) if self.func_span is not None else ".text"
 
 
 @dataclass(frozen=True)
@@ -407,6 +420,7 @@ class PeImage:
         self.functions = PdataIndex(blob)
         self._imports_cache: tuple[ImportEntry, ...] | None = None
         self._iat_map_cache: dict[int, ImportEntry] | None = None
+        self._ecs_cache: list[EcsComponentInfo] | None = None
         self._md_fast: Cs | None = None
         self._md_detail: Cs | None = None
 
@@ -442,6 +456,14 @@ class PeImage:
         if found is None:
             return None
         return self.image_base + found[0], self.image_base + found[1]
+
+    def find_func(self, va: int) -> tuple[int, int] | None:
+        """Alias for ``function_at(va)``."""
+        return self.function_at(va)
+
+    def section_va(self, section: Section) -> int:
+        """Return the virtual address of ``section`` (``image_base + section.va``)."""
+        return self.image_base + section.va
 
     def read(self, va: int, length: int = 16) -> bytes:
         rva = self.rva(va)
@@ -833,6 +855,20 @@ class PeImage:
             parts.append(f"str={preview!r}")
         return f"{target:#x} " + " ".join(parts)
 
+    def _format_disasm_insn(self, insn: CsInsn) -> str:
+        target: int | None = None
+        for op in insn.operands:
+            if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
+                target = insn.address + insn.size + op.mem.disp
+                break
+            if op.type == X86_OP_IMM and insn.mnemonic in ("call", "jmp"):
+                target = int(op.imm)
+                break
+        line = _format_insn(insn.address, insn.mnemonic, insn.op_str)
+        if target is not None:
+            line = f"{line}  ; {self._annotate_target(target)}"
+        return line
+
     def disassemble(self, va: int, count: int = 40) -> list[str]:
         """Disassemble ``count`` instructions from ``va`` with target annotations."""
         if count <= 0:
@@ -846,19 +882,129 @@ class PeImage:
         for idx, insn in enumerate(md.disasm(code, va)):
             if idx >= count:
                 break
-            target: int | None = None
-            for op in insn.operands:
-                if op.type == X86_OP_MEM and op.mem.base == X86_REG_RIP:
-                    target = insn.address + insn.size + op.mem.disp
-                    break
-                if op.type == X86_OP_IMM and insn.mnemonic in ("call", "jmp"):
-                    target = int(op.imm)
-                    break
-            line = _format_insn(insn.address, insn.mnemonic, insn.op_str)
-            if target is not None:
-                line = f"{line}  ; {self._annotate_target(target)}"
-            lines.append(line)
+            lines.append(self._format_disasm_insn(insn))
+        if not lines:
+            span = self.function_at(va)
+            if span is not None and span[0] < va < span[1]:
+                return self.disassemble_function(va, max_insns=count, from_va=va)
         return lines
+
+    def disassemble_function(
+        self,
+        va: int,
+        *,
+        max_insns: int = 2000,
+        from_va: int | None = None,
+    ) -> list[str]:
+        """Disassemble the ``.pdata`` function containing ``va`` (optionally from ``from_va``)."""
+        if max_insns <= 0:
+            return []
+        span = self.function_at(va)
+        if span is None:
+            return []
+        begin, end = span
+        code = self.read(begin, max(0, end - begin))
+        if not code:
+            return []
+
+        md = self._disasm_detail()
+        lines: list[str] = []
+        for insn in md.disasm(code, begin):
+            if insn.address >= end or len(lines) >= max_insns:
+                break
+            if from_va is not None and insn.address + insn.size <= from_va:
+                continue
+            lines.append(self._format_disasm_insn(insn))
+        return lines
+
+    def find_bytes(
+        self,
+        pattern: bytes,
+        *,
+        section: str | None = None,
+        limit: int = 64,
+    ) -> list[tuple[int, tuple[int, int] | None]]:
+        """Scan sections (default ``.text`` and ``.rdata``) for byte ``pattern``."""
+        if not pattern or limit <= 0:
+            return []
+        sec_names = (section,) if section is not None else (".text", ".rdata")
+        hits: list[tuple[int, tuple[int, int] | None]] = []
+        for sec in self.sections:
+            if sec.name not in sec_names or sec.raw_size < len(pattern):
+                continue
+            start = sec.raw
+            end = sec.raw + sec.raw_size
+            pos = start
+            while pos < end and len(hits) < limit:
+                idx = self._data.find(pattern, pos, end)
+                if idx == -1:
+                    break
+                va = self.image_base + sec.va + (idx - start)
+                hits.append((va, self.function_at(va)))
+                pos = idx + 1
+            if len(hits) >= limit:
+                break
+        return hits
+
+    def find_u32(
+        self,
+        value: int,
+        *,
+        section: str | None = None,
+        limit: int = 64,
+    ) -> list[tuple[int, tuple[int, int] | None]]:
+        """Scan for little-endian 32-bit unsigned integer ``value``."""
+        return self.find_bytes(struct.pack("<I", value & 0xFFFFFFFF), section=section, limit=limit)
+
+    def find_f32(
+        self,
+        value: float,
+        *,
+        section: str | None = None,
+        limit: int = 64,
+    ) -> list[tuple[int, tuple[int, int] | None]]:
+        """Scan for IEEE-754 little-endian float32 ``value``."""
+        return self.find_bytes(struct.pack("<f", float(value)), section=section, limit=limit)
+
+    def find_string(
+        self,
+        substring: str,
+        *,
+        section: str = ".rdata",
+        ignore_case: bool = False,
+        limit: int = 64,
+    ) -> list[tuple[int, str]]:
+        """Find printable ASCII/UTF-8 strings containing ``substring`` in ``section``."""
+        if not substring or limit <= 0:
+            return []
+        needle = substring.encode("utf-8")
+        needle_lower = needle.lower() if ignore_case else needle
+        sec = next((s for s in self.sections if s.name == section), None)
+        if sec is None or sec.raw_size == 0:
+            return []
+        start = sec.raw
+        end = sec.raw + sec.raw_size
+        haystack = bytes(self._data[start:end]).lower() if ignore_case else self._data[start:end]
+        results: list[tuple[int, str]] = []
+        seen_starts: set[int] = set()
+        pos = 0
+        while pos < len(haystack) and len(results) < limit:
+            rel = haystack.find(needle_lower, pos)
+            if rel == -1:
+                break
+            abs_pos = start + rel
+            s = abs_pos
+            while s > start and 0x20 <= self._data[s - 1] < 0x7F:
+                s -= 1
+            e = abs_pos + len(needle)
+            while e < end and 0x20 <= self._data[e] < 0x7F:
+                e += 1
+            if s not in seen_starts:
+                seen_starts.add(s)
+                va = self.image_base + sec.va + (s - start)
+                results.append((va, self._data[s:e].decode("utf-8", "replace")))
+            pos = rel + len(needle_lower)
+        return results
 
     # -- MSVC RTTI ---------------------------------------------------------
     def _read_vtable_methods(self, vtable_va: int, limit: int = 6) -> tuple[int, ...]:
@@ -909,8 +1055,14 @@ class PeImage:
             )
         ]
 
-    def _find_rtti_by_name(self, substring: str) -> list[RttiResult]:
-        if not substring:
+    def _find_rtti_by_name(
+        self,
+        substring: str,
+        *,
+        allow_empty: bool = False,
+        include_xrefs: bool = True,
+    ) -> list[RttiResult]:
+        if not substring and not allow_empty:
             return []
         q_lower = substring.lower()
         td_matches: dict[int, tuple[str, str]] = {}
@@ -931,7 +1083,11 @@ class PeImage:
                     if nul != -1:
                         mangled = self._data[hit:nul].decode("ascii", "replace")
                         demangled = demangle_rtti_name(mangled)
-                        if q_lower in mangled.lower() or q_lower in demangled.lower():
+                        if (
+                            not q_lower
+                            or q_lower in mangled.lower()
+                            or q_lower in demangled.lower()
+                        ):
                             td_rva = sec.va + (hit - sec.raw) - 16
                             td_matches[td_rva] = (mangled, demangled)
                 pos = hit + 3
@@ -986,7 +1142,7 @@ class PeImage:
         if not vtable_to_col:
             return []
 
-        xrefs_by_vt = self._scan_rip_xrefs(sorted(vtable_to_col))
+        xrefs_by_vt = self._scan_rip_xrefs(sorted(vtable_to_col)) if include_xrefs else {}
         results: list[RttiResult] = []
         for vt_va in sorted(vtable_to_col):
             col_va = vtable_to_col[vt_va]
@@ -1005,6 +1161,25 @@ class PeImage:
             )
         return results
 
+    def find_vtable_slot_overrides(
+        self, slot: int, *, filter_substr: str = ""
+    ) -> dict[int, list[str]]:
+        """Group RTTI classes matching ``filter_substr`` by the method VA at ``vtable[slot]``."""
+        if slot < 0:
+            return {}
+        rtti_list = self._find_rtti_by_name(filter_substr, allow_empty=True, include_xrefs=False)
+        grouped: dict[int, list[str]] = {}
+        for item in rtti_list:
+            raw = self.read(item.vtable_va + slot * 8, 8)
+            if len(raw) < 8:
+                continue
+            method_va = struct.unpack("<Q", raw)[0]
+            sec = self.section_of(method_va)
+            if sec is None or not sec.is_executable:
+                continue
+            grouped.setdefault(method_va, []).append(item.name)
+        return {va: sorted(names) for va, names in grouped.items()}
+
     def find_rtti(self, query: str | int) -> list[RttiResult]:
         """Resolve MSVC x64 RTTI by vtable VA (``int`` or ``0x...``) or class name substring."""
         if isinstance(query, int):
@@ -1013,6 +1188,64 @@ class PeImage:
         if stripped.lower().startswith("0x") or stripped.isdigit():
             return self._find_rtti_by_vtable(int(stripped, 0))
         return self._find_rtti_by_name(stripped)
+
+    _ENTT_DESC_RE = re.compile(
+        rb"\xc7\x40\x04(.{4})\x48\x8d\x0d(.{4})\x48\x89\x48\x08",
+        re.DOTALL,
+    )
+
+    def scan_ecs_components(self) -> list[EcsComponentInfo]:
+        """Scan ``.text`` for EnTT type descriptor emitters (hash_id <-> component name)."""
+        if self._ecs_cache is not None:
+            return self._ecs_cache
+        by_hash: dict[int, EcsComponentInfo] = {}
+        for sec in self.sections:
+            if not sec.is_executable or sec.raw_size < 18:
+                continue
+            raw = self._data[sec.raw : sec.raw + sec.raw_size]
+            for match in self._ENTT_DESC_RE.finditer(raw):
+                off = match.start()
+                hash_id = struct.unpack("<I", match.group(1))[0]
+                if hash_id in by_hash:
+                    continue
+                disp = struct.unpack("<i", match.group(2))[0]
+                desc_va = self.image_base + sec.va + off
+                str_va = desc_va + 14 + disp
+                slen = 256
+                if raw[off + 18 : off + 22] == b"\x48\xc7\x40\x10" and off + 26 <= len(raw):
+                    explicit = struct.unpack_from("<I", raw, off + 22)[0]
+                    if 0 < explicit <= 256:
+                        slen = explicit
+                sraw = self.read(str_va, slen)
+                if not sraw:
+                    continue
+                head = sraw.split(b"\x00", 1)[0].split(b"]", 1)[0]
+                if not head or not all(0x20 <= b < 0x7F for b in head):
+                    continue
+                name = head.decode("ascii")
+                by_hash[hash_id] = EcsComponentInfo(
+                    hash_id=hash_id,
+                    name=name,
+                    desc_va=desc_va,
+                    func_span=self.function_at(desc_va),
+                )
+        self._ecs_cache = sorted(by_hash.values(), key=lambda c: (c.name.lower(), c.hash_id))
+        return self._ecs_cache
+
+    def find_ecs_by_hash(self, hash_id: int) -> EcsComponentInfo | None:
+        """Resolve one EnTT component hash (masked to uint32)."""
+        target = hash_id & 0xFFFFFFFF
+        for item in self.scan_ecs_components():
+            if item.hash_id == target:
+                return item
+        return None
+
+    def find_ecs_by_name(self, query: str) -> list[EcsComponentInfo]:
+        """Find EnTT components whose decoded name contains ``query`` (case-insensitive)."""
+        needle = query.strip().lower()
+        if not needle:
+            return []
+        return [item for item in self.scan_ecs_components() if needle in item.name.lower()]
 
 
 def default_exe() -> Path:
@@ -1095,10 +1328,126 @@ def _print_disasm(image: PeImage, va: int, count: int) -> int:
     return 0
 
 
+def _print_func(image: PeImage, va: int, max_insns: int, *, from_va: int | None = None) -> int:
+    span = image.function_at(va)
+    if span is None:
+        print(f"no .pdata function covering {va:#x}")
+        return 1
+    begin, end = span
+    lines = image.disassemble_function(va, max_insns=max_insns, from_va=from_va)
+    suffix = f" from {from_va:#x}" if from_va is not None else ""
+    print(f"function {begin:#x}..{end:#x} (size {end - begin:#x}, {len(lines)} insn(s){suffix}):")
+    if lines:
+        print("\n".join(lines))
+    return 0
+
+
+def _in_span(va: int, span: tuple[int, int]) -> bool:
+    return span[0] <= va < span[1]
+
+
+def _print_find_hits(
+    image: PeImage,
+    label: str,
+    hits: list[tuple[int, tuple[int, int] | None]],
+    *,
+    with_xrefs: bool = False,
+    in_func_span: tuple[int, int] | None = None,
+    limit: int = 64,
+) -> int:
+    xrefs_map = (
+        image._scan_rip_xrefs(sorted({va for va, _ in hits})) if (with_xrefs and hits) else {}
+    )
+    filtered: list[tuple[int, tuple[int, int] | None, list[RipXref]]] = []
+    for va, span in hits:
+        xrefs = xrefs_map.get(va, [])
+        if in_func_span is not None:
+            if with_xrefs:
+                xrefs = [x for x in xrefs if _in_span(x.insn_va, in_func_span)]
+                if not _in_span(va, in_func_span) and not xrefs:
+                    continue
+            elif not _in_span(va, in_func_span):
+                continue
+        filtered.append((va, span, xrefs))
+        if len(filtered) >= limit:
+            break
+
+    print(f"{label}: {len(filtered)} hit(s)")
+    for va, span, xrefs in filtered:
+        sec = image.section_of(va)
+        sec_name = sec.name if sec is not None else "?"
+        func_label = _format_func_label(span[0], span[1]) if span is not None else sec_name
+        print(f"  {va:#x}  [{sec_name}]  {func_label}")
+        if with_xrefs:
+            for xref in xrefs[:10]:
+                print(f"    xref {xref.insn_va:#x}  {xref.func_label:34s}  {xref.text}")
+    return 0
+
+
+def _print_find_strings(
+    image: PeImage,
+    query: str,
+    *,
+    ignore_case: bool = False,
+    limit: int = 64,
+    with_xrefs: bool = False,
+    in_func_span: tuple[int, int] | None = None,
+) -> int:
+    scan_limit = max(limit, 1024) if (in_func_span is not None and with_xrefs) else limit
+    hits = image.find_string(query, ignore_case=ignore_case, limit=scan_limit)
+    xrefs_map = (
+        image._scan_rip_xrefs(sorted({va for va, _ in hits})) if (with_xrefs and hits) else {}
+    )
+    filtered: list[tuple[int, str, list[RipXref]]] = []
+    for va, text in hits:
+        xrefs = xrefs_map.get(va, [])
+        if in_func_span is not None and with_xrefs:
+            xrefs = [x for x in xrefs if _in_span(x.insn_va, in_func_span)]
+            if not xrefs:
+                continue
+        filtered.append((va, text, xrefs))
+        if len(filtered) >= limit:
+            break
+
+    print(f"strings matching {query!r}: {len(filtered)} hit(s)")
+    for va, text, xrefs in filtered:
+        print(f"  {va:#x}  {text!r}")
+        if with_xrefs:
+            for xref in xrefs[:10]:
+                print(f"    xref {xref.insn_va:#x}  {xref.func_label:34s}  {xref.text}")
+    return 0
+
+
+def _print_vtable_slot(image: PeImage, slot: int, filt: str) -> int:
+    grouped = image.find_vtable_slot_overrides(slot, filter_substr=filt)
+    print(f"vtable slot[{slot}] (filter={filt!r}): {len(grouped)} unique target(s)")
+    for method_va, names in sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        span = image.function_at(method_va)
+        func_label = _format_func_label(span[0], span[1]) if span is not None else "<no .pdata>"
+        sample = ", ".join(names[:5])
+        suffix = f", ... (+{len(names) - 5} more)" if len(names) > 5 else ""
+        print(f"  {method_va:#x}  {func_label:34s}  ({len(names)}): {sample}{suffix}")
+    return 0
+
+
 def _print_rtti(image: PeImage, query: str) -> int:
     results = image.find_rtti(query)
     if not results:
         print(f"no RTTI matches for {query!r}")
+        stripped = query.strip()
+        if stripped and not stripped.lower().startswith("0x") and not stripped.isdigit():
+            ecs_hits = image.find_ecs_by_name(stripped)[:5]
+            if ecs_hits:
+                print(
+                    "hint: matching ECS component(s): "
+                    + ", ".join(f"{c.name} ({c.hash_id:#010x})" for c in ecs_hits)
+                )
+            str_hits = image.find_string(stripped, ignore_case=True, limit=5)
+            if str_hits:
+                print(
+                    "hint: matching string(s): "
+                    + ", ".join(f"{va:#x} {text!r}" for va, text in str_hits)
+                )
         return 0
     print(f"RTTI matches for {query!r}: {len(results)}")
     for item in results:
@@ -1117,12 +1466,76 @@ def _print_rtti(image: PeImage, query: str) -> int:
     return 0
 
 
+def _print_ecs_hash(
+    image: PeImage,
+    hash_id: int,
+    *,
+    limit: int = 64,
+    in_func_span: tuple[int, int] | None = None,
+) -> int:
+    val = hash_id & 0xFFFFFFFF
+    info = image.find_ecs_by_hash(val)
+    if info is None:
+        print(f"ECS hash {val:#010x}: <descriptor not found>")
+    else:
+        print(
+            f"ECS hash {val:#010x}: {info.name}  (descriptor {info.desc_va:#x}, {info.func_label})"
+        )
+    scan_limit = max(limit, 1024) if in_func_span is not None else limit
+    hits = image.find_u32(val, section=".text", limit=scan_limit)
+    return _print_find_hits(
+        image,
+        f".text u32 {val:#010x}",
+        hits,
+        with_xrefs=False,
+        in_func_span=in_func_span,
+        limit=limit,
+    )
+
+
+def _print_ecs_find(
+    image: PeImage,
+    query: str,
+    *,
+    limit: int = 64,
+    with_xrefs: bool = False,
+) -> int:
+    matches = image.find_ecs_by_name(query)
+    shown = matches[: max(0, limit)]
+    print(f"ECS components matching {query!r}: {len(matches)} match(es)")
+    for idx, info in enumerate(shown):
+        print(f"  {info.hash_id:#010x}  {info.name:42s}  desc {info.desc_va:#x}  {info.func_label}")
+        if with_xrefs and idx < 10:
+            for va, span in image.find_u32(info.hash_id, section=".text", limit=10):
+                func_label = _format_func_label(*span) if span is not None else ".text"
+                print(f"    use  {va:#x}  {func_label}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("address", nargs="?", help="VA in hex (0x...) or decimal")
     parser.add_argument("--exe", type=Path, default=None, help="path to Minecraft.Windows.exe")
     parser.add_argument(
-        "-n", "--count", type=int, default=40, help="instruction count for --disasm"
+        "-n", "--count", type=int, default=None, help="instruction count for --disasm/--func"
+    )
+    parser.add_argument(
+        "--from", dest="from_va", metavar="VA", default=None, help="start VA for --func"
+    )
+    parser.add_argument("--section", default=None, help="section filter for --find-u32/--find-f32")
+    parser.add_argument("--limit", type=int, default=64, help="max results for --find-* scans")
+    parser.add_argument("--ignore-case", action="store_true", help="case-insensitive --find-str")
+    parser.add_argument(
+        "--with-xrefs", action="store_true", help="resolve .text RIP xrefs for --find-* hits"
+    )
+    parser.add_argument(
+        "--in-func",
+        metavar="VA",
+        default=None,
+        help="restrict --find-* / --ecs-hash hits or xrefs to .pdata function covering VA",
+    )
+    parser.add_argument(
+        "--filter", default="", help="demangled RTTI class substring for --vtable-slot"
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -1133,6 +1546,15 @@ def main() -> int:
     )
     mode.add_argument("--import-xrefs", metavar="SYMBOL", help="find .text xrefs to IAT import")
     mode.add_argument("--disasm", metavar="VA", help="disassemble with annotations from VA")
+    mode.add_argument("--func", metavar="VA", help="disassemble entire .pdata function covering VA")
+    mode.add_argument("--find-u32", metavar="INT", help="find little-endian uint32 constant")
+    mode.add_argument("--find-f32", metavar="FLOAT", help="find little-endian float32 constant")
+    mode.add_argument("--find-str", metavar="TEXT", help="find printable UTF-8/ASCII strings")
+    mode.add_argument("--ecs-hash", metavar="HASH", help="resolve EnTT ECS component hash and uses")
+    mode.add_argument("--ecs-find", metavar="NAME", help="search EnTT ECS components by name")
+    mode.add_argument(
+        "--vtable-slot", type=int, metavar="SLOT", help="group RTTI classes by vtable[SLOT]"
+    )
     mode.add_argument("--rtti", metavar="VA_OR_NAME", help="inspect MSVC RTTI by vtable VA or name")
     args = parser.parse_args()
 
@@ -1143,6 +1565,13 @@ def main() -> int:
             args.iat is not None,
             args.import_xrefs is not None,
             args.disasm is not None,
+            args.func is not None,
+            args.find_u32 is not None,
+            args.find_f32 is not None,
+            args.find_str is not None,
+            args.ecs_hash is not None,
+            args.ecs_find is not None,
+            args.vtable_slot is not None,
             args.rtti is not None,
         ]
     )
@@ -1151,6 +1580,13 @@ def main() -> int:
 
     path = args.exe if args.exe is not None else default_exe()
     with PeImage(path) as image:
+        in_func_span: tuple[int, int] | None = None
+        if args.in_func is not None:
+            in_func_va = int(args.in_func, 0)
+            in_func_span = image.function_at(in_func_va)
+            if in_func_span is None:
+                print(f"no .pdata function covering {in_func_va:#x}")
+                return 1
         if args.sections:
             print(f"{path}  base {image.image_base:#x}  functions {len(image.functions)}")
             for section in image.sections:
@@ -1166,7 +1602,60 @@ def main() -> int:
         if args.import_xrefs is not None:
             return _print_import_xrefs(image, args.import_xrefs)
         if args.disasm is not None:
-            return _print_disasm(image, int(args.disasm, 0), args.count)
+            return _print_disasm(image, int(args.disasm, 0), args.count or 40)
+        if args.func is not None:
+            from_va = int(args.from_va, 0) if args.from_va is not None else None
+            return _print_func(image, int(args.func, 0), args.count or 2000, from_va=from_va)
+        if args.find_u32 is not None:
+            val = int(args.find_u32, 0) & 0xFFFFFFFF
+            scan_limit = max(args.limit, 1024) if in_func_span is not None else args.limit
+            hits = image.find_u32(val, section=args.section, limit=scan_limit)
+            return _print_find_hits(
+                image,
+                f"u32 {val:#010x}",
+                hits,
+                with_xrefs=args.with_xrefs,
+                in_func_span=in_func_span,
+                limit=args.limit,
+            )
+        if args.find_f32 is not None:
+            val_f = float(args.find_f32)
+            bits = struct.unpack("<I", struct.pack("<f", val_f))[0]
+            scan_limit = max(args.limit, 1024) if in_func_span is not None else args.limit
+            hits = image.find_f32(val_f, section=args.section, limit=scan_limit)
+            return _print_find_hits(
+                image,
+                f"f32 {val_f} ({bits:#010x})",
+                hits,
+                with_xrefs=args.with_xrefs,
+                in_func_span=in_func_span,
+                limit=args.limit,
+            )
+        if args.find_str is not None:
+            return _print_find_strings(
+                image,
+                args.find_str,
+                ignore_case=args.ignore_case,
+                limit=args.limit,
+                with_xrefs=args.with_xrefs,
+                in_func_span=in_func_span,
+            )
+        if args.ecs_hash is not None:
+            return _print_ecs_hash(
+                image,
+                int(args.ecs_hash, 0),
+                limit=args.limit,
+                in_func_span=in_func_span,
+            )
+        if args.ecs_find is not None:
+            return _print_ecs_find(
+                image,
+                args.ecs_find,
+                limit=args.limit,
+                with_xrefs=args.with_xrefs,
+            )
+        if args.vtable_slot is not None:
+            return _print_vtable_slot(image, args.vtable_slot, args.filter)
         if args.rtti is not None:
             return _print_rtti(image, args.rtti)
         if args.address is None:

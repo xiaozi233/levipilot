@@ -206,6 +206,26 @@ def synthetic_rich_pe() -> tuple[bytes, dict[str, int]]:
     # 0x1080: jmp 0x1050 (5B)
     put_text(0x1080, b"\xe9" + _disp32(0x1085, 0x1050))
 
+    # Synthetic EnTT component descriptor inside .text (0x1090..0x10B0, inside pdata fn3 [0x1090, 0x10B8))
+    ecs_name_rva = 0x25A0
+    put_rdata(ecs_name_rva, b"DemoFooComponent]")
+    struct.pack_into("<III", buf, pdata_raw + 24, 0x1090, 0x10B8, 0)
+    # 0x1090: mov dword ptr [rax+4], 0xCAFEBABE (7B)
+    # 0x1097: lea rcx, [rip + disp] -> ecs_name_rva (7B)
+    # 0x109E: mov qword ptr [rax+8], rcx (4B)
+    # 0x10A2: mov qword ptr [rax+0x10], 16 (8B)
+    # 0x10AA: ret (1B)
+    put_text(
+        0x1090,
+        b"\xc7\x40\x04"
+        + struct.pack("<I", 0xCAFEBABE)
+        + b"\x48\x8d\x0d"
+        + _disp32(0x109E, ecs_name_rva)
+        + b"\x48\x89\x48\x08\x48\xc7\x40\x10"
+        + struct.pack("<I", 16)
+        + b"\xc3",
+    )
+
     addrs = {
         "hello": IMAGE_BASE + hello_rva,
         "float": IMAGE_BASE + float_rva,
@@ -216,12 +236,14 @@ def synthetic_rich_pe() -> tuple[bytes, dict[str, int]]:
         "helper_slot": helper_slot,
         "fn1": IMAGE_BASE + 0x1000,
         "fn2": IMAGE_BASE + 0x1050,
+        "fn3": IMAGE_BASE + 0x1090,
         "leaf": IMAGE_BASE + 0x1072,
         "widget_vt": IMAGE_BASE + widget_vt_rva,
         "widget_col": IMAGE_BASE + widget_col_rva,
         "widget_td": IMAGE_BASE + widget_td_rva,
         "plain_vt": IMAGE_BASE + plain_vt_rva,
         "box_vt": IMAGE_BASE + box_vt_rva,
+        "ecs_desc": IMAGE_BASE + 0x1090,
     }
     return bytes(buf), addrs
 
@@ -474,6 +496,102 @@ class PeImageTests(unittest.TestCase):
             rc, out = run_cli("--rtti", "PlainStruct")
             self.assertEqual(rc, 0)
             self.assertIn("PlainStruct (.?AUPlainStruct@@)", out)
+
+            rc, out = run_cli("--find-u32", "0x12345678")
+            self.assertEqual(rc, 0)
+            self.assertIn("1 hit(s)", out)
+
+            rc, out = run_cli("--find-f32", "1.5", "--with-xrefs")
+            self.assertEqual(rc, 0)
+            self.assertIn(hex(addrs["float"] + 4), out)
+
+            rc, out = run_cli("--find-f32", "0.6", "--with-xrefs")
+            self.assertEqual(rc, 0)
+            self.assertIn(hex(addrs["float"]), out)
+            self.assertIn("xref ", out)
+
+            rc, out = run_cli("--find-str", "hello", "--ignore-case", "--with-xrefs")
+            self.assertEqual(rc, 0)
+            self.assertIn("'HelloPE'", out)
+            self.assertIn("xref ", out)
+
+            rc, out = run_cli("--func", hex(addrs["fn1"] + 7))
+            self.assertEqual(rc, 0)
+            self.assertIn("function ", out)
+            self.assertIn("call ", out)
+
+            rc, out = run_cli("--vtable-slot", "0", "--filter", "PlainStruct")
+            self.assertEqual(rc, 0)
+            self.assertIn("PlainStruct", out)
+
+    def test_new_pe_image_helpers(self) -> None:
+        blob, addrs = synthetic_rich_pe()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "synthetic.exe"
+            path.write_bytes(blob)
+            with PeImage(path) as image:
+                self.assertEqual(image.find_func(addrs["fn1"] + 3), image.function_at(addrs["fn1"]))
+                text_sec = next(s for s in image.sections if s.name == ".text")
+                self.assertEqual(image.section_va(text_sec), image.image_base + text_sec.va)
+                u_hits = image.find_u32(0x12345678)
+                self.assertTrue(any(va > addrs["fn1"] and span is not None for va, span in u_hits))
+                f_hits = image.find_f32(1.5, section=".rdata")
+                self.assertEqual([va for va, _ in f_hits], [addrs["float"] + 4])
+                s_hits = image.find_string("HELLO", ignore_case=True)
+                self.assertEqual(s_hits, [(addrs["hello"], "HelloPE")])
+                fn_lines = image.disassemble_function(addrs["fn1"] + 7)
+                self.assertGreaterEqual(len(fn_lines), 5)
+                slots = image.find_vtable_slot_overrides(0, filter_substr="PlainStruct")
+                self.assertEqual(slots, {addrs["fn2"]: ["PlainStruct"]})
+
+                ecs_all = image.scan_ecs_components()
+                self.assertEqual(len(ecs_all), 1)
+                self.assertEqual(ecs_all[0].hash_id, 0xCAFEBABE)
+                self.assertEqual(ecs_all[0].name, "DemoFooComponent")
+                self.assertEqual(image.find_ecs_by_hash(0xCAFEBABE), ecs_all[0])
+                self.assertEqual(image.find_ecs_by_name("demofoo"), ecs_all)
+
+                from_lines = image.disassemble_function(addrs["fn1"], from_va=addrs["fn1"] + 0x10)
+                self.assertTrue(from_lines[0].startswith(f"{addrs['fn1'] + 0xF:#x}:"))
+
+    def test_ecs_from_infunc_and_rtti_hints_cli(self) -> None:
+        blob, addrs = synthetic_rich_pe()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "synthetic.exe"
+            path.write_bytes(blob)
+
+            def run_cli(*argv: str) -> tuple[int, str]:
+                buf = io.StringIO()
+                with (
+                    mock.patch.object(sys, "argv", ["pe_map.py", "--exe", str(path), *argv]),
+                    contextlib.redirect_stdout(buf),
+                ):
+                    rc = pe_map.main()
+                return rc, buf.getvalue()
+
+            rc, out = run_cli("--ecs-hash", "0xCAFEBABE")
+            self.assertEqual(rc, 0)
+            self.assertIn("DemoFooComponent", out)
+
+            rc, out = run_cli("--ecs-find", "DemoFoo", "--with-xrefs")
+            self.assertEqual(rc, 0)
+            self.assertIn("0xcafebabe", out)
+            self.assertIn("use ", out)
+
+            rc, out = run_cli("--func", hex(addrs["fn1"]), "--from", hex(addrs["fn1"] + 0x10))
+            self.assertEqual(rc, 0)
+            self.assertIn(f"from {addrs['fn1'] + 0x10:#x}", out)
+
+            rc, out = run_cli("--find-f32", "0.6", "--with-xrefs", "--in-func", hex(addrs["fn1"]))
+            self.assertEqual(rc, 0)
+            self.assertIn(hex(addrs["fn1"]), out)
+            self.assertNotIn(hex(addrs["leaf"]), out)
+
+            rc, out = run_cli("--rtti", "DemoFoo")
+            self.assertEqual(rc, 0)
+            self.assertIn("no RTTI matches for 'DemoFoo'", out)
+            self.assertIn("hint: matching ECS component(s): DemoFooComponent (0xcafebabe)", out)
+            self.assertIn("hint: matching string(s):", out)
 
     def test_real_binary_shapes(self) -> None:
         """Property check against the installed build; skipped when it is absent."""

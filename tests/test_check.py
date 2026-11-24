@@ -109,6 +109,7 @@ class CheckRunnerTests(unittest.TestCase):
                     "check_alpha",
                     "check_beta",
                     "gen_profiles",
+                    "probes ruff",
                     "command docs",
                     "markdown links",
                     "git diff --check",
@@ -160,7 +161,47 @@ class CheckRunnerTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(all(item.passed for item in results))
             self.assertIn(["git", "diff", "--check"], seen_commands)
-            self.assertIn("11/11 checks passed", buf.getvalue())
+            self.assertIn("12/12 checks passed", buf.getvalue())
+
+    def test_probes_ruff_checks_syntax_and_changed_probes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_fake_repo(root)
+            ok, out = check.check_probes_ruff(root)
+            self.assertTrue(ok, out)
+
+            probe = (
+                root
+                / "skills"
+                / "bedrock-re"
+                / "findings"
+                / "1.26.51.01"
+                / "cases"
+                / "demo"
+                / "probes"
+                / "p.py"
+            )
+            probe.parent.mkdir(parents=True)
+            probe.write_text("print('ok')\n", encoding="utf-8")
+
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, **_kwargs):
+                calls.append(list(cmd))
+                if cmd[:3] == ["git", "ls-files", "--others"]:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout="skills/bedrock-re/findings/1.26.51.01/cases/demo/probes/p.py\n",
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch.object(check.subprocess, "run", side_effect=fake_run):
+                ok, out = check.check_probes_ruff(root)
+            self.assertTrue(ok, out)
+            self.assertIn("1 scanned, 1 strict-checked", out)
+            self.assertTrue(any("--select" in c and "E9,F63,F7,F82" in c for c in calls))
 
     def test_runner_continues_after_failure_and_reports_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

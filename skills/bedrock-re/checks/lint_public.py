@@ -8,6 +8,7 @@ The repository is public.  Generic templates such as ``%APPDATA%`` and
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -40,14 +41,14 @@ PATTERNS = [
 
 
 def iter_files(root: Path):
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if path.suffix.lower() not in TEXT_SUFFIXES:
-            continue
-        yield path
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+        parent = Path(dirpath)
+        for name in filenames:
+            path = parent / name
+            if path.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            yield path
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -16,8 +16,10 @@ cd mod/probe && xmake -j4 -y
 py -3.11 driver/dev.py run --world "超平坦测试"
 
 # 附着到用户桌面已运行的游戏实例（不杀进程、不重装 mod，避开隔离桌面 exebox 不可见/失焦暂停）；
-# 可选 --exec 在世界就绪后执行命令，--stop-after 在完成后按保存门禁停止游戏
+# --background 开启防抓鼠标与后台防暂停并跳过强抢焦点；exec 可复用已打开的世界快速跑脚本
 py -3.11 driver/dev.py run --attach --world "超平坦测试"
+py -3.11 driver/dev.py run --world "超平坦测试" --background
+py -3.11 driver/dev.py exec "<cmd>" --background
 py -3.11 driver/dev.py run --attach --exec "<cmd>" --stop-after
 
 # 断开错误页恢复：先落盘诊断，再回菜单/重进；不要凭 HBUI 推断保存状态
@@ -39,6 +41,13 @@ py -3.11 driver/pe_map.py --xrefs <va>
 py -3.11 driver/pe_map.py --iat [filter]
 py -3.11 driver/pe_map.py --import-xrefs <sym>
 py -3.11 driver/pe_map.py --disasm <va> [-n N]
+py -3.11 driver/pe_map.py --func <va> [--from <va>] [-n N]
+py -3.11 driver/pe_map.py --find-u32 <hex_or_int> [--with-xrefs] [--in-func <va>]
+py -3.11 driver/pe_map.py --find-f32 <float> [--with-xrefs] [--in-func <va>]
+py -3.11 driver/pe_map.py --find-str <text> [--ignore-case] [--with-xrefs] [--in-func <va>]
+py -3.11 driver/pe_map.py --ecs-hash <hex_or_int> [--in-func <va>]
+py -3.11 driver/pe_map.py --ecs-find <name> [--with-xrefs]
+py -3.11 driver/pe_map.py --vtable-slot <idx> [--filter <substr>]
 py -3.11 driver/pe_map.py --rtti <va_or_name>
 
 # 需要已进入测试存档；权限或空槽不足产生的 required skip 在严格模式下也失败
@@ -47,7 +56,7 @@ py -3.11 driver/selftest.py --connection-only --require-complete
 py -3.11 driver/selftest.py --diagnostic-export-only --require-complete
 py -3.11 driver/selftest.py --lifecycle-prepare-only --require-complete
 
-# 逆向账本
+# 逆向账本（claim 校验 #anchor，end --close 可一键结案并刷新 resume）
 py -3.11 driver/landing.py begin --case <slug> --goal "..."
 ```
 
@@ -193,7 +202,7 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
 
 ## 当前状态与维护
 
-当前基线为离线 **459/459**、完整现场 `--require-complete` **1171/1171**；另有生命周期
+当前基线为离线 **496/496**、完整现场 `--require-complete` **1173/1173**；另有生命周期
 准入 **10/10**、输入专项 **46/46**、200000 tick 长录制 **9/9**。这些数字对应其代码与权限
 前提，后续变更必须重新验证适用范围，不能永久当作“全绿”。
 

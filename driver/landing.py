@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -329,6 +330,8 @@ def generate_resume(findings_root: Path, version: str, case: str) -> Path:
     if next_actions:
         for action in next_actions[-3:]:
             lines.append(f"- {action}")
+    elif data.get("status") == "closed" and not open_items and not pending:
+        lines.append("- closed")
     else:
         lines.append("- fill in the next hypothesis")
     lines += [
@@ -582,29 +585,71 @@ def probe(args: argparse.Namespace) -> int:
     return 0 if exit_code == 0 else 1
 
 
-def load_claims(path: Path) -> list[dict[str, Any]]:
-    text = path.read_text(encoding="utf-8")
-    if path.suffix.lower() == ".json":
+def parse_claims_text(
+    text: str, *, suffix: str = "", label: str = "<stdin>"
+) -> list[dict[str, Any]]:
+    data: Any
+    if suffix.lower() == ".json":
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise LandingError(f"{path}: {exc}") from exc
+            raise LandingError(f"{label}: {exc}") from exc
     else:
         try:
-            import yaml
-        except ImportError as exc:  # pragma: no cover - PyYAML is present here
-            raise LandingError("PyYAML is required for .yaml claims; use .json") from exc
-        try:
-            data = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
-            raise LandingError(f"{path}: {exc}") from exc
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                import yaml
+            except ImportError as exc:  # pragma: no cover - PyYAML is present here
+                raise LandingError("PyYAML is required for YAML claims; use JSON") from exc
+            try:
+                data = yaml.safe_load(text)
+            except yaml.YAMLError as exc:
+                raise LandingError(f"{label}: {exc}") from exc
     if isinstance(data, dict) and "claims" in data:
         data = data["claims"]
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
-        raise LandingError("claims file must be a list or {claims: [...]}")
+        raise LandingError("claims input must be a list or {claims: [...]}")
     return [item for item in data if isinstance(item, dict)]
+
+
+def load_claims(path: Path) -> list[dict[str, Any]]:
+    return parse_claims_text(path.read_text(encoding="utf-8"), suffix=path.suffix, label=str(path))
+
+
+def _markdown_heading_slugs(path: Path) -> set[str]:
+    """Extract GitHub-style heading anchors from a Markdown file (skipping fenced code)."""
+    counts: dict[str, int] = {}
+    slugs: set[str] = set()
+    in_fence = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        matched = re.match(r"^#{1,6}\s+(.+?)\s*$", line)
+        if not matched:
+            continue
+        title = re.sub(r"\s+#+$", "", matched.group(1)).strip()
+        title = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", title)
+        title = title.replace("`", "")
+        cleaned = []
+        for ch in title.lower():
+            if ch == " ":
+                cleaned.append("-")
+            elif ch in ("-", "_") or ch.isalnum():
+                cleaned.append(ch)
+        base = "".join(cleaned)
+        if not base:
+            continue
+        idx = counts.get(base, 0)
+        counts[base] = idx + 1
+        slugs.add(base if idx == 0 else f"{base}-{idx}")
+    return slugs
 
 
 def validate_claim(claim: dict[str, Any], known_ids: set[str]) -> None:
@@ -631,9 +676,15 @@ def validate_claim(claim: dict[str, Any], known_ids: set[str]) -> None:
         published = claim["published"]
         if not isinstance(published, str):
             raise LandingError("claim.published must be a string")
-        target = published.split("#", 1)[0]
+        target, sep, anchor = published.partition("#")
         if target and not (ROOT / target).exists():
             raise LandingError(f"claim.published target does not exist: {target}")
+        if sep and anchor and target:
+            target_path = ROOT / target
+            if target_path.suffix.lower() == ".md":
+                slug = urllib.parse.unquote(anchor).lower()
+                if slug not in _markdown_heading_slugs(target_path):
+                    raise LandingError(f"claim.published anchor not found in {target}: #{anchor}")
     kind = claim.get("kind")
     if kind is not None and kind not in {"claim", "dead-end", "decision"}:
         raise LandingError("claim.kind must be claim/dead-end/decision")
@@ -658,9 +709,37 @@ def claim(args: argparse.Namespace) -> int:
     data = read_case(args.findings_root, args.version, args.case)
     if data.get("status") != "open":
         raise LandingError(f"case is not open: {args.case}")
-    items = load_claims(args.file)
+    sources = sum(
+        [
+            args.file is not None,
+            bool(getattr(args, "stdin", False)),
+            getattr(args, "hypothesis", None) is not None,
+        ]
+    )
+    if sources != 1:
+        raise LandingError("claim requires exactly one of --file, --stdin, or --hypothesis")
+    if args.file is not None:
+        items = load_claims(args.file)
+    elif getattr(args, "stdin", False):
+        items = parse_claims_text(sys.stdin.read(), label="<stdin>")
+    else:
+        result = getattr(args, "result", "confirmed")
+        tier = getattr(args, "tier", None) or ("live" if result == "live-only" else "code")
+        inline_item: dict[str, Any] = {
+            "hypothesis": args.hypothesis,
+            "result": result,
+            "evidence_tier": tier,
+            "evidence": getattr(args, "evidence", None) or "",
+        }
+        if getattr(args, "static_closure", None) is not None:
+            inline_item["static_closure"] = args.static_closure
+        if getattr(args, "published", None) is not None:
+            inline_item["published"] = args.published
+        if getattr(args, "erratum_of", None) is not None:
+            inline_item["erratum_of"] = args.erratum_of
+        items = [inline_item]
     if not items:
-        raise LandingError("claims file is empty")
+        raise LandingError("claims input is empty")
     records = read_journal(args.findings_root, args.version, args.case)
     known_ids = {str(item.get("id")) for item in records}
     for item in items:
@@ -704,6 +783,8 @@ def end(args: argparse.Namespace) -> int:
     data = read_case(args.findings_root, args.version, args.case)
     if data.get("status") != "open":
         raise LandingError(f"case is not open: {args.case}")
+    if getattr(args, "close", False):
+        return close(args)
     facts = generate_facts(args.findings_root, args.version, args.case)
     resume = generate_resume(args.findings_root, args.version, args.case)
     current = int(data.get("current_round", 1))
@@ -872,6 +953,7 @@ def close(args: argparse.Namespace) -> int:
         )
         return 1
     update_case(args.findings_root, args.version, args.case, status="closed")
+    generate_resume(args.findings_root, args.version, args.case)
     print(json.dumps({"event": "close", "ok": True, "report": str(report)}, ensure_ascii=False))
     return 0
 
@@ -905,13 +987,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_probe.add_argument("command", nargs=argparse.REMAINDER)
     p_probe.set_defaults(func=probe)
 
-    p_claim = sub.add_parser("claim", help="append claims from a JSON/YAML file")
+    p_claim = sub.add_parser("claim", help="append claims from --file, --stdin, or inline flags")
     p_claim.add_argument("--case", required=True)
-    p_claim.add_argument("--file", type=Path, required=True)
+    p_claim.add_argument("--file", type=Path, default=None)
+    p_claim.add_argument("--stdin", action="store_true", help="read JSON/YAML claims from stdin")
+    p_claim.add_argument("--hypothesis", default=None, help="inline claim hypothesis")
+    p_claim.add_argument("--result", default="confirmed", choices=sorted(RESULTS))
+    p_claim.add_argument("--tier", default=None, choices=sorted(TIERS), help="evidence_tier")
+    p_claim.add_argument("--static-closure", default=None)
+    p_claim.add_argument("--evidence", default=None)
+    p_claim.add_argument("--published", default=None)
+    p_claim.add_argument("--erratum-of", default=None)
     p_claim.set_defaults(func=claim)
 
     p_end = sub.add_parser("end", help="regenerate facts/resume and advance the round")
     p_end.add_argument("--case", required=True)
+    p_end.add_argument("--close", action="store_true", help="also run close checks and mark closed")
+    p_end.add_argument("--skip-public", action="store_true", help="forwarded to close")
+    p_end.add_argument("--skip-tests", action="store_true", help="forwarded to close")
     p_end.set_defaults(func=end)
 
     p_close = sub.add_parser("close", help="run checks and write the three-part report")

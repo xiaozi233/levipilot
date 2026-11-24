@@ -327,3 +327,115 @@ class ScrubPathsTests(unittest.TestCase):
 
     def test_empty_text_is_untouched(self) -> None:
         self.assertEqual(landing.scrub_paths(""), "")
+
+    def test_claim_stdin_and_inline_modes(self) -> None:
+        import io
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            landing.main(
+                ["--findings-root", str(root), "begin", "--case", "demo", "--goal", "verify"]
+            )
+            payload = json.dumps(
+                {
+                    "hypothesis": "from stdin",
+                    "result": "confirmed",
+                    "evidence_tier": "code",
+                    "static_closure": "fn 0x1000",
+                    "evidence": "[代码] test",
+                }
+            )
+            with patch.object(landing.sys, "stdin", io.StringIO(payload)):
+                rc = landing.main(
+                    ["--findings-root", str(root), "claim", "--case", "demo", "--stdin"]
+                )
+            self.assertEqual(rc, 0)
+
+            rc = landing.main(
+                [
+                    "--findings-root",
+                    str(root),
+                    "claim",
+                    "--case",
+                    "demo",
+                    "--hypothesis",
+                    "inline claim",
+                    "--result",
+                    "live-only",
+                    "--tier",
+                    "live",
+                    "--evidence",
+                    "[实测] observed",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            records = landing.read_journal(root, landing.DEFAULT_VERSION, "demo")
+            claims = [r for r in records if r.get("kind") == "claim"]
+            self.assertEqual([c["hypothesis"] for c in claims], ["from stdin", "inline claim"])
+
+    def test_published_anchor_validation_and_end_close(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            landing.main(
+                ["--findings-root", str(root), "begin", "--case", "demo", "--goal", "verify"]
+            )
+            bad = json.dumps(
+                {
+                    "hypothesis": "bad anchor",
+                    "result": "confirmed",
+                    "evidence_tier": "code",
+                    "static_closure": "fn 0x1000",
+                    "evidence": "[代码] test",
+                    "published": "docs/notes/climb-blocks-12651.md#definitely-missing-anchor",
+                }
+            )
+            with self.assertRaises(landing.LandingError):
+                landing.validate_claim(json.loads(bad), set())
+
+            good_anchor = "docs/notes/climb-blocks-12651.md#1-全游戏可攀爬方块清单代码-常量"
+            rc = landing.main(
+                [
+                    "--findings-root",
+                    str(root),
+                    "claim",
+                    "--case",
+                    "demo",
+                    "--hypothesis",
+                    "valid anchor",
+                    "--result",
+                    "confirmed",
+                    "--tier",
+                    "code",
+                    "--static-closure",
+                    "fn 0x1000",
+                    "--evidence",
+                    "[代码] verified",
+                    "--published",
+                    good_anchor,
+                ]
+            )
+            self.assertEqual(rc, 0)
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                rc_end = landing.main(
+                    [
+                        "--findings-root",
+                        str(root),
+                        "end",
+                        "--case",
+                        "demo",
+                        "--close",
+                        "--skip-public",
+                        "--skip-tests",
+                    ]
+                )
+            self.assertEqual(rc_end, 0)
+            case_data = landing.read_case(root, landing.DEFAULT_VERSION, "demo")
+            self.assertEqual(case_data["status"], "closed")
+            resume = (root / landing.DEFAULT_VERSION / "cases" / "demo" / "resume.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("- closed", resume)

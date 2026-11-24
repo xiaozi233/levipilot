@@ -551,8 +551,13 @@ def _parse_kv_options(items: list[str]) -> dict[str, str]:
     return options
 
 
-def _parse_kv_allow(items: list[str], *, lock_input: bool) -> dict[str, object]:
+def _parse_kv_allow(
+    items: list[str], *, lock_input: bool, background: bool = False
+) -> dict[str, object]:
     allow: dict[str, object] = {}
+    if background:
+        allow["suppress_cursor_grab"] = True
+        allow["suppress_focus_pause"] = True
     for item in items:
         key, sep, value = item.partition("=")
         if not sep or not key:
@@ -604,7 +609,8 @@ def _prepare_and_enter_world(
         raise SystemExit(
             f"找不到世界 {args.world!r}；可用：{', '.join(sorted(n for n in names if n))}{hint}"
         )
-    if not attach and not args.no_focus and not focus_game(pid, timeout=3.0):
+    no_focus = bool(getattr(args, "no_focus", False)) or bool(getattr(args, "background", False))
+    if not attach and not no_focus and not focus_game(pid, timeout=3.0):
         log("warning: game window is not foreground; block ticks may be paused")
         _log_isolated_desktop_hint()
     try:
@@ -633,7 +639,9 @@ def _prepare_and_enter_world(
 def run(args: argparse.Namespace) -> int:
     version_dir = Path(args.version_dir).expanduser()
     options = _parse_kv_options(args.options)
-    allow = _parse_kv_allow(args.allow, lock_input=args.lock_input)
+    background = bool(getattr(args, "background", False))
+    no_focus = bool(getattr(args, "no_focus", False)) or background
+    allow = _parse_kv_allow(args.allow, lock_input=args.lock_input, background=background)
     if args.write_config:
         write_auto_config(version_dir / "mods" / "probe", args.world, options, allow)
         log("wrote harness.json; the mod will auto-enter on launch")
@@ -679,7 +687,7 @@ def run(args: argparse.Namespace) -> int:
         log(f"starting {exe}")
         process = subprocess.Popen([str(exe)], cwd=str(exe.parent))
         pid = process.pid
-        if not args.no_focus:
+        if not no_focus:
             # The window can take tens of seconds to appear behind the splash; the
             # wait ends as soon as a visible window shows up.
             if focus_game(pid, timeout=60.0):
@@ -696,6 +704,9 @@ def run(args: argparse.Namespace) -> int:
         client = ModClient(connect_timeout=90.0, timeout=20.0).connect()
         try:
             client.wait_ready(timeout=90.0, require_world=False)
+            if background:
+                fc = client.focus_cfg(suppress_cursor_grab=True, suppress_focus_pause=True)
+                log(f"background focus_cfg: {fc}")
             already_in_world = False
             if attach:
                 status = client.status()
@@ -845,6 +856,11 @@ def main(argv: list[str] | None = None) -> int:
         help="do not bring the game window to the foreground before entering",
     )
     run_parser.add_argument(
+        "--background",
+        action="store_true",
+        help="enable suppress_cursor_grab + suppress_focus_pause and skip focus stealing",
+    )
+    run_parser.add_argument(
         "--write-config",
         action="store_true",
         help="only write harness.json (the mod auto-enters on launch)",
@@ -862,6 +878,27 @@ def main(argv: list[str] | None = None) -> int:
         "--stop-after",
         action="store_true",
         help="save and stop the game after --exec or world entry finishes",
+    )
+
+    exec_parser = sub.add_parser(
+        "exec",
+        help="execute a shell command against an already-running attached game",
+    )
+    exec_parser.add_argument("exec_cmd", help="shell command to execute")
+    exec_parser.add_argument("--world", help="world name to enter if still at menu")
+    exec_parser.add_argument("--version-dir", default=str(DEFAULT_VERSION))
+    exec_parser.add_argument("--exe", help="override the game executable path")
+    exec_parser.add_argument("--timeout", type=float, default=30.0)
+    exec_parser.add_argument("--attempts", type=int, default=3)
+    exec_parser.add_argument(
+        "--background",
+        action="store_true",
+        help="enable suppress_cursor_grab + suppress_focus_pause before running",
+    )
+    exec_parser.add_argument(
+        "--stop-after",
+        action="store_true",
+        help="save and stop the game after the command finishes",
     )
 
     stop_parser = sub.add_parser("stop", help="save, leave and stop the selected game executable")
@@ -921,6 +958,28 @@ def main(argv: list[str] | None = None) -> int:
             return focus(args)
         if args.command == "recover":
             return recover(args)
+        if args.command == "exec":
+            exec_ns = argparse.Namespace(
+                command="run",
+                world=args.world,
+                build=False,
+                no_build=True,
+                options=[],
+                allow=[],
+                lock_input=False,
+                version_dir=args.version_dir,
+                exe=args.exe,
+                force_stop=False,
+                timeout=args.timeout,
+                attempts=args.attempts,
+                no_focus=True,
+                background=args.background,
+                write_config=False,
+                attach=True,
+                exec=args.exec_cmd,
+                stop_after=args.stop_after,
+            )
+            return run(exec_ns)
         return run(args)
     except (ModPipeError, ModTimeout, OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

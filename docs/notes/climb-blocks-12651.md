@@ -169,7 +169,7 @@
 
 ---
 
-## 6. 未闭合静态边界（诚实披露）
+## 6. 未闭合静态边界（诚实披露 → 已由后续专题补齐）
 
-- **细雪 `1.5f` 乘数写入源 VA**：本轮已通过实机 `RecordSession` 观察槽确认 `BlockMovementSlowdownMultiplierComponent`（`0xf6091f58`）`+4` 为 `1.5`，且消费者侧 `BlockMovementSlowdownMultiplierSystem::applySlowdownOnMove`（`0x1448a98c0`）与 `adjustFallDistance`（`0x1448a8d30`）已静态完全闭合；细雪将 `(0.9f, 1.5f, 0.9f)` 写入该组件的精确写入点 VA 暂标 `unresolved`（保留至 `cobweb_slowing_blocks` 课题与冰冻/effect box 一并收尾）。
-- **细雪 `PowderSnowBlock::getCollisionShape` 摔落高度下沉阈值静态地址**：穿皮革靴从高处跌落细雪会下沉 1 格停在 `-49.0` 已获 `[实测]` 确认，精确 `> 2.5f` 判断指令 VA 尚未单独拆读。
+- **细雪 `1.5f` 乘数写入源 VA**：本轮已通过实机 `RecordSession` 观察槽确认 `BlockMovementSlowdownMultiplierComponent`（`0xf6091f58`）`+4` 为 `1.5`，且消费者侧 `BlockMovementSlowdownMultiplierSystem::applySlowdownOnMove`（`0x1448a98c0`）与 `adjustFallDistance`（`0x1448a8d30`）已静态完全闭合；细雪将 `(0.9f, 1.5f, 0.9f)` 写入该组件的精确写入点 VA（`0x1463ad860..0x1463ada52`）现已在 [`slowing-blocks-12651.md`](slowing-blocks-12651.md) 中补齐静态证明与实机对照。
+- **细雪 `PowderSnowBlock::getCollisionShape` 摔落高度下沉阈值静态地址**：`PowderSnowBlock::getCollisionShape`（`0x149952000..0x149952292`）的 `getFallingHeight() > 2.5f`（`0x1499521a2`）并返回 `[0,0,0..1,0.9,1]` 下陷盒的完整机制及 `1.5` vs `3.5` 格跌落实机对照同样已闭合于 [`slowing-blocks-12651.md`](slowing-blocks-12651.md)。

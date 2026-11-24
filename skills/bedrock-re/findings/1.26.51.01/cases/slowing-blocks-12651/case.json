@@ -1,0 +1,10 @@
+{
+  "case": "slowing-blocks-12651",
+  "version": "1.26.51.01",
+  "goal": "静态与逐tick实测闭合基岩版1.26.51.01减速方块(蜘蛛网/甜浆果丛/细雪与冰冻减速/灵魂沙)、0.998^3效果盒、多方块重叠min规则及细雪2.5格下沉碰撞箱",
+  "environment": "",
+  "current_round": 1,
+  "status": "closed",
+  "created_at": "2026-11-24T15:09:22Z",
+  "updated_at": "2026-11-24T15:26:48Z"
+}

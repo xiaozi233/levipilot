@@ -13,6 +13,9 @@
 | [`tick-order-12651.md`](tick-order-12651.md) | tick 顺序与 ECS | ECS 调度顺序、注册链和调用栈证据 |
 | [`bounce-12651.md`](bounce-12651.md) | 黏液反弹 | 黏液反弹覆盖高度、落差与逐 tick 证据 |
 | [`sin-table-12651.md`](sin-table-12651.md) | 正弦表与三角函数 | `65536` 项 `SIN_TABLE` 建表/查表、`269` 处/`193` 条目分工与加速筛选（Pattern A/B）、大小半角极值（`5898195°`/`-5898375°`）及客户端 `fmodf` 锁死与包级透传 |
+| [`block-collisions-12651.md`](block-collisions-12651.md) | 方块与实体碰撞箱 | `1477` 类 / `22091` 状态全量导出、`Hopper`/`Happy Ghast`/`Shelf Mushroom` 补全与 `MCBE_Parkour_wiki` 勘误校对 |
+| [`dolphins-grace-12651.md`](dolphins-grace-12651.md) | 海豚的恩惠 | `DolphinBoostSystem`（`±5.0` 盒/60t 周期/`SWIMMING` 门控）、`SwimSpeedMultiplier=2.0` 跳过 `0.546` 阻力与 `0.02(0.7+0.3L/3)×2` 闭式及迅捷反协同实测 |
+| [`climb-blocks-12651.md`](climb-blocks-12651.md) | 攀爬方块 | 7 种 `Climbable \| CanHaltWhenClimbing` 方块、`isOnLadder()` 单点 vs `BlockClimberSystem` AABB 足迹、`AutoClimb` 跳重力/阻尼、脚手架无潜行免摔、`1.5×` 细雪推墙 `+0.300` b/t 与开活板门实测 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
 旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。

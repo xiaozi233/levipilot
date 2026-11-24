@@ -1,0 +1,10 @@
+{
+  "case": "climb-blocks-12651",
+  "version": "1.26.51.01",
+  "goal": "Prove Bedrock 1.26.51.01 climbable block mechanics (ladders, vines, scaffolding, powder snow + leather boots, trapdoors): detection geometry, vertical/horizontal formulas, tick order, and JE differences",
+  "environment": "",
+  "current_round": 2,
+  "status": "closed",
+  "created_at": "2026-11-24T10:22:44Z",
+  "updated_at": "2026-11-24T13:44:17Z"
+}

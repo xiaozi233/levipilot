@@ -118,6 +118,8 @@ public:
     bool          setLifecycleMouseHook(bool on, bool suspendThreads = true);
     bool          setLifecyclePlayerHook(bool on, bool suspendThreads = true);
     bool          setLifecycleTurnHook(bool on, bool suspendThreads = true);
+    bool          setLifecycleCursorHook(bool on, bool suspendThreads = true);
+    bool          setLifecycleFocusHook(bool on, bool suspendThreads = true);
 
     // H1 packet tap (identity ring, byte ring, send/recv hooks) lives in its
     // own owner; these forwarders keep the file-scope LL hooks unchanged.
@@ -142,6 +144,7 @@ public:
     // the Windows loader lock. These flags start at the actual unmapped state.
     std::atomic_bool mLifecycleKeyHooked{false}, mLifecyclePlayerHooked{false};
     std::atomic_bool mLifecycleMouseHooked{false}, mLifecycleTurnHooked{false};
+    std::atomic_bool mLifecycleCursorHooked{false}, mLifecycleFocusHooked{false};
     bool             stopLifecycleHooks(bool suspendThreads = true);
     // Set while quiesced for unload: no new work is admitted between the last
     // in-flight request and the moment the static hooks come off.
@@ -150,6 +153,8 @@ public:
     // Called by the _applyTurnDelta hook: background mouse look must not move
     // the camera, but our own look/task injections must still work.
     [[nodiscard]] bool allowTurnDelta() const;
+    [[nodiscard]] bool allowCursorClip() const;
+    [[nodiscard]] bool allowFocusLost() const;
     [[nodiscard]] bool hardwareInputLocked() const {
         return mInputSession.hardwareLocked.load(std::memory_order_relaxed);
     }
@@ -304,6 +309,19 @@ private:
     void queueClearInventory();
     void captureBlocks(LocalPlayer& player, detail::BlockRequest const& request, detail::BlockSnapshot& out);
     bool captureScan(LocalPlayer& player, detail::ScanQuery const& request, detail::ScanSnapshot& out);
+    void runBlockShapesQuery(
+        detail::PlayerIdentity const&   identity,
+        std::vector<detail::BlockPoint> positions,
+        std::string                     entityMode
+    );
+    void runDumpBlockCollisions(
+        detail::PlayerIdentity const& identity,
+        std::string                   filename,
+        bool                          hasPos,
+        detail::BlockPoint            pos,
+        bool                          includeAir,
+        std::string                   entityMode
+    );
     void drainQueries();
     void resetQueries();
     void cancelQueries(char const* reason);
@@ -447,6 +465,8 @@ private:
 
     // Written by enable()/config and read on the tick thread.
     std::atomic_bool                             mBackgroundGuard{true};
+    std::atomic_bool                             mSuppressCursorGrab{false};
+    std::atomic_bool                             mSuppressFocusPause{false};
     std::atomic_bool                             mForeground{true};
     detail::ParkourTracker                       mParkourTracker; // Tick-owned; reset on generation changes.
     detail::TickQueue<detail::ParkourEvent, 256> mParkourEvents;

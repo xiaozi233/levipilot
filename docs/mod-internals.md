@@ -81,9 +81,8 @@ ID 和截止时间；已经开始的 SDK 调用不能承诺抢占或回滚。
 legacy JSON 录制由 `LegacyStreamState` 统一持有流、冷锁、终结和世界退出状态。跑酷事件使用
 固定队列和 generation，旧世界事件不进入新运行。
 
-二进制记录环为 **524288 × 64 B = 32 MiB payload**，另有发布序号。tick 是单写者，停止等待
-已准入采样。`record_dump` 的 `since/next` 是绝对序号，`bin`/`hex` 以 hex 分块保持 JSONL。
-采样故障或离开世界终结 record_id；显式部分导出也不允许跨 record_id 拼接。
+二进制记录环为 **524288 × 64 B = 32 MiB payload**（含 `swimming`/`flying`/`gliding` 位），另有发布序号；若 `record_start` 传入 1..4 个 `watch` 槽位，则按需懒分配平行的 **524288 × 40 B `RecordWatchEntry`** 环在同一游戏 tick 内同步采集标量（`record_dump` 附 `watch_b64` / `watch`）。`record_dump` 的 `since/next` 是绝对序号，`bin`/`hex` 以 hex 分块保持 JSONL。
+采样故障或离开世界终结 `record_id`；显式部分导出也不允许跨 `record_id` 拼接。`ecs_read_batch` 在同一客户端/服务端 ECS stage 内原子采集最多 8 个组件地址与切片及当拍 `tick`。
 
 宏录制省略、0 或超过上限时都采用 200000 tick 硬上限。冷侧一次初始化帧槽，tick 只写已准入
 槽位；到顶只发一次 `macro_rec_limit`，录制停止但数据仍可保存。保存先写同目录临时文件，检查
@@ -109,6 +108,13 @@ spool 每 100 ms 或 64 KB 刷盘（未刷缓冲上限 16 MiB），单文件超�
 启动加载 `harness.json`、`offsets.json` 与 `checkpoints.json` 均使用容错 JSON 解析与异常
 保护：字段类型错误会写入 `harness-boot.log` 并回退默认值或跳过坏条目，不会因异常逃逸导致
 `enable()` 静默失效。
+
+方块形状采样与全表导出：`block_shapes` 与 `dump_block_collisions` 经 `queueServerTask()` 在服务端
+`BlockSource` 上采样 `getCollisionShape` / `addCollisionShapes` / `getOutline` /
+`getVisualShape` / `getVisualShapeInWorld` / `getBounciness` / `randomlyModifyPosition`
+（支持 `none` / `player` / `leather_boots` / `sneak_above` 四种 `GetCollisionShapeInterface`
+上下文），单项读取均包在局部 `guardedGameRead` 内，全量导出先写 `.tmp` 再原子替换。
+`entities` 与 `entity_info` 的实体行同时附带 `Actor::getAABB()` 原始 `aabb`（`min`/`max`/`size`）。
 
 ## 内存、观察点与 hook
 
@@ -209,9 +215,9 @@ owner、generation、origin 字段和完整 requestId（最多 512 字节），�
 
 ## DLL 生命周期
 
-键盘、鼠标、玩家 tick 与转向四个常驻 hook 由 `enable/disable` 显式管理，状态初始为未安装。
+键盘、鼠标、玩家 tick、转向、光标裁剪（`USER32!ClipCursor` + `ClientInstance::$grabMouse`）与失焦（`MinecraftGame::$onAppFocusLost`）六组常驻 hook 由 `enable/disable` 显式管理，状态初始为未安装。
 不使用全局 `HookRegistrar`：它在静态构造/析构中暂停其他线程，会把卸钩与 DLL loader lock
-组合在同一阶段。启用要求四个 hook 都安装成功，部分失败会尝试撤销；停用逐个尝试卸钩，
+组合在同一阶段。启用要求各常驻 hook 都安装成功，部分失败会尝试撤销；停用逐个尝试卸钩，
 失败不得报告可卸载。`status.lifecycle.hooks` 提供各 hook 的当前安装标志。
 
 游戏内重载不会再触发当前世界的命令注册事件。启用时另向服务端队列提交一次注册任务，
@@ -222,7 +228,7 @@ owner、generation、origin 字段和完整 requestId（最多 512 字节），�
 新 enable 日志、全部 hook 已安装、tick 前进及 `/togglefly` 能力变化与恢复。
 仅 prepare 成功或管道重连不构成验收。回调排空竞争专项以当前验收文档为准。
 
-`CallbackLifecycleModel.h` 统一跟踪 key/mouse/tick/turn、client/server/delay、EventBus、
+`CallbackLifecycleModel.h` 统一跟踪 key/mouse/tick/turn/cursor/focus、client/server/delay、EventBus、
 诊断 detour、VEH、游戏命令和管道请求。热侧是定长原子计数与 TLS 深度；计数涵盖 origin
 调用返回。队列准入位与所有权计数共用一个 CAS 字，任务闭包的所有副本共享 ticket；执行
 结束不提前退票，用户捕获先销毁，ticket 最后释放。EventBus 移除监听器后还要等待外部

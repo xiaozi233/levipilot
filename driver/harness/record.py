@@ -8,8 +8,10 @@ module keeps the struct layout and flag bits in one place.
 
 from __future__ import annotations
 
+import base64
 import math
 import struct
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +33,18 @@ FLAG_BLOCK_OOB = 1 << 11
 # Feet/head block is a liquid (flowing variants included).
 FLAG_IN_WATER = 1 << 12
 FLAG_IN_LAVA = 1 << 13
+FLAG_SWIMMING = 1 << 14
+FLAG_FLYING = 1 << 15
+FLAG_GLIDING = 1 << 16
+
+WATCH_MAX_SLOTS = 4
+WATCH_ENTRY_FORMAT = "<4QII"
+WATCH_ENTRY_SIZE = 40
+
+if struct.calcsize(WATCH_ENTRY_FORMAT) != WATCH_ENTRY_SIZE:
+    raise RuntimeError(
+        f"WATCH_ENTRY_FORMAT size {struct.calcsize(WATCH_ENTRY_FORMAT)} != {WATCH_ENTRY_SIZE}"
+    )
 
 if struct.calcsize(ENTRY_FORMAT) != ENTRY_SIZE:
     raise RuntimeError(f"ENTRY_FORMAT size {struct.calcsize(ENTRY_FORMAT)} != {ENTRY_SIZE}")
@@ -101,6 +115,18 @@ class RecordEntry:
         return bool(self.flags & FLAG_IN_LAVA)
 
     @property
+    def swimming(self) -> bool:
+        return bool(self.flags & FLAG_SWIMMING)
+
+    @property
+    def flying(self) -> bool:
+        return bool(self.flags & FLAG_FLYING)
+
+    @property
+    def gliding(self) -> bool:
+        return bool(self.flags & FLAG_GLIDING)
+
+    @property
     def input(self) -> dict[str, bool]:
         return {
             "w": bool(self.flags & FLAG_INPUT_W),
@@ -161,6 +187,114 @@ class RecordEntry:
         }
 
 
+@dataclass(frozen=True)
+class WatchSample:
+    """Custom per-tick scalar reads attached to a ``RecordSession``."""
+
+    values: tuple[int, ...]
+    valid_mask: int
+
+    def valid(self, slot: int) -> bool:
+        if slot < 0 or slot >= len(self.values):
+            return False
+        return bool(self.valid_mask & (1 << slot))
+
+    def as_u32(self, slot: int) -> int:
+        return self.values[slot] & 0xFFFFFFFF
+
+    def as_u64(self, slot: int) -> int:
+        return self.values[slot] & 0xFFFFFFFFFFFFFFFF
+
+    def as_i32(self, slot: int) -> int:
+        return struct.unpack("<i", struct.pack("<I", self.values[slot] & 0xFFFFFFFF))[0]
+
+    def as_f32(self, slot: int) -> float:
+        return float(struct.unpack("<f", struct.pack("<I", self.values[slot] & 0xFFFFFFFF))[0])
+
+    def as_f64(self, slot: int) -> float:
+        return float(
+            struct.unpack("<d", struct.pack("<Q", self.values[slot] & 0xFFFFFFFFFFFFFFFF))[0]
+        )
+
+    def as_bit(self, slot: int, bit: int) -> bool:
+        if bit < 0 or bit >= 64:
+            raise ValueError(f"bit index out of range 0..63: {bit}")
+        return bool((self.values[slot] >> bit) & 1)
+
+    def decode(self, slot: int, fmt: str = "u64") -> int | float | bool | str | None:
+        """Decode ``slot`` according to ``fmt`` (returns ``None`` when invalid)."""
+        if not self.valid(slot):
+            return None
+        kind = fmt.strip().lower()
+        if kind == "u64":
+            return self.as_u64(slot)
+        if kind == "u32":
+            return self.as_u32(slot)
+        if kind == "i32":
+            return self.as_i32(slot)
+        if kind == "f32":
+            return self.as_f32(slot)
+        if kind == "f64":
+            return self.as_f64(slot)
+        if kind == "hex":
+            return f"{self.as_u64(slot):#x}"
+        if kind.startswith("bit:"):
+            return self.as_bit(slot, int(kind[4:], 0))
+        raise ValueError(f"unknown watch format {fmt!r}")
+
+
+def decode_watch_row(sample: WatchSample, specs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Decode one ``WatchSample`` into named fields using optional ``name``/``fmt``/``bits``."""
+    out: dict[str, Any] = {}
+    for idx, spec in enumerate(specs):
+        name = str(spec.get("name") or f"watch_{idx}")
+        bits = spec.get("bits")
+        omit_raw = bool(spec.get("omit_raw", False))
+        if not (omit_raw and isinstance(bits, Mapping)):
+            out[name] = sample.decode(idx, str(spec.get("fmt", "u64")))
+        if isinstance(bits, Mapping):
+            valid = sample.valid(idx)
+            for flag_name, bit_idx in bits.items():
+                out[str(flag_name)] = sample.as_bit(idx, int(bit_idx)) if valid else None
+    return out
+
+
+def decode_watch_chunk(b64: str, count: int) -> list[WatchSample]:
+    """Decode one ``record_dump`` base64 ``watch_b64`` payload."""
+    if not b64:
+        return []
+    raw = base64.b64decode(b64.encode("ascii"))
+    if len(raw) % WATCH_ENTRY_SIZE:
+        raise ValueError(f"watch payload is not a multiple of {WATCH_ENTRY_SIZE} bytes")
+    slots = max(0, min(int(count), WATCH_MAX_SLOTS))
+    samples: list[WatchSample] = []
+    for offset in range(0, len(raw), WATCH_ENTRY_SIZE):
+        *vals, valid_mask, _pad = struct.unpack_from(WATCH_ENTRY_FORMAT, raw, offset)
+        samples.append(
+            WatchSample(values=tuple(int(v) for v in vals[:slots]), valid_mask=int(valid_mask))
+        )
+    return samples
+
+
+def decode_watch_dump(message: dict[str, Any]) -> list[WatchSample]:
+    """Decode watch samples from either binary (``watch_b64``) or JSON ``record_dump``."""
+    if message.get("event") != "record_dump":
+        raise ValueError("not a record_dump message")
+    count = int(message.get("watch_count", 0))
+    if count <= 0:
+        return []
+    if "watch_b64" in message:
+        return decode_watch_chunk(str(message["watch_b64"]), count)
+    rows = message.get("rows", [])
+    return [
+        WatchSample(
+            values=tuple(int(v) for v in list(row.get("watch", ()))[:count]),
+            valid_mask=int(row.get("watch_mask", 0)),
+        )
+        for row in rows
+    ]
+
+
 def decode_hex(text: str) -> list[RecordEntry]:
     """Decode one ``record_dump`` hex payload."""
     data = bytes.fromhex(text)
@@ -211,6 +345,8 @@ def block_hash(name: str) -> int:
 __all__ = [
     "ENTRY_SIZE",
     "FLAG_ACTION_SPRINT",
+    "FLAG_FLYING",
+    "FLAG_GLIDING",
     "FLAG_INPUT_A",
     "FLAG_INPUT_D",
     "FLAG_INPUT_JUMP",
@@ -221,8 +357,14 @@ __all__ = [
     "FLAG_ON_GROUND",
     "FLAG_SNEAK",
     "FLAG_SPRINT",
+    "FLAG_SWIMMING",
+    "WATCH_ENTRY_SIZE",
+    "WATCH_MAX_SLOTS",
     "RecordEntry",
+    "WatchSample",
     "block_hash",
     "decode_dump",
     "decode_hex",
+    "decode_watch_chunk",
+    "decode_watch_dump",
 ]

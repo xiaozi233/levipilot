@@ -61,10 +61,62 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
             enqueue(R"({"event":"error","reason":"version_mismatch"})");
             return true;
         }
+        std::array<RecordWatchSpec, RecordWatchMaxSlots> watchSpecs{};
+        std::size_t                                      watchCount = 0;
+        if (j.contains("watch") && !j["watch"].is_null()) {
+            if (!j["watch"].is_array() || j["watch"].size() > RecordWatchMaxSlots) {
+                enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                return true;
+            }
+            if (!j["watch"].empty() && !mAllowMemoryRead.load(std::memory_order_relaxed)) {
+                enqueue(
+                    R"({"event":"error","reason":"read_disabled","hint":"set allow_mem_read=true in harness.json"})"
+                );
+                return true;
+            }
+            for (auto const& item : j["watch"]) {
+                if (!item.is_object()) {
+                    enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                    return true;
+                }
+                RecordWatchSpec    spec{};
+                std::int64_t const size   = item.value("size", std::int64_t{4});
+                std::int64_t const offset = item.value("offset", std::int64_t{0});
+                if (size < 1 || size > 8 || offset < 0 || offset > 65536) {
+                    enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                    return true;
+                }
+                spec.size   = static_cast<std::uint32_t>(size);
+                spec.offset = static_cast<std::uint32_t>(offset);
+                if (item.contains("component_id")) {
+                    if (!item["component_id"].is_number_integer()) {
+                        enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                        return true;
+                    }
+                    auto const cid = item["component_id"].get<std::int64_t>();
+                    if (cid < 0 || cid > static_cast<std::int64_t>(UINT32_MAX)) {
+                        enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                        return true;
+                    }
+                    spec.byComponent = true;
+                    spec.componentId = static_cast<std::uint32_t>(cid);
+                } else if (item.contains("addr")) {
+                    if (!parseAddress(item["addr"], spec.addr) || spec.addr == 0) {
+                        enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                        return true;
+                    }
+                    spec.byComponent = false;
+                } else {
+                    enqueue(R"({"event":"error","reason":"bad_param","param":"watch"})");
+                    return true;
+                }
+                watchSpecs[watchCount++] = spec;
+            }
+        }
         std::uint32_t const           period = std::clamp(j.value("period", 1), 1, 200);
         std::string                   error;
         std::optional<nlohmann::json> previous;
-        bool const                    started = recordStart(period, error, previous);
+        bool const                    started = recordStart(period, error, previous, watchSpecs.data(), watchCount);
         if (previous) enqueue(previous->dump());
         if (!started) {
             enqueue(
@@ -83,6 +135,10 @@ bool ProbeMod::dispatchRecordingCommand(std::string const& cmd, nlohmann::json& 
         out["event"]      = "record_started";
         out["capacity"]   = RecordCapacity;
         out["entry_size"] = RecordSize;
+        if (watchCount > 0) {
+            out["watch_count"]      = watchCount;
+            out["watch_entry_size"] = sizeof(RecordWatchEntry);
+        }
         enqueue(out.dump());
         return true;
     }

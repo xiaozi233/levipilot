@@ -17,6 +17,8 @@ enum class CallbackDomain : unsigned {
     Mouse,
     Tick,
     Turn,
+    Cursor,
+    Focus,
     Client,
     Server,
     Delay,
@@ -28,8 +30,22 @@ enum class CallbackDomain : unsigned {
     Count
 };
 inline constexpr unsigned    kCallbackDomains = static_cast<unsigned>(CallbackDomain::Count);
-inline constexpr char const* kCallbackNames[] =
-    {"key", "mouse", "tick", "turn", "client", "server", "delay", "event", "diagnostic", "veh", "command", "request"};
+inline constexpr char const* kCallbackNames[] = {
+    "key",
+    "mouse",
+    "tick",
+    "turn",
+    "cursor",
+    "focus",
+    "client",
+    "server",
+    "delay",
+    "event",
+    "diagnostic",
+    "veh",
+    "command",
+    "request"
+};
 
 // The closed bit and queue ownership count share one CAS word. Closing cannot
 // race a successful reservation that has not yet become visible to the waiter.

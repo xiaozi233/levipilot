@@ -4,6 +4,7 @@
 #include "ll/api/command/CommandRegistrar.h"
 #include "ll/api/command/Overload.h"
 #include "ll/api/event/command/ServerCommandRegisterEvent.h"
+#include "mc/client/game/MinecraftGame.h"
 #include "mc/server/commands/CommandOrigin.h"
 #include "mc/server/commands/CommandOutput.h"
 #include "mc/world/level/GameType.h"
@@ -84,7 +85,9 @@ bool ProbeMod::enable() {
         bool const mouseOk  = setLifecycleMouseHook(true);
         bool const playerOk = setLifecyclePlayerHook(true);
         bool const turnOk   = setLifecycleTurnHook(true);
-        if (!(keyOk && mouseOk && playerOk && turnOk)) {
+        bool const cursorOk = setLifecycleCursorHook(true);
+        bool const focusOk  = setLifecycleFocusHook(true);
+        if (!(keyOk && mouseOk && playerOk && turnOk && cursorOk && focusOk)) {
             cleanupOnError("enable: hook installation failed");
             return false;
         }
@@ -219,7 +222,9 @@ bool ProbeMod::stopLifecycleHooks(bool suspendThreads) {
     bool const mouseOk  = setLifecycleMouseHook(false, suspendThreads);
     bool const playerOk = setLifecyclePlayerHook(false, suspendThreads);
     bool const turnOk   = setLifecycleTurnHook(false, suspendThreads);
-    return keyOk && mouseOk && playerOk && turnOk;
+    bool const cursorOk = setLifecycleCursorHook(false, suspendThreads);
+    bool const focusOk  = setLifecycleFocusHook(false, suspendThreads);
+    return keyOk && mouseOk && playerOk && turnOk && cursorOk && focusOk;
 }
 
 bool ProbeMod::disable() {
@@ -363,6 +368,8 @@ void ProbeMod::loadAutoConfig() {
         auto const  autoDelayMs = std::clamp(readInt("delay_ms", 2000), 0, 60000);
         std::string autoOptions;
         mBackgroundGuard          = readBool("background_guard", true);
+        mSuppressCursorGrab       = readBool("suppress_cursor_grab", false);
+        mSuppressFocusPause       = readBool("suppress_focus_pause", false);
         mAllowMemoryRead          = readBool("allow_mem_read", true);
         mAllowMemoryWrite         = readBool("allow_write", false);
         mAllowToggleFly           = readBool("allow_togglefly", true);
@@ -765,6 +772,27 @@ bool ProbeMod::allowTurnDelta() const {
     return mForeground.load(std::memory_order_relaxed);
 }
 
+bool ProbeMod::allowCursorClip() const {
+    if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
+        return true;
+    }
+    if (mSuppressCursorGrab.load(std::memory_order_relaxed)
+        || mInputSession.hardwareLocked.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    if (mBackgroundGuard.load(std::memory_order_relaxed) && !detail::isGameForeground()) {
+        return false;
+    }
+    return true;
+}
+
+bool ProbeMod::allowFocusLost() const {
+    if (!mRunning.load(std::memory_order_relaxed) || !hooksAllowed()) {
+        return true;
+    }
+    return !mSuppressFocusPause.load(std::memory_order_relaxed);
+}
+
 bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
     InjectionCountScope injecting(mInputSession.injectingLook);
     return guardedControl(ControlOp::Turn, [&] {
@@ -774,18 +802,29 @@ bool ProbeMod::applyTurnDelta(LocalPlayer& player, Vec2 const& delta) {
 }
 
 void ProbeMod::updateFocusState() {
-    bool const foreground = detail::isGameForeground();
-    if (foreground == mForeground.load(std::memory_order_relaxed)) {
-        if (!foreground) {
-            // The game keeps calling ClipCursor even in the background.
-            ClipCursor(nullptr);
+    bool const foreground   = detail::isGameForeground();
+    bool const suppressGrab = mSuppressCursorGrab.load(std::memory_order_relaxed);
+    if (!foreground || suppressGrab) {
+        ClipCursor(nullptr);
+    }
+    bool const prevForeground = mForeground.load(std::memory_order_relaxed);
+    if (foreground == prevForeground) {
+        if (suppressGrab && mCursorShowCalls == 0) {
+            int calls = 0;
+            while (calls < 8) {
+                ++calls;
+                if (ShowCursor(TRUE) >= 0) {
+                    break;
+                }
+            }
+            mCursorShowCalls += calls;
         }
         return;
     }
 
     if (!foreground) {
         ClipCursor(nullptr);
-        if (mBackgroundGuard) {
+        if (mBackgroundGuard.load(std::memory_order_relaxed) || suppressGrab) {
             int calls = 0;
             while (calls < 8) {
                 ++calls;
@@ -797,7 +836,7 @@ void ProbeMod::updateFocusState() {
         }
         bootLog("focus: lost");
     } else {
-        if (mCursorShowCalls > 0) {
+        if (!suppressGrab && mCursorShowCalls > 0) {
             for (int i = 0; i < mCursorShowCalls; ++i) {
                 ShowCursor(FALSE);
             }
@@ -987,6 +1026,155 @@ bool ProbeMod::setLifecycleTurnHook(bool on, bool suspendThreads) {
     if (!ProbeTurnDeltaHook::unhook(suspendThreads)) {
         mLifecycleTurnHooked.store(true, std::memory_order_release);
         bootLog("lifecycle: turn hook unhook failed");
+        return false;
+    }
+    return true;
+}
+
+} // namespace probe
+
+namespace {
+
+ll::memory::FuncPtr gClipCursorTarget = nullptr;
+ll::memory::FuncPtr gOrigClipCursor   = nullptr;
+bool                gClipCursorHooked = false;
+bool                gGrabMouseHooked  = false;
+
+BOOL WINAPI detourClipCursor(RECT const* lpRect) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Cursor);
+    auto                           orig = reinterpret_cast<BOOL(WINAPI*)(RECT const*)>(gOrigClipCursor);
+    if (lpRect != nullptr && callback.admitted() && !::probe::ProbeMod::getInstance().allowCursorClip()) {
+        return TRUE;
+    }
+    return orig ? orig(lpRect) : TRUE;
+}
+
+} // namespace
+
+LL_TYPE_INSTANCE_HOOK(
+    ProbeGrabMouseHook,
+    ll::memory::HookPriority::Normal,
+    ClientInstance,
+    &ClientInstance::$grabMouse,
+    void
+) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Cursor);
+    auto&                          mod = ::probe::ProbeMod::getInstance();
+    if (callback.admitted() && !mod.allowCursorClip()) {
+        return;
+    }
+    origin();
+};
+
+LL_TYPE_INSTANCE_HOOK(
+    ProbeFocusLostHook,
+    ll::memory::HookPriority::Normal,
+    MinecraftGame,
+    &MinecraftGame::$onAppFocusLost,
+    void
+) {
+    ::probe::detail::CallbackScope callback(::probe::detail::gCallbacks, ::probe::detail::CallbackDomain::Focus);
+    auto&                          mod = ::probe::ProbeMod::getInstance();
+    if (callback.admitted() && !mod.allowFocusLost()) {
+        return;
+    }
+    origin();
+};
+
+namespace probe {
+
+bool ProbeMod::setLifecycleCursorHook(bool on, bool suspendThreads) {
+    if (on) {
+        if (mLifecycleCursorHooked.load(std::memory_order_acquire)) return true;
+        if (!gClipCursorHooked) {
+            if (!gClipCursorTarget) {
+                if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+                    gClipCursorTarget = reinterpret_cast<ll::memory::FuncPtr>(GetProcAddress(user32, "ClipCursor"));
+                }
+            }
+            if (!gClipCursorTarget) {
+                bootLog("lifecycle: cursor ClipCursor symbol unresolved");
+                return false;
+            }
+            int const status = ll::memory::hook(
+                gClipCursorTarget,
+                reinterpret_cast<ll::memory::FuncPtr>(&detourClipCursor),
+                &gOrigClipCursor,
+                ll::memory::HookPriority::Normal,
+                suspendThreads
+            );
+            if (status != 0) {
+                bootLog("lifecycle: clip cursor hook failed status=" + std::to_string(status));
+                return false;
+            }
+            gClipCursorHooked = true;
+        }
+        if (!gGrabMouseHooked) {
+            int const status = ProbeGrabMouseHook::hook(suspendThreads);
+            if (status != 0) {
+                bootLog("lifecycle: grabMouse hook failed status=" + std::to_string(status));
+                if (gClipCursorHooked) {
+                    if (ll::memory::unhook(
+                            gClipCursorTarget,
+                            reinterpret_cast<ll::memory::FuncPtr>(&detourClipCursor),
+                            suspendThreads
+                        )) {
+                        gClipCursorHooked = false;
+                        gOrigClipCursor   = nullptr;
+                    }
+                }
+                return false;
+            }
+            gGrabMouseHooked = true;
+        }
+        mLifecycleCursorHooked.store(true, std::memory_order_release);
+        return true;
+    }
+    if (!mLifecycleCursorHooked.exchange(false, std::memory_order_acq_rel)) return true;
+    bool ok = true;
+    if (gGrabMouseHooked) {
+        if (ProbeGrabMouseHook::unhook(suspendThreads)) {
+            gGrabMouseHooked = false;
+        } else {
+            ok = false;
+            bootLog("lifecycle: grabMouse hook unhook failed");
+        }
+    }
+    if (gClipCursorHooked) {
+        if (ll::memory::unhook(
+                gClipCursorTarget,
+                reinterpret_cast<ll::memory::FuncPtr>(&detourClipCursor),
+                suspendThreads
+            )) {
+            gClipCursorHooked = false;
+            gOrigClipCursor   = nullptr;
+        } else {
+            ok = false;
+            bootLog("lifecycle: clip cursor hook unhook failed");
+        }
+    }
+    if (!ok) {
+        mLifecycleCursorHooked.store(true, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+bool ProbeMod::setLifecycleFocusHook(bool on, bool suspendThreads) {
+    if (on) {
+        if (mLifecycleFocusHooked.load(std::memory_order_acquire)) return true;
+        int const status = ProbeFocusLostHook::hook(suspendThreads);
+        if (status != 0) {
+            bootLog("lifecycle: focus hook restore failed status=" + std::to_string(status));
+            return false;
+        }
+        mLifecycleFocusHooked.store(true, std::memory_order_release);
+        return true;
+    }
+    if (!mLifecycleFocusHooked.exchange(false, std::memory_order_acq_rel)) return true;
+    if (!ProbeFocusLostHook::unhook(suspendThreads)) {
+        mLifecycleFocusHooked.store(true, std::memory_order_release);
+        bootLog("lifecycle: focus hook unhook failed");
         return false;
     }
     return true;

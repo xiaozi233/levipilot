@@ -180,6 +180,43 @@ class RecordingCommandsTests(unittest.TestCase):
                     client.record(1, on_sample=callback, move_ticks=1)
                 self.assertEqual(client.sent[-1], {"cmd": "stop"})
 
+    def test_record_bin_start_and_dump_all_with_watch(self) -> None:
+        import base64
+        import struct
+
+        client = FakeClient()
+        client._session.stream.lines.put(
+            {"event": "record_started", "watch_count": 1, "watch_entry_size": 40}
+        )
+        started = client.record_bin_start(period=1, watch=[{"component_id": 0x60FC5A9A, "size": 4}])
+        self.assertEqual(started["watch_count"], 1)
+        self.assertEqual(
+            client.sent[-1],
+            {
+                "cmd": "record_start",
+                "period": 1,
+                "watch": [{"component_id": 0x60FC5A9A, "offset": 0, "size": 4}],
+            },
+        )
+
+        watch_blob = struct.pack("<4QII", 0x40000000, 0, 0, 0, 1, 0)
+        message = {
+            "event": "record_dump",
+            "head": 1,
+            "next": 1,
+            "count": 1,
+            "watch_count": 1,
+            "watch_entry_size": 40,
+            "data": "00" * 64,
+            "watch_b64": base64.b64encode(watch_blob).decode("ascii"),
+        }
+        with patch.object(client, "record_dump", return_value=message):
+            entries, watch_entries = client.record_dump_all(format="hex", include_watch=True)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(watch_entries), 1)
+        self.assertTrue(watch_entries[0].valid(0))
+        self.assertAlmostEqual(watch_entries[0].as_f32(0), 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

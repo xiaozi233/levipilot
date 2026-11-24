@@ -23,13 +23,13 @@ import itertools
 import json
 import math
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .errors import ModPipeError
-from .record import RecordEntry
+from .record import RecordEntry, WatchSample, decode_watch_row
 
 if TYPE_CHECKING:
     from .client import ModClient
@@ -145,14 +145,26 @@ class Builder:
 class RecordSession:
     """Binary ring session with automatic cursor (``record_start`` resets head)."""
 
-    def __init__(self, client: ModClient, *, period: int = 1) -> None:
+    def __init__(
+        self,
+        client: ModClient,
+        *,
+        period: int = 1,
+        watch: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
         self.client = client
         self.period = period
+        self.watch = list(watch) if watch else None
         self.entries: list[RecordEntry] = []
+        self.watch_entries: list[WatchSample] = []
         self.record_id: int | None = None
 
     def __enter__(self) -> RecordSession:
-        started = self.client.record_bin_start(period=self.period)
+        started = (
+            self.client.record_bin_start(period=self.period, watch=self.watch)
+            if self.watch
+            else self.client.record_bin_start(period=self.period)
+        )
         self.record_id = started.get("record_id")
         return self
 
@@ -163,16 +175,40 @@ class RecordSession:
         except ModPipeError as error:
             failure = error
         try:
-            self.entries = self.client.record_dump_all(
-                since=0, chunk=8192, allow_partial=failure is not None, record_id=self.record_id
-            )
+            if self.watch:
+                self.entries, self.watch_entries = self.client.record_dump_all(
+                    since=0,
+                    chunk=8192,
+                    allow_partial=failure is not None,
+                    record_id=self.record_id,
+                    include_watch=True,
+                )
+            else:
+                self.entries = self.client.record_dump_all(
+                    since=0,
+                    chunk=8192,
+                    allow_partial=failure is not None,
+                    record_id=self.record_id,
+                )
         except ModPipeError as error:
             if failure is None:
                 failure = error
                 with contextlib.suppress(ModPipeError):
-                    self.entries = self.client.record_dump_all(
-                        since=0, chunk=8192, allow_partial=True, record_id=self.record_id
-                    )
+                    if self.watch:
+                        self.entries, self.watch_entries = self.client.record_dump_all(
+                            since=0,
+                            chunk=8192,
+                            allow_partial=True,
+                            record_id=self.record_id,
+                            include_watch=True,
+                        )
+                    else:
+                        self.entries = self.client.record_dump_all(
+                            since=0,
+                            chunk=8192,
+                            allow_partial=True,
+                            record_id=self.record_id,
+                        )
             else:
                 failure.add_note(f"partial dump also failed: {error}")
         if failure is not None:
@@ -182,12 +218,29 @@ class RecordSession:
                 raise failure
 
     @property
+    def decoded_watch(self) -> list[dict[str, Any]]:
+        if not self.watch or not self.watch_entries:
+            return []
+        return [decode_watch_row(sample, self.watch) for sample in self.watch_entries]
+
+    @property
     def rows(self) -> list[dict[str, Any]]:
-        return [entry.to_dict() for entry in self.entries]
+        base = [entry.to_dict() for entry in self.entries]
+        if self.watch and len(self.watch_entries) == len(base):
+            for row, sample in zip(base, self.watch_entries, strict=True):
+                row["watch"] = list(sample.values)
+                row["watch_mask"] = sample.valid_mask
+                row.update(decode_watch_row(sample, self.watch))
+        return base
 
 
-def record_session(client: ModClient, *, period: int = 1) -> RecordSession:
-    return RecordSession(client, period=period)
+def record_session(
+    client: ModClient,
+    *,
+    period: int = 1,
+    watch: Sequence[Mapping[str, Any]] | None = None,
+) -> RecordSession:
+    return RecordSession(client, period=period, watch=watch)
 
 
 def move_and_wait(
@@ -215,6 +268,120 @@ def move_and_wait(
         ticks=int(ticks),
     )
     client.wait_ticks(int(ticks) + settle)
+
+
+def heal_clean(client: ModClient, *, settle_ticks: int = 2) -> Mapping[str, Any]:
+    """Restore full health cleanly without leaving lingering instant_health effects."""
+    client.command("effect @s instant_health 1 10 true")
+    client.wait_ticks(int(settle_ticks))
+    client.command("effect @s clear")
+    client.wait_ticks(int(settle_ticks))
+    return client.state()
+
+
+def clear_armor_and_wait(
+    client: ModClient,
+    *,
+    settle_ticks: int = 6,
+    max_wait_ticks: int = 16,
+) -> list[dict[str, Any]]:
+    """Clear inventory and wait until armor slots read empty plus ``settle_ticks``."""
+    client.clear_inventory()
+    armor: list[dict[str, Any]] = []
+    waited = 0
+    while True:
+        client.wait_ticks(2)
+        waited += 2
+        armor = list(client.inventory().get("armor", []))
+        if all(slot.get("item") is None for slot in armor) or waited >= max_wait_ticks:
+            break
+    if settle_ticks > 0:
+        client.wait_ticks(int(settle_ticks))
+    return armor
+
+
+class LabSession:
+    """Context manager that applies background focus flags and restores world/player state."""
+
+    def __init__(
+        self,
+        client: ModClient,
+        *,
+        suppress_cursor_grab: bool = True,
+        suppress_focus_pause: bool = True,
+        restore_position: bool = True,
+        restore_gamemode: bool = True,
+        clear_box: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+        clear_inventory: bool = False,
+    ) -> None:
+        self.client = client
+        self.suppress_cursor_grab = suppress_cursor_grab
+        self.suppress_focus_pause = suppress_focus_pause
+        self.restore_position = restore_position
+        self.restore_gamemode = restore_gamemode
+        self.clear_box = clear_box
+        self.clear_inventory = clear_inventory
+        self.orig_focus_cfg: dict[str, Any] = {}
+        self.orig_state: dict[str, Any] = {}
+        self.orig_gamemode: int = 1
+
+    def __enter__(self) -> LabSession:
+        self.orig_focus_cfg = self.client.focus_cfg()
+        self.orig_state = dict(self.client.state())
+        self.orig_gamemode = int(self.orig_state.get("gamemode", 1))
+        self.client.focus_cfg(
+            suppress_cursor_grab=self.suppress_cursor_grab,
+            suppress_focus_pause=self.suppress_focus_pause,
+        )
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        in_exception = bool(exc and isinstance(exc[1], BaseException))
+        first_error: BaseException | None = None
+
+        def step(fn: Callable[[], Any]) -> None:
+            nonlocal first_error
+            try:
+                fn()
+            except ModPipeError as err:
+                if in_exception:
+                    with contextlib.suppress(Exception):
+                        exc[1].add_note(f"lab cleanup failed: {err}")
+                elif first_error is None:
+                    first_error = err
+
+        step(lambda: self.client.set_input())
+        if self.clear_inventory:
+            step(lambda: self.client.clear_inventory())
+        if self.clear_box is not None:
+            p1, p2 = self.clear_box
+            cmd = f"fill {p1[0]} {p1[1]} {p1[2]} {p2[0]} {p2[1]} {p2[2]} air"
+            step(lambda: (self.client.command(cmd), self.client.wait_ticks(3)))
+        if self.restore_gamemode and self.orig_state:
+            gm = self.orig_gamemode
+            step(lambda: (self.client.command(f"gamemode {gm} @s"), self.client.wait_ticks(2)))
+        if self.restore_position and "feet_x" in self.orig_state:
+            st = self.orig_state
+            step(
+                lambda: self.client.teleport(
+                    float(st["feet_x"]),
+                    float(st["feet_y"]),
+                    float(st["feet_z"]),
+                    yaw=float(st.get("yaw", 0.0)),
+                    pitch=float(st.get("pitch", 0.0)),
+                )
+            )
+        if self.orig_focus_cfg:
+            fc = self.orig_focus_cfg
+            step(
+                lambda: self.client.focus_cfg(
+                    background_guard=bool(fc.get("background_guard", True)),
+                    suppress_cursor_grab=bool(fc.get("suppress_cursor_grab", False)),
+                    suppress_focus_pause=bool(fc.get("suppress_focus_pause", False)),
+                )
+            )
+        if first_error is not None:
+            raise first_error
 
 
 # -- analysis -----------------------------------------------------------------
@@ -587,6 +754,25 @@ def settle(
         "ticks": streak,
         "state": last,
     }
+
+
+def remove_entities(
+    client: ModClient,
+    selector: str,
+    *,
+    void_pos: tuple[float, float, float] = (400.0, -100.0, 400.0),
+    wait_ticks: int = 2,
+) -> None:
+    """Teleport matching entities out of scan/collision range before ``/kill``.
+
+    ``/kill`` leaves a brief dying-corpse entity that still participates in AABB
+    and hitbox scans for several ticks; teleporting away first clears it at once.
+    """
+    vx, vy, vz = void_pos
+    client.command(f"/tp {selector} {vx:g} {vy:g} {vz:g}")
+    client.command(f"/kill {selector}")
+    if wait_ticks > 0:
+        client.wait_ticks(wait_ticks)
 
 
 # --- inbound slice decoding -------------------------------------------------

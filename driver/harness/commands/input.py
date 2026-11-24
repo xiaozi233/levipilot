@@ -224,3 +224,21 @@ class InputCommands(PipeMixinBase):
 
     def screen(self) -> dict[str, Any]:
         return self.request({"cmd": "screen"}, "screen")
+
+    def focus_cfg(
+        self,
+        *,
+        background_guard: bool | None = None,
+        suppress_cursor_grab: bool | None = None,
+        suppress_focus_pause: bool | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Configure cursor-centering prevention and background focus-pause suppression."""
+        message: dict[str, Any] = {"cmd": "focus_cfg"}
+        if background_guard is not None:
+            message["background_guard"] = bool(background_guard)
+        if suppress_cursor_grab is not None:
+            message["suppress_cursor_grab"] = bool(suppress_cursor_grab)
+        if suppress_focus_pause is not None:
+            message["suppress_focus_pause"] = bool(suppress_focus_pause)
+        return self.request(message, "focus_cfg", timeout=timeout)

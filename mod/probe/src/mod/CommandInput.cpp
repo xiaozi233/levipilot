@@ -394,6 +394,45 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         );
         return true;
     }
+    if (cmd == "focus_cfg") {
+        for (char const* key : {"background_guard", "suppress_cursor_grab", "suppress_focus_pause"}) {
+            if (j.contains(key) && !j[key].is_boolean()) {
+                enqueue(
+                    nlohmann::json{
+                        {"event",  "error"    },
+                        {"reason", "bad_param"},
+                        {"param",  key        }
+                }.dump()
+                );
+                return true;
+            }
+        }
+        if (j.contains("background_guard")) {
+            mBackgroundGuard.store(j["background_guard"].get<bool>(), std::memory_order_relaxed);
+        }
+        if (j.contains("suppress_cursor_grab")) {
+            mSuppressCursorGrab.store(j["suppress_cursor_grab"].get<bool>(), std::memory_order_relaxed);
+        }
+        if (j.contains("suppress_focus_pause")) {
+            mSuppressFocusPause.store(j["suppress_focus_pause"].get<bool>(), std::memory_order_relaxed);
+        }
+        if (!allowCursorClip()) {
+            ClipCursor(nullptr);
+        }
+        enqueue(
+            nlohmann::json{
+                {"event",                "focus_cfg"                                           },
+                {"ok",                   true                                                  },
+                {"background_guard",     mBackgroundGuard.load(std::memory_order_relaxed)      },
+                {"suppress_cursor_grab", mSuppressCursorGrab.load(std::memory_order_relaxed)   },
+                {"suppress_focus_pause", mSuppressFocusPause.load(std::memory_order_relaxed)   },
+                {"foreground",           detail::isGameForeground()                            },
+                {"cursor_hooked",        mLifecycleCursorHooked.load(std::memory_order_relaxed)},
+                {"focus_hooked",         mLifecycleFocusHooked.load(std::memory_order_relaxed) }
+        }.dump()
+        );
+        return true;
+    }
     if (cmd == "buttons") {
         if (!mWorld.inWorld()) enqueue(R"({"event":"error","reason":"not_in_world"})");
         else if (!mButtonCapture.begin({}, GetTickCount64(), 2000, activeReqId()))

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Literal, overload
 
 from ..errors import ModProtocolError
-from ..record import RecordEntry, decode_dump
+from ..record import RecordEntry, WatchSample, decode_dump, decode_watch_dump
 from ._protocol import PipeMixinBase
 
 
@@ -26,13 +26,31 @@ class RecordingCommands(PipeMixinBase):
         if reply.get("ok") is False:
             raise ModProtocolError(f"recording: {reply.get('reason', 'failed')}")
 
-    def record_bin_start(self, period: int = 1, timeout: float | None = None) -> dict[str, Any]:
+    def record_bin_start(
+        self,
+        period: int = 1,
+        *,
+        watch: Sequence[Mapping[str, Any]] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         """Start the fixed-size binary tick ring (T4)."""
-        return self.request(
-            {"cmd": "record_start", "period": int(period)},
-            "record_started",
-            timeout=timeout,
-        )
+        message: dict[str, Any] = {"cmd": "record_start", "period": int(period)}
+        if watch:
+            payload_watch: list[dict[str, Any]] = []
+            for spec in watch:
+                item: dict[str, Any] = {
+                    "offset": int(spec.get("offset", 0)),
+                    "size": int(spec.get("size", 4)),
+                }
+                if "component_id" in spec:
+                    item["component_id"] = int(spec["component_id"])
+                elif "addr" in spec:
+                    item["addr"] = spec["addr"]
+                else:
+                    raise ValueError("watch spec requires component_id or addr")
+                payload_watch.append(item)
+            message["watch"] = payload_watch
+        return self.request(message, "record_started", timeout=timeout)
 
     def record_bin_stop(self, timeout: float | None = None) -> dict[str, Any]:
         reply = self.request({"cmd": "record_stop"}, "record_stopped", timeout=timeout)
@@ -58,6 +76,7 @@ class RecordingCommands(PipeMixinBase):
             timeout=timeout,
         )
 
+    @overload
     def record_dump_all(
         self,
         *,
@@ -67,9 +86,36 @@ class RecordingCommands(PipeMixinBase):
         timeout: float | None = None,
         allow_partial: bool = False,
         record_id: int | None = None,
-    ) -> list[RecordEntry]:
+        include_watch: Literal[False] = False,
+    ) -> list[RecordEntry]: ...
+
+    @overload
+    def record_dump_all(
+        self,
+        *,
+        since: int = 0,
+        chunk: int = 1024,
+        format: str = "jsonl",
+        timeout: float | None = None,
+        allow_partial: bool = False,
+        record_id: int | None = None,
+        include_watch: Literal[True],
+    ) -> tuple[list[RecordEntry], list[WatchSample]]: ...
+
+    def record_dump_all(
+        self,
+        *,
+        since: int = 0,
+        chunk: int = 1024,
+        format: str = "jsonl",
+        timeout: float | None = None,
+        allow_partial: bool = False,
+        record_id: int | None = None,
+        include_watch: bool = False,
+    ) -> list[RecordEntry] | tuple[list[RecordEntry], list[WatchSample]]:
         """Drain one recording up to its initial head; reject failure/loss by default."""
         entries: list[RecordEntry] = []
+        watch_entries: list[WatchSample] = []
         stop_at: int | None = None
         cursor = since
         with self.exchange():
@@ -92,11 +138,15 @@ class RecordingCommands(PipeMixinBase):
                 if batch and next_cursor <= cursor:
                     raise ModProtocolError("record_dump cursor did not advance")
                 entries.extend(batch)
+                if include_watch:
+                    watch_entries.extend(decode_watch_dump(message))
                 cursor = next_cursor
                 if stop_at is None:
                     stop_at = int(message.get("head", cursor))
                 if cursor >= stop_at or not batch:
                     break
+        if include_watch:
+            return entries, watch_entries
         return entries
 
     def record(

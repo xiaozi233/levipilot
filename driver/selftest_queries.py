@@ -118,6 +118,31 @@ def check_query_capture(client: ModClient, checks: Checks) -> None:
     )
     after = {(p.name, p.stat().st_mtime_ns) for p in directory.glob("crash-*")}
     checks.check("query_handled_fault_no_dump", after == before)
+    shapes = client.block_shapes([[x, low_y, z]], entity_mode="player")
+    shape_rows = shapes.get("blocks") or []
+    checks.check(
+        "query_block_shapes_sample",
+        shapes.get("ok") is True
+        and shapes.get("entity_mode") == "player"
+        and len(shape_rows) == 1
+        and isinstance(shape_rows[0].get("collision"), dict)
+        and isinstance(shape_rows[0].get("boxes"), list),
+        str(shapes),
+    )
+    ents = client.entities(radius=64, limit=16)
+    ent_rows = ents.get("entities") or []
+    checks.check(
+        "query_entities_aabb_shape",
+        ents.get("event") == "entities"
+        and all(
+            isinstance(r.get("aabb"), dict)
+            and len(r["aabb"].get("min", [])) == 3
+            and len(r["aabb"].get("max", [])) == 3
+            and len(r["aabb"].get("size", [])) == 3
+            for r in ent_rows
+        ),
+        str(ent_rows[:1]),
+    )
     check_entity_slot_capture(client, checks)
 
 

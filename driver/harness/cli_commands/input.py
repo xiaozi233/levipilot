@@ -24,6 +24,7 @@ COMMANDS = frozenset(
         "jump",
         "jump-key",
         "input-lock",
+        "focus-cfg",
         "togglefly",
         "swim",
         "stopmove",
@@ -112,6 +113,15 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
         return emit_json(jump_key(client))
     if args.command == "input-lock":
         return emit_json(client.input_lock(not args.off))
+    if args.command == "focus-cfg":
+        return emit_json(
+            client.focus_cfg(
+                background_guard=args.background_guard,
+                suppress_cursor_grab=args.suppress_cursor_grab,
+                suppress_focus_pause=args.suppress_focus_pause,
+            ),
+            ensure_ascii=False,
+        )
     if args.command == "togglefly":
         wanted = True if args.on else (False if args.off else None)
         return emit_json(client.toggle_fly(wanted), ensure_ascii=False)

@@ -14,6 +14,8 @@ COMMANDS = frozenset(
         "state",
         "entities",
         "blocks",
+        "block-shapes",
+        "dump-block-collisions",
         "scan",
         "slot",
         "inventory",
@@ -30,6 +32,7 @@ COMMANDS = frozenset(
         "ecs-entity",
         "ecs-components",
         "ecs-component",
+        "ecs-read-batch",
     }
 )
 
@@ -56,6 +59,26 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
             parser.error("blocks 需要 3 的倍数个坐标")
         positions = [args.positions[i : i + 3] for i in range(0, len(args.positions), 3)]
         return emit_json(client.blocks(positions), ensure_ascii=False, indent=2)
+    if args.command == "block-shapes":
+        if len(args.positions) % 3:
+            parser.error("block-shapes 需要 3 的倍数个坐标")
+        positions = [args.positions[i : i + 3] for i in range(0, len(args.positions), 3)]
+        return emit_json(
+            client.block_shapes(positions, entity_mode=args.entity_mode),
+            ensure_ascii=False,
+            indent=2,
+        )
+    if args.command == "dump-block-collisions":
+        return emit_json(
+            client.dump_block_collisions(
+                filename=args.filename,
+                pos=args.pos,
+                include_air=args.include_air,
+                entity_mode=args.entity_mode,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
     if args.command == "scan":
         return emit_json(
             client.scan(
@@ -118,6 +141,23 @@ def run(args: argparse.Namespace, client: ModClient, parser: argparse.ArgumentPa
     if args.command == "ecs-component":
         return emit_json(
             client.ecs_component(args.runtime_id, args.component_id, length=args.len),
+            ensure_ascii=False,
+            indent=2,
+        )
+    if args.command == "ecs-read-batch":
+        items: list[dict[str, int]] = []
+        for raw in args.item:
+            parts = str(raw).split(":")
+            if not 1 <= len(parts) <= 3:
+                parser.error(f"invalid --item {raw!r}; expected COMP[:OFFSET[:LEN]]")
+            item: dict[str, int] = {"component_id": int(parts[0], 0)}
+            if len(parts) >= 2 and parts[1] != "":
+                item["offset"] = int(parts[1], 0)
+            if len(parts) == 3 and parts[2] != "":
+                item["len"] = int(parts[2], 0)
+            items.append(item)
+        return emit_json(
+            client.ecs_read_batch(items, context=args.context),
             ensure_ascii=False,
             indent=2,
         )

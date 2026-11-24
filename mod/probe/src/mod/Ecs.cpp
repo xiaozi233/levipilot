@@ -133,6 +133,32 @@ void captureComponent(Registry& registry, EntityId entity, EcsQuery const& query
     out.ok     = readMemory(row.address, out.bytes.data(), out.length);
 }
 
+void captureContextBatch(Registry& registry, EntityId entity, EcsQuery const& query, EcsSnapshot& out) {
+    out.batchCount = std::min(query.batchCount, EcsSnapshot::MaxBatchItems);
+    for (std::size_t i = 0; i < out.batchCount; ++i) {
+        auto const& item = query.batchItems[i];
+        auto&       res  = out.batchResults[i];
+        res.id           = item.componentId;
+        res.offset       = item.offset;
+        res.length       = item.length;
+        auto* storage    = registry.storage(static_cast<entt::id_type>(item.componentId));
+        if (!storage || !storage->contains(entity)) {
+            res.present = false;
+            continue;
+        }
+        res.present = true;
+        res.address = reinterpret_cast<std::uint64_t>(storage->value(entity));
+        if (item.length > 0 && res.address != 0) {
+            std::uint32_t const clamped = std::clamp<std::uint32_t>(item.length, 1, EcsSnapshot::MaxBatchBytes);
+            res.length                  = clamped;
+            res.readOk                  = readMemory(res.address + item.offset, res.bytes.data(), clamped);
+        } else {
+            res.readOk = res.length == 0;
+        }
+    }
+    out.ok = true;
+}
+
 nlohmann::json rowJson(EcsSnapshot::Row const& row) {
     nlohmann::json result{
         {"id",      row.id          },
@@ -240,6 +266,33 @@ nlohmann::json ecsJson(EcsQuery const& query, EcsSnapshot const& out) {
         if (out.ok) result["hex"] = hexEncode(out.bytes.data(), out.length);
         else result["reason"] = "bad_addr";
         break;
+    case EcsOperation::ContextBatch: {
+        nlohmann::json items = nlohmann::json::array();
+        for (std::size_t i = 0; i < out.batchCount; ++i) {
+            auto const&    row = out.batchResults[i];
+            nlohmann::json entry{
+                {"component_id", row.id                         },
+                {"present",      row.present                    },
+                {"is_tag",       row.present && row.address == 0},
+                {"address",      row.address                    },
+                {"offset",       row.offset                     },
+                {"len",          row.length                     },
+                {"read_ok",      row.readOk                     }
+            };
+            if (row.readOk && row.length > 0) entry["hex"] = hexEncode(row.bytes.data(), row.length);
+            items.push_back(std::move(entry));
+        }
+        result = {
+            {"event",    "ecs_read_batch"},
+            {"ok",       true            },
+            {"tick",     out.tick        },
+            {"context",  out.context     },
+            {"registry", out.registry    },
+            {"entity",   out.entity      },
+            {"items",    std::move(items)}
+        };
+        break;
+    }
     }
     if (query.operation == EcsOperation::Registries) {
         result["scope"] = query.scope == EcsScope::All ? "all" : query.scope == EcsScope::Server ? "server" : "client";
@@ -286,7 +339,17 @@ EcsStage ProbeMod::captureEcsStage(EcsStage stage, EcsQuery const& query, EcsSna
                     }
                     return;
                 }
-                if (query.operation == EcsOperation::Context) {
+                if (query.operation == EcsOperation::Context || query.operation == EcsOperation::ContextBatch) {
+                    out.tick = mTick.load(std::memory_order_relaxed);
+                    if (query.operation == EcsOperation::ContextBatch && query.context == 0) {
+                        auto& context  = player->getEntityContext();
+                        auto& registry = context.getRegistry();
+                        out.context    = reinterpret_cast<std::uint64_t>(&context);
+                        out.registry   = reinterpret_cast<std::uint64_t>(&registry);
+                        out.entity     = static_cast<std::uint64_t>(context.mEntity.mRawId);
+                        captureContextBatch(registry, context.mEntity, query, out);
+                        return;
+                    }
                     if (!readableRange(query.context, sizeof(EntityContext))) {
                         out.error = "bad_addr";
                         return;
@@ -294,16 +357,26 @@ EcsStage ProbeMod::captureEcsStage(EcsStage stage, EcsQuery const& query, EcsSna
                     auto& context = *reinterpret_cast<EntityContext*>(query.context);
                     // Read only the handle's registry identity and entity id here.
                     // Never enumerate an unverified or foreign-thread registry.
+                    out.context    = query.context;
                     out.registry   = reinterpret_cast<std::uint64_t>(&context.getRegistry());
                     out.entity     = static_cast<std::uint64_t>(context.mEntity.mRawId);
                     auto& registry = player->getEntityContext().getRegistry();
                     if (out.registry == reinterpret_cast<std::uint64_t>(&registry)) {
-                        captureComponent(
-                            registry,
-                            EntityId(static_cast<EntityId::entity_type>(out.entity)),
-                            query,
-                            out
-                        );
+                        if (query.operation == EcsOperation::ContextBatch) {
+                            captureContextBatch(
+                                registry,
+                                EntityId(static_cast<EntityId::entity_type>(out.entity)),
+                                query,
+                                out
+                            );
+                        } else {
+                            captureComponent(
+                                registry,
+                                EntityId(static_cast<EntityId::entity_type>(out.entity)),
+                                query,
+                                out
+                            );
+                        }
                         return;
                     }
                 }
@@ -311,6 +384,7 @@ EcsStage ProbeMod::captureEcsStage(EcsStage stage, EcsQuery const& query, EcsSna
                 return;
             }
             out.server = true;
+            out.tick   = mTick.load(std::memory_order_relaxed);
             if (query.operation == EcsOperation::Registries) {
                 auto const serverCtx = serverPlayerContext(identity, mPoseEpoch.load(), mWorld.inWorld());
                 Actor*     target    = serverCtx.player;
@@ -350,9 +424,23 @@ EcsStage ProbeMod::captureEcsStage(EcsStage stage, EcsQuery const& query, EcsSna
                 if (!actor) continue;
                 auto& context  = actor->getEntityContext();
                 auto& registry = context.getRegistry();
-                if (query.operation == EcsOperation::Context) {
+                if (query.operation == EcsOperation::Context || query.operation == EcsOperation::ContextBatch) {
                     if (out.registry != reinterpret_cast<std::uint64_t>(&registry)) continue;
-                    captureComponent(registry, EntityId(static_cast<EntityId::entity_type>(out.entity)), query, out);
+                    if (query.operation == EcsOperation::ContextBatch) {
+                        captureContextBatch(
+                            registry,
+                            EntityId(static_cast<EntityId::entity_type>(out.entity)),
+                            query,
+                            out
+                        );
+                    } else {
+                        captureComponent(
+                            registry,
+                            EntityId(static_cast<EntityId::entity_type>(out.entity)),
+                            query,
+                            out
+                        );
+                    }
                     return;
                 }
                 if (static_cast<std::uint64_t>(actor->getRuntimeID()) != query.runtimeId) continue;

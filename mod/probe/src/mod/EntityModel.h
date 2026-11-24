@@ -26,7 +26,7 @@ struct EntitySnapshot {
         FixedText<256>  type;
         FixedText<4096> name;
         std::uint64_t   runtimeId = 0;
-        Vec             pos, velocity;
+        Vec             pos, velocity, aabbMin, aabbMax;
         float           health = 0, distance = 0, yaw = 0, pitch = 0;
         bool            isPlayer = false, alive = false, onGround = false;
     };

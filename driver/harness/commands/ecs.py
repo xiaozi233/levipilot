@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ._protocol import PipeMixinBase
@@ -57,3 +58,24 @@ class EcsCommands(PipeMixinBase):
             "ecs_component",
             timeout=timeout,
         )
+
+    def ecs_read_batch(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        *,
+        context: int | str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically read up to 8 components (and optional memory slices) in one game tick."""
+        payload_items: list[dict[str, int]] = []
+        for item in items:
+            entry: dict[str, int] = {
+                "component_id": int(item["component_id"]),
+                "offset": int(item.get("offset", 0)),
+                "len": int(item.get("len", 0)),
+            }
+            payload_items.append(entry)
+        message: dict[str, Any] = {"cmd": "ecs_read_batch", "items": payload_items}
+        if context is not None:
+            message["context"] = context
+        return self.request(message, "ecs_read_batch", timeout=timeout)

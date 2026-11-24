@@ -205,6 +205,24 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     blocks = sub.add_parser("blocks")
     blocks.add_argument("positions", nargs="+", type=float, help="x y z [x y z ...]")
 
+    block_shapes = sub.add_parser("block-shapes")
+    block_shapes.add_argument("positions", nargs="+", type=float, help="x y z [x y z ...]")
+    block_shapes.add_argument(
+        "--entity-mode",
+        default="none",
+        choices=["none", "player", "leather_boots", "sneak_above"],
+    )
+
+    dump_blocks = sub.add_parser("dump-block-collisions")
+    dump_blocks.add_argument("--filename", default="block-collisions.jsonl")
+    dump_blocks.add_argument("--pos", nargs=3, type=float, default=None, metavar=("X", "Y", "Z"))
+    dump_blocks.add_argument("--include-air", action="store_true")
+    dump_blocks.add_argument(
+        "--entity-mode",
+        default="none",
+        choices=["none", "player", "leather_boots", "sneak_above"],
+    )
+
     scan = sub.add_parser("scan", help="scan an inclusive block region")
     scan.add_argument("coords", nargs=6, type=float, metavar=("X1", "Y1", "Z1", "X2", "Y2", "Z2"))
     scan.add_argument("--include-air", action="store_true")
@@ -277,6 +295,20 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ecs_component.add_argument("--runtime-id", type=int, required=True)
     ecs_component.add_argument("--component-id", type=int, required=True)
     ecs_component.add_argument("--len", type=int, default=0)
+
+    ecs_read_batch = sub.add_parser(
+        "ecs-read-batch", help="atomically read up to 8 components in one tick"
+    )
+    ecs_read_batch.add_argument(
+        "--context", default=None, help="EntityContext address (default local player)"
+    )
+    ecs_read_batch.add_argument(
+        "--item",
+        action="append",
+        required=True,
+        metavar="COMP[:OFFSET[:LEN]]",
+        help="component spec (hex/int id, optional offset and byte len)",
+    )
 
     click = sub.add_parser("click")
     click.add_argument("button", choices=["left", "right"])
@@ -411,6 +443,28 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     togglefly_mode.add_argument("--off", action="store_true")
     input_lock = sub.add_parser("input-lock", help="drop real hardware keys/mouse")
     input_lock.add_argument("--off", action="store_true", help="release the lock (default: on)")
+    focus_cfg = sub.add_parser(
+        "focus-cfg",
+        help="cursor-grab and focus-pause settings",
+    )
+    focus_cfg.add_argument(
+        "--background-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="guard background mouse turns and cursor clipping",
+    )
+    focus_cfg.add_argument(
+        "--suppress-cursor-grab",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="block ClipCursor/grabMouse even while focused",
+    )
+    focus_cfg.add_argument(
+        "--suppress-focus-pause",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="ignore onAppFocusLost so background worlds keep ticking",
+    )
     sub.add_parser("stopmove")
 
     swim = sub.add_parser("swim", help="enter/leave SWIMMING with real key events")
@@ -437,6 +491,13 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
     record_start = sub.add_parser("record-start", help="start the binary tick ring")
     record_start.add_argument("--period", type=int, default=1)
+    record_start.add_argument(
+        "--watch",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help="watch COMP[:OFF[:SIZE]] or @ADDR[:SIZE] (max 4)",
+    )
     sub.add_parser("record-stop", help="stop the binary tick ring")
 
     record_dump = sub.add_parser("record-dump", help="dump the binary tick ring")

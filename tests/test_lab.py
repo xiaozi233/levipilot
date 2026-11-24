@@ -552,3 +552,126 @@ class InboundSliceTests(unittest.TestCase):
         self.assertEqual(summary["by_id_size"], {"188:7": 2})
         self.assertEqual(summary["tail"][0]["seq"], 9)
         self.assertEqual(summary["tail"][0]["captured_bytes"], 2)
+
+
+class RecordWatchAndCleanupTests(unittest.TestCase):
+    def test_record_session_with_watch_returns_aligned_watch_entries(self) -> None:
+        from driver.harness.record import WatchSample
+
+        class WatchFakeClient(FakeClient):
+            def record_dump_all(self, *_args, include_watch: bool = False, **_kwargs):
+                self.calls.append(("record_dump_all", _args, {"include_watch": include_watch}))
+                if include_watch:
+                    return self.entries, [WatchSample((0x3F800000,), 1)]
+                return self.entries
+
+        client = WatchFakeClient(entries=[entry(1)])
+        with RecordSession(client, watch=[{"component_id": 0x60FC5A9A, "size": 4}]) as rec:
+            pass
+        self.assertEqual(len(rec.entries), 1)
+        self.assertEqual(len(rec.watch_entries), 1)
+        self.assertAlmostEqual(rec.watch_entries[0].as_f32(0), 1.0)
+
+    def test_record_session_rows_merge_named_watch_specs(self) -> None:
+        from driver.harness.record import WatchSample
+
+        class NamedWatchClient(FakeClient):
+            def record_dump_all(self, *_args, include_watch: bool = False, **_kwargs):
+                if include_watch:
+                    return self.entries, [WatchSample((0x3FC00000, 1 << 5), 0b11)]
+                return self.entries
+
+        client = NamedWatchClient(entries=[entry(1)])
+        specs = [
+            {"name": "slow_y", "fmt": "f32"},
+            {
+                "name": "flags",
+                "omit_raw": True,
+                "bits": {"in_scaf": 5, "over_scaf": 6},
+            },
+        ]
+        with RecordSession(client, watch=specs) as rec:
+            pass
+        self.assertEqual(rec.decoded_watch, [{"slow_y": 1.5, "in_scaf": True, "over_scaf": False}])
+        rows = rec.rows
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["slow_y"], 1.5)
+        self.assertTrue(rows[0]["in_scaf"])
+        self.assertFalse(rows[0]["over_scaf"])
+        self.assertEqual(rows[0]["watch_mask"], 0b11)
+
+    def test_heal_clean_and_clear_armor_and_lab_session(self) -> None:
+        from driver.harness.lab import LabSession, clear_armor_and_wait, heal_clean
+
+        inv_replies = [
+            {"armor": [{"slot": 3, "item": {"type": "minecraft:leather_boots"}}]},
+            {"armor": [{"slot": 3, "item": None}]},
+        ]
+
+        class LabFakeClient(FakeClient):
+            def focus_cfg(self, **kwargs):
+                self.calls.append(("focus_cfg", (), kwargs))
+                return {
+                    "background_guard": True,
+                    "suppress_cursor_grab": False,
+                    "suppress_focus_pause": False,
+                }
+
+            def state(self):
+                self.calls.append(("state", (), {}))
+                return {
+                    "gamemode": 0,
+                    "feet_x": 1.0,
+                    "feet_y": -60.0,
+                    "feet_z": 2.0,
+                    "yaw": 90.0,
+                    "pitch": 5.0,
+                    "health": 20.0,
+                }
+
+            def inventory(self):
+                self.calls.append(("inventory", (), {}))
+                return inv_replies.pop(0) if inv_replies else {"armor": [{"slot": 3, "item": None}]}
+
+        client = LabFakeClient()
+        st = heal_clean(client, settle_ticks=1)
+        self.assertEqual(st["health"], 20.0)
+        armor = clear_armor_and_wait(client, settle_ticks=3, max_wait_ticks=10)
+        self.assertEqual(armor, [{"slot": 3, "item": None}])
+        client.calls.clear()
+
+        with LabSession(client, clear_box=((0, -57, 0), (5, -50, 5)), clear_inventory=True):
+            pass
+
+        names = [name for name, _, _ in client.calls]
+        self.assertEqual(
+            names,
+            [
+                "focus_cfg",
+                "state",
+                "focus_cfg",
+                "set_input",
+                "clear_inventory",
+                "command",
+                "wait_ticks",
+                "command",
+                "wait_ticks",
+                "teleport",
+                "focus_cfg",
+            ],
+        )
+        self.assertEqual(client.calls[-1][2]["suppress_focus_pause"], False)
+
+    def test_remove_entities_teleports_then_kills(self) -> None:
+        from driver.harness.lab import remove_entities
+
+        client = FakeClient()
+        remove_entities(client, "@e[type=dolphin]", void_pos=(10, -100, 20), wait_ticks=3)
+        self.assertEqual(
+            [(name, args) for name, args, _ in client.calls],
+            [
+                ("command", ("/tp @e[type=dolphin] 10 -100 20",)),
+                ("command", ("/kill @e[type=dolphin]",)),
+                ("wait_ticks", (3,)),
+            ],
+        )

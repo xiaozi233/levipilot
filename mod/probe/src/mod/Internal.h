@@ -51,6 +51,12 @@
 #include "mc/deps/input/win/HIDControllerGameCoreDesktop.h"
 #include "mc/deps/nbt/ByteTag.h"
 #include "mc/deps/nbt/CompoundTag.h"
+#include "mc/deps/nbt/DoubleTag.h"
+#include "mc/deps/nbt/FloatTag.h"
+#include "mc/deps/nbt/Int64Tag.h"
+#include "mc/deps/nbt/IntTag.h"
+#include "mc/deps/nbt/ShortTag.h"
+#include "mc/deps/nbt/StringTag.h"
 #include "mc/deps/shared_types/legacy/actor/ArmorSlot.h"
 #include "mc/deps/vanilla_components/StateVectorComponent.h"
 #include "mc/entity/components/ActorRotationComponent.h"
@@ -103,10 +109,14 @@
 #include "mc/world/level/Level.h"
 #include "mc/world/level/LevelSettings.h"
 #include "mc/world/level/block/Block.h"
+#include "mc/world/level/block/BlockType.h"
+#include "mc/world/level/block/GetCollisionShapeInterface.h"
+#include "mc/world/level/block/registry/BlockTypeRegistry.h"
 #include "mc/world/level/dimension/DimensionType.h"
 #include "mc/world/level/storage/ILevelListCache.h"
 #include "mc/world/level/storage/LevelData.h"
 #include "mc/world/level/storage/LevelSummary.h"
+#include "mc/world/phys/AABB.h"
 #include "mc/world/phys/HitResult.h"
 #include "mc/world/phys/HitResultType.h"
 
@@ -460,19 +470,46 @@ constexpr std::uint32_t RecordFlagInputJump    = 1u << 10;
 // attempted (the three block fields are 0 for that sample).
 constexpr std::uint32_t RecordFlagBlockOob = 1u << 11;
 // Coarse medium bits from the feet/head block names (flowing counts as still).
-constexpr std::uint32_t RecordFlagInWater = 1u << 12;
-constexpr std::uint32_t RecordFlagInLava  = 1u << 13;
+constexpr std::uint32_t RecordFlagInWater  = 1u << 12;
+constexpr std::uint32_t RecordFlagInLava   = 1u << 13;
+constexpr std::uint32_t RecordFlagSwimming = 1u << 14;
+constexpr std::uint32_t RecordFlagFlying   = 1u << 15;
+constexpr std::uint32_t RecordFlagGliding  = 1u << 16;
+
+constexpr std::size_t RecordWatchMaxSlots = 4;
+
+struct RecordWatchEntry {
+    std::uint64_t values[RecordWatchMaxSlots]{};
+    std::uint32_t validMask = 0;
+    std::uint32_t pad       = 0;
+};
+
+static_assert(sizeof(RecordWatchEntry) == 40, "record watch entry must stay 40 bytes");
+
+struct RecordWatchSpec {
+    std::uint32_t componentId = 0;
+    std::uint32_t offset      = 0;
+    std::uint32_t size        = 0;
+    std::uint64_t addr        = 0;
+    bool          byComponent = false;
+};
 
 std::uint32_t blockNameHash(std::string const& name);
 
-bool           recordStart(std::uint32_t period, std::string& error, std::optional<nlohmann::json>& previous);
-void           recordStop(RecordEnd reason = RecordEnd::Client);
-void           recordCancel(RecordEnd reason);
-nlohmann::json recordStateJson();
-bool           recordActive();
-std::uint64_t  recordHead();
-std::uint64_t  recordRows();
-std::uint32_t  recordPeriod();
+bool recordStart(
+    std::uint32_t                  period,
+    std::string&                   error,
+    std::optional<nlohmann::json>& previous,
+    RecordWatchSpec const*         watchSpecs = nullptr,
+    std::size_t                    watchCount = 0
+);
+void                          recordStop(RecordEnd reason = RecordEnd::Client);
+void                          recordCancel(RecordEnd reason);
+nlohmann::json                recordStateJson();
+bool                          recordActive();
+std::uint64_t                 recordHead();
+std::uint64_t                 recordRows();
+std::uint32_t                 recordPeriod();
 std::optional<nlohmann::json> recordTakeFailure(); // Consumed/formatted on the cold side.
 bool                          recordArmTest(CaptureTest test);
 void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick, bool jumpEdge);

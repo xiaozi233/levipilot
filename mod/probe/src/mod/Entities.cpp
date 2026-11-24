@@ -18,10 +18,13 @@ void captureActor(
     auto const& name = actor.getNameTag();
     row.type.assign(type);
     row.name.assign(name);
-    truncated    = truncated || row.type.view().size() != type.size() || row.name.view().size() != name.size();
-    row.pos      = snapshotVec(actor.getPosition());
-    row.isPlayer = actor.isPlayer();
-    row.health   = actor.getHealth();
+    truncated        = truncated || row.type.view().size() != type.size() || row.name.view().size() != name.size();
+    row.pos          = snapshotVec(actor.getPosition());
+    auto const& aabb = actor.getAABB();
+    row.aabbMin      = snapshotVec(aabb.min);
+    row.aabbMax      = snapshotVec(aabb.max);
+    row.isPlayer     = actor.isPlayer();
+    row.health       = actor.getHealth();
     float dx = row.pos.x - origin.x, dy = row.pos.y - origin.y, dz = row.pos.z - origin.z;
     row.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (detailed) {
@@ -35,6 +38,9 @@ void captureActor(
 }
 
 nlohmann::json entityRowJson(EntitySnapshot::Row const& row) {
+    float const dx = finiteOrZero(row.aabbMax.x - row.aabbMin.x);
+    float const dy = finiteOrZero(row.aabbMax.y - row.aabbMin.y);
+    float const dz = finiteOrZero(row.aabbMax.z - row.aabbMin.z);
     return {
         {"runtime_id", row.runtimeId             },
         {"type",       row.type.c_str()          },
@@ -44,6 +50,10 @@ nlohmann::json entityRowJson(EntitySnapshot::Row const& row) {
         {"x",          finiteOrZero(row.pos.x)   },
         {"y",          finiteOrZero(row.pos.y)   },
         {"z",          finiteOrZero(row.pos.z)   },
+        {"aabb",
+         {{"min", {finiteOrZero(row.aabbMin.x), finiteOrZero(row.aabbMin.y), finiteOrZero(row.aabbMin.z)}},
+          {"max", {finiteOrZero(row.aabbMax.x), finiteOrZero(row.aabbMax.y), finiteOrZero(row.aabbMax.z)}},
+          {"size", {dx, dy, dz}}}                },
         {"distance",   finiteOrZero(row.distance)}
     };
 }

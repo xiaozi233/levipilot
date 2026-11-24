@@ -58,6 +58,7 @@ public:
     };
     class Capture {
     public:
+        Capture() noexcept                 = default;
         Capture(Capture const&)            = delete;
         Capture& operator=(Capture const&) = delete;
         Capture(Capture&& other) noexcept : mOwner(std::exchange(other.mOwner, nullptr)) {}
@@ -90,7 +91,7 @@ public:
     private:
         friend class RecordBuffer;
         explicit Capture(RecordBuffer* owner) : mOwner(owner) {}
-        RecordBuffer* mOwner;
+        RecordBuffer* mOwner = nullptr;
     };
 
     template <class Initialize>

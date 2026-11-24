@@ -43,6 +43,44 @@ class QueryCommands(PipeMixinBase):
     def blocks(self, positions: Iterable[Iterable[float]]) -> dict[str, Any]:
         return self.request({"cmd": "blocks", "positions": [list(p) for p in positions]}, "blocks")
 
+    def block_shapes(
+        self,
+        positions: Iterable[Iterable[float]],
+        *,
+        entity_mode: str = "none",
+        timeout: float | None = 10.0,
+    ) -> dict[str, Any]:
+        """Inspect BlockType collision, multi-box, outline, visual, friction, and bounciness."""
+        return self.request(
+            {
+                "cmd": "block_shapes",
+                "positions": [list(p) for p in positions],
+                "entity_mode": str(entity_mode),
+            },
+            "block_shapes",
+            timeout=timeout,
+        )
+
+    def dump_block_collisions(
+        self,
+        filename: str = "block-collisions.jsonl",
+        *,
+        pos: Iterable[float] | None = None,
+        include_air: bool = False,
+        entity_mode: str = "none",
+        timeout: float | None = 60.0,
+    ) -> dict[str, Any]:
+        """Dump every registered Block permutation's shapes and properties to <modDir>/<filename>."""
+        payload: dict[str, Any] = {
+            "cmd": "dump_block_collisions",
+            "filename": str(filename),
+            "include_air": bool(include_air),
+            "entity_mode": str(entity_mode),
+        }
+        if pos is not None:
+            payload["pos"] = [float(v) for v in pos]
+        return self.request(payload, "block_collisions_dumped", timeout=timeout)
+
     def _read_state_word(self, addr: int, length: int = 4) -> int:
         reply = self.request(
             {"cmd": "probe", "addr": int(addr) + 288, "kind": "raw", "len": int(length)},

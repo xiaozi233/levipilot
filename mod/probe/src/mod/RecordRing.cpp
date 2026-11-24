@@ -9,9 +9,30 @@ namespace probe::detail {
 
 namespace {
 
-RecordBuffer<RecordEntry, RecordCapacity> gRecords;
-std::mutex                                gRingMutex; // Command-side lifecycle and dumps; never taken by tick.
-std::atomic<CaptureTest>                  gSampleTest{CaptureTest::None};
+RecordBuffer<RecordEntry, RecordCapacity>        gRecords;
+RecordBuffer<RecordWatchEntry, RecordCapacity>   gWatchRecords;
+std::mutex                                       gRingMutex; // Command-side lifecycle and dumps; never taken by tick.
+std::atomic<CaptureTest>                         gSampleTest{CaptureTest::None};
+std::array<RecordWatchSpec, RecordWatchMaxSlots> gWatchSpecs{};
+std::atomic<std::size_t>                         gWatchCount{0};
+
+std::string base64Encode(void const* data, std::size_t len) {
+    static constexpr char Alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    auto const*           bytes      = static_cast<std::uint8_t const*>(data);
+    std::string           out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (std::size_t i = 0; i < len; i += 3) {
+        std::uint32_t const b0 = bytes[i];
+        std::uint32_t const b1 = (i + 1 < len) ? bytes[i + 1] : 0;
+        std::uint32_t const b2 = (i + 2 < len) ? bytes[i + 2] : 0;
+        std::uint32_t const v  = (b0 << 16) | (b1 << 8) | b2;
+        out.push_back(Alphabet[(v >> 18) & 0x3Fu]);
+        out.push_back(Alphabet[(v >> 12) & 0x3Fu]);
+        out.push_back(i + 1 < len ? Alphabet[(v >> 6) & 0x3Fu] : '=');
+        out.push_back(i + 2 < len ? Alphabet[v & 0x3Fu] : '=');
+    }
+    return out;
+}
 
 // Liquid hashes are resolved on the command side and remain plain tick loads.
 std::atomic<std::uint32_t> gWaterHash{0};
@@ -122,10 +143,27 @@ nlohmann::json failureJson(RecordBuffer<RecordEntry, RecordCapacity>::Outcome co
 }
 } // namespace
 
-bool recordStart(std::uint32_t period, std::string& error, std::optional<nlohmann::json>& previous) {
+bool recordStart(
+    std::uint32_t                  period,
+    std::string&                   error,
+    std::optional<nlohmann::json>& previous,
+    RecordWatchSpec const*         watchSpecs,
+    std::size_t                    watchCount
+) {
     std::lock_guard lock(gRingMutex);
     gRecords.stop();
+    gWatchRecords.stop();
     if (auto done = gRecords.takeFailure()) previous = failureJson(*done);
+    std::size_t const clampedWatch = watchSpecs ? std::min(watchCount, RecordWatchMaxSlots) : 0;
+    for (std::size_t i = 0; i < RecordWatchMaxSlots; ++i) {
+        gWatchSpecs[i] = i < clampedWatch ? watchSpecs[i] : RecordWatchSpec{};
+    }
+    gWatchCount.store(clampedWatch, std::memory_order_release);
+    if (clampedWatch > 0 && !gWatchRecords.start(period, [] {})) {
+        gWatchCount.store(0, std::memory_order_release);
+        error = "alloc_failed";
+        return false;
+    }
     if (!gRecords.start(period, [] {
             gSampleTest = CaptureTest::None;
             gWaterHash.store(blockNameHash("minecraft:water"), std::memory_order_relaxed);
@@ -137,6 +175,8 @@ bool recordStart(std::uint32_t period, std::string& error, std::optional<nlohman
             resolveBlockOffsets();
             std::fill(std::begin(gBlockHashCache), std::end(gBlockHashCache), BlockHashEntry{});
         })) {
+        if (clampedWatch > 0) gWatchRecords.stop(RecordEnd::CaptureFailed);
+        gWatchCount.store(0, std::memory_order_release);
         error = "alloc_failed";
         return false;
     }
@@ -146,9 +186,13 @@ bool recordStart(std::uint32_t period, std::string& error, std::optional<nlohman
 void recordStop(RecordEnd reason) {
     std::lock_guard lock(gRingMutex);
     gRecords.stop(reason);
+    gWatchRecords.stop(reason);
 }
 
-void recordCancel(RecordEnd reason) { gRecords.cancel(reason); }
+void recordCancel(RecordEnd reason) {
+    gRecords.cancel(reason);
+    gWatchRecords.cancel(reason);
+}
 
 nlohmann::json recordStateJson() {
     std::lock_guard lock(gRingMutex);
@@ -238,6 +282,15 @@ void captureTickEntry(
     if (actionSprint) {
         flags |= RecordFlagActionSprint;
     }
+    if (player.isSwimming()) {
+        flags |= RecordFlagSwimming;
+    }
+    if (player.isFlying()) {
+        flags |= RecordFlagFlying;
+    }
+    if (player.isGliding()) {
+        flags |= RecordFlagGliding;
+    }
     if (in.w) {
         flags |= RecordFlagInputW;
     }
@@ -293,25 +346,54 @@ void captureTickEntry(
     entry.healthMilli  = health > 0.0f ? static_cast<std::uint32_t>(health * 1000.0f) : 0u;
 }
 
+void captureWatchEntry(LocalPlayer& player, RecordWatchEntry& watchEntry, std::size_t watchCount) {
+    auto&         ctx      = player.getEntityContext();
+    auto&         registry = ctx.getRegistry();
+    auto const    entity   = ctx.mEntity;
+    std::uint32_t mask     = 0;
+    for (std::size_t i = 0; i < watchCount && i < RecordWatchMaxSlots; ++i) {
+        auto const&   spec = gWatchSpecs[i];
+        std::uint64_t base = spec.addr;
+        if (spec.byComponent) {
+            base          = 0;
+            auto* storage = registry.storage(static_cast<entt::id_type>(spec.componentId));
+            if (storage && storage->contains(entity)) {
+                base = reinterpret_cast<std::uint64_t>(storage->value(entity));
+            }
+        }
+        if (base == 0 || spec.size == 0 || spec.size > sizeof(std::uint64_t)) continue;
+        std::uint64_t value = 0;
+        if (readMemory(base + spec.offset, &value, spec.size)) {
+            watchEntry.values[i]  = value;
+            mask                 |= (1u << i);
+        }
+    }
+    watchEntry.validMask = mask;
+}
+
 // Keep SEH in a frame with no C++ objects. /EHs does not unwind a Capture for
 // an access violation; converting it here lets the owner always release its
 // admission lease and prevents a later record_start/stop from waiting forever.
 __declspec(noinline) bool captureEntryWithSeh(
-    LocalPlayer&    player,
-    ClientInstance& client,
-    std::uint64_t   tick,
-    bool            jumpEdge,
-    RecordEntry&    entry
+    LocalPlayer&      player,
+    ClientInstance&   client,
+    std::uint64_t     tick,
+    bool              jumpEdge,
+    RecordEntry&      entry,
+    RecordWatchEntry* watchEntry,
+    std::size_t       watchCount
 ) {
 #if defined(_MSC_VER)
     __try {
         captureTickEntry(player, client, tick, jumpEdge, entry);
+        if (watchEntry && watchCount > 0) captureWatchEntry(player, *watchEntry, watchCount);
         return true;
     } __except (isFatalSehCode(GetExceptionCode()) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         return false;
     }
 #else
     captureTickEntry(player, client, tick, jumpEdge, entry);
+    if (watchEntry && watchCount > 0) captureWatchEntry(player, *watchEntry, watchCount);
     return true;
 #endif
 }
@@ -324,25 +406,41 @@ void recordTick(LocalPlayer& player, ClientInstance& client, std::uint64_t tick,
     pathCount(PathCounter::Record);
     if (!capture.sampleDue()) return;
 
+    std::size_t const watchCount = gWatchCount.load(std::memory_order_acquire);
+    auto              watchCapture =
+        watchCount > 0 ? gWatchRecords.capture() : RecordBuffer<RecordWatchEntry, RecordCapacity>::Capture{};
     try {
-        HandledSehScope captureFlag;
-        RecordEntry     entry;
-        if (!captureEntryWithSeh(player, client, tick, jumpEdge, entry)) {
+        HandledSehScope  captureFlag;
+        RecordEntry      entry;
+        RecordWatchEntry watchEntry{};
+        if (!captureEntryWithSeh(
+                player,
+                client,
+                tick,
+                jumpEdge,
+                entry,
+                watchCapture ? &watchEntry : nullptr,
+                watchCount
+            )) {
             capture.fail(RecordEnd::CaptureFault);
+            if (watchCapture) watchCapture.fail(RecordEnd::CaptureFault);
             return;
         }
         capture.publish(entry);
+        if (watchCapture) watchCapture.publish(watchEntry);
     } catch (...) {
         capture.fail(RecordEnd::CaptureFailed);
+        if (watchCapture) watchCapture.fail(RecordEnd::CaptureFailed);
     }
 }
 
 nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binary) {
     std::lock_guard     lock(gRingMutex);
-    std::uint64_t const head   = gRecords.head();
-    std::uint64_t const oldest = head > RecordCapacity ? head - RecordCapacity : 0;
-    std::uint64_t       start  = since;
-    std::uint64_t       lost   = 0;
+    std::uint64_t const head       = gRecords.head();
+    std::uint64_t const oldest     = head > RecordCapacity ? head - RecordCapacity : 0;
+    std::uint64_t       start      = since;
+    std::uint64_t       lost       = 0;
+    std::size_t const   watchCount = gWatchCount.load(std::memory_order_relaxed);
     if (start < oldest) {
         lost  = oldest - start;
         start = oldest;
@@ -371,11 +469,17 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
     out["ok"]          = outcome.ok();
     out["reason"]      = recordEndName(outcome.reason);
     out["partial"]     = !outcome.ok();
+    if (watchCount > 0) {
+        out["watch_count"]      = watchCount;
+        out["watch_entry_size"] = sizeof(RecordWatchEntry);
+    }
 
     if (binary) {
         static constexpr char Digits[] = "0123456789abcdef";
         std::string           hex;
         hex.reserve(static_cast<std::size_t>(end - start) * RecordSize * 2);
+        std::vector<RecordWatchEntry> watchRows;
+        if (watchCount > 0) watchRows.reserve(static_cast<std::size_t>(end - start));
         std::uint64_t count = 0;
         for (std::uint64_t index = start; index < end; ++index) {
             RecordEntry entry;
@@ -389,11 +493,19 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
                 hex.push_back(Digits[bytes[byte] >> 4]);
                 hex.push_back(Digits[bytes[byte] & 0x0F]);
             }
+            if (watchCount > 0) {
+                RecordWatchEntry wEntry{};
+                gWatchRecords.read(index, wEntry);
+                watchRows.push_back(wEntry);
+            }
         }
         out["encoding"] = "hex";
         out["data"]     = std::move(hex);
-        out["count"]    = count;
-        out["lost"]     = lost;
+        if (watchCount > 0) {
+            out["watch_b64"] = base64Encode(watchRows.data(), watchRows.size() * sizeof(RecordWatchEntry));
+        }
+        out["count"] = count;
+        out["lost"]  = lost;
         return out;
     }
 
@@ -401,7 +513,18 @@ nlohmann::json recordDumpJson(std::uint64_t since, std::size_t limit, bool binar
     for (std::uint64_t index = start; index < end; ++index) {
         RecordEntry entry;
         if (gRecords.read(index, entry)) {
-            out["rows"].push_back(entryJson(entry));
+            auto row = entryJson(entry);
+            if (watchCount > 0) {
+                RecordWatchEntry wEntry{};
+                bool const       okWatch = gWatchRecords.read(index, wEntry);
+                nlohmann::json   vals    = nlohmann::json::array();
+                for (std::size_t s = 0; s < watchCount; ++s) {
+                    vals.push_back(okWatch ? wEntry.values[s] : 0ull);
+                }
+                row["watch"]      = std::move(vals);
+                row["watch_mask"] = okWatch ? wEntry.validMask : 0u;
+            }
+            out["rows"].push_back(std::move(row));
         } else {
             ++lost;
         }

@@ -206,6 +206,7 @@ bool ProbeMod::drainCallbacks() {
     };
     bool const key = mLifecycleKeyHooked.load(), mouse = mLifecycleMouseHooked.load();
     bool const player = mLifecyclePlayerHooked.load(), turn = mLifecycleTurnHooked.load();
+    bool const cursor = mLifecycleCursorHooked.load(), focus = mLifecycleFocusHooked.load();
     bool       detached = false;
     auto       rollback = [&] {
         bool ok = true;
@@ -227,6 +228,16 @@ bool ProbeMod::drainCallbacks() {
             }
             try {
                 ok = setLifecycleTurnHook(turn) && ok;
+            } catch (...) {
+                ok = false;
+            }
+            try {
+                ok = setLifecycleCursorHook(cursor) && ok;
+            } catch (...) {
+                ok = false;
+            }
+            try {
+                ok = setLifecycleFocusHook(focus) && ok;
             } catch (...) {
                 ok = false;
             }

@@ -276,6 +276,64 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         } else enqueue(R"({"event":"error","reason":"ecs_busy","phase":"ecs"})");
         return true;
     }
+    if (cmd == "ecs_read_batch") {
+        auto const epoch = mPoseEpoch.load();
+        if (!mWorld.inWorld() || !hooksAllowed()) {
+            enqueue(
+                nlohmann::json{
+                    {"event",  "error"                                               },
+                    {"reason", mWorld.inWorld() ? "version_mismatch" : "not_in_world"}
+            }
+                    .dump()
+            );
+            return true;
+        }
+        if (!j.contains("items") || !j["items"].is_array() || j["items"].empty()
+            || j["items"].size() > EcsQuery::MaxBatchItems) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"items"})");
+            return true;
+        }
+        EcsQuery query;
+        query.operation = EcsOperation::ContextBatch;
+        if (j.contains("context") && !j["context"].is_null()) {
+            if (!parseAddress(j["context"], query.context)) {
+                enqueue(R"({"event":"error","reason":"bad_addr"})");
+                return true;
+            }
+        }
+        bool needMemRead = false;
+        for (auto const& item : j["items"]) {
+            if (!item.is_object() || !item.contains("component_id") || !item["component_id"].is_number_integer()) {
+                enqueue(R"({"event":"error","reason":"bad_param","param":"items"})");
+                return true;
+            }
+            auto const rawId = item["component_id"].get<std::int64_t>();
+            if (rawId < 0 || rawId > static_cast<std::int64_t>(UINT32_MAX)) {
+                enqueue(R"({"event":"error","reason":"bad_param","param":"component_id"})");
+                return true;
+            }
+            std::int64_t const offset = item.value("offset", std::int64_t{0});
+            std::int64_t const len    = item.value("len", std::int64_t{0});
+            if (offset < 0 || offset > 65536 || len < 0 || len > static_cast<std::int64_t>(EcsQuery::MaxBatchBytes)) {
+                enqueue(R"({"event":"error","reason":"bad_param","param":"items"})");
+                return true;
+            }
+            if (len > 0) needMemRead = true;
+            query.batchItems[query.batchCount++] = {
+                static_cast<std::uint32_t>(rawId),
+                static_cast<std::uint32_t>(offset),
+                static_cast<std::uint32_t>(len),
+            };
+        }
+        if (needMemRead && !mAllowMemoryRead.load(std::memory_order_relaxed)) {
+            enqueue(R"({"event":"error","reason":"read_disabled","hint":"set allow_mem_read=true in harness.json"})");
+            return true;
+        }
+        if (auto request = mEcsCapture.begin(query, GetTickCount64(), 2000, activeReqId())) {
+            if (!mWorld.inWorld() || mPoseEpoch.load() != epoch) request->cancel("world_left");
+        } else enqueue(R"({"event":"error","reason":"ecs_busy","phase":"ecs"})");
+        return true;
+    }
     if (cmd == "entity" || cmd == "attack_entity" || cmd == "interact_entity" || cmd == "look_at_entity") {
         if (!mWorld.inWorld()) {
             enqueue(R"({"event":"error","reason":"not_in_world"})");
@@ -294,6 +352,114 @@ bool ProbeMod::dispatchQueryCommand(std::string const& cmd, nlohmann::json& j) {
         action.runtimeId = j.value("runtime_id", std::uint64_t{0});
         if (!mEntityCapture.begin(action, GetTickCount64(), 2000, activeReqId()))
             enqueue(R"({"event":"error","reason":"entities_busy"})");
+        return true;
+    }
+    if (cmd == "block_shapes") {
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        auto const identity = localPlayerIdentity();
+        if (!identity.valid) {
+            enqueue(R"({"event":"error","reason":"player_unknown"})");
+            return true;
+        }
+        bool        invalidMode = false;
+        std::string entityMode  = safeJsonString(j, "entity_mode", "none", &invalidMode);
+        if (invalidMode
+            || (entityMode != "none" && entityMode != "player" && entityMode != "leather_boots"
+                && entityMode != "sneak_above")) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"entity_mode"})");
+            return true;
+        }
+        if (!j.contains("positions") || !j["positions"].is_array() || j["positions"].empty()
+            || j["positions"].size() > 64) {
+            enqueue(R"({"event":"error","reason":"bad_coord","param":"positions"})");
+            return true;
+        }
+        std::vector<BlockPoint> positions;
+        positions.reserve(j["positions"].size());
+        for (auto const& pos : j["positions"]) {
+            if (!pos.is_array() || pos.size() != 3) {
+                enqueue(R"({"event":"error","reason":"bad_coord","param":"positions"})");
+                return true;
+            }
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (!numberValue(pos[0], -CoordHorizonLimit, CoordHorizonLimit, x)
+                || !numberValue(pos[1], CoordHeightLow, CoordHeightHigh, y)
+                || !numberValue(pos[2], -CoordHorizonLimit, CoordHorizonLimit, z)) {
+                enqueue(R"({"event":"error","reason":"bad_coord","param":"positions"})");
+                return true;
+            }
+            positions.push_back(
+                BlockPoint{
+                    static_cast<int>(std::floor(x)),
+                    static_cast<int>(std::floor(y)),
+                    static_cast<int>(std::floor(z)),
+                }
+            );
+        }
+        runBlockShapesQuery(identity, std::move(positions), std::move(entityMode));
+        return true;
+    }
+    if (cmd == "dump_block_collisions") {
+        if (!mWorld.inWorld()) {
+            enqueue(R"({"event":"error","reason":"not_in_world"})");
+            return true;
+        }
+        auto const identity = localPlayerIdentity();
+        if (!identity.valid) {
+            enqueue(R"({"event":"error","reason":"player_unknown"})");
+            return true;
+        }
+        bool        invalidFilename = false;
+        std::string filename        = safeJsonString(j, "filename", "block-collisions.jsonl", &invalidFilename);
+        auto        validFilename   = [](std::string const& s) {
+            if (s.empty() || s.size() > 128 || s.front() == '.') return false;
+            return std::all_of(s.begin(), s.end(), [](unsigned char c) {
+                return std::isalnum(c) || c == '.' || c == '_' || c == '-';
+            });
+        };
+        if (invalidFilename || !validFilename(filename)) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"filename"})");
+            return true;
+        }
+        bool        invalidMode = false;
+        std::string entityMode  = safeJsonString(j, "entity_mode", "none", &invalidMode);
+        if (invalidMode
+            || (entityMode != "none" && entityMode != "player" && entityMode != "leather_boots"
+                && entityMode != "sneak_above")) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"entity_mode"})");
+            return true;
+        }
+        bool invalidAir = false;
+        bool includeAir = safeJsonBool(j, "include_air", false, &invalidAir);
+        if (invalidAir) {
+            enqueue(R"({"event":"error","reason":"bad_param","param":"include_air"})");
+            return true;
+        }
+        bool       hasPos = false;
+        BlockPoint pos{0, 0, 0};
+        if (j.contains("pos") && !j["pos"].is_null()) {
+            if (!j["pos"].is_array() || j["pos"].size() != 3) {
+                enqueue(R"({"event":"error","reason":"bad_coord","param":"pos"})");
+                return true;
+            }
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (!numberValue(j["pos"][0], -CoordHorizonLimit, CoordHorizonLimit, x)
+                || !numberValue(j["pos"][1], CoordHeightLow, CoordHeightHigh, y)
+                || !numberValue(j["pos"][2], -CoordHorizonLimit, CoordHorizonLimit, z)) {
+                enqueue(R"({"event":"error","reason":"bad_coord","param":"pos"})");
+                return true;
+            }
+            pos = BlockPoint{
+                static_cast<int>(std::floor(x)),
+                static_cast<int>(std::floor(y)),
+                static_cast<int>(std::floor(z)),
+            };
+            hasPos = true;
+        }
+        runDumpBlockCollisions(identity, std::move(filename), hasPos, pos, includeAir, std::move(entityMode));
         return true;
     }
     return false;

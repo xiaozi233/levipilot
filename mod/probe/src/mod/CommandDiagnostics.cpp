@@ -211,7 +211,9 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         bool const mouseOk  = setLifecycleMouseHook(true);
         bool const playerOk = setLifecyclePlayerHook(true);
         bool const turnOk   = setLifecycleTurnHook(true);
-        bool const allOk    = keyOk && mouseOk && playerOk && turnOk;
+        bool const cursorOk = setLifecycleCursorHook(true);
+        bool const focusOk  = setLifecycleFocusHook(true);
+        bool const allOk    = keyOk && mouseOk && playerOk && turnOk && cursorOk && focusOk;
         if (!on && !allOk) {
             // A hook is still installed: lift the quiesce state so the session
             // stays usable instead of deadlocking behind a partial teardown.
@@ -222,16 +224,24 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
         }
         enqueue(
             nlohmann::json{
-                {"event",     "lifecycle_prepare"                                                         },
-                {"on",        on                                                                          },
-                {"ok",        allOk                                                                       },
-                {"quiescing", mQuiescing.load()                                                           },
-                {"results",   {{"key", keyOk}, {"mouse", mouseOk}, {"player", playerOk}, {"turn", turnOk}}},
+                {"event",     "lifecycle_prepare"         },
+                {"on",        on                          },
+                {"ok",        allOk                       },
+                {"quiescing", mQuiescing.load()           },
+                {"results",
+                 {{"key", keyOk},
+                  {"mouse", mouseOk},
+                  {"player", playerOk},
+                  {"turn", turnOk},
+                  {"cursor", cursorOk},
+                  {"focus", focusOk}}                     },
                 {"hooks",
                  {{"key", mLifecycleKeyHooked.load()},
                   {"mouse", mLifecycleMouseHooked.load()},
                   {"player", mLifecyclePlayerHooked.load()},
-                  {"turn", mLifecycleTurnHooked.load()}}                                                  }
+                  {"turn", mLifecycleTurnHooked.load()},
+                  {"cursor", mLifecycleCursorHooked.load()},
+                  {"focus", mLifecycleFocusHooked.load()}}}
         }.dump()
         );
         return true;
@@ -657,7 +667,9 @@ bool ProbeMod::dispatchDiagnosticsCommand(std::string const& cmd, nlohmann::json
              {{"key", mLifecycleKeyHooked.load()},
               {"mouse", mLifecycleMouseHooked.load()},
               {"player", mLifecyclePlayerHooked.load()},
-              {"turn", mLifecycleTurnHooked.load()}}  }
+              {"turn", mLifecycleTurnHooked.load()},
+              {"cursor", mLifecycleCursorHooked.load()},
+              {"focus", mLifecycleFocusHooked.load()}}}
         };
         out["lifecycle"]["callbacks"] = callbackStatus();
         auto const identity           = localPlayerIdentity();

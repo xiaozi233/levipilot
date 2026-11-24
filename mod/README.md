@@ -43,7 +43,7 @@ CI 运行 Python/native 检查及 `--cpp-format-all`（经 `LEVIPILOT_LLVM_ROOT`
 | `hook_call` | 调用已支持的导出符号；当前为 `MobJump::setJumpPendingScale` |
 | `panic` / `unhook_all` | `level=hooks/tasks/all`；卸钩、清观察点、取消任务和输入，不杀进程 |
 | `diagnose` / `profile_dump` / `profile_probe` / `signature_check` | 版本、profile、锚点和签名诊断 |
-| `ecs_registries` / `ecs_entity` / `ecs_components` / `ecs_component` / `ecs_context` | ECS 查询；`ecs_registries` 支持可选 `scope`（`client`/`server`/`all`），`ecs_context`/`ecs_component` 支持零字节 Tag 组件（`present: true`、`is_tag: true`、`len: 0`、`hex: ""`） |
+| `ecs_registries` / `ecs_entity` / `ecs_components` / `ecs_component` / `ecs_context` / `ecs_read_batch` | ECS 查询；`ecs_registries` 支持可选 `scope`（`client`/`server`/`all`），`ecs_context`/`ecs_component` 支持零字节 Tag 组件（`present: true`、`is_tag: true`、`len: 0`、`hex: ""`）；`ecs_read_batch` 在同一游戏 tick 内原子读取最多 8 个组件（可选 `offset`/`len`，`len > 0` 需 `allow_mem_read`） |
 | `overhead` | tick/hook 耗时与调用率统计 |
 | `spool_flush` | 立即刷写内存中的 spool 记录 |
 | `selftest_av` / `selftest_crash` | 请求异常隔离 / 进程崩溃取证；后者需 `allow_crash_test=true` |
@@ -68,8 +68,8 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 | 命令 | 说明 |
 | --- | --- |
 | `start` / `stop` | legacy JSON 逐 tick 采样 |
-| `record_start` / `record_stop` | 二进制 tick 环；`period` 每 N tick 采样 |
-| `record_dump` | `since,limit,format=jsonl/bin`；含 `next/head/lost` 和会话元数据 |
+| `record_start` / `record_stop` | 二进制 tick 环；`period` 每 N tick 采样，可选 `watch`（1..4 个同 tick `component_id`/`addr` 标量读取槽，需 `allow_mem_read`）；`flags` 含 `swimming`/`flying`/`gliding` 位 |
+| `record_dump` | `since,limit,format=jsonl/bin`；含 `next/head/lost` 和会话元数据；启用 `watch` 时附 `watch_b64` / `watch` |
 | `key_event` | `code,down,repeat,repeat_ms,via`；`hid/hardware/raw/queue`，需 `allow_input_inject` |
 | `key_state` | 游戏键状态、LL 事件和注入计数；计数不等于游戏已收键 |
 | `mouse_event` | `move/left/right/middle/wheel/x1/x2/move_relative`；走 `MouseDevice::feed` |
@@ -80,6 +80,7 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 | `click` | `button=left/right,reach`；实际破坏/放置效果须回读 |
 | `select_slot` | `slot=0..8`；接受与 `select_slot_done` 分离 |
 | `input_lock` | `on`；锁真实硬件输入，注入照常；断开客户端自动解锁 |
+| `focus_cfg` | 查询或切换 `background_guard`、`suppress_cursor_grab`（前置拦截 `ClipCursor`/`grabMouse`）、`suppress_focus_pause`（抑制失焦暂停），并返回 `cursor_hooked`/`focus_hooked` |
 | `fly` / `togglefly` | 飞行与 `MayFly`；服务端写、客户端回读，游戏内也可用 `/togglefly` |
 
 ### 封包与网络诊断
@@ -103,11 +104,12 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 
 | 命令 | 说明 |
 | --- | --- |
-| `entities` / `entity` | 附近实体列表 / 单个实体信息 |
+| `entities` / `entity` | 附近实体列表 / 单个实体信息（均含 `aabb: {min, max, size}`） |
 | `attack_entity` | 服务端玩家 `GameMode::attack` |
 | `interact_entity` | 转向并注入使用按钮，best effort |
 | `look_at_entity` | 转向实体，回执带实际使用的 eye/target |
 | `blocks` / `scan` | 方块读取 / 跨 tick 有界区域扫描 |
+| `block_shapes` / `dump_block_collisions` | 服务端批量读取方块碰撞箱/多盒/选框/滑度/反弹系数，或全量导出注册表方块状态到 `<modDir>` JSONL |
 | `inventory` | `slots`、`armor`、`offhand`、`selected_slot` |
 | `set_item` / `give` / `clear_item` / `clear_inventory` | 背包、盔甲和副手操作；`set_item`/`give` 支持可选 `damage` 与烟花 `flight` 参数（CLI 为 `--damage`/`--flight`） |
 | `equip` | 把库存栈移入 armor/offhand，附魔随栈移动 |
@@ -176,6 +178,8 @@ profile、生命周期、pipe 写入超时和诊断统计。
   "options": {"gfx_gamma": "0.5"},
   "delay_ms": 2000,
   "background_guard": true,
+  "suppress_cursor_grab": false,
+  "suppress_focus_pause": false,
   "allow_mem_read": true,
   "allow_write": false,
   "allow_togglefly": true,
@@ -192,8 +196,7 @@ profile、生命周期、pipe 写入超时和诊断统计。
 }
 ```
 
-`auto_enter` 等安全世界列表且游戏在前台后进入。`background_guard` 忽略后台真实鼠标转向，
-不拦 mod 注入。各 `allow_*` 分别控制内存写、崩溃测试、VA hook、压力测试、观察点、输入注入
+`auto_enter` 等安全世界列表且游戏在前台后进入。`background_guard` 忽略后台真实鼠标转向与后台光标锁定（`ClipCursor`/`grabMouse`），不拦 mod 注入；`suppress_cursor_grab` 可选在前台也阻止抓鼠标居中，`suppress_focus_pause` 可选屏蔽失焦暂停（`onAppFocusLost`）。各 `allow_*` 分别控制内存写、崩溃测试、VA hook、压力测试、观察点、输入注入
 和封包能力，默认应按最小权限开启。
 
 `lock_input` 只在 harness 客户端连接时生效，断开自动解锁；没有人连接时不会锁住手动 UI。

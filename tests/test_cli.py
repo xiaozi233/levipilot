@@ -116,6 +116,15 @@ class CliCompatibilityTests(unittest.TestCase):
                 text = text.replace(" [--no-wait-teleport]\n                     ", " ")
                 text = re.sub(r"^  --no-wait-teleport +[^\n]*\n", "", text, flags=re.MULTILINE)
                 text = text.replace("  -h, --help          show this", "  -h, --help     show this")
+            if "usage: harness record-start" in text:
+                text = text.replace(" [--watch SPEC]", "")
+                text = re.sub(r"^  --watch SPEC +[^\n]*\n", "", text, flags=re.MULTILINE)
+                text = re.sub(
+                    r"^  -h, --help +show this",
+                    "  -h, --help     show this",
+                    text,
+                    flags=re.MULTILINE,
+                )
             result[stream] = text
         return result
 
@@ -391,6 +400,53 @@ class CliCompatibilityTests(unittest.TestCase):
                     json.loads(out.getvalue()),
                     {"event": f"{method_name}_result", "ok": False, "reason": "not_ready"},
                 )
+
+    def test_new_cli_commands_wiring(self) -> None:
+        focus = invoke_cli(
+            cli, ["focus-cfg", "--suppress-cursor-grab", "--no-suppress-focus-pause"]
+        )
+        self.assertEqual(focus["code"], 0)
+        self.assertEqual(
+            focus["calls"][1],
+            [
+                "focus_cfg",
+                [],
+                {
+                    "background_guard": None,
+                    "suppress_cursor_grab": True,
+                    "suppress_focus_pause": False,
+                },
+            ],
+        )
+
+        batch = invoke_cli(
+            cli, ["ecs-read-batch", "--item", "0x60fc5a9a:0:4", "--item", "0xb8b9c219::4"]
+        )
+        self.assertEqual(batch["code"], 0)
+        self.assertEqual(
+            batch["calls"][1],
+            [
+                "ecs_read_batch",
+                [
+                    [
+                        {"component_id": 0x60FC5A9A, "offset": 0, "len": 4},
+                        {"component_id": 0xB8B9C219, "len": 4},
+                    ]
+                ],
+                {"context": None},
+            ],
+        )
+
+        rec_start = invoke_cli(cli, ["record-start", "--period", "2", "--watch", "0x60fc5a9a:0:4"])
+        self.assertEqual(rec_start["code"], 0)
+        self.assertEqual(
+            rec_start["calls"][1],
+            [
+                "record_bin_start",
+                [2],
+                {"watch": [{"component_id": 0x60FC5A9A, "offset": 0, "size": 4}]},
+            ],
+        )
 
 
 if __name__ == "__main__":

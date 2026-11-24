@@ -3,9 +3,12 @@
 import unittest
 from typing import NotRequired, get_origin, get_type_hints
 
+from driver.harness import cli
+from driver.harness.cli_parser import build_parser
 from driver.harness.errors import ModProtocolError, ModTimeout
 from driver.harness.facade import Harness
 from driver.harness.protocol import StateEvent
+from tests.cli_support import invoke_cli
 from tests.test_transport import FakeClient
 
 
@@ -201,6 +204,76 @@ class InventoryAndEcsPayloadTests(unittest.TestCase):
         for key in ("prev_yaw", "prev_pitch", "pos_delta_x", "pos_delta_y", "pos_delta_z"):
             self.assertIn(key, hints)
             self.assertIs(get_origin(hints[key]), NotRequired)
+
+
+class BlockShapesPayloadTests(unittest.TestCase):
+    def test_block_shapes_request_and_cli_parsing(self) -> None:
+        client = FakeClient()
+        client._session.stream.lines.put(
+            {"event": "block_shapes", "ok": True, "entity_mode": "player", "blocks": []}
+        )
+        reply = client.block_shapes([(1, -50, 2), (3, -50, 4)], entity_mode="player")
+        self.assertTrue(reply["ok"])
+        self.assertEqual(
+            client.sent[0],
+            {
+                "cmd": "block_shapes",
+                "positions": [[1, -50, 2], [3, -50, 4]],
+                "entity_mode": "player",
+            },
+        )
+
+        parser = build_parser()
+        parsed = parser.parse_args(
+            ["block-shapes", "1", "-50", "2", "--entity-mode", "leather_boots"]
+        )
+        self.assertEqual(parsed.command, "block-shapes")
+        self.assertEqual(parsed.positions, [1.0, -50.0, 2.0])
+        self.assertEqual(parsed.entity_mode, "leather_boots")
+
+        res = invoke_cli(
+            cli,
+            ["dump-block-collisions", "--filename", "out.jsonl", "--pos", "0", "0", "0"],
+        )
+        self.assertEqual(res["code"], 0)
+        self.assertEqual(
+            res["calls"][1],
+            [
+                "dump_block_collisions",
+                [],
+                {
+                    "filename": "out.jsonl",
+                    "pos": [0.0, 0.0, 0.0],
+                    "include_air": False,
+                    "entity_mode": "none",
+                },
+            ],
+        )
+
+    def test_dump_block_collisions_payload(self) -> None:
+        client = FakeClient()
+        client._session.stream.lines.put(
+            {
+                "event": "block_collisions_dumped",
+                "ok": True,
+                "path": "block-collisions.jsonl",
+                "permutations": 100,
+            }
+        )
+        reply = client.dump_block_collisions(
+            "custom.jsonl", pos=(0, 0, 0), include_air=True, entity_mode="sneak_above"
+        )
+        self.assertTrue(reply["ok"])
+        self.assertEqual(
+            client.sent[0],
+            {
+                "cmd": "dump_block_collisions",
+                "filename": "custom.jsonl",
+                "include_air": True,
+                "entity_mode": "sneak_above",
+                "pos": [0.0, 0.0, 0.0],
+            },
+        )
 
 
 if __name__ == "__main__":

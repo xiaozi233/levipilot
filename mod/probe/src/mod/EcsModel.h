@@ -5,39 +5,55 @@
 
 namespace probe::detail {
 
-enum class EcsOperation { Entity, Components, Component, Registries, Context };
+enum class EcsOperation { Entity, Components, Component, Registries, Context, ContextBatch };
 enum class EcsStage { Client, Server, Complete };
 enum class EcsScope { Client, Server, All };
 
 struct EcsQuery {
-    EcsOperation  operation = EcsOperation::Entity;
-    EcsScope      scope     = EcsScope::Client;
-    std::uint64_t runtimeId = 0, context = 0;
-    std::uint32_t componentId = 0, length = 0;
-    CaptureTest   test      = CaptureTest::None;
-    EcsStage      testStage = EcsStage::Client;
+    static constexpr std::size_t MaxBatchItems = 8, MaxBatchBytes = 64;
+    struct BatchItem {
+        std::uint32_t componentId = 0, offset = 0, length = 0;
+    };
+    EcsOperation                         operation = EcsOperation::Entity;
+    EcsScope                             scope     = EcsScope::Client;
+    std::uint64_t                        runtimeId = 0, context = 0;
+    std::uint32_t                        componentId = 0, length = 0;
+    CaptureTest                          test      = CaptureTest::None;
+    EcsStage                             testStage = EcsStage::Client;
+    std::array<BatchItem, MaxBatchItems> batchItems{};
+    std::size_t                          batchCount = 0;
 };
 
 struct EcsSnapshot {
     static constexpr std::size_t MaxRows = 1024, MaxVisited = 4096;
+    static constexpr std::size_t MaxBatchItems = EcsQuery::MaxBatchItems, MaxBatchBytes = EcsQuery::MaxBatchBytes;
     struct Row {
         std::uint32_t id = 0, stride = 0;
         std::uint64_t index = 0, address = 0, count = 0;
     } component;
+    struct BatchResult {
+        std::uint32_t                           id = 0, offset = 0, length = 0;
+        std::uint64_t                           address = 0;
+        bool                                    present = false, readOk = false;
+        std::array<std::uint8_t, MaxBatchBytes> bytes{};
+    };
     struct RegistryEntry {
         std::uint64_t registry = 0, entity = 0;
         std::size_t   components = 0;
         bool          present    = false;
     } clientRegistry, serverRegistry;
-    std::array<Row, MaxRows>           rows{};
-    std::array<std::uint32_t, MaxRows> skipped{};
-    std::array<std::uint8_t, 512>      bytes{};
-    FixedText<256>                     type;
-    std::size_t                        count = 0, skippedCount = 0, visited = 0, priorVisited = 0;
-    std::uint64_t                      registry = 0, entity = 0, actor = 0, context = 0, playerRuntimeId = 0;
-    std::uint32_t                      length = 0;
-    bool                               server = false, truncated = false, ok = false;
-    char const*                        error = nullptr;
+    std::array<Row, MaxRows>               rows{};
+    std::array<std::uint32_t, MaxRows>     skipped{};
+    std::array<std::uint8_t, 512>          bytes{};
+    std::array<BatchResult, MaxBatchItems> batchResults{};
+    std::size_t                            batchCount = 0;
+    std::uint64_t                          tick       = 0;
+    FixedText<256>                         type;
+    std::size_t                            count = 0, skippedCount = 0, visited = 0, priorVisited = 0;
+    std::uint64_t                          registry = 0, entity = 0, actor = 0, context = 0, playerRuntimeId = 0;
+    std::uint32_t                          length = 0;
+    bool                                   server = false, truncated = false, ok = false;
+    char const*                            error = nullptr;
 
     bool add(Row const& row) {
         if (count == rows.size()) {

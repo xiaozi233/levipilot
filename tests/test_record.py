@@ -7,14 +7,22 @@ import unittest
 from driver.harness.record import (
     ENTRY_FORMAT,
     ENTRY_SIZE,
+    FLAG_ACTION_SPRINT,
+    FLAG_FLYING,
+    FLAG_GLIDING,
     FLAG_IN_AIR,
     FLAG_INPUT_W,
     FLAG_JUMP_EDGE,
     FLAG_ON_GROUND,
+    FLAG_SWIMMING,
     RecordEntry,
+    WatchSample,
     block_hash,
     decode_dump,
     decode_hex,
+    decode_watch_chunk,
+    decode_watch_dump,
+    decode_watch_row,
 )
 
 
@@ -100,6 +108,73 @@ class RecordEntryTests(unittest.TestCase):
         exact = RecordEntry(1, 0.0, 0.0, 0.0, 0.3, -0.1, 0.4, 0.0, 0.0, 0.0, 0, 0, 0, 0, 20000)
         self.assertEqual(exact.completed_delta, (0.3, -0.1, 0.4))
         self.assertEqual(exact.horizontal_speed, math.hypot(0.3, 0.4))
+
+    def test_pose_flags_and_watch_decoding(self) -> None:
+        import base64
+
+        packed = decode_hex(
+            pack_entry(flags=FLAG_SWIMMING | FLAG_FLYING | FLAG_GLIDING | FLAG_ACTION_SPRINT).hex()
+        )[0]
+        self.assertTrue(packed.swimming)
+        self.assertTrue(packed.flying)
+        self.assertTrue(packed.gliding)
+        self.assertTrue(packed.action_sprint)
+
+        raw = struct.pack("<4QII", 0x40000000, 0xFFFFFFFE, 0, 0, 0b11, 0)
+        b64 = base64.b64encode(raw).decode("ascii")
+        chunk = decode_watch_chunk(b64, 2)
+        self.assertEqual(len(chunk), 1)
+        s = chunk[0]
+        self.assertIsInstance(s, WatchSample)
+        self.assertTrue(s.valid(0))
+        self.assertTrue(s.valid(1))
+        self.assertFalse(s.valid(2))
+        self.assertAlmostEqual(s.as_f32(0), 2.0)
+        self.assertEqual(s.as_i32(1), -2)
+        self.assertEqual(s.as_u32(1), 0xFFFFFFFE)
+        self.assertEqual(
+            decode_watch_dump({"event": "record_dump", "watch_count": 2, "watch_b64": b64}),
+            chunk,
+        )
+        json_dump = decode_watch_dump(
+            {"event": "record_dump", "watch_count": 1, "rows": [{"watch": [60], "watch_mask": 1}]}
+        )
+        self.assertEqual(json_dump, [WatchSample((60,), 1)])
+
+    def test_watch_typed_decode_and_named_rows(self) -> None:
+        f64_bits = struct.unpack("<Q", struct.pack("<d", 2.25))[0]
+        sample = WatchSample((0x3FC00000, (1 << 5) | (1 << 60), f64_bits), 0b111)
+        self.assertEqual(sample.as_u64(1), (1 << 5) | (1 << 60))
+        self.assertAlmostEqual(sample.as_f64(2), 2.25, places=12)
+        self.assertTrue(sample.as_bit(1, 5))
+        self.assertTrue(sample.as_bit(1, 60))
+        self.assertFalse(sample.as_bit(1, 6))
+        self.assertAlmostEqual(float(sample.decode(0, "f32")), 1.5)
+        self.assertAlmostEqual(float(sample.decode(2, "f64")), 2.25)
+        self.assertEqual(sample.decode(1, "hex"), hex((1 << 5) | (1 << 60)))
+        self.assertTrue(sample.decode(1, "bit:60"))
+        self.assertIsNone(sample.decode(3, "u32"))
+        with self.assertRaises(ValueError):
+            sample.decode(0, "badfmt")
+
+        specs = [
+            {"name": "slow_y", "fmt": "f32"},
+            {
+                "name": "adf_hi",
+                "fmt": "u64",
+                "omit_raw": True,
+                "bits": {"in_scaf": 5, "over_desc": 36},
+            },
+            {"name": "dbl", "fmt": "f64"},
+            {"name": "missing", "fmt": "u32"},
+        ]
+        decoded = decode_watch_row(sample, specs)
+        self.assertEqual(decoded["slow_y"], 1.5)
+        self.assertEqual(decoded["dbl"], 2.25)
+        self.assertNotIn("adf_hi", decoded)
+        self.assertTrue(decoded["in_scaf"])
+        self.assertFalse(decoded["over_desc"])
+        self.assertIsNone(decoded["missing"])
 
 
 if __name__ == "__main__":

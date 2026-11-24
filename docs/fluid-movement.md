@@ -191,9 +191,7 @@ $$
   （4.21 格/s），**2.15×**（含阻力混合与速度属性两条腿；理论上限
   $(1-0.546)/(1-0.8)=2.27$，实测略低与涉水时脚部悬浮、等级部分时间减半一致）。
   装备路径用 `set_item` 手持 → `/enchant @s depth_strider 3` → `equip feet`（附魔随栈转移）。
-- 额外的一道门：`SwimSpeedMultiplier > 1`（海豚的恩惠一类）时**跳过**向 0.546 的混合
-  （反编译的 `cmp 1.0` 选择，R-F1）—— 这就是 Parkour wiki
-  "Depth strider: Not true in certain conditions" 那句 `[Todo]` 的答案 [代码]。
+- 额外的一道门：`SwimSpeedMultiplier > 1`（**海豚的恩惠** `MovementEffectType::DolphinBoost = 1`，`SwimSpeedMultiplier = 2.0f`）时不仅**跳过**向 `0.546` 的阻力混合（`cmp 1.0`，R-F1，保持纯水阻力 `0.9`/`0.8`），加速度侧（`WaterTravelSystem` `0x14c61f1d0`）也会跳过 `groundSpeed`（疾跑 `1.3×`/迅捷药水完全被忽略）与 `OnGround` 离地减半，改按 $a = 0.02 \cdot (0.7 + 0.3 \cdot \min(L, 3)/3) \cdot 2.0$ 结算（DS 0..III 正向前游稳态分别为 `0.2744` / `0.3136` / `0.3528` / `0.3920` b/t）—— 这就是 Parkour wiki "Depth strider: Not true in certain conditions" 与 `Pages/fluids.md` L71 `[Needs verification.]` 的完整答案 [代码] [实测]；详参 [`notes/dolphins-grace-12651.md`](notes/dolphins-grace-12651.md)。
 - **水阻力替代地面摩擦，不叠加**：流推平衡 $0.07001 = 0.014/(1-0.8)$ 精确成立；若地面摩擦 $0.546$
   仍会叠乘，平衡应是 $0.014/(1-0.8\times0.546) = 0.0248$ —— 被实测排除。[实测]
 

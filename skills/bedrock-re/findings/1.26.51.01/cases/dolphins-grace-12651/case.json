@@ -1,0 +1,10 @@
+{
+  "case": "dolphins-grace-12651",
+  "version": "1.26.51.01",
+  "goal": "静态与逐tick实测闭合基岩版1.26.51.01海豚的恩惠(DolphinBoostSystem)触发条件、60t周期与±5盒、SwimSpeedMultiplier=2.0、与深海探索者/迅捷药水/水阻力的交互公式",
+  "environment": "",
+  "current_round": 2,
+  "status": "closed",
+  "created_at": "2026-11-24T07:25:21Z",
+  "updated_at": "2026-11-24T13:44:15Z"
+}

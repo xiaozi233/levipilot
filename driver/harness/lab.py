@@ -300,6 +300,40 @@ def clear_armor_and_wait(
     return armor
 
 
+FILL_VOLUME_LIMIT = 32768
+
+
+def _fill_chunks(
+    p1: tuple[int, int, int],
+    p2: tuple[int, int, int],
+    *,
+    max_blocks: int = FILL_VOLUME_LIMIT,
+) -> list[tuple[tuple[int, int, int], tuple[int, int, int]]]:
+    """Split an inclusive integer box into <= ``max_blocks`` sub-boxes for ``/fill``."""
+    if max_blocks < 1:
+        raise ValueError(f"max_blocks must be >= 1, got {max_blocks}")
+    lo = [min(int(p1[i]), int(p2[i])) for i in range(3)]
+    hi = [max(int(p1[i]), int(p2[i])) for i in range(3)]
+    chunks: list[tuple[tuple[int, int, int], tuple[int, int, int]]] = []
+
+    def split(a: list[int], b: list[int]) -> None:
+        dims = [b[i] - a[i] + 1 for i in range(3)]
+        if dims[0] * dims[1] * dims[2] <= max_blocks:
+            chunks.append(((a[0], a[1], a[2]), (b[0], b[1], b[2])))
+            return
+        axis = max(range(3), key=lambda i: dims[i])
+        mid = a[axis] + (dims[axis] // 2) - 1
+        left_hi = list(b)
+        left_hi[axis] = mid
+        right_lo = list(a)
+        right_lo[axis] = mid + 1
+        split(a, left_hi)
+        split(right_lo, b)
+
+    split(lo, hi)
+    return chunks
+
+
 class LabSession:
     """Context manager that applies background focus flags and restores world/player state."""
 
@@ -355,8 +389,17 @@ class LabSession:
             step(lambda: self.client.clear_inventory())
         if self.clear_box is not None:
             p1, p2 = self.clear_box
-            cmd = f"fill {p1[0]} {p1[1]} {p1[2]} {p2[0]} {p2[1]} {p2[2]} air"
-            step(lambda: (self.client.command(cmd), self.client.wait_ticks(3)))
+            cmds = [
+                f"fill {lo[0]} {lo[1]} {lo[2]} {hi[0]} {hi[1]} {hi[2]} air"
+                for lo, hi in _fill_chunks(p1, p2)
+            ]
+
+            def run_clear() -> None:
+                for cmd in cmds:
+                    self.client.command(cmd)
+                self.client.wait_ticks(3)
+
+            step(run_clear)
         if self.restore_gamemode and self.orig_state:
             gm = self.orig_gamemode
             step(lambda: (self.client.command(f"gamemode {gm} @s"), self.client.wait_ticks(2)))

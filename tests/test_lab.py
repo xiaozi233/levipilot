@@ -675,3 +675,50 @@ class RecordWatchAndCleanupTests(unittest.TestCase):
                 ("wait_ticks", (3,)),
             ],
         )
+
+    def test_lab_session_chunks_oversized_clear_box(self) -> None:
+        from driver.harness.lab import FILL_VOLUME_LIMIT, LabSession
+
+        class MinimalFakeClient(FakeClient):
+            def focus_cfg(self, **kwargs):
+                self.calls.append(("focus_cfg", (), kwargs))
+                return {"suppress_cursor_grab": False, "suppress_focus_pause": False}
+
+            def state(self):
+                self.calls.append(("state", (), {}))
+                return {"gamemode": 1}
+
+        client = MinimalFakeClient()
+        p1, p2 = (600, -60, 600), (640, -44, 660)
+        with LabSession(
+            client,
+            clear_box=(p1, p2),
+            restore_position=False,
+            restore_gamemode=False,
+        ):
+            pass
+
+        fill_cmds = [
+            args[0]
+            for name, args, _ in client.calls
+            if name == "command" and args[0].startswith("fill ")
+        ]
+        self.assertGreater(len(fill_cmds), 1)
+        covered: set[tuple[int, int, int]] = set()
+        total_cells = 0
+        for cmd in fill_cmds:
+            parts = cmd.split()
+            self.assertEqual(parts[0], "fill")
+            self.assertEqual(parts[-1], "air")
+            x1, y1, z1, x2, y2, z2 = (int(v) for v in parts[1:7])
+            volume = (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1)
+            self.assertLessEqual(volume, FILL_VOLUME_LIMIT)
+            self.assertGreater(volume, 0)
+            total_cells += volume
+            for x in range(x1, x2 + 1):
+                for y in range(y1, y2 + 1):
+                    for z in range(z1, z2 + 1):
+                        covered.add((x, y, z))
+        expected_volume = (640 - 600 + 1) * (-44 - (-60) + 1) * (660 - 600 + 1)
+        self.assertEqual(total_cells, expected_volume)
+        self.assertEqual(len(covered), expected_volume)

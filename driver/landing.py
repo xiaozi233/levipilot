@@ -330,7 +330,11 @@ def generate_resume(findings_root: Path, version: str, case: str) -> Path:
     if next_actions:
         for action in next_actions[-3:]:
             lines.append(f"- {action}")
-    elif data.get("status") == "closed" and not open_items and not pending:
+    # ``live-only``/``inconclusive`` claims stay visible under "Open / pending":
+    # the case itself is closed, but those observations still lack static
+    # closure. Only *pending probes* block the closed marker, because ``close``
+    # already refuses to run with an unclaimed probe.
+    elif data.get("status") == "closed" and not pending:
         lines.append("- closed")
     else:
         lines.append("- fill in the next hypothesis")

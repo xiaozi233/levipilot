@@ -439,3 +439,54 @@ class ScrubPathsTests(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn("- closed", resume)
+
+    def test_closed_case_with_live_only_claim_reports_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                landing.main(
+                    ["--findings-root", str(root), "begin", "--case", "live", "--goal", "measure"]
+                )
+                rc_claim = landing.main(
+                    [
+                        "--findings-root",
+                        str(root),
+                        "claim",
+                        "--case",
+                        "live",
+                        "--hypothesis",
+                        "measurement only",
+                        "--result",
+                        "live-only",
+                        "--tier",
+                        "live",
+                        "--evidence",
+                        "[实测] observed",
+                    ]
+                )
+                rc_end = landing.main(
+                    [
+                        "--findings-root",
+                        str(root),
+                        "end",
+                        "--case",
+                        "live",
+                        "--close",
+                        "--skip-public",
+                        "--skip-tests",
+                    ]
+                )
+            self.assertEqual(rc_claim, 0)
+            self.assertEqual(rc_end, 0)
+            case_data = landing.read_case(root, landing.DEFAULT_VERSION, "live")
+            self.assertEqual(case_data["status"], "closed")
+            resume = (root / landing.DEFAULT_VERSION / "cases" / "live" / "resume.md").read_text(
+                encoding="utf-8"
+            )
+            # The closed marker reflects the case status; the live-only claim is
+            # still listed under "Open / pending" for the next investigator.
+            self.assertIn("- closed", resume)
+            self.assertIn("measurement only", resume)

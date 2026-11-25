@@ -21,7 +21,7 @@
 
 ## Next actions
 
-- fill in the next hypothesis
+- closed
 
 ## Pointers
 

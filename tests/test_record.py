@@ -119,6 +119,12 @@ class RecordEntryTests(unittest.TestCase):
         self.assertTrue(packed.flying)
         self.assertTrue(packed.gliding)
         self.assertTrue(packed.action_sprint)
+        row = packed.to_dict()
+        self.assertTrue(row["swimming"])
+        self.assertTrue(row["flying"])
+        self.assertTrue(row["gliding"])
+        self.assertFalse(row["in_water"])
+        self.assertFalse(row["in_lava"])
 
         raw = struct.pack("<4QII", 0x40000000, 0xFFFFFFFE, 0, 0, 0b11, 0)
         b64 = base64.b64encode(raw).decode("ascii")

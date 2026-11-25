@@ -36,10 +36,10 @@
 - **现状**：`main` 分支仅描述为接近 Java 1.8（`[Needs verification.]`）并记步高 `0.5625`，`wiki-pages` 为空。
 - **研究切入点**：反编译玩家移动中的 step-up 试探顺序（先水平还是先抬升、步高 `0.5625` 还是 `0.6`）、上台阶成功后对 `mPosDelta.y` / `on_ground` / `fallDistance` 的写回规则，并系统检验基岩版是否存在固体 blip、grind、ceiling blip 与 jump cancel 及其成立条件。
 
-### 3. 疾跑状态机、撞墙断疾跑与倒车疾跑（`Pages/sprint.md`，0 行）
+### 3. 疾跑状态机、撞墙断疾跑与倒车疾跑（`Pages/sprint.md`，0 行）→ 已结案
 
-- **现状**：`wiki-pages` 首页仅提及“撞墙会断疾跑且条件不同于 Java 1.8”，`main` 分支保留了若干未验证猜想（如上拍 Z/X 分量大小与 `|Z-vel| < 5e-5` 判定、`f65` 贴墙疾跑高频闪烁、倒车疾跑、地面疾跑延迟）。
-- **研究切入点**：结合已有疾跑写入顺序（见 [`notes/tick-order-12651.md`](notes/tick-order-12651.md)），完整梳理疾跑建立/保持/打断条件，核实读的是 `mPosDelta` 还是碰撞后已完成位移、`5e-5` 是否存在精确浮点常量、`f65` 震荡的数学区间，并顺手闭环疾跑起跳 `+0.2` 冲量的实机验证。
+- **结论**：四系统（SprintTimer / SetRequest / Intent / Action）注册与入口已定位；起跑要求前向 ±45° 扇区（`sqrt(x²+y²) ≥ 0.707`、`y>0`、`|x|≤0.707`、`mCanSprint` 允许），倒车/侧走/潜行立即取消；撞墙断疾跑由唯一 `5e-5f`（`0x14eac97e0`）与主轴差值判定，实测三区间：≤20° 单次断、23.5~24.4° 逐拍闪烁（即 `f65`，X 墙在 65.6° 镜像）、≥24.5° 稳定滑行；地面/空中均无 1-tick 延迟；疾跑跳 `+0.2` 的真实写入点在 `JumpFromGroundSystem`（`0x1495e9200`，`SIN_TABLE` → `mPosDelta.x/z`），实测 `0.19999~0.20000`。
+- **未闭合**：5e-5 判定字段的逐字段绑定、Intent 条件全集（失明/骑乘/使用物品等）、`0.2f` 字段身份。见 [`notes/sprint-12651.md`](notes/sprint-12651.md) 与 [`sprint-wiki.md`](sprint-wiki.md)。
 
 ### 4. `float32` 精度与 Hitbox Manipulation / 微妙穿墙（`Pages/precision_glitches.md`，0 行）
 

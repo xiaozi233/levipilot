@@ -17,6 +17,7 @@
 | [`dolphins-grace-12651.md`](dolphins-grace-12651.md) | 海豚的恩惠 | `DolphinBoostSystem`（`±5.0` 盒/60t 周期/`SWIMMING` 门控）、`SwimSpeedMultiplier=2.0` 跳过 `0.546` 阻力与 `0.02(0.7+0.3L/3)×2` 闭式及迅捷反协同实测 |
 | [`climb-blocks-12651.md`](climb-blocks-12651.md) | 攀爬方块 | 7 种 `Climbable \| CanHaltWhenClimbing` 方块、`isOnLadder()` 单点 vs `BlockClimberSystem` AABB 足迹、`AutoClimb` 跳重力/阻尼、脚手架无潜行免摔、`1.5×` 细雪推墙 `+0.300` b/t 与开活板门实测 |
 | [`speed-limit-12651.md`](speed-limit-12651.md) | 速度钳位与移动边界 | `fetchCollisionShapes 0x1431c2f50` 对 `MoveRequest.mSpeed` 做三维模长 16 等比缩限（`256.0/16.0` 常量）、45° 斜向单轴 `11.3136`、灵魂疾行 III+迅捷 255 实测封顶、`mPosDelta` 无碰撞时保留 >16 动量、蓝冰 `(0.6/slip)³` 反直觉、`FLT_EPSILON` 归零与终速 `-3.92` |
+| [`sprint-12651.md`](sprint-12651.md) | 疾跑状态机 | 四系统 vtable/worker、前向 ±45° 起跑门控（`mCanSprint`）、后/侧/潜行取消、`5e-5f` 撞墙主轴判据三区间（0~20° 断、23.5~24.4° 逐拍闪烁=f65、≥24.5° 稳定；X 墙 65.58° 镜像）、地面/空中首拍 1.3× 无延迟、疾跑跳 `+0.2`（`mPosDelta` 的 sin/cos 分解，实测 0.19999~0.20000） |
 | [`slowing-blocks-12651.md`](slowing-blocks-12651.md) | 减速方块、冰冻与灵魂沙 | 蜘蛛网/浆果丛/细雪三写入点与 `minss`、`0.998^3` 盒、创造 `Flying & Instabuild` 门控、细雪 `>2.5f` 下陷 `0.9`、冰冻 `+1/140`/`-2/140`/`40t` 伤与不减空速、灵魂沙 `1.225×` 摩擦与 `+0.1` 地毯半砖实测 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把

@@ -1,0 +1,10 @@
+{
+  "case": "honey-block-12651",
+  "version": "1.26.51.01",
+  "goal": "第3轮：撤回r02-015水中include误读（0x1463c51d8..0x1463c5220为entt::exclude_t），封闭静水池与fall_clear着陆/五拓扑就地重建复测收口",
+  "environment": "",
+  "current_round": 2,
+  "status": "closed",
+  "created_at": "2026-11-25T11:31:09Z",
+  "updated_at": "2026-11-25T14:32:03Z"
+}

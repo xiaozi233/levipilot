@@ -20,6 +20,7 @@
 | [`sprint-12651.md`](sprint-12651.md) | 疾跑状态机 | 四系统 vtable/worker、前向 ±45° 起跑门控（`mCanSprint`）、后/侧/潜行取消、`5e-5f` 撞墙主轴判据三区间（0~20° 断、23.5~24.4° 逐拍闪烁=f65、≥24.5° 稳定；X 墙 65.58° 镜像）、地面/空中首拍 1.3× 无延迟、疾跑跳 `+0.2`（`mPosDelta` 的 sin/cos 分解，实测 0.19999~0.20000） |
 | [`stepping-12651.md`](stepping-12651.md) | 上台阶、Step-Assist Jump Cancel、固体 Blip 与 Grind | 完整准入（`isFlying`/落地拍/`OnGround`/`CanAlwaysAutoStep`）、试探前临时滤天花板盒与终点全盒复核、`Y↑→X→Z→Y↓` 与 `dx²+dz²` 采纳判据、`0.5625` 步高边界、只改 `MoveRequest.mSpeed` 不动 `mPosDelta`、贴前沿起跳 `+0.42` 被吃掉并直接站上台阶、对齐落地拍后保速固体 Blip、`MobJumpComponent::mNoJumpDelay` 长按 `10` tick / 点按 `3` tick；含 `r01-006` 撤回 |
 | [`slowing-blocks-12651.md`](slowing-blocks-12651.md) | 减速方块、冰冻与灵魂沙 | 蜘蛛网/浆果丛/细雪三写入点与 `minss`、`0.998^3` 盒、创造 `Flying & Instabuild` 门控、细雪 `>2.5f` 下陷 `0.9`、冰冻 `+1/140`/`-2/140`/`40t` 伤与不减空速、灵魂沙 `1.225×` 摩擦与 `+0.1` 地毯半砖实测 |
+| [`honey-block-12651.md`](honey-block-12651.md) | 蜂蜜块 | 碰撞箱 `[0.0625,0,0.0625]..[0.9375,1.0,0.9375]`；`0.4`/`-0.12` 对 `0xc83bbc35` 每条目**无条件**执行，几何门只清零 `FallDistanceComponent`（`mPos.y=feet+1.62`、水平 `>` 的 OR）；五拓扑 `0.4^n`（n=1 比值 `0.3641`、n=2 `0.1449`）；蜂蜜与黏液顶面逐位相同；起跳 `0.42→0.252` 由 `BlockLegacy+0x130` bit30 门控；摔落 `×0.5` 由 `onFallOn` 静态闭合；创造飞行只免竖直钳位；`WasInWater` 为 `exclude`（水中完全跳过） |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
 旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。

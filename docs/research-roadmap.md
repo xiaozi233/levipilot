@@ -77,7 +77,7 @@
 | --- | --- | --- |
 | `Pages/fluids.md` L71 | **海豚的恩惠（Dolphin's Grace）**：当泳速乘数 `> 1.0` 时是否跳过 Depth Strider 的水平阻力插值（原标 `[Needs verification.]`） | **已闭合**：`SwimSpeedMultiplier=2.0` 跳过 `0.546` 插值并改用 $0.02(0.7+0.3L/3)\cdot 2.0$，忽略 `groundSpeed`/离地且仅在 `SWIMMING` 触发（见 [`notes/dolphins-grace-12651.md`](notes/dolphins-grace-12651.md)） |
 | `Pages/bouncy-ness.md` L45 | **Shelf Mushroom（架状菌）** 反弹系数原标为 `[Todo]` | **已闭合**：`0x142da3480` 与实测均为 **`0.75`**（见 [`notes/block-collisions-12651.md`](notes/block-collisions-12651.md)） |
-| `Pages/slime_honey_block.md` L32 | **蜂蜜块贴墙滑落（Side Sliding `[Todo]`）**：`-0.12` 垂直钳位盒距、`0.4` 水平乘数为什么叠加及顶面边缘（`honey-top-edge`）判定 | 定位蜂蜜块滑落条件分支 + `watch_set` 观察逐 tick 速度缩放时机 |
+| `Pages/slime_honey_block.md` L32 | **蜂蜜块贴墙滑落（Side Sliding `[Todo]`）**：`-0.12` 垂直钳位盒距、`0.4` 水平乘数为什么叠加及顶面边缘（`honey-top-edge`）判定 | **已闭合**：`0.4`/`-0.12` 对组件每条目无条件执行，几何门只清零 `FallDistanceComponent` 与播效果（`mPos.y=feet+1.62`、水平 `>` 的 OR）；每块 `0.4^n`（干净滑行 `n=1/2` 实测 `0.3641/0.1449`）；起跳 `0.42→0.252` 由 `PreventsJumping` 位闭合；摔落距离 `×0.5` 由 `onFallOn` 闭合；蜂蜜与黏液顶面一致；创造飞行只免竖直钳位、`WasInWater` 完全排除——见 [`notes/honey-block-12651.md`](notes/honey-block-12651.md) 与 [`honey-block-wiki.md`](honey-block-wiki.md) |
 | `Pages/cobweb_slowing_blocks.md` L22 | **蜘蛛网、细雪、甜浆果丛、冰冻与灵魂沙**：`0.9`/`1.5` 写入源、`fallHeight > 2.5f` 下陷、`0.998^3` 盒、创造免疫条件、冰冻与灵魂沙数值 | **已闭合**：[`notes/slowing-blocks-12651.md`](notes/slowing-blocks-12651.md)（静态+逐 tick 实测完整报告）与 [`slowing-blocks-wiki.md`](slowing-blocks-wiki.md)（攀爬部分见 [`notes/climb-blocks-12651.md`](notes/climb-blocks-12651.md)） |
 | `Pages/constants.md` L31 | **创造飞行非加速水平阻力**：Wiki 仅给出经验近似值 `~0.34125` | 查飞行移动系统的摩擦分支，导出精确表达式与单精度常量 |
 | `Pages/camera_movement.md` L25, L31 | **触屏与手柄摇杆灵敏度公式**：触屏为固定分辨率 `[WIP]`，手柄摇杆为 `todo` | 静态提取输入缩放常量与公式，补齐独立于单机分辨率的表达 |

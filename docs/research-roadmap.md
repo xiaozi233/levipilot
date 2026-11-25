@@ -31,10 +31,10 @@
 - **现状**：社区长期标为 `Super mysterious [Todo]`，缺少机制解释与复现条件。
 - **研究切入点**：定位 `UsingItem` / `Blocking`（通用减速 `0.35^2 = 0.1225`）与望远镜使用状态在 ECS 中的写入、保持和清除顺序，用 `watch_set` 追踪速度属性与乘数改写源，确认 `1.26.51.01` 中该机制是否仍存活、触发窗口及加速倍率来源。
 
-### 2. 上台阶与固体 Blip / Grind / Jump Cancel（`Pages/stepping.md`，0 行）
+### 2. 上台阶与固体 Blip / Grind / Jump Cancel（`Pages/stepping.md`，0 行）→ 已结案
 
-- **现状**：`main` 分支仅描述为接近 Java 1.8（`[Needs verification.]`）并记步高 `0.5625`，`wiki-pages` 为空。
-- **研究切入点**：反编译玩家移动中的 step-up 试探顺序（先水平还是先抬升、步高 `0.5625` 还是 `0.6`）、上台阶成功后对 `mPosDelta.y` / `on_ground` / `fallDistance` 的写回规则，并系统检验基岩版是否存在固体 blip、grind、ceiling blip 与 jump cancel 及其成立条件。
+- **结论**：四系统在同一注册函数内按 `MoveCollisionSystem → ActorMoveSystem → AutoStepFilterSystem → AutoStepSystem → FinalizeMoveSystem` 登记；完整准入为 `maxAutoStep > 0` + 水平碰撞 +（`isFlying` / 落地拍 / `OnGroundFlagComponent` / `CanAlwaysAutoStepFlagComponent`）。上台阶试探前会临时剔除 `box.min.y >= mOriginalAABBShape.max.y` 的天花板盒，走 `Y↑step→X→Z→Y↓` 后比较 `dx²+dz²`，再对未过滤完整列表复核终点 AABB。步高实测 `0.5625`（`0.5`/`0.5625` 可平走、`0.625` 被挡，`0.2` 净空矮顶会拒绝上台阶），上台阶只改写 `MoveRequestComponent::mSpeed`、平移缓存碰撞盒并挂 `HasAutoSteppedComponent`，**不动 `mPosDelta`**；能走上的台阶不会触发 `5e-5` 断疾跑。**第 2 轮纠正**：贴台阶/天花板前缘起跳的 `+0.42` 会被 Step-Assist 整拍吃掉并直接放上台阶顶（保水平速度 `0.3274`）；把首次水平碰撞对齐到落地同拍后，基岩版存在保速固体 Blip（`vz` 与控制组一致、一步抬 `+0.4412`）；`10` tick 只是长按空格时 `MobJumpComponent::mNoJumpDelay` 的自动连跳冷却，松开即清零，点按可达 `3` tick 一跳、峰值 `0.6318`。第 1 轮 `r01-006` 的「无 Blip / 无 Jump Cancel / Grind 10 tick」已作为假阴性撤回。见 [`notes/stepping-12651.md`](notes/stepping-12651.md) 与 [`stepping-wiki.md`](stepping-wiki.md)。
+- **未闭合**：可变步高三值（`0.5625/1.0625/0.5625`）选择分支的完整条件、求解器另一消费者 `0x1482d4710` 的所属系统名、`0.5625~0.625` 更细高度扫描、点按 `3` tick 极限的逐指令时序、台阶阶梯未能连锁 Jump Cancel。
 
 ### 3. 疾跑状态机、撞墙断疾跑与倒车疾跑（`Pages/sprint.md`，0 行）→ 已结案
 
@@ -104,9 +104,9 @@
 
 | 如果你的主要目标是 | 优先推荐的课题 |
 | --- | --- |
-| **尽快给 `wiki-pages` 填缺纠错** | 先整理回填 [`elytra-wiki.md`](elytra-wiki.md)、[`angles-wiki.md`](angles-wiki.md)、[`dolphins-grace-wiki.md`](dolphins-grace-wiki.md) 与已闭合的攀爬方块（[`climb-blocks-wiki.md`](climb-blocks-wiki.md) / [`notes/climb-blocks-12651.md`](notes/climb-blocks-12651.md)），并补全 `angles` 实机拟合 |
+| **尽快给 `wiki-pages` 填缺纠错** | 先整理回填 [`elytra-wiki.md`](elytra-wiki.md)、[`angles-wiki.md`](angles-wiki.md)、[`dolphins-grace-wiki.md`](dolphins-grace-wiki.md)、已闭合的攀爬方块（[`climb-blocks-wiki.md`](climb-blocks-wiki.md) / [`notes/climb-blocks-12651.md`](notes/climb-blocks-12651.md)）与上台阶（[`stepping-wiki.md`](stepping-wiki.md) / [`notes/stepping-12651.md`](notes/stepping-12651.md)），并补全 `angles` 实机拟合 |
 | **破一个悬案级冷门谜题** | **望远镜加速（`spyglass_glitch`）** 或 **`float32` 碰撞箱漂移（`precision_glitches`）** |
-| **补强跑酷实战与物理还原** | **上台阶与固体 Blip（`stepping`）**、**撞墙断疾跑（`sprint`）** 或 **爬行与姿态切换（`sneaking_crawling`）** |
+| **补强跑酷实战与物理还原** | 已结案的 **上台阶与固体 Blip（`stepping`）**、**撞墙断疾跑（`sprint`）** 可直接回填；下一步优先 **爬行与姿态切换（`sneaking_crawling`）** |
 | **一次性产出全量精确数据资产** | 写自动化脚本调 `Block::getCollisionShape` **全量导出 1.26.51.01 方块碰撞箱**，顺带批量跑完 **`tapping`** 实机表 |
 | **开拓全新高价值专题** | **风弹跳与击退加速**、**冰船物理** 或 **服务端移动回滚（Rewind）** |
 

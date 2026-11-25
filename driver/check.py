@@ -126,33 +126,95 @@ def _extract_link_target(raw: str) -> str:
     return raw.split("#", 1)[0].split("?", 1)[0].strip()
 
 
+def _find_git_ignored_paths(root: Path, rel_paths: set[str]) -> set[str]:
+    """Return the subset of ``rel_paths`` ignored by Git under ``root``."""
+    if not rel_paths or not (root / ".git").exists():
+        return set()
+    try:
+        completed = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            cwd=root,
+            input="\0".join(sorted(rel_paths)) + "\0",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return set()
+    if completed.returncode not in (0, 1):
+        return set()
+    return {item for item in completed.stdout.split("\0") if item}
+
+
 def find_broken_markdown_links(root: Path = REPO_ROOT) -> list[str]:
-    """Return human-readable errors for missing relative Markdown link targets."""
-    errors: list[str] = []
-    for path in iter_markdown_files(root):
+    """Return human-readable errors for missing or gitignored relative Markdown links."""
+    root_resolved = root.resolve()
+    findings: list[tuple[int, int, int, str]] = []
+    existing_targets: list[tuple[int, int, int, str, str, str]] = []
+    for file_idx, path in enumerate(iter_markdown_files(root)):
         rel_path = path.relative_to(root).as_posix()
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
-            errors.append(f"{rel_path}: cannot read ({exc})")
+            findings.append((file_idx, 0, 0, f"{rel_path}: cannot read ({exc})"))
             continue
 
+        seq = 0
         for line_no, line in enumerate(_strip_code_preserving_lines(text), 1):
             for match in _LINK_RE.finditer(line):
+                seq += 1
                 target = _extract_link_target(match.group(1))
                 if not target or target.startswith("//") or _SCHEME_RE.match(target):
                     continue
                 if target.startswith(("/", "\\")) or _DRIVE_RE.match(target):
-                    errors.append(f"{rel_path}:{line_no}: non-relative link {target}")
+                    findings.append(
+                        (
+                            file_idx,
+                            line_no,
+                            seq,
+                            f"{rel_path}:{line_no}: non-relative link {target}",
+                        )
+                    )
                     continue
                 candidate = (path.parent / target).resolve()
-                if candidate.exists():
+                if not candidate.exists():
+                    unquoted = unquote(target)
+                    unquoted_candidate = (path.parent / unquoted).resolve()
+                    if unquoted != target and unquoted_candidate.exists():
+                        candidate = unquoted_candidate
+                    else:
+                        findings.append(
+                            (file_idx, line_no, seq, f"{rel_path}:{line_no}: broken link {target}")
+                        )
+                        continue
+                try:
+                    rel_target = candidate.relative_to(root_resolved).as_posix()
+                except ValueError:
+                    findings.append(
+                        (
+                            file_idx,
+                            line_no,
+                            seq,
+                            f"{rel_path}:{line_no}: outside-repo link {target}",
+                        )
+                    )
                     continue
-                unquoted = unquote(target)
-                if unquoted != target and (path.parent / unquoted).resolve().exists():
-                    continue
-                errors.append(f"{rel_path}:{line_no}: broken link {target}")
-    return errors
+                existing_targets.append((file_idx, line_no, seq, rel_path, target, rel_target))
+
+    ignored = _find_git_ignored_paths(
+        root_resolved,
+        {item[5] for item in existing_targets if item[5] != "."},
+    )
+    for file_idx, line_no, seq, rel_path, target, rel_target in existing_targets:
+        if rel_target in ignored:
+            findings.append(
+                (file_idx, line_no, seq, f"{rel_path}:{line_no}: gitignored link {target}")
+            )
+
+    findings.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [msg for _, _, _, msg in findings]
 
 
 def check_markdown_links(root: Path = REPO_ROOT) -> tuple[bool, str]:

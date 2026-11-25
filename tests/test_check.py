@@ -71,6 +71,25 @@ class MarkdownLinkCheckTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("README.md:2: broken link docs/nope.md", output)
 
+    def test_gitignored_link_targets_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".gitignore").write_text("refs/\n", encoding="utf-8")
+            (root / "refs").mkdir()
+            (root / "refs" / "local.h").write_text("// local\n", encoding="utf-8")
+            (root / "docs").mkdir()
+            (root / "docs" / "guide.md").write_text("guide\n", encoding="utf-8")
+            (root / "README.md").write_text(
+                "[ok](docs/guide.md)\n[ignored](refs/local.h)\n",
+                encoding="utf-8",
+            )
+            errors = check.find_broken_markdown_links(root)
+            self.assertEqual(errors, ["README.md:2: gitignored link refs/local.h"])
+            ok, output = check.check_markdown_links(root)
+            self.assertFalse(ok)
+            self.assertIn("README.md:2: gitignored link refs/local.h", output)
+
     def test_repo_markdown_links_currently_pass(self) -> None:
         ok, output = check.check_markdown_links(check.REPO_ROOT)
         self.assertTrue(ok, output)

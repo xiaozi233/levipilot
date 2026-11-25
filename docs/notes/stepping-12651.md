@@ -197,7 +197,7 @@ if (maxAutoStep > 0.0f
 
 ### 7.1 静态：`MobJumpComponent::mNoJumpDelay`
 
-SDK 头 [`MobJumpComponent.h`](../../refs/levilamina-26.51.7/src/mc/entity/components/MobJumpComponent.h)：`mJumpStartPos +0x00`、`mJumpVelRedux +0x0C`、`mNoJumpDelay +0x10 (int)`，组件哈希 `0xc52c8f78`，池步长 `0x14` `[常量]`。
+SDK 头 `MobJumpComponent.h`（本地 `refs/levilamina-26.51.7/src/mc/entity/components/MobJumpComponent.h`）：`mJumpStartPos +0x00`、`mJumpVelRedux +0x0C`、`mNoJumpDelay +0x10 (int)`，组件哈希 `0xc52c8f78`，池步长 `0x14` `[常量]`。
 
 | 动作 | 位置 | 指令 |
 | --- | --- | --- |

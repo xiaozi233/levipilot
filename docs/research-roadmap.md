@@ -62,7 +62,7 @@
 
 ### 8. 速度上限、碰撞解算、Tap 实机校对与综述空页
 
-- **`Pages/speed_limit.md`（0 行）**：验证 `16 b/t` 绝对速度上限在 ECS 移动管线中的准确截断位置（是在哪些冲量之前还是之后、是否分轴或按三维模长、是否有绕过途径）。
+- **`Pages/speed_limit.md`（0 行）→ 已结案**：`16 b/t` 上限存在，位于 `MoveCollisionSystem::fetchCollisionShapes`（`0x1431c2f50`）入口，对 `MoveRequestComponent.mSpeed`（`+0x3C/+0x40/+0x44`）做三维欧氏模长 ≤16 的等比缩限（`256.0f`/`16.0f`）；45° 斜向单轴 `11.3136` 验证球形范数；灵魂疾行 III+迅捷 255 实测封顶 `15.9998~16.0`，普通疾跑/迅捷 255（`14.65`）与蓝冰（`11.42/14.85`）都摸不到。见 [`notes/speed-limit-12651.md`](notes/speed-limit-12651.md) 与 [`speed-limit-wiki.md`](speed-limit-wiki.md)。
 - **`Pages/collisions.md`（0 行）**：静态确认方块碰撞解析轴序（Y → X → Z 与历史差异）、`0.1` 卡墙挤出、实体碰撞推力及箱内判定。
 - **`Pages/tapping.md`（0 行）**：`main` 分支的 Tap 起跳表标有 `[Needs verification.]`，适合直接用 LeviPilot 的 `Hardware HID` 按键注入 + 逐 tick 录制批量跑出实机基准表（walk / sprint / sneak / blocking / A7 tap）。
 - **其余汇总类空页**：`Pages/movement_formulas.md`、`Pages/patched_glitches.md`、`Pages/strategies.md` 均为 0 行，待上述单项机制收齐后再做统一汇编。

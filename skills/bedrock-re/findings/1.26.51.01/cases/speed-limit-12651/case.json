@@ -1,0 +1,10 @@
+{
+  "case": "speed-limit-12651",
+  "version": "1.26.51.01",
+  "goal": "返工：定位并实测 1.26.51.01 的 16 b/t 三维速度钳位（fetchCollisionShapes），修正静态扫描盲区与 mPosDelta 写回结论",
+  "environment": "",
+  "current_round": 2,
+  "status": "closed",
+  "created_at": "2026-11-24T16:13:12Z",
+  "updated_at": "2026-11-25T03:12:06Z"
+}

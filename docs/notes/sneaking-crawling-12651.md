@@ -4,7 +4,7 @@
 > 证据约定：`[代码]` 反汇编/控制流；`[常量]` `.rdata` 浮点、组件哈希、注册点；`[实测]` LeviPilot 逐 tick 录制与 ECS 回读；`[推断]` 由直接证据补出的环节。
 > 复现脚本：[`verify_sneaking_crawling.py`](../../skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py)（Round 1–3，`r03-048`）与 [`verify_sneaking_crawling_tail.py`](../../skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling_tail.py)（Round 5，`r05-068`）。原始数据：gitignored `out/sneaking-crawling-1.26.51.01.json` 与 `out/sneaking-crawling-tail-1.26.51.01.json`。
 > 相位口径：录制 `vx/vy/vz` 是**已完成位移**；`watch` 的 `AABBShapeComponent+0x1C` 是**当前碰撞箱高度**；`state.head_y` 是独立的镜头高度，**不等于**碰撞箱高度。
-> **勘误说明**：本版含 v2 四处静态纠正（§9 勘误表）、v3 露天水池对照纠正，以及 v4 → v5 的 Round 5 纠正（§11：Swift Sneak 调度序、0.91 空气阻力算式、静态消费点、台沿符号）；Round 1/2 的 `pose_swim sneaking=true` 为水池 `y=-37` 封顶导致 `1.56 < 1.79` 的夹具假象，改露天水池后实测 `sneaking=false`。
+> **勘误说明**：本版含 v2 四处静态纠正（§9 勘误表）、v3 露天水池对照纠正、v4 → v5 的 Round 5 纠正（§11：Swift Sneak 调度序、0.91 空气阻力算式、静态消费点、台沿符号），以及独立复核静态补正（`TickServerMoveInputHandler 0x1404495e0` 为主消费点解释爬行/2 拍滞后、`0x141A1C130` 跳表为 `ActorDataIDs [38,53,54]`）；Round 1/2 的 `pose_swim sneaking=true` 为水池 `y=-37` 封顶导致 `1.56 < 1.79` 的夹具假象，改露天水池后实测 `sneaking=false`。
 
 ---
 
@@ -71,7 +71,7 @@ Round 4 已把整条链闭合 `[代码]` `[常量]` `[实测]`：
 | --- | --- | --- |
 | ① 姿态参数 | `0x148FE9B5A`=1.8、`0x148FE9B9A`=1.49、`0x148FEA45C/5B7/75A`=1.8/1.49/0.6 三档盒 | 1.8/1.49 是**世界版本参数**，0.6 是爬行判定盒；三者都不直接写请求 |
 | ② 尺寸数据 | `ActorDataBoundingBoxComponent (0x5ACD5A3E)` | 实测 32B：`+0x00 scale=1.0`、`+0x04 width=0.6`、`+0x08 height`（站立 `1.8` / 潜行 `1.49` / 爬行 `0.6`） |
-| ③ 种类派发 | `0x141A1C130`（`edx` = 尺寸种类，跳表 `0x14E7D0400`） | 分支 `0x141A1C175` 经 `0x141E15010` 按实体 id 取 `ActorDataBoundingBoxComponent` 的 `+0x04/+0x08` → `xmm1/xmm2` |
+| ③ 同步数据回调 | `0x141A1C130`（`Actor::onSynchedDataUpdate`，跳表 `0x14E7D0400`） | 下标 `[38, 53, 54]`（SDK `ActorDataIDs::Reserved038/053/054`，即 Scale/Width/Height）落入 `0x141A1C175`，经 `0x141E15010` 取 `ActorDataBoundingBoxComponent` 的 `+0x04/+0x08` → `xmm1/xmm2` |
 | ④ **写请求** | `0x1419F93A0`：`movss [req], xmm7` @`0x1419F9536`、`movss [req+4], xmm6` @`0x1419F953A`、`mov byte [req+8],1` @`0x1419F9532` | 写 `ShouldUpdateBoundingBoxRequestComponent` 的 `(w,h,dirty)` |
 | ⑤ 消费请求 | `0x14289AFB0`（系统体）→ thunk `0x14289AEE0` → `0x14289A870` | 写 `AABBShapeComponent +0x18 width` / `+0x1C height`（`0x14289A9C0` / `0x14289A9C5`），再用自身 `min.y` 与宽高重建六面 |
 | ⑥ 回写尺寸数据 | `0x14289A870` 尾部 `0x14289AA60` / `0x14289AA75` | 同一 `(w,h)` 写回 `ActorDataBoundingBoxComponent +0x04/+0x08`，并置 `[flags+6]` bit5/bit6 |
@@ -82,10 +82,7 @@ Round 4 已把整条链闭合 `[代码]` `[常量]` `[实测]`：
 `0x141A1C130 ← 0x1401E78B6 ← 0x149046586 ← … ← 0x1425C846F（foreachTickingSystem）← 0x1463B0C27（主 pass）`，
 证明走的是每 tick 的 ECS pass，而不是 spawn/传送的一次性路径。
 
-**如实边界**：`ActorDataBoundingBoxComponent` 的 `(w,h)` 在姿态切换拍还有一条独立写入链
-（`0x142A3BBC0` 的 `0x142A3BCC1/0x142A3BCCA`，上游 `0x142A1DBA0 → 0x143DFAF20 → 0x14204C3A0 → 0x1401E8570`）；
-"三个能力字节 → 尺寸种类枚举值（`3..0x82` 的跳表下标与站/蹲/爬的对应）"没有调试符号可读，
-这一步标 `unresolved`，不猜。
+**如实边界**：`0x141A1C130` 只是在 `ActorDataIDs [38, 53, 54]` 变动时转发碰撞箱请求，并不存在“站/蹲/爬跳表下标”；真正按姿态把 `(0.6, 1.8/1.49/0.6)` 写进 `ActorDataBoundingBoxComponent` 的上游是姿态切换拍的独立写链（`0x142A3BBC0` 的 `0x142A3BCC1/0x142A3BCCA`，上游 `0x142A1DBA0 → 0x143DFAF20 → 0x14204C3A0 → 0x1401E8570`），该上游写链无符号可读，标 `unresolved`。
 
 ### 1.3 实测尺寸
 
@@ -228,24 +225,13 @@ Round 4 已把整条链闭合 `[代码]` `[常量]` `[实测]`：
 
 - **行走 / 潜行 / 强制潜行 / 爬行的乘数第一拍就满额**（`0.300` 精确，`0.098007 → 0.029404`），
   没有 Java 1.8 式的地面 1 tick 延迟；稳态比值同样是 `0.300`（`0.213448 → 0.064034`）。
-- **迅捷潜行的"额外"加成不是客户端装备同步，而是同 tick 的调度顺序**：`SneakingSystem`
-  （`0x14B192C50`，姿态/潜行组第 3 个）排在 `SneakTriggerActionSystem`（`0x14B190C50`，
-  第 6 个）**之前**，后者才写 `ADF bit1`。同拍按下 `W+Sneak` 时，`SneakingSystem` 当拍
-  仍看到 `ADF bit1=0`，乘数保持默认 `0.3`；下一拍才切到 `0.3+0.15×等级`。把潜行键先按住
-  6 拍（`ADF bit1` 已置位）或由矮顶强制爬行（`ADF bit114` 已置位）时，**首拍直接就是
-  `0.750`**（`0.073502`）。这条静态顺序来自 §5.1 的注册表，不是"装备复制延迟"。
-- **空中共享同一个乘数**：`SneakingComponent` 的每实体乘数由 `SneakingSystem` 写
-  `0x14B192F9A`；唯一把该浮点读出来并乘进移动输入标量的代码是 `0x144A26290`
-  （默认 `0.3f`，`0x144A2642C mulss xmm6, xmm0`）。调用点 `0x144A281FF / 0x144A283F9 /
-  0x144A285DF` 都在玩家每 tick 移动更新 `0x144A27D20` 内（`0x144A27670 → 0x144A27D20`，
-  经 vtable thunk `0x14B177510` 进入），结果写入 `LocalMoveVelocityComponent (0x10257C61)`。
-  该 helper 只按 `ADF bit1 (Sneaking)` / `bit57 (Swimming)` 门控，**没有任何 on_ground
-  分支**；因此地面与空中走同一条乘数链，游泳则跳过潜行乘数。按 `a_i = v[i+1]−0.91·v[i]`
-  复算，三档空中加速度精确落在 `0.450 / 0.600 / 0.750`（`<0.02` 容差），与地面稳态比值一致。
-  其余 12 处 `0x8918332C` 命中是组件描述符、视图/系统注册、事件分发与 Molang 查询
-  （`0x1401DF3B7`），没有第二个乘法点。
-- **空中新按潜行仍有 1 拍 0.3**：空中才第一次按潜行时，第一拍 `a_0` 仍是 `0.300`，第二拍起
-  才升到 `0.45/0.60/0.75`；这与地面同拍按 `W+Sneak` 是同一个调度序，不是空中特例。
+- **迅捷潜行的"额外"加成滞后 2 拍，源自同 tick 三系统调度顺序**：在 `0x14681DA00` 组内，`TickServerMoveInputHandler`（注册 `0x14681dcf4`，vt `0x14EA34B10`，slot[5] `0x148B459F0` → `0x148B45510` → `0x148B2D870` → 消费叶 `0x1404495e0`）排在 `SneakingSystem`（`0x14B192C50`）**之前**，后者又排在 `SneakTriggerActionSystem`（`0x14B190C50`，写 `ADF bit1`）**之前**。因此站立同拍按下 `W+Sneak` 时：
+  1. 第 1 拍：`0x1404495e0` 先跑，凭 `MoveInput & 0x40001` 命中、读旧 `SneakingComponent = 0.3`（地面 `0.029404` / 空中 `0.005875`）；随后 `SneakingSystem` 仍见 `ADF bit1=0` 写入 `0.3`；再之后 `Action` 才置 `ADF bit1=1`；
+  2. 第 2 拍：`0x1404495e0` 再次先于 `SneakingSystem` 跑，**仍读上一拍的 `0.3`**（地面 `0.045456` / 空中 `0.01123` 仍按 `0.3×` 加速）；随后 `SneakingSystem` 见 `ADF bit1=1` 才写入 `0.75`；
+  3. 第 3 拍：`0x1404495e0` 才读到 `0.75`（地面 `0.098312` / 空中 `0.019043..0.024918`）。
+  先按住潜行 6 拍（`ADF bit1` 与 `SneakingComponent=0.75` 均已就绪）或矮顶强制爬行（`ADF bit114` 已置位）时，**首拍直接就是 `0.750`**（`0.073502`）。这条顺序来自 §5.1 注册表，不是"装备复制延迟"。
+- **地面/空中/爬行共享主消费点 `0x1404495e0`**：`SneakingComponent` 的每实体乘数由 `SneakingSystem` 写 `0x14B192F9A`；**主消费点**是 `TickServerMoveInputHandler` 内的 `0x148B2DD41 → 0x1404495e0`（直接乘进 `MoveInputComponent +0x24/+0x28` `mMoveVector`）：门控 `MoveInput & 0x40001 || ADF bit1 (Sneaking) || ADF bit114 (Crawling)`，在 `isFlying / WasInWater / ADF bit57 (Swimming)` 时跳过，**没有任何 `on_ground` 分支**，读 `[SneakingComponent]` 缺省 `0.3f` 并执行 `0x1404497f9 mulss`。次级消费点 `0x144A26290`（`0x144A281FF/3F9/5DF` → `LocalMoveVelocityComponent 0x10257C61`）仅查 `ADF bit1` 与 `!bit57`，不查 `bit114` 与 `MoveInput`。按 `a_i = v[i+1]−0.91·v[i]` 复算，三档空中加速度精确落在 `0.450 / 0.600 / 0.750`（`<0.02` 容差），与地面稳态比值一致。
+- **空中新按潜行同样滞后 2 拍**：空中才第一次按潜行时，前两拍加速度 `a_0 / a_1` 仍是 `0.300`（`0.005875 / 0.005885`），第 3 拍 `a_2` 起才升到 `0.45/0.60/0.75`（`0.008823 / 0.011753 / 0.014698`）；这与地面同拍按 `W+Sneak` 完全同源，不是空中特例。
 
 ---
 
@@ -383,13 +369,14 @@ Z 段（0x14B18BF9B..0x14B18C0D0，dz = MoveRequest+0x44）: 与 X 段同构（0
 
 | 序 | 系统 | 名字字面量 | vtable | slot[5] / slot[6] |
 | --- | --- | --- | --- | --- |
-| 1 | `PlayerBoundingBoxStateUpdateSystem` | `0x14EC3570C` | `0x14EA4F990` | `0x148FE9A20` / ret |
-| 2 | `SneakTriggerIntentSystem` | `0x14EC33121` | `0x14EAC9B60` | `0x14B18E400` / ret |
-| 3 | `SneakingSystem` | `0x14EC3544A` | `0x14EAC9C30` | `0x14B192C50` / `0x14B193600` |
-| 4 | `JumpInputSystem` | `0x14EC32BCD` | — | — |
-| 5 | `SneakingChangedEventSystem` | `0x14EC330D3` | **`0x14EAC9BF0`** | `0x14B191C90` / `0x14B192180` |
-| 6 | `SneakTriggerActionSystem` | `0x14EC348C4` | **`0x14EAC9BB0`** | `0x14B190C50` / `0x14B190CF0` |
-| 7 | `UpdateHorizontalPoseSystem` | `0x14EC3579B` | `0x14E83A6E0` | `0x1428B8980` / ret |
+| 1 | `TickServerMoveInputHandler`（`0x14681dcf4`） | `0x14EC07660` | `0x14EA34B10` | `0x148B459F0` / — |
+| 2 | `PlayerBoundingBoxStateUpdateSystem` | `0x14EC3570C` | `0x14EA4F990` | `0x148FE9A20` / ret |
+| 3 | `SneakTriggerIntentSystem` | `0x14EC33121` | `0x14EAC9B60` | `0x14B18E400` / ret |
+| 4 | `SneakingSystem` | `0x14EC3544A` | `0x14EAC9C30` | `0x14B192C50` / `0x14B193600` |
+| 5 | `JumpInputSystem` | `0x14EC32BCD` | — | — |
+| 6 | `SneakingChangedEventSystem` | `0x14EC330D3` | **`0x14EAC9BF0`** | `0x14B191C90` / `0x14B192180` |
+| 7 | `SneakTriggerActionSystem` | `0x14EC348C4` | **`0x14EAC9BB0`** | `0x14B190C50` / `0x14B190CF0` |
+| 8 | `UpdateHorizontalPoseSystem` | `0x14EC3579B` | `0x14E83A6E0` | `0x1428B8980` / ret |
 
 ### 5.2 移动/碰撞组（`0x14681AC20`）`[常量]`
 
@@ -422,7 +409,7 @@ Java 侧为机制对照，未在本机复测 `[推断]`。
 
 | 原尾项 | 闭合位置 | 证据 |
 | --- | --- | --- |
-| 1. `0.6` 写进请求的最终写点 | §1.2 的六步链（尺寸组件 → 种类派发 `0x141A1C130` → 请求写点 `0x1419F93A0`） | `[代码] [常量]` + `watch_set` 命中 `0x14289A9C5`（1.49）/ 回写 1.8 |
+| 1. `0.6` 写进请求的最终写点 | §1.2 的六步链（尺寸组件 → 同步数据回调 `0x141A1C130` (`ActorDataIDs [38,53,54]`) → 请求写点 `0x1419F93A0`） | `[代码] [常量]` + `watch_set` 命中 `0x14289A9C5`（1.49）/ 回写 1.8 |
 | 2. `ADF bit6` 枚举语义 | §4.1：`ActorFlags::Tempted`，门控在玩家/非玩家两路汇合之后 | SDK `ActorFlags.h` + `0x14B18BCA7` |
 | 3. 对角复核逐分支 | §4.2 伪代码（X/Z/对角三段 + 收尾） | `[代码] [常量]` |
 | 4. `0.05` 与 `1.01` 的交互 | §4.2：**对角段同样每轮 dx、dz 各减 0.05**，深度 `1.01×maxAutoStep` 与 `0.025` 内缩复用 | 同上 + 45° 实测停点 |
@@ -430,7 +417,7 @@ Java 侧为机制对照，未在本机复测 `[推断]`。
 
 **保留的如实边界**：
 
-- `ActorDataBoundingBoxComponent` 的 `(w,h)` 在姿态切换拍还有一条独立写链（`0x142A3BBC0`，上游 `0x142A1DBA0 → 0x143DFAF20 → 0x14204C3A0 → 0x1401E8570`）；"能力字节 → 尺寸种类枚举值"的跳表下标映射没有调试符号可读，标 `unresolved`，不猜。
+- `0x141A1C130` 仅是 `ActorDataIDs [38,53,54]` 的同步数据属性转发；`ActorDataBoundingBoxComponent` 在姿态切换拍的上游写链（`0x142A3BBC0`，上游 `0x142A1DBA0 → 0x143DFAF20 → 0x14204C3A0 → 0x1401E8570`）无调试符号可读，标 `unresolved`，不猜。
 - `ADF bit6` 的**设计意图**（为什么"被食物吸引"要跳过潜行夹取）属语义解释，标 `[推断]`；静态能证的只是门控位置与枚举名。
 
 Round 4 曾把 `Swift Sneak` 的首拍 `0.30` 记成"客户端装备同步的 1~2 拍追赶"；Round 5 用不松键夹具与静态注册顺序证明这是**同 tick 调度序**（`SneakingSystem` 第 3 个先于 `SneakTriggerActionSystem` 第 6 个），已撤回，不再作为边界。
@@ -491,3 +478,5 @@ py -3.11 driver/dev.py exec "py -3.11 skills/bedrock-re/findings/1.26.51.01/case
 | 空中迅捷潜行的"最大逐拍增量" `0.398 / 0.548 / 0.698`，用未扣空气阻力的 `v[i+1]−v[i]` 估计（`r04-064`） | 按 **`a_i = v[i+1] − 0.91·v[i]`（`a_0 = v[0]`，`0.91f` @`0x14E76D2D8`）** 复算，空中加速度精确为 **`0.450 / 0.600 / 0.750`**（`0.008820 / 0.011765 / 0.014694`，容差 `<0.02`）；"空中新按潜行"第一拍仍是 `0.300`，第二拍起升到目标档 | §3.3 + `r05-068` |
 | 斜向停点"落在台沿 `−0.275` 的一个量子内"（`r04-063` / `r04-064`） | 停点中心**越过台沿约 `+0.27`**：`diag45_sneak (208.271042, 258.274506)`，单轴 `208.272644 / 258.272644`，台角 `(208, 258)`；`inset_limit = (208.275, 258.275)`，箱体重叠 `0.028958 / 0.025494` 与 `0.027356`，全部落在 `[0.025, 0.05)` | §4.3 + `r05-068` |
 | `SneakingComponent` 的浮点乘数只有实测消费，未定位静态读取点（`r04-064` 的边界） | 静态消费点闭合：`0x144A26290` 读该组件的每实体浮点（缺省 `0.3f`），`0x144A2642C mulss xmm6, xmm0` 乘进移动输入标量；调用点 `0x144A281FF / 0x144A283F9 / 0x144A285DF` 在玩家每 tick 移动更新 `0x144A27D20` 内，结果写 `LocalMoveVelocityComponent (0x10257C61)`；helper 只按 `Sneaking`/`Swimming` 门控，无 on_ground 分支 ⇒ 地面与空中共享同一条乘数链 | §3.3 + `pe_map --ecs-hash 0x8918332C` 的 13 处命中（描述符/视图/事件分发之外唯一乘法点） |
+| **独立复核补正**：称 `0x144A26290` 是唯一乘法消费点，且同拍 `W+Sneak` 滞后 1 拍（`r05-069`） | **主消费点实为 `TickServerMoveInputHandler 0x1404495e0`**（`0x14681dcf4` → `0x148B459F0` → `0x148B45510` → `0x148B2D870` → `0x1404495e0` 写 `MoveInputComponent +0x24/+0x28`，含 `MoveInput & 0x40001`、`ADF bit1`、`ADF bit114 (Crawling)`，无 `on_ground` 分支）；`0x144A26290` 只是次级消费点。输入缩放早于 `SneakingSystem` 又早于 `Action` ⇒ **同拍按 `W+Sneak` 共滞后 2 拍**（地面 `[0.0294, 0.0455, 0.0983]`、空中 `[0.005875, 0.005885, 0.014698]` 第 3 拍才切 `0.75`） | §3.3 + §5.1 + `r05-068` JSON 逐拍序列 |
+| **独立复核补正**：`0x141A1C130` 跳表被描述为“无符号站/蹲/爬尺寸种类派发”（`r04-061`） | 解码 `0x14E7D0400` 跳表 128 项仅 **`[38, 53, 54]`**（SDK `ActorDataIDs::Reserved038/053/054`，即 Scale/Width/Height）落入 `0x141A1C175`，故 `0x141A1C130` 是同步属性回调，不是站/蹲/爬种类枚举；未符号化环节改回上游 `0x142A3BBC0` 写链 | §1.2 + `0x14E7D0400` 跳表全表解码 |

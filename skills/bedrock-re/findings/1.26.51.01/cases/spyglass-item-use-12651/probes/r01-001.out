@@ -1,0 +1,277 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/spyglass-item-use-12651/probes/verify_spyglass_item_use.py
+# cwd: <repo>
+# started: 2026-11-27T13:43:55Z
+# exit: 0
+# --- stdout ---
+{
+  "applied_factor_table": {
+    "spyglass": 0.1225,
+    "bow_arrows": 0.1225,
+    "crossbow_arrows": 0.1225,
+    "trident": 0.1225,
+    "shield": 1.0,
+    "shield_offhand": 1.0,
+    "golden_apple": 0.1225,
+    "potion": 0.1225,
+    "milk_bucket": 0.1225,
+    "goat_horn": 1.0,
+    "brush_brush_block": 1.0,
+    "bread": 0.1225
+  },
+  "item_use_windows": {
+    "spyglass": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "bow_arrows": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "crossbow_arrows": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "trident": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "shield": {
+      "hold": false,
+      "walk": false,
+      "after": false
+    },
+    "shield_offhand": {
+      "hold": false,
+      "walk": false,
+      "after": false
+    },
+    "golden_apple": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "potion": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "milk_bucket": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "goat_horn": {
+      "hold": true,
+      "walk": false,
+      "after": false
+    },
+    "brush_brush_block": {
+      "hold": false,
+      "walk": false,
+      "after": false
+    },
+    "bread": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    }
+  },
+  "baselines": {
+    "walk": {
+      "n": 17,
+      "median": 0.097982,
+      "min": 0.09791,
+      "max": 0.098071
+    },
+    "air": {
+      "n": 8,
+      "median": 0.019612,
+      "min": 0.019507,
+      "max": 0.019668
+    }
+  },
+  "ground_combos": {
+    "walk": {
+      "factor": 0.1225,
+      "steady": {
+        "n": 5,
+        "median": 0.026489,
+        "min": 0.026489,
+        "max": 0.026489
+      },
+      "accel": {
+        "n": 17,
+        "median": 0.012023,
+        "min": 0.011938,
+        "max": 0.012093
+      }
+    },
+    "sneak": {
+      "factor": 0.03675,
+      "steady": {
+        "n": 5,
+        "median": 0.007935,
+        "min": 0.007935,
+        "max": 0.007935
+      },
+      "accel": {
+        "n": 17,
+        "median": 0.003602,
+        "min": 0.003526,
+        "max": 0.003669
+      }
+    },
+    "diag45": {
+      "factor": 0.086621,
+      "steady": {
+        "n": 5,
+        "median": 0.026413,
+        "min": 0.026413,
+        "max": 0.026413
+      },
+      "accel": {
+        "n": 17,
+        "median": 0.008479,
+        "min": 0.008427,
+        "max": 0.008559
+      }
+    },
+    "sprint_request": {
+      "factor": 0.1225,
+      "steady": {
+        "n": 5,
+        "median": 0.026489,
+        "min": 0.026489,
+        "max": 0.026489
+      },
+      "accel": {
+        "n": 17,
+        "median": 0.012023,
+        "min": 0.011938,
+        "max": 0.012093
+      }
+    },
+    "sneak_ss3": {
+      "factor": 0.091875,
+      "steady": {
+        "n": 5,
+        "median": 0.019775,
+        "min": 0.019775,
+        "max": 0.019775
+      },
+      "accel": {
+        "n": 15,
+        "median": 0.008978,
+        "min": 0.008925,
+        "max": 0.009056
+      }
+    }
+  },
+  "air": {
+    "walk": {
+      "factor": 0.1225,
+      "accel": {
+        "n": 8,
+        "median": 0.002415,
+        "min": 0.002329,
+        "max": 0.00243
+      }
+    },
+    "sprint": {
+      "factor": 0.1225,
+      "accel": {
+        "n": 8,
+        "median": 0.002384,
+        "min": 0.002316,
+        "max": 0.002468
+      }
+    }
+  },
+  "sprint_then_scope": {
+    "sprint": {
+      "sprint_ticks": 12,
+      "factor": 1.0
+    },
+    "scope": {
+      "sprint_ticks": 0,
+      "factor": 0.1225
+    },
+    "hold": {
+      "sprint_ticks": 0,
+      "factor": 0.1225
+    },
+    "off": {
+      "sprint_ticks": 0,
+      "factor": 1.0
+    }
+  },
+  "hotbar_switch": {
+    "in_use_scoped": true,
+    "in_use_bread": true,
+    "in_use_shield": true,
+    "in_use_horn": false,
+    "factors": {
+      "scoped": 0.1225,
+      "bread": 0.1225,
+      "shield": 0.1225,
+      "horn": 1.0
+    }
+  },
+  "tap_spam_mi_z": [
+    0.0,
+    0.1225,
+    1.0
+  ],
+  "sprint_recovery": {
+    "first_sprint_offset": 1,
+    "resume_sprint": [
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0
+    ],
+    "resume_mi_z": [
+      0.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ]
+  }
+}
+
+wrote out\spyglass-item-use-1.26.51.01.json
+
+# --- stderr ---
+

@@ -1,0 +1,10 @@
+{
+  "case": "spyglass-item-use-12651",
+  "version": "1.26.51.01",
+  "goal": "Round 4 返工：修复 hotbar_switch 错位与无缝切换自动松键、补齐持续开镜起跳与盾牌潜行格挡实测，并修正组件 sizeof=4 / Item::isComponentBased / VanillaClientGameplayComponent::mSprintTriggerTime 静态闭合",
+  "environment": "",
+  "current_round": 5,
+  "status": "closed",
+  "created_at": "2026-11-27T13:03:55Z",
+  "updated_at": "2026-11-27T14:49:26Z"
+}

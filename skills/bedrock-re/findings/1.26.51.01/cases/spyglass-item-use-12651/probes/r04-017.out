@@ -1,0 +1,360 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/spyglass-item-use-12651/probes/verify_spyglass_item_use.py
+# cwd: <repo>
+# started: 2026-11-27T14:38:17Z
+# exit: 0
+# --- stdout ---
+{
+  "applied_factor_table": {
+    "spyglass": 0.1225,
+    "bow_arrows": 0.1225,
+    "crossbow_arrows": 0.1225,
+    "trident": 0.1225,
+    "shield": 1.0,
+    "shield_offhand": 1.0,
+    "golden_apple": 0.1225,
+    "potion": 0.1225,
+    "milk_bucket": 0.1225,
+    "goat_horn": 1.0,
+    "bread": 0.1225
+  },
+  "item_use_windows": {
+    "spyglass": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "bow_arrows": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "crossbow_arrows": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "trident": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "shield": {
+      "hold": false,
+      "walk": false,
+      "after": false
+    },
+    "shield_offhand": {
+      "hold": false,
+      "walk": false,
+      "after": false
+    },
+    "golden_apple": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "potion": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "milk_bucket": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    },
+    "goat_horn": {
+      "hold": true,
+      "walk": false,
+      "after": false
+    },
+    "bread": {
+      "hold": true,
+      "walk": true,
+      "after": false
+    }
+  },
+  "baselines": {
+    "walk_accel": {
+      "n": 19,
+      "median": 0.097982,
+      "min": 0.09791,
+      "max": 0.098071
+    },
+    "air_accel": {
+      "n": 7,
+      "median": 0.019601,
+      "min": 0.019521,
+      "max": 0.019641
+    }
+  },
+  "ground_combos": {
+    "walk": {
+      "factor": 0.1225,
+      "accel": {
+        "n": 18,
+        "median": 0.012025,
+        "min": 0.011938,
+        "max": 0.012093
+      },
+      "sneak_ticks": 0,
+      "gaps": 0
+    },
+    "sneak": {
+      "factor": 0.03675,
+      "accel": {
+        "n": 18,
+        "median": 0.003602,
+        "min": 0.003526,
+        "max": 0.003669
+      },
+      "sneak_ticks": 20,
+      "gaps": 0
+    },
+    "diag45": {
+      "factor": 0.086621,
+      "accel": {
+        "n": 18,
+        "median": 0.008479,
+        "min": 0.008427,
+        "max": 0.008559
+      },
+      "sneak_ticks": 0,
+      "gaps": 0
+    },
+    "sprint_request": {
+      "factor": 0.1225,
+      "accel": {
+        "n": 19,
+        "median": 0.012026,
+        "min": 0.011938,
+        "max": 0.012093
+      },
+      "sneak_ticks": 0,
+      "gaps": 0
+    },
+    "sneak_ss3": {
+      "factor": 0.091875,
+      "accel": {
+        "n": 18,
+        "median": 0.008978,
+        "min": 0.008956,
+        "max": 0.009057
+      },
+      "sneak_ticks": 20,
+      "gaps": 0
+    }
+  },
+  "sprint_then_scope": {
+    "gaps": 0,
+    "sprint_ticks_by_phase": {
+      "sprint": 15,
+      "scope": 1,
+      "hold": 0,
+      "off": 0
+    }
+  },
+  "hotbar_switch": {
+    "selected_ok": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "samples": [
+      [
+        0,
+        0,
+        true
+      ],
+      [
+        1,
+        1,
+        true
+      ],
+      [
+        2,
+        2,
+        false
+      ],
+      [
+        3,
+        3,
+        true
+      ],
+      [
+        4,
+        4,
+        false
+      ]
+    ],
+    "factors_by_slot": {
+      "0": 0.1225,
+      "1": 0.1225,
+      "2": 1.0,
+      "3": 0.1225,
+      "4": 1.0
+    },
+    "gaps": 0
+  },
+  "air": {
+    "walk": {
+      "in_use_scoped": true,
+      "in_use_on_jump": true,
+      "launch": [
+        {
+          "tick": 25520,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.0,
+          "sprint": false,
+          "on_ground": true
+        },
+        {
+          "tick": 25521,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.419998,
+          "sprint": false,
+          "on_ground": false
+        },
+        {
+          "tick": 25522,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.333199,
+          "sprint": false,
+          "on_ground": false
+        },
+        {
+          "tick": 25523,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.248135,
+          "sprint": false,
+          "on_ground": false
+        }
+      ]
+    },
+    "sprint": {
+      "in_use_scoped": true,
+      "in_use_on_jump": true,
+      "launch": [
+        {
+          "tick": 25595,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.0,
+          "sprint": false,
+          "on_ground": true
+        },
+        {
+          "tick": 25596,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.419998,
+          "sprint": false,
+          "on_ground": false
+        },
+        {
+          "tick": 25597,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.333199,
+          "sprint": false,
+          "on_ground": false
+        },
+        {
+          "tick": 25598,
+          "mi_z": 0.1224999949336052,
+          "vy": 0.248135,
+          "sprint": false,
+          "on_ground": false
+        }
+      ]
+    }
+  },
+  "shield_control": {
+    "adf_bits_without_shield": [
+      1,
+      19,
+      34,
+      35,
+      48,
+      49,
+      72,
+      73,
+      89,
+      109
+    ],
+    "adf_bits_with_shield": [
+      1,
+      19,
+      34,
+      35,
+      48,
+      49,
+      72,
+      89,
+      109
+    ]
+  },
+  "shield_sneak": {
+    "main": {
+      "adf_bits": [
+        1,
+        19,
+        34,
+        35,
+        48,
+        49,
+        72,
+        89,
+        109
+      ],
+      "in_use_walk": false,
+      "in_use_rmb": false,
+      "factor_walk": 0.3,
+      "factor_rmb": 0.3,
+      "sneak_ticks": 22
+    },
+    "offhand": {
+      "adf_bits": [
+        1,
+        19,
+        34,
+        35,
+        48,
+        49,
+        72,
+        89,
+        109
+      ],
+      "in_use_walk": false,
+      "in_use_rmb": false,
+      "factor_walk": 0.3,
+      "factor_rmb": 0.3,
+      "sneak_ticks": 22
+    }
+  },
+  "tap_spam": {
+    "mi_z": [
+      0.0,
+      0.1225,
+      1.0
+    ],
+    "outside_curve": []
+  },
+  "tap_spam_sprint": {
+    "mi_z": [
+      0.0,
+      0.1225,
+      1.0
+    ],
+    "sprint_ticks": 25,
+    "outside_curve": []
+  },
+  "sprint_recovery": {
+    "first_sprint_offset": 1,
+    "gaps": 0
+  }
+}
+
+wrote out\spyglass-item-use-1.26.51.01.json
+
+# --- stderr ---
+

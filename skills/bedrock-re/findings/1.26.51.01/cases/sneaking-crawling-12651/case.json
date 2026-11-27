@@ -1,0 +1,10 @@
+{
+  "case": "sneaking-crawling-12651",
+  "version": "1.26.51.01",
+  "goal": "Round 5 返工：修复 pre_sneak 夹具松键与 Swift Sneak 调度序归因、改用 0.91 空气阻力精确算式并补齐 SneakingComponent 静态消费点、清净台沿 +0.275 停点符号并补全 §4.3 斜角实测表",
+  "environment": "",
+  "current_round": 5,
+  "status": "closed",
+  "created_at": "2026-11-26T15:48:30Z",
+  "updated_at": "2026-11-27T09:25:44Z"
+}

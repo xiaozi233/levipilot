@@ -1,0 +1,27 @@
+# command: py -3.11 driver/dev.py run --no-build --version-dir <version-dir> --world 超平坦测试 --background --allow allow_input_inject=1 --allow allow_mem_read=1 --exec "py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py" --stop-after
+# cwd: <repo>
+# started: 2026-11-26T16:24:13Z
+# exit: 0
+# --- stdout ---
+installed mod -> AppData\Local\LeviLauncher\Instances\1.26.51.01\mods\probe
+harness.json: AppData\Local\LeviLauncher\Instances\1.26.51.01\mods\probe\harness.json
+starting AppData\Local\LeviLauncher\Instances\1.26.51.01\Minecraft.Windows.exe
+background focus_cfg: {'background_guard': True, 'cursor_hooked': True, 'event': 'focus_cfg', 'focus_hooked': True, 'foreground': True, 'ok': True, 'suppress_cursor_grab': True, 'suppress_cursor_grab_on_connect': True, 'suppress_focus_pause': True, 'suppress_focus_pause_on_connect': True, 'req_id': 3}
+pipe ready; waiting for menu
+worlds: 超平坦测试, 我的世界
+signin: {'event': 'signin', 'known': True, 'signed_in': True, 'req_id': 6}
+entering '超平坦测试'
+in world: feet=(215.50, -40.00, 215.50) health=20.0
+player settled (on ground, still)
+exec: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py
+WROTE out\sneaking-crawling-1.26.51.01.json
+POSES {"pose_stand": [0.600006, 1.799999, 0.600006], "pose_sneak": [0.600006, 1.490002, 0.600006], "pose_crawl": [0.600006, 0.599998, 0.600006], "pose_swim": [0.600006, 0.599998, 0.600006]}
+LADDER [[2.0, 1.799999, false], [1.875, 1.799999, false], [1.75, 1.490002, true], [1.625, 1.490002, true], [1.5, 1.490002, true], [1.375, 0.599998, false], [1.25, 0.599998, false], [1.125, 0.599998, false], [1.0, 0.599998, false], [0.875, 0.599998, false], [0.75, 0.599998, false], [0.625, 0.599998, false], [0.5, 1.799999, false]]
+ENTRY {"gap": 1.0, "walk_in": {"x": 213.7, "height": 1.799999}, "sneak_in": {"x": 213.7, "height": 1.490002}, "teleport_in": [{"tick": 672, "h": 0.6, "x": 218.5}, {"tick": 673, "h": 0.6, "x": 218.5}, {"tick": 674, "h": 0.6, "x": 218.5}, {"tick": 675, "h": 0.6, "x": 218.5}, {"tick": 676, "h": 0.6, "x": 218.5}, {"tick": 677, "h": 0.6, "x": 218.5}, {"tick": 678, "h": 0.6, "x": 218.5}, {"tick": 679, "h": 0.6, "x": 218.5}, {"tick": 680, "h": 0.6, "x": 218.5}, {"tick": 681, "h": 0.6, "x": 218.5}]}
+SPEEDS [["walk", 0.215866089, 1.8], ["sneak", 0.064758301, 1.49], ["crawl", 0.064758301, 0.6], ["crawl+sneakkey", 0.064758301, 0.6], ["crawl+sprintkey", 0.064758301, 0.6], ["sneak+ss1", 0.097137451, 1.49], ["crawl+ss1", 0.097137451, 0.6], ["sneak+ss2", 0.129516602, 1.49], ["crawl+ss2", 0.129516602, 0.6], ["sneak+ss3", 0.161888123, 1.49], ["crawl+ss3", 0.161895752, 0.6]]
+EDGES [{"tag": "walk", "edge_z": 245.0, "z": 274.283691, "overhang": 29.583691, "height": 1.799999, "feet_y": -60.0}, {"tag": "sneak", "edge_z": 245.0, "z": 245.266022, "overhang": 0.566022, "height": 1.490002, "feet_y": -40.0}, {"tag": "crawl", "edge_z": 245.0, "z": 257.633911, "overhang": 12.933911, "height": 1.799999, "feet_y": -60.0}, {"tag": "crawl+sneak", "edge_z": 245.0, "z": 245.266022, "overhang": 0.566022, "height": 0.599998, "feet_y": -40.0}]
+saving and leaving world (pid=504)
+stopping target game pid=504 after save
+
+# --- stderr ---
+

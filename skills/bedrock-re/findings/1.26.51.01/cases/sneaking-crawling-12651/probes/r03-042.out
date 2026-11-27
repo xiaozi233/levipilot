@@ -1,0 +1,19 @@
+# command: py -3.11 driver/dev.py exec "py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py"
+# cwd: <repo>
+# started: 2026-11-26T17:52:15Z
+# exit: 1
+# --- stdout ---
+attaching to Minecraft.Windows.exe (pid=37064)
+already in world; skipping menu/world entry
+exec: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 760, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 497, in main
+    assert outside["x"] > 241.0 and abs(outside["feet_y"] - GROUND) < 0.05, outside
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'tick': 1971, 'feet_y': -39.5, 'head_y': -38.329986572265625, 'sneaking': True, 'input_sneak': False, 'swimming': False, 'sprinting': False, 'size': [0.600006, 1.490002, 0.600006], 'height': 1.490002, 'x': 239.57220458984375, 'z': 240.5, 'health': 20.0}
+

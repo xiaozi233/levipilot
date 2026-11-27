@@ -1,0 +1,1 @@
+py -3.11 driver/dev.py run --no-build --version-dir <version-dir> --world 超平坦测试 --background --allow allow_input_inject=1 --allow allow_mem_read=1 --exec "py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py" --stop-after

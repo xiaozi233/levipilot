@@ -1,0 +1,29 @@
+# command: py -3.11 out/run_r2.py
+# cwd: <repo>
+# started: 2026-11-26T17:14:39Z
+# exit: 1
+# --- stdout ---
+installed mod -> <local>\mods\probe
+harness.json: <local>\mods\probe\harness.json
+starting <local>\Minecraft.Windows.exe
+background focus_cfg: {'background_guard': True, 'cursor_hooked': True, 'event': 'focus_cfg', 'focus_hooked': True, 'foreground': False, 'ok': True, 'suppress_cursor_grab': True, 'suppress_cursor_grab_on_connect': True, 'suppress_focus_pause': True, 'suppress_focus_pause_on_connect': True, 'req_id': 3}
+pipe ready; waiting for menu
+worlds: 超平坦测试, 我的世界
+signin: {'event': 'signin', 'known': True, 'signed_in': True, 'req_id': 6}
+entering '超平坦测试'
+in world: feet=(215.50, -40.00, 215.50) health=20.0
+player settled (on ground, still)
+exec: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py
+saving and leaving world (pid=33992)
+stopping target game pid=33992 after save
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 727, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 633, in main
+    assert row["feet_y"] < GROUND - 0.3, row
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'tag': 'drop0.500', 'block': 'minecraft:normal_stone_slab', 'support_top': -40.5, 'drop': 0.5, 'z': 247.273529, 'feet_y': -40.0, 'height': 1.490002, 'start_height': 1.799999}
+
+# --- stderr ---
+

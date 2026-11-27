@@ -1,0 +1,30 @@
+# command: py -3.11 out/run_r2.py
+# cwd: <repo>
+# started: 2026-11-26T16:54:48Z
+# exit: 1
+# --- stdout ---
+installed mod -> <local>\mods\probe
+harness.json: <local>\mods\probe\harness.json
+starting <local>\Minecraft.Windows.exe
+background focus_cfg: {'background_guard': True, 'cursor_hooked': True, 'event': 'focus_cfg', 'focus_hooked': True, 'foreground': False, 'ok': True, 'suppress_cursor_grab': True, 'suppress_cursor_grab_on_connect': True, 'suppress_focus_pause': True, 'suppress_focus_pause_on_connect': True, 'req_id': 3}
+pipe ready; waiting for menu
+worlds: 超平坦测试, 我的世界
+signin: {'event': 'signin', 'known': True, 'signed_in': True, 'req_id': 6}
+entering '超平坦测试'
+in world: feet=(215.50, -40.00, 215.50) health=20.0
+player settled (on ground, still)
+exec: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py
+saving and leaving world (pid=360)
+stopping target game pid=360 after save
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 722, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 203, in main
+    fill_box(client, (198, -43, 190), (250, -43, 252), "stone")
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 75, in fill_box
+    raise AssertionError(f"fill {block} {lo}..{hi} did not land: {rows}")
+AssertionError: fill stone (198, -43, 190)..(250, -43, 252) did not land: [{'addr': 1863435038400, 'name': 'minecraft:air', 'x': 198, 'y': -43, 'z': 190}, {'addr': 1863435038400, 'name': 'minecraft:air', 'x': 250, 'y': -43, 'z': 252}]
+
+# --- stderr ---
+

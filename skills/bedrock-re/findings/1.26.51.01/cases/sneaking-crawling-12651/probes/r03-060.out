@@ -1,0 +1,63 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling_tail.py
+# cwd: <repo>
+# started: 2026-11-27T08:30:53Z
+# exit: 0
+# --- stdout ---
+{
+ "ground": {
+  "walk": [
+   1.000073,
+   1.0
+  ],
+  "sneak": [
+   0.300038,
+   0.299996
+  ],
+  "forced_sneak": [
+   0.300038,
+   0.299996
+  ],
+  "crawl": [
+   0.300038,
+   0.299996
+  ],
+  "sneak+ss3": [
+   0.300038,
+   0.738035
+  ],
+  "sneak+ss3_held": [
+   0.300038,
+   0.738035
+  ],
+  "crawl+ss3": [
+   0.750016,
+   0.749973
+  ]
+ },
+ "air": {
+  "air_walk": 1.000385,
+  "air_sneak_ss0": 0.299726,
+  "air_sneak_ss1": 0.299726,
+  "air_sneak_ss2": 0.299726,
+  "air_sneak_ss3": 0.299726
+ },
+ "corner": {
+  "inset_limit": 207.725,
+  "diag": [
+   208.271042,
+   258.274506
+  ],
+  "axis_x": [
+   208.272644,
+   252.5
+  ],
+  "axis_z": [
+   200.5,
+   258.272644
+  ]
+ }
+}
+Saved: out\sneaking-crawling-tail-1.26.51.01.json
+
+# --- stderr ---
+

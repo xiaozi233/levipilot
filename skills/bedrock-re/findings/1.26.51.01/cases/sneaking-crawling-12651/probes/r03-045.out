@@ -1,0 +1,19 @@
+# command: py -3.11 driver/dev.py exec "py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py"
+# cwd: <repo>
+# started: 2026-11-26T18:01:03Z
+# exit: 1
+# --- stdout ---
+attaching to Minecraft.Windows.exe (pid=2760)
+already in world; skipping menu/world entry
+exec: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling.py
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 761, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sneaking-crawling-12651\probes\verify_sneaking_crawling.py", line 697, in main
+    assert not h2_after["swimming"], h2_after
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'tick': 5188, 'feet_y': -40.722991943359375, 'head_y': -40.42298889160156, 'sneaking': False, 'input_sneak': False, 'swimming': True, 'sprinting': True, 'size': [0.600006, 0.599998, 0.600006], 'height': 0.599998, 'x': 240.5, 'z': 221.6999969482422, 'health': 20.0}
+

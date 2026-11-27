@@ -1,0 +1,91 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sneaking-crawling-12651/probes/verify_sneaking_crawling_tail.py
+# cwd: <repo>
+# started: 2026-11-27T09:14:37Z
+# exit: 0
+# --- stdout ---
+{
+ "ground": {
+  "walk": [
+   1.000073,
+   1.0
+  ],
+  "sneak": [
+   0.300038,
+   0.299996
+  ],
+  "forced_sneak": [
+   0.300038,
+   0.299996
+  ],
+  "crawl": [
+   0.300038,
+   0.299996
+  ],
+  "sneak+ss3": [
+   0.300038,
+   0.738035
+  ],
+  "sneak+ss3_held": [
+   0.750016,
+   0.749973
+  ],
+  "crawl+ss3": [
+   0.750016,
+   0.749973
+  ]
+ },
+ "air": {
+  "air_walk": [
+   1.000179,
+   1.0
+  ],
+  "air_sneak_ss0": [
+   0.299665,
+   0.300404
+  ],
+  "air_sneak_ss1_held": [
+   0.449886,
+   0.450166
+  ],
+  "air_sneak_ss1_new": [
+   0.299665,
+   0.450135
+  ],
+  "air_sneak_ss2_held": [
+   0.600107,
+   0.600255
+  ],
+  "air_sneak_ss2_new": [
+   0.299665,
+   0.600574
+  ],
+  "air_sneak_ss3_held": [
+   0.749551,
+   0.750072
+  ],
+  "air_sneak_ss3_new": [
+   0.299665,
+   0.750306
+  ]
+ },
+ "corner": {
+  "inset_limit": 208.275,
+  "inset_limit_z": 258.275,
+  "diag": [
+   208.271042,
+   258.274506
+  ],
+  "axis_x": [
+   208.272644,
+   252.5
+  ],
+  "axis_z": [
+   200.5,
+   258.272644
+  ]
+ }
+}
+Saved: out\sneaking-crawling-tail-1.26.51.01.json
+
+# --- stderr ---
+

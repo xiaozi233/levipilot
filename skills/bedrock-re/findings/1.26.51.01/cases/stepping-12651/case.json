@@ -1,10 +1,10 @@
 {
   "case": "stepping-12651",
   "version": "1.26.51.01",
-  "goal": "返工第 2 轮：补全 AutoStepFilterSystem 准入/天花板过滤/跳跃冷却静态闭环，重测落地拍 Solid Blip、Step-Assist Jump Cancel、点按与台阶 Grind",
+  "goal": "Round 3 尾项收口：静态闭合 ClientVariableMaxAutoStepSystem 0x1428ce9f0 三值条件、求解器另一消费者 0x1482d4710 系统名与点按 3 tick 落地重触发时序；实机补测 0.5625~0.625 精细高度、矮檐跨台阶、连续天花板+台阶连锁与潜行/飞行步高对照",
   "environment": "",
-  "current_round": 2,
+  "current_round": 3,
   "status": "closed",
   "created_at": "2026-11-25T08:53:36Z",
-  "updated_at": "2026-11-25T10:11:27Z"
+  "updated_at": "2026-11-27T11:41:04Z"
 }

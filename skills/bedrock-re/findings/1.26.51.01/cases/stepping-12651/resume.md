@@ -1,10 +1,10 @@
 # resume: stepping-12651
 
 - version: `1.26.51.01`
-- goal: 返工第 2 轮：补全 AutoStepFilterSystem 准入/天花板过滤/跳跃冷却静态闭环，重测落地拍 Solid Blip、Step-Assist Jump Cancel、点按与台阶 Grind
+- goal: Round 3 尾项收口：静态闭合 ClientVariableMaxAutoStepSystem 0x1428ce9f0 三值条件、求解器另一消费者 0x1482d4710 系统名与点按 3 tick 落地重触发时序；实机补测 0.5625~0.625 精细高度、矮檐跨台阶、连续天花板+台阶连锁与潜行/飞行步高对照
 - environment: -
-- current round: 2
-- last record: r02-015
+- current round: 3
+- last record: r03-023
 - journal: `skills/bedrock-re/findings/1.26.51.01/cases/stepping-12651/journal.jsonl`
 
 ## Confirmed (static closure required)
@@ -16,6 +16,10 @@
 - r02-009: AutoStepFilterSystem worker 0x149048220 的完整准入条件是 maxAutoStep > 0 且发生水平碰撞，且 isFlying（MovementAbilitiesComponent +4 bit0）、落地拍（mPreCollisionSpeed.y < 0 && mSpeed.y != mPreCollisionSpeed.y）、has<OnGroundFlagComponent>、has<CanAlwaysAutoStepFlagComponent> 四者之一，之后才 emplace AutoStepRequestFlagComponent。 [code; driver/pe_map.py --func 0x149048220 / 0x149048ab0 / 0x149048e70 与 --ecs-hash 0xc29078a0 / 0x6de78dc5 / 0x91e56036 / 0xbaa9695a；SDK 头 refs/levilamina-26.51.7/src/mc/deps/vanilla_components/MoveRequestComponent.h；cases/stepping-12651/probes/verify_stepping.py 复现。]
 - r02-010: AutoStepSystem 0x149049700 在把临时碰撞盒交给两次 0x1482a4890 试探之前，会先剔除 box.min.y >= mOriginalAABBShape.max.y 的天花板盒；采纳前再对未过滤的完整 mCollisionShapes 做终态 AABB 相交复核。 [code; driver/pe_map.py --func 0x149049700 与 --xrefs 0x1482a4890（5 处调用点）；SDK 头 refs/levilamina-26.51.7/src/mc/deps/vanilla_components/MoveRequestComponent.h（mOriginalAABBShape +0x00、mCollisionShapes +0x58）；cases/stepping-12651/probes/verify_stepping.py 的 low_ceiling_step_* 对照。]
 - r02-011: 10 tick 连跳冷却的载体是 MobJumpComponent::mNoJumpDelay（组件 0xc52c8f78，偏移 +0x10，int，池步长 0x14）：起跳时置 10、每拍递减、减到 0 才允许再跳；松开跳跃键经 ResetNoJumpDelaySystem 清零，因此冷却只在长按不松时生效。 [constant; driver/pe_map.py --func 0x1495ea890 / 0x14961b5f0 / 0x149621750 / 0x14c5f72c0、--disasm 0x1495ea882 / 0x1495ea9ed / 0x1495eac38 / 0x14961b7ca / 0x1495eae70、--ecs-hash 0xc52c8f78 / 0x8fd20e98、--find-str DecrementNoJumpDelaySystem / ResetNoJumpDelaySystem / MobJumpSystem / JumpInputSystem；SDK 头 refs/levilamina-26.51.7/src/mc/entity/components/MobJumpComponent.h；cases/stepping-12651/probes/verify_stepping.py 的 held/tap 对照。]
+- r03-017: ClientVariableMaxAutoStepSystem 回调 0x1428ce9f0 只在三种来源间选择 MaxAutoStepComponent：默认 mBaseValue 0.5625；mJumpPreventedValue 0.5625（+8）在 has<ControlledByLocalInstanceComponent> 且脚下方块带 PreventsJumping(0x40000000)，或（脚下方块带 Carpet(0x80) 或 floor(feet.y)>=AABB.min.y）且下方一格带 PreventsJumping 时生效；mControlledValue 1.0625（+4）在 has<VehicleComponent> 且乘客数 > ActorDataControllingSeatIndex 且 ActorDataFlag bit44 WasdControlled 时生效；实体无 VariableMaxAutoStepComponent 时按 mHardcodedClientSide 决定用 .rdata 默认值还是写 0。 [code; driver/ida.py decompile 0x1428ce9f0 / 0x1428d2480 / 0x1428d0e40 / 0x1428d2280；driver/ida.py call get_bytes 0x14e83aaa0（.rdata 三条 0.5625/1.0625/0.5625 与 mHardcodedClientSide）；driver/pe_map.py --ecs-hash 0x759e3440/0x161f61ea/0x630d515f/0xc67426f3/0x45ecc051 与 --ecs-find；SDK 头 refs/levilamina-26.51.7/src/mc/world/actor/ActorFlags.h、.../block/BlockProperty.h、.../components/VehicleComponent.h、.../components/ActorDataControllingSeatIndexComponent.h；实机对照 probes/verify_stepping_tail.py 的 0.59375/0.625 边界与 0.5625 姿态组。]
+- r03-018: 0x1482d4710（vtable 0x14ea1a4c0）是 ClientAcceptanceSystem 的 per-entity worker，不是第二个上台阶系统：它由 0x1482a4d00 在 0x14681b78b 注册（同函数还注册 SetPlayerAcceptanceCooldown / SetPlayerPassengerAcceptanceCooldown，位于 AutoStepSystem 之后、FinalizeMoveSystem 之前），消费 ServerPlayerCurrentMovementComponent(0xaf78dfa4) 与 ClientAcceptanceThresholdsComponent(0x759e3440)，用共享求解器 0x1482a4890 先竖直 count=1、再水平 count=2 把服务端权威位置偏差夹到碰撞几何上；没有 Y↑step 试探、不读 MaxAutoStep。 [code; driver/ida.py decompile 0x1482a4d00 / 0x1482d4460 / 0x1482d4fc0 / 0x1482d5330 / 0x1482d4710 / 0x1482a4890；driver/ida.py call get_bytes 0x14ea1a4c0（slot[5]=0x1482d4fc0、slot[6]=0x1482d5330）；driver/pe_map.py --xrefs 0x1482d4710 / 0x1482a4d00、--find-u32 0x482d5330、--ecs-find ServerPlayerCurrentMovementComponent / ClientAcceptanceThresholdsComponent；SDK 头 refs/levilamina-26.51.7/src/mc/entity/systems/ClientAcceptanceSystem.h 与 .../components/ClientAcceptanceThresholdsComponent.h。]
+- r03-019: 点按 2 格矮顶下 3 tick 一跳的静态时序：同一 tick 内 JumpInputSystem 按输入增删 MobIsJumpingFlagComponent，DecrementNoJumpDelaySystem 递减 MobJumpComponent::mNoJumpDelay，MobJumpSystem 仅在 delay==0 时放行并置 10，JumpFromGroundSystem 写 mPosDelta.y=+0.42，ResetNoJumpDelaySystem 在松键拍把 delay 清零；落地发生在 T+2 的移动阶段、FinalizeMoveSystem 在 tick 末尾才置 OnGround，故最早 T+3 可再次起跳，逐行为 +0.42 -> +0.2 -> -0.0784 -> -0.1216 落地同拍重触发。 [code; driver/pe_map.py --find-str/--xrefs 0x1468203da/0x146823b8d/0x146823ce0/0x146823ebf/0x14682414e 与 --func 0x14681ac20；driver/ida.py decompile 0x14c5f72c0（JumpInputSystem）/0x1495ea890（MobJump 区域）/0x1495e9200（JumpFromGroundSystem）/0x14961b5f0（Decrement）/0x149621750（Reset 视图与 0x1495eae70 清零）/0x1482a4890（Y 轴扫描夹取）；复用 r02-011 的 mNoJumpDelay 偏移与组件哈希；probes/verify_stepping_tail.py 的 tap_three_tick 逐行断言。]
+- r03-020: 1.26.51.01 的有效自动步高精确为 maxAutoStep=0.5625：0.5/0.5625 可平走，0.59375（横置铁链真实碰撞顶面）与 0.625 被挡；getMaxCollisionVolume 的 1.01 只把向下搜索下界扩到 0.568125，AutoStepSystem 抬升数组 Y 分量是 maxAutoStep 原值，采纳比较 dx²+dz² > mSpeed.x²+mSpeed.z² 为严格大于。 [code; driver/ida.py decompile 0x14b177650（v19=*a3*1.01、y 下界减 v19）；driver/pe_map.py --disasm 0x149049860..0x149049af0（(0,step,0)/(pre.x,0,0)/(0,0,pre.z) 数组、addss/mulss/ucomiss/jbe）；driver/pe_map.py --func 0x149049700（终点未过滤全表复核）；probes/verify_stepping_tail.py 的四档高度扫描与 sprint 对照。]
 
 ## Open / pending
 
@@ -25,10 +29,13 @@
 - r02-013: 紧贴 0.42 < h <= 0.5625 台阶前沿（或矮天花板前缘）起跳时，+0.42 起跳被 Step-Assist 整拍替换：玩家被直接放到台阶顶面（垂直位移等于台阶高）或保持地面，水平速度全速保留，且下一次落地拍点按可立即重跳。 (live-only)
 - r02-014: 把首次水平碰撞对齐到落地同一拍后，基岩版 1.26.51.01 存在保速固体 Blip：落地/接触同拍水平速度与无台阶控制组完全一致，且当拍一步抬到 0.5625 台阶顶面。 (live-only)
 - r02-015: 2 格矮天花板下点按跳跃显著快于长按：按 1 拍/松 1 拍可达每 3 tick 一跳（3 次重复共 35 次冲量、间隔 3~5 tick）、max_vz = 0.631786；长按 24 拍只有 10 tick 间隔、max_vz = 0.482189；连续 0.5 台阶阶梯点按未能连锁 Jump Cancel（间隔 12~15 tick）。 (live-only)
+- r03-022: 第 3 轮实机尾项：横置铁链 0.59375 是 0.5625/0.625 之间的真实碰撞顶面且被挡；潜行与创造飞行均保留 0.5625 自动步高（潜行 0.5625 可上、0.625 被挡；飞行 0.5625 可上）；0.5 台阶+空档+2 格矮顶前缘的周期 6 组合点按 1/2 产生 10 次冲量、间隔 4~14 tick，优于纯 0.5 阶梯（10~14）但不如纯矮顶前缘（4~6）稳定。 (live-only)
+- r03-023: 连续矮天花板前缘 + 0.5 台阶的组合几何能连锁触发 Jump Cancel，但不如纯矮顶稳定：周期 6 布局（0.5 台阶两格 -> 一格空档 -> 两格 0.2 净空矮顶前缘 -> 一格空档）以 1/2 点按产生 10 次冲量、间隔 4~14 tick，同场纯 0.5 阶梯为 10~14 tick、纯矮顶前缘为 4~6 tick；组合的最大推进约 16 格。 (live-only)
 
 ## Retracted / errata
 
 - r02-008 (erratum of r01-006): 撤回第 1 轮 r01-006「1.26.51.01 无 JE 1.8 式固体 Blip / Ceiling Blip；Jump Cancel 把 +0.42 裁成 +0.2；Grind 是 10 tick 一次的冲量周期」：三处结论均为夹具/测法/静态漏读造成的假阴性。 [refuted] — 原命题: 1.26.51.01 无 JE 1.8 式固体 Blip / Ceiling Blip；Jump Cancel 把 +0.42 裁成实际 +0.2；Grind 是 10 tick 一次的冲量周期而非每拍 +0.2。
+- r03-021 (erratum of -): 原 §8 推断「从矮天花板下向外跨上无顶台阶时，BE 因试探前预删 box.min.y>=origAABB.max.y 的原头顶盒而可以穿檐走上」不成立：终点复核遍历未过滤的完整 mCollisionShapes，候选 AABB 仍与身后矮顶水平重叠时拒绝；矮顶直接压在台阶前缘被拒（max_z=1413.699951），矮顶提前一格结束才可上（max_feet_y=-59.5）。 [refuted]
 
 ## Next actions
 

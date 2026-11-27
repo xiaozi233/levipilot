@@ -326,6 +326,13 @@ void ProbeMod::serverLoop() {
                 mInputSession.hardwareLocked.store(false, std::memory_order_relaxed);
                 bootLog("input_lock: released (no client)");
             }
+            if (!connected) {
+                bool const hadCursor = mSuppressCursorGrab.exchange(false, std::memory_order_relaxed);
+                bool const hadFocus  = mSuppressFocusPause.exchange(false, std::memory_order_relaxed);
+                if (hadCursor || hadFocus) {
+                    bootLog("focus_cfg: released (no client)");
+                }
+            }
 
             if (!connected) {
                 mPipeAuthed.store(mPipeToken.empty(), std::memory_order_release);
@@ -355,6 +362,17 @@ void ProbeMod::serverLoop() {
                 if (mInputSession.lockOnConnect.load(std::memory_order_relaxed)) {
                     mInputSession.hardwareLocked.store(true, std::memory_order_relaxed);
                     bootLog("input_lock: armed (client connected)");
+                }
+                bool const armCursor = mSuppressCursorGrabOnConnect.load(std::memory_order_relaxed);
+                bool const armFocus  = mSuppressFocusPauseOnConnect.load(std::memory_order_relaxed);
+                if (armCursor) {
+                    mSuppressCursorGrab.store(true, std::memory_order_relaxed);
+                }
+                if (armFocus) {
+                    mSuppressFocusPause.store(true, std::memory_order_relaxed);
+                }
+                if (armCursor || armFocus) {
+                    bootLog("focus_cfg: armed (client connected)");
                 }
                 // Do not drop rows accumulated while no client was attached:
                 // rotate them to the spool first, then deliver them on this
@@ -456,6 +474,8 @@ void ProbeMod::serverLoop() {
     }
 
     mInputSession.hardwareLocked.store(false, std::memory_order_relaxed);
+    mSuppressCursorGrab.store(false, std::memory_order_relaxed);
+    mSuppressFocusPause.store(false, std::memory_order_relaxed);
 }
 
 

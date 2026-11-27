@@ -607,24 +607,40 @@ class RunAttachAndExecTests(unittest.TestCase):
         exe = Path("D:/game/Minecraft.Windows.exe")
         client = MagicMock()
         client.status.return_value = {"in_world": True}
-        client.focus_cfg.side_effect = lambda **kw: (
-            events.append(f"focus_cfg:{sorted(kw.items())}") or {"ok": True}
-        )
+
+        def record_focus_cfg(**kw: object) -> dict[str, object]:
+            events.append(f"focus_cfg:{sorted(kw.items())}")
+            return {
+                "ok": True,
+                "suppress_cursor_grab_on_connect": False,
+                "suppress_focus_pause_on_connect": False,
+            }
+
+        client.focus_cfg.side_effect = record_focus_cfg
         client.close.side_effect = lambda: events.append("close")
+
+        def run_side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            events.append(f"run:{args[0]}")
+            return subprocess.CompletedProcess("echo hi", 0)
 
         with (
             patch.object(dev, "game_pids", return_value=[123]),
             patch.object(dev, "ModClient") as factory,
-            patch.object(
-                dev.subprocess, "run", return_value=subprocess.CompletedProcess("echo hi", 0)
-            ) as sub_run,
+            patch.object(dev.subprocess, "run", side_effect=run_side_effect) as sub_run,
         ):
             factory.return_value.connect.return_value = client
             code = dev.main(["exec", "echo hi", "--exe", str(exe), "--background"])
         self.assertEqual(code, 0)
         self.assertEqual(
             events,
-            ["focus_cfg:[('suppress_cursor_grab', True), ('suppress_focus_pause', True)]", "close"],
+            [
+                "focus_cfg:[]",
+                "focus_cfg:[('on_connect', True), ('suppress_cursor_grab', True), ('suppress_focus_pause', True)]",
+                "close",
+                "run:echo hi",
+                "focus_cfg:[('on_connect', True), ('suppress_cursor_grab', False), ('suppress_focus_pause', False)]",
+                "close",
+            ],
         )
         sub_run.assert_called_once_with("echo hi", shell=True)
 

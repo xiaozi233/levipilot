@@ -395,7 +395,7 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
         return true;
     }
     if (cmd == "focus_cfg") {
-        for (char const* key : {"background_guard", "suppress_cursor_grab", "suppress_focus_pause"}) {
+        for (char const* key : {"background_guard", "suppress_cursor_grab", "suppress_focus_pause", "on_connect"}) {
             if (j.contains(key) && !j[key].is_boolean()) {
                 enqueue(
                     nlohmann::json{
@@ -407,28 +407,39 @@ bool ProbeMod::dispatchInputCommand(std::string const& cmd, nlohmann::json& j) {
                 return true;
             }
         }
+        bool const onConnect = j.value("on_connect", false);
         if (j.contains("background_guard")) {
             mBackgroundGuard.store(j["background_guard"].get<bool>(), std::memory_order_relaxed);
         }
         if (j.contains("suppress_cursor_grab")) {
-            mSuppressCursorGrab.store(j["suppress_cursor_grab"].get<bool>(), std::memory_order_relaxed);
+            bool const val = j["suppress_cursor_grab"].get<bool>();
+            mSuppressCursorGrab.store(val, std::memory_order_relaxed);
+            if (onConnect) {
+                mSuppressCursorGrabOnConnect.store(val, std::memory_order_relaxed);
+            }
         }
         if (j.contains("suppress_focus_pause")) {
-            mSuppressFocusPause.store(j["suppress_focus_pause"].get<bool>(), std::memory_order_relaxed);
+            bool const val = j["suppress_focus_pause"].get<bool>();
+            mSuppressFocusPause.store(val, std::memory_order_relaxed);
+            if (onConnect) {
+                mSuppressFocusPauseOnConnect.store(val, std::memory_order_relaxed);
+            }
         }
         if (!allowCursorClip()) {
             ClipCursor(nullptr);
         }
         enqueue(
             nlohmann::json{
-                {"event",                "focus_cfg"                                           },
-                {"ok",                   true                                                  },
-                {"background_guard",     mBackgroundGuard.load(std::memory_order_relaxed)      },
-                {"suppress_cursor_grab", mSuppressCursorGrab.load(std::memory_order_relaxed)   },
-                {"suppress_focus_pause", mSuppressFocusPause.load(std::memory_order_relaxed)   },
-                {"foreground",           detail::isGameForeground()                            },
-                {"cursor_hooked",        mLifecycleCursorHooked.load(std::memory_order_relaxed)},
-                {"focus_hooked",         mLifecycleFocusHooked.load(std::memory_order_relaxed) }
+                {"event",                           "focus_cfg"                                                 },
+                {"ok",                              true                                                        },
+                {"background_guard",                mBackgroundGuard.load(std::memory_order_relaxed)            },
+                {"suppress_cursor_grab",            mSuppressCursorGrab.load(std::memory_order_relaxed)         },
+                {"suppress_focus_pause",            mSuppressFocusPause.load(std::memory_order_relaxed)         },
+                {"suppress_cursor_grab_on_connect", mSuppressCursorGrabOnConnect.load(std::memory_order_relaxed)},
+                {"suppress_focus_pause_on_connect", mSuppressFocusPauseOnConnect.load(std::memory_order_relaxed)},
+                {"foreground",                      detail::isGameForeground()                                  },
+                {"cursor_hooked",                   mLifecycleCursorHooked.load(std::memory_order_relaxed)      },
+                {"focus_hooked",                    mLifecycleFocusHooked.load(std::memory_order_relaxed)       }
         }.dump()
         );
         return true;

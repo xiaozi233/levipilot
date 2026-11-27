@@ -150,7 +150,8 @@ SKIP 仍保留在分母中。`--violation-only` 只验证合成记录，不是�
   `MoveInputComponent`、queue/handler 重发或 `jumpFromGround` 恢复成默认路径；legacy
   `mode`/`jump_impulse` 只允许 `input_cfg force=true` 的对照实验。
 - 输入锁丢弃真实硬件来源，注入仍可工作：`hid`=Virtual，`hardware`=Hardware+注入标记，
-  `raw`=Hardware 无标记。配置的 `lock_input` 只在客户端连着时生效，断开自动解锁。
+  `raw`=Hardware 无标记。配置的 `lock_input`、`suppress_cursor_grab` 与 `suppress_focus_pause`
+  都只在客户端连着时生效（或经 `focus_cfg(..., on_connect=True)` 随连接自动启用），断开自动解除并恢复鼠标锁定。
 - 双击空格飞行要求 Hardware origin 且按下跨 tick，使用 `lab.double_space_fly()`。能力门是
   `MayFly`；切换游戏模式会重置能力。
 - 实验先 `lab.settle(...)` 验证地面、静止、水中和 sprint 前提，不用裸 `sleep` 代替。

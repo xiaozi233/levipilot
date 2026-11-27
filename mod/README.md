@@ -80,7 +80,7 @@ Python `ModClient` / `Harness` 的 `watch_drain()`、`hook_drain()` 默认从安
 | `click` | `button=left/right,reach`；实际破坏/放置效果须回读 |
 | `select_slot` | `slot=0..8`；接受与 `select_slot_done` 分离 |
 | `input_lock` | `on`；锁真实硬件输入，注入照常；断开客户端自动解锁 |
-| `focus_cfg` | 查询或切换 `background_guard`、`suppress_cursor_grab`（前置拦截 `ClipCursor`/`grabMouse`）、`suppress_focus_pause`（抑制失焦暂停），并返回 `cursor_hooked`/`focus_hooked` |
+| `focus_cfg` | 查询或切换 `background_guard`、`suppress_cursor_grab`（前置拦截 `ClipCursor`/`grabMouse`）、`suppress_focus_pause`（抑制失焦暂停）及可选 `on_connect`（随客户端连接自动启用），并返回 `cursor_hooked`/`focus_hooked` |
 | `fly` / `togglefly` | 飞行与 `MayFly`；服务端写、客户端回读，游戏内也可用 `/togglefly` |
 
 ### 封包与网络诊断
@@ -199,7 +199,7 @@ profile、生命周期、pipe 写入超时和诊断统计。
 `auto_enter` 等安全世界列表且游戏在前台后进入。`background_guard` 忽略后台真实鼠标转向与后台光标锁定（`ClipCursor`/`grabMouse`），不拦 mod 注入；`suppress_cursor_grab` 可选在前台也阻止抓鼠标居中，`suppress_focus_pause` 可选屏蔽失焦暂停（`onAppFocusLost`）。各 `allow_*` 分别控制内存写、崩溃测试、VA hook、压力测试、观察点、输入注入
 和封包能力，默认应按最小权限开启。
 
-`lock_input` 只在 harness 客户端连接时生效，断开自动解锁；没有人连接时不会锁住手动 UI。
+`lock_input`、`suppress_cursor_grab` 与 `suppress_focus_pause` 都只在 harness 客户端连接时生效（可在 `harness.json` 中配置或经 `focus_cfg(..., on_connect=True)` 设成随连接自动启用），客户端断开即自动解除并恢复光标捕获；没有人连接时不会锁住手动 UI 或破坏正常锁鼠标。
 `signin_wait_ms=0` 表示只检查一次登录态。不需要配置时删除文件即可。
 
 ## 使用限制

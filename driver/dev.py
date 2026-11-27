@@ -456,6 +456,11 @@ def install_mod(version_dir: Path) -> None:
     log(f"installed mod -> {dst}")
 
 
+_RUN_SCOPED_CONFIG_KEYS = frozenset(
+    {"auto_enter", "options", "suppress_cursor_grab", "suppress_focus_pause"}
+)
+
+
 def write_auto_config(
     mod_dir: Path,
     world: str | None,
@@ -472,9 +477,10 @@ def write_auto_config(
     ``allow_hook_va`` or a hand-written ``events`` switch must not vanish just
     because this run only passed ``--allow allow_input_inject=1``. The first
     version of the file is kept as ``harness.json.prev`` so
-    ``dev.py restore-config`` can put it back; ``auto_enter``/``options`` are
-    owned by this function and are dropped/updated explicitly (a stale
-    auto_enter races with the explicit ``enter_world`` below).
+    ``dev.py restore-config`` can put it back; ``auto_enter``, ``options``,
+    ``suppress_cursor_grab``, and ``suppress_focus_pause`` are run-scoped keys
+    owned by this function and are dropped unless passed for the current run
+    (so non-``--background`` runs clear stale background focus suppression).
     """
     mod_dir.mkdir(parents=True, exist_ok=True)
     path = mod_dir / "harness.json"
@@ -492,11 +498,11 @@ def write_auto_config(
         if not backup.exists():
             shutil.copy2(path, backup)
 
-    if not world and not options and not allow and not {"auto_enter", "options"} & previous.keys():
+    if not world and not options and not allow and not _RUN_SCOPED_CONFIG_KEYS & previous.keys():
         return
 
     config: dict[str, object] = {
-        key: value for key, value in previous.items() if key not in {"auto_enter", "options"}
+        key: value for key, value in previous.items() if key not in _RUN_SCOPED_CONFIG_KEYS
     }
     config.setdefault("delay_ms", 2000)
     if world:
@@ -700,12 +706,25 @@ def run(args: argparse.Namespace) -> int:
                 _log_isolated_desktop_hint()
 
     exit_code = 0
+    restore_focus_on_connect: tuple[bool, bool] | None = None
     try:
         client = ModClient(connect_timeout=90.0, timeout=20.0).connect()
         try:
             client.wait_ready(timeout=90.0, require_world=False)
             if background:
-                fc = client.focus_cfg(suppress_cursor_grab=True, suppress_focus_pause=True)
+                if attach and exec_cmd:
+                    orig_fc = client.focus_cfg()
+                    restore_focus_on_connect = (
+                        bool(orig_fc.get("suppress_cursor_grab_on_connect", False)),
+                        bool(orig_fc.get("suppress_focus_pause_on_connect", False)),
+                    )
+                    fc = client.focus_cfg(
+                        suppress_cursor_grab=True,
+                        suppress_focus_pause=True,
+                        on_connect=True,
+                    )
+                else:
+                    fc = client.focus_cfg(suppress_cursor_grab=True, suppress_focus_pause=True)
                 log(f"background focus_cfg: {fc}")
             already_in_world = False
             if attach:
@@ -734,6 +753,20 @@ def run(args: argparse.Namespace) -> int:
             exec_result = subprocess.run(exec_cmd, shell=True)
             exit_code = int(exec_result.returncode)
     finally:
+        if restore_focus_on_connect is not None and not stop_after:
+            orig_grab, orig_pause = restore_focus_on_connect
+            try:
+                restore_client = ModClient(connect_timeout=5.0, timeout=10.0).connect()
+                try:
+                    restore_client.focus_cfg(
+                        suppress_cursor_grab=orig_grab,
+                        suppress_focus_pause=orig_pause,
+                        on_connect=True,
+                    )
+                finally:
+                    restore_client.close()
+            except (ModPipeError, ModTimeout, OSError) as exc:
+                log(f"warning: failed to restore background focus_cfg: {exc}")
         if stop_after:
             kill_game(exe)
     return exit_code

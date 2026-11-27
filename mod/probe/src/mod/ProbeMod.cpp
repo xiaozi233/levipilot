@@ -260,6 +260,10 @@ bool ProbeMod::disable() {
     packetCaptureStop();
     // Never leave the game with real input dropped after an unload.
     mInputSession.hardwareLocked = false;
+    mSuppressCursorGrab          = false;
+    mSuppressFocusPause          = false;
+    mSuppressCursorGrabOnConnect = false;
+    mSuppressFocusPauseOnConnect = false;
 
     if (mMouseListener) {
         ll::event::EventBus::getInstance().removeListener<ll::event::input::MouseInputEvent>(mMouseListener);
@@ -367,19 +371,25 @@ void ProbeMod::loadAutoConfig() {
         auto const  autoWorld   = readString("auto_enter", "");
         auto const  autoDelayMs = std::clamp(readInt("delay_ms", 2000), 0, 60000);
         std::string autoOptions;
-        mBackgroundGuard          = readBool("background_guard", true);
-        mSuppressCursorGrab       = readBool("suppress_cursor_grab", false);
-        mSuppressFocusPause       = readBool("suppress_focus_pause", false);
-        mAllowMemoryRead          = readBool("allow_mem_read", true);
-        mAllowMemoryWrite         = readBool("allow_write", false);
-        mAllowToggleFly           = readBool("allow_togglefly", true);
-        mAllowCrashTest           = readBool("allow_crash_test", false);
-        mAllowHookVa              = readBool("allow_hook_va", false);
-        mAllowSelftestStress      = readBool("allow_selftest_stress", false);
-        mAllowWatch               = readBool("allow_watch", true);
-        mAllowPacketCapture       = readBool("allow_packet_capture", false);
-        mAllowPacketInject        = readBool("allow_packet_inject", false);
-        mInputSession.allowInject = readBool("allow_input_inject", false);
+        mBackgroundGuard = readBool("background_guard", true);
+        // Armed by serverLoop() when a client connects, not here: leaving
+        // suppress_cursor_grab / suppress_focus_pause active with no client
+        // connected (manual play after a --background run) breaks normal
+        // mouse capture and cursor clipping.
+        mSuppressCursorGrabOnConnect = readBool("suppress_cursor_grab", false);
+        mSuppressFocusPauseOnConnect = readBool("suppress_focus_pause", false);
+        mSuppressCursorGrab          = false;
+        mSuppressFocusPause          = false;
+        mAllowMemoryRead             = readBool("allow_mem_read", true);
+        mAllowMemoryWrite            = readBool("allow_write", false);
+        mAllowToggleFly              = readBool("allow_togglefly", true);
+        mAllowCrashTest              = readBool("allow_crash_test", false);
+        mAllowHookVa                 = readBool("allow_hook_va", false);
+        mAllowSelftestStress         = readBool("allow_selftest_stress", false);
+        mAllowWatch                  = readBool("allow_watch", true);
+        mAllowPacketCapture          = readBool("allow_packet_capture", false);
+        mAllowPacketInject           = readBool("allow_packet_inject", false);
+        mInputSession.allowInject    = readBool("allow_input_inject", false);
         // Armed by serverLoop() when a client connects, not here: a lock held from
         // startup (previous script run, stale harness.json) makes the main menu
         // unclickable for the person at the keyboard.
@@ -818,6 +828,11 @@ void ProbeMod::updateFocusState() {
                 }
             }
             mCursorShowCalls += calls;
+        } else if (foreground && !suppressGrab && mCursorShowCalls > 0) {
+            for (int i = 0; i < mCursorShowCalls; ++i) {
+                ShowCursor(FALSE);
+            }
+            mCursorShowCalls = 0;
         }
         return;
     }

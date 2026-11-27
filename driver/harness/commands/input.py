@@ -231,6 +231,7 @@ class InputCommands(PipeMixinBase):
         background_guard: bool | None = None,
         suppress_cursor_grab: bool | None = None,
         suppress_focus_pause: bool | None = None,
+        on_connect: bool | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Configure cursor-centering prevention and background focus-pause suppression."""
@@ -241,4 +242,6 @@ class InputCommands(PipeMixinBase):
             message["suppress_cursor_grab"] = bool(suppress_cursor_grab)
         if suppress_focus_pause is not None:
             message["suppress_focus_pause"] = bool(suppress_focus_pause)
+        if on_connect is not None:
+            message["on_connect"] = bool(on_connect)
         return self.request(message, "focus_cfg", timeout=timeout)

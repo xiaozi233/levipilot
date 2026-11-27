@@ -335,12 +335,13 @@ def _fill_chunks(
 
 
 class LabSession:
-    """Context manager that applies background focus flags and restores world/player state."""
+    """Context manager that locks hardware input, sets focus flags, and restores state."""
 
     def __init__(
         self,
         client: ModClient,
         *,
+        lock_input: bool = True,
         suppress_cursor_grab: bool = True,
         suppress_focus_pause: bool = True,
         restore_position: bool = True,
@@ -349,6 +350,7 @@ class LabSession:
         clear_inventory: bool = False,
     ) -> None:
         self.client = client
+        self.lock_input = lock_input
         self.suppress_cursor_grab = suppress_cursor_grab
         self.suppress_focus_pause = suppress_focus_pause
         self.restore_position = restore_position
@@ -367,6 +369,8 @@ class LabSession:
             suppress_cursor_grab=self.suppress_cursor_grab,
             suppress_focus_pause=self.suppress_focus_pause,
         )
+        if self.lock_input:
+            self.client.input_lock(True)
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -423,6 +427,8 @@ class LabSession:
                     suppress_focus_pause=bool(fc.get("suppress_focus_pause", False)),
                 )
             )
+        if self.lock_input:
+            step(lambda: self.client.input_lock(False))
         if first_error is not None:
             raise first_error
 

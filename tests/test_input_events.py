@@ -33,3 +33,23 @@ class TextInputTests(unittest.TestCase):
         client = FakeClient()
         client._session.stream.lines.put({"event": "text_input_queued"})
         self.assertEqual(client.text_input("abc", wait=True), {"event": "text_input_queued"})
+
+
+class FocusCfgTests(unittest.TestCase):
+    def test_focus_cfg_serializes_on_connect_when_specified(self) -> None:
+        client = FakeClient()
+        client._session.stream.lines.put({"event": "focus_cfg", "ok": True})
+        client.focus_cfg(
+            suppress_cursor_grab=True,
+            suppress_focus_pause=True,
+            on_connect=True,
+        )
+        self.assertEqual(
+            client.sent[-1],
+            {
+                "cmd": "focus_cfg",
+                "suppress_cursor_grab": True,
+                "suppress_focus_pause": True,
+                "on_connect": True,
+            },
+        )

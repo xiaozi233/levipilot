@@ -82,11 +82,19 @@ class AutoConfigTests(unittest.TestCase):
         self.assertEqual(self.read(), {"allow_input_inject": True})
 
     def test_empty_update_clears_stale_launch_actions_and_can_restore(self) -> None:
-        previous = {"auto_enter": "旧世界", "options": {"gfx_gamma": "1.2"}, "allow_write": True}
+        previous = {
+            "auto_enter": "旧世界",
+            "options": {"gfx_gamma": "1.2"},
+            "suppress_cursor_grab": True,
+            "suppress_focus_pause": True,
+            "allow_write": True,
+        }
         self.path.write_text(json.dumps(previous), encoding="utf-8")
         dev.write_auto_config(self.dir, None, {})
         self.assertNotIn("auto_enter", self.read())
         self.assertNotIn("options", self.read())
+        self.assertNotIn("suppress_cursor_grab", self.read())
+        self.assertNotIn("suppress_focus_pause", self.read())
         self.assertTrue(self.read()["allow_write"])
         self.assertTrue(dev.restore_config(self.dir))
         self.assertEqual(self.read(), previous)

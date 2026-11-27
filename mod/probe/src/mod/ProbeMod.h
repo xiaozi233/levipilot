@@ -467,6 +467,8 @@ private:
     std::atomic_bool                             mBackgroundGuard{true};
     std::atomic_bool                             mSuppressCursorGrab{false};
     std::atomic_bool                             mSuppressFocusPause{false};
+    std::atomic_bool                             mSuppressCursorGrabOnConnect{false};
+    std::atomic_bool                             mSuppressFocusPauseOnConnect{false};
     std::atomic_bool                             mForeground{true};
     detail::ParkourTracker                       mParkourTracker; // Tick-owned; reset on generation changes.
     detail::TickQueue<detail::ParkourEvent, 256> mParkourEvents;

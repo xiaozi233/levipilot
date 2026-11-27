@@ -650,6 +650,7 @@ class RecordWatchAndCleanupTests(unittest.TestCase):
                 "focus_cfg",
                 "state",
                 "focus_cfg",
+                "input_lock",
                 "set_input",
                 "clear_inventory",
                 "command",
@@ -658,9 +659,35 @@ class RecordWatchAndCleanupTests(unittest.TestCase):
                 "wait_ticks",
                 "teleport",
                 "focus_cfg",
+                "input_lock",
             ],
         )
-        self.assertEqual(client.calls[-1][2]["suppress_focus_pause"], False)
+        self.assertEqual(client.calls[3], ("input_lock", (True,), {}))
+        self.assertEqual(client.calls[-2][2]["suppress_focus_pause"], False)
+        self.assertEqual(client.calls[-1], ("input_lock", (False,), {}))
+
+    def test_lab_session_lock_input_opt_out(self) -> None:
+        from driver.harness.lab import LabSession
+
+        class MinimalClient(FakeClient):
+            def focus_cfg(self, **kwargs):
+                self.calls.append(("focus_cfg", (), kwargs))
+                return {"suppress_cursor_grab": False, "suppress_focus_pause": False}
+
+            def state(self):
+                self.calls.append(("state", (), {}))
+                return {"gamemode": 1}
+
+        client = MinimalClient()
+        with LabSession(
+            client,
+            lock_input=False,
+            restore_position=False,
+            restore_gamemode=False,
+        ):
+            pass
+
+        self.assertNotIn("input_lock", [name for name, _, _ in client.calls])
 
     def test_remove_entities_teleports_then_kills(self) -> None:
         from driver.harness.lab import remove_entities

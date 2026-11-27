@@ -1,10 +1,10 @@
 {
   "case": "sprint-12651",
   "version": "1.26.51.01",
-  "goal": "返工 v2：修正疾跑跳 +0.2 真实写入点（JumpFromGroundSystem 0x1495e9200）、补全 5e-5 撞墙判定的组件字段绑定、复现 f65 三区间与 X/Z 墙镜像、修正 Java 对照与延迟归因",
+  "goal": "修正 Round 3 四项验收缺陷：0.01° 细扫分类反转、JumpFromGroundSystem 三处静态误读、PlayerPreMove/Intent/MoveCollision 写读顺序自相矛盾、清理残留与修正计数",
   "environment": "",
-  "current_round": 2,
+  "current_round": 4,
   "status": "closed",
   "created_at": "2026-11-25T03:54:32Z",
-  "updated_at": "2026-11-25T04:57:37Z"
+  "updated_at": "2026-11-27T07:18:08Z"
 }

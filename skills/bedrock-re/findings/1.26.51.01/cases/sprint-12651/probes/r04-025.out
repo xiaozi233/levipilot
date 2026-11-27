@@ -1,0 +1,17 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/sprint-12651/probes/verify_sprint_tail.py
+# cwd: <repo>
+# started: 2026-11-27T07:02:02Z
+# exit: 1
+# --- stdout ---
+fine_bands: {"z": {"stable_angles": [24.43, 24.44, 24.45, 24.46, 24.47, 24.48, 24.49, 24.5], "flicker_angles": [24.38, 24.39, 24.4, 24.41, 24.42], "single_break_angles": [], "broken_angles": [], "other_angles": [], "stable_min": 24.43, "stable_max": 24.5, "flicker_min": 24.38, "flicker_max": 24.42}, "x": {"stable_angles": [65.5, 65.51, 65.52, 65.53, 65.54, 65.55, 65.56, 65.57, 65.58], "flicker_angles": [65.59, 65.6, 65.61, 65.62], "single_break_angles": [], "broken_angles": [], "other_angles": [], "stable_min": 65.5, "stable_max": 65.58, "flicker_min": 65.59, "flicker_max": 65.62}}
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sprint-12651\probes\verify_sprint_tail.py", line 639, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\sprint-12651\probes\verify_sprint_tail.py", line 361, in main
+    assert z_bands["flicker_max"] < theory < z_bands["stable_min"], z_bands
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'stable_angles': [24.43, 24.44, 24.45, 24.46, 24.47, 24.48, 24.49, 24.5], 'flicker_angles': [24.38, 24.39, 24.4, 24.41, 24.42], 'single_break_angles': [], 'broken_angles': [], 'other_angles': [], 'stable_min': 24.43, 'stable_max': 24.5, 'flicker_min': 24.38, 'flicker_max': 24.42}
+

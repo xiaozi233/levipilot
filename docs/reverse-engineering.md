@@ -107,7 +107,7 @@ py -3.11 driver/pe_map.py --rtti <vtable_va>
 
 ```bash
 # 抓 resolver 的 r8（AABB，6 个 float）
-py -3.11 driver/harness/cli.py hook-install --va <runtime VA> --mem-arg 2 --mem-size 24
+py -3.11 -m driver.harness.cli hook-install --va <runtime VA> --mem-arg 2 --mem-size 24
 ```
 
 ```python
@@ -120,6 +120,13 @@ rows[-1].mem_ok       # False = 参数不是可读指针（不会崩）
 约束：`mem_arg` 0..3 对应四个整数寄存器；`mem_size` 4..64、按 4 递增；
 拷贝发生在 detour 里（`VirtualQuery` + `ReadProcessMemory`，无分配），未开启时
 只多一次可分支。VA hook 仍受 `allow_hook_va` 管控。
+
+### 2.3 实验夹具、录制相位与快速迭代
+
+- **`RecordSession` 命名类型解码**：`watch` 槽支持附带可选 `"name"`、`"fmt"`（`u64`/`u32`/`i32`/`f32`/`f64`/`hex`/`bit:<N>`）、`"bits": {"flag": bit_idx}` 与 `"omit_raw": True`；`rec.decoded_watch` 与 `rec.rows` 会自动按槽位展开解码值，无需手写 `struct.unpack`。
+- **`RecordTick` 与 `mPosDelta` 1 拍相位差**：`recordTick` 在 `safeTickPost` 采样，因此同一行里的 `vx/vy/vz`（已完成位移 `mPos - mPosPrev`）反映刚刚跑完的那轮移动，而 watch 读出的 `StateVectorComponent::mPosDelta`（`+0x18..+0x20`）已经包含下一拍输入/跳跃预写入的待用位移（例如按 Space 起跳首帧会看到 `vy=0.0, mpdY=0.2`）。
+- **常用实验夹具（`driver/harness/lab.py`）**：`LabSession` 自动启用并恢复 `focus_cfg`、模式、位置与可选清理框；`heal_clean()` 瞬间回满血后立即清掉残留 `instant_health`；`clear_armor_and_wait()` 轮询 `armor` 清空并额外等待同步拍，避免脱甲 1-tick 伪影。
+- **后台会话复用与结案**：多轮调探针时先用 `py -3.11 driver/dev.py run --world "<world>" --background` 启动后台不暂停实例，之后重复运行 `py -3.11 driver/dev.py exec "py -3.11 ..."`（结束加 `--stop-after`）；`landing.py claim` 会校验 Markdown `#anchor`，定稿后可用 `landing.py end --case <slug> --close` 直接归档。
 
 ---
 
@@ -242,13 +249,6 @@ ActionSprintTrigger 注册在先 ⇒ **写位先于阻力**。旧结论撤回。
 15. **立即数常量没有 xref**：扫描为空时先检查是不是立即数写入，再下“不存在”的结论。
 16. **阈值/门限要读上下文**：例如 0.026/0.02 这种“看起来像 1.3 倍”的表，可能是另一个
     字段（基础加速度），不是最终乘数；最终值要沿数据流追到写入点。
-
-### 2.3 实验夹具、录制相位与快速迭代
-
-- **`RecordSession` 命名类型解码**：`watch` 槽支持附带可选 `"name"`、`"fmt"`（`u64`/`u32`/`i32`/`f32`/`f64`/`hex`/`bit:<N>`）、`"bits": {"flag": bit_idx}` 与 `"omit_raw": True`；`rec.decoded_watch` 与 `rec.rows` 会自动按槽位展开解码值，无需手写 `struct.unpack`。
-- **`RecordTick` 与 `mPosDelta` 1 拍相位差**：`recordTick` 在 `safeTickPost` 采样，因此同一行里的 `vx/vy/vz`（已完成位移 `mPos - mPosPrev`）反映刚刚跑完的那轮移动，而 watch 读出的 `StateVectorComponent::mPosDelta`（`+0x18..+0x20`）已经包含下一拍输入/跳跃预写入的待用位移（例如按 Space 起跳首帧会看到 `vy=0.0, mpdY=0.2`）。
-- **常用实验夹具（`driver/harness/lab.py`）**：`LabSession` 自动启用并恢复 `focus_cfg`、模式、位置与可选清理框；`heal_clean()` 瞬间回满血后立即清掉残留 `instant_health`；`clear_armor_and_wait()` 轮询 `armor` 清空并额外等待同步拍，避免脱甲 1-tick 伪影。
-- **后台会话复用与结案**：多轮调探针时先用 `py -3.11 driver/dev.py run --world "<world>" --background` 启动后台不暂停实例，之后重复运行 `py -3.11 driver/dev.py exec "py -3.11 ..."`（结束加 `--stop-after`）；`landing.py claim` 会校验 Markdown `#anchor`，定稿后可用 `landing.py end --case <slug> --close` 直接归档。
 
 ---
 

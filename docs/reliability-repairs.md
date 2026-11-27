@@ -15,27 +15,34 @@
 
 以下数字只在对应代码、游戏版本（`1.26.51.01`）与权限前提下有效；任何代码或配置变更后都应按影响范围重新运行，不能把旧基线当作未来提交的保证。
 
+### 核心验收基线
+
 | 范围 | 当前结果 | 覆盖重点与前提 |
 | --- | --- | --- |
-| 完整离线 | **496/496**（native ASAN **3/3** 为既有基线，本轮未设 `LEVIPILOT_NATIVE_ASAN`） | Python、native 模型、CLI、协议、安全/格式化检查与资源生命周期；ASAN 回归需显式开启 |
+| 完整离线 | **496/496**（native ASAN **3/3** 为既有基线，近期未设 `LEVIPILOT_NATIVE_ASAN` 重跑） | Python、native 模型、CLI、协议、安全/格式化检查与资源生命周期；ASAN 回归需显式开启 |
 | 静态与文档检查 | `driver/check.py --cpp-format`（**16/16**） | `ruff check`/`format`、`mypy`、`profiles`、`roles`、`lint_public`、`command docs`、机制守卫、`probes ruff`、C++ `clang-format 22.1.8`、Markdown 相对链接；另经 LLVM 22 C++ 构建 |
 | 完整现场 `--require-complete` | **1173/1173**，0 fail、0 skip、0 required skip | 当前默认全套，含权限/空槽前提；未开 `LEVIPILOT_VIOLATION_DUMP`；`packets` 段行走后复位到本段起点，行走不再把跳跃/落地检查带到有顶棚或水中的位置 |
-| 安全与鉴权 `--security-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip（既有历史基线，**本轮未重跑**） | 管道 1-ACE DACL、`pipe_token` 未认证/错令牌拒止、`allow_mem_read=false` 与 `allow_togglefly=false` 及两次热重载完整还原 |
 | 受控空闲真实热重载 `--hot-reload-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip | 最终 DLL 实测：拒绝不存在模块、静默准入、`/ll reload probe` 同 PID 切换代次/日志/六 hook（`cursor/focus/key/mouse/player/turn`）/tick/`/togglefly` 恢复及配置/DLL/crash 一致 |
-| 连接生命周期 `--connection-only --require-complete` | **11/11**，0 fail、0 skip、0 required skip（既有历史基线，**本轮未重跑**） | 弃用句柄、正常与异常退出后的管道释放与重连 |
-| SDK 局部边界 | **69/69**（既有历史基线，未单跑） | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；默认完整现场含相同内核覆盖 |
+| 安全与鉴权 `--security-only --require-complete` | **22/22**，0 fail、0 skip、0 required skip（既有基线，近期未重跑） | 管道 1-ACE DACL、`pipe_token` 未认证/错令牌拒止、`allow_mem_read=false` 与 `allow_togglefly=false` 及两次热重载完整还原 |
+| 连接生命周期 `--connection-only --require-complete` | **11/11**，0 fail、0 skip、0 required skip（既有基线，近期未重跑） | 弃用句柄、正常与异常退出后的管道释放与重连 |
+| 最终环境恢复 | **17/17** | 原配置逐字节恢复并重启加载，姿态/能力/效果/背包/输入回读，四 hook、空回调所有权、DLL 一致和 crash 文件无变化 |
+
+### 局部专项与历史基线
+
+| 范围 | 当前结果 | 覆盖重点与前提 |
+| --- | --- | --- |
+| SDK 局部边界 | **69/69**（既有基线，未单跑） | client/server lookup、submit、run 的 SEH/C++ 故障，唯一失败回执、所有权退休、后续任务及真实 `/togglefly` 恢复；默认完整现场含相同内核覆盖 |
 | 领域效果保留 | **126/126**；进入/退档 **35/35** | 夜视跨查询/聊天退档、宏播放、任务及世界进入恢复仍存在，结束只清理测试效果 |
 | 朝向/传送专项 | **45/45** | 保持 0.1° 容差与连续三个 tick；移除 state 快照之后的额外延迟 |
 | 有界查询/重连 | **8/8** | 四轮共 1040 次查询，约 24–25 次/秒，显式关闭并重连；仅该专项内未复现失联 |
-| `lifecycle-prepare-only --require-complete` | **8/8**，0 fail、0 skip、0 required skip（第 1 轮 C++ 改动后实测，本轮未随 `1b4b672` 重跑） | 持续/到期输入、事件持键、hook 恢复与姿态恢复 |
-| 守望开启时的真实重载 | **25/25**（既有历史基线，本轮未重跑） | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止 |
-| 在途回调竞争专项（`--callback-drain-only`） | **132/132**（既有历史基线，**本轮未重跑**） | 人为延迟回调/同线程卸载拒绝压力专项；本轮仅跑常规热重载与安全重载，未重跑该压力专项 |
+| `lifecycle-prepare-only --require-complete` | **8/8**，0 fail、0 skip、0 required skip（既有基线，最新 C++ 改动后未单跑） | 持续/到期输入、事件持键、hook 恢复与姿态恢复 |
+| 守望开启时的真实重载 | **25/25**（既有基线，近期未重跑） | 旧环 checkpoint、明确观察空窗、新 DLL 环游标归零、重新武装和最终导出/停止 |
+| 在途回调竞争专项（`--callback-drain-only`） | **132/132**（既有基线，近期未重跑） | 人为延迟回调/同线程卸载拒绝压力专项；近期仅跑常规热重载，未重跑该压力专项 |
 | 输入事件专项 | **46/46** | 真实键状态、raw/注入对照、标记恢复和输入释放 |
 | tick 客户端读取恢复 | **55/55** | pre/post 局部 SEH 与既有恢复链，不是整个 tick 的 SEH |
 | 世界进入/退档 | **32/32** | `leave_id`、菜单快照和正常恢复；异常 HBUI 根因不在覆盖内 |
 | 飞行短/长复验 | **50/50** | 效果保留、自然到期、哨兵占用与姿态恢复 |
 | 长录制 | **9/9**（既有记录，近期未复跑） | 同一 `record_id` 的 200000 tick、保存、重载与等待器接续 |
-| 最终环境恢复 | **17/17** | 原配置逐字节恢复并重启加载，姿态/能力/效果/背包/输入回读，四 hook、空回调所有权、DLL 一致和 crash 文件无变化 |
 | 观察点采样与准入专项 | canary **26/26**；准入/撤销 **11/11**；离线回归 **22/22** / **23/23** | `watch_set sample=true`（1/2/4/8 字节、变化值、QPC、tick 相位、默认关闭及撤销），六条件同步入口 202 条；未在全套完整现场中重跑，详见[动态复核](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-raw-velocity-review.md)与[运算顺序动态对质](../skills/bedrock-re/findings/1.26.51.01/cases/liquid-blip/probes/liquid-blip-operation-order.md) |
 | 游标与被动采集器离线回归 | **51/51** | `test_hooks`、`test_delta_watch`、`test_landing`、`test_scenario`：默认/显式游标、交替安装、全局分页后过滤、分轴范围、部分安装失败、context 改变、首错/清理失败与丢失统计；`driver.delta_watch` 尚未现场重采 |
 

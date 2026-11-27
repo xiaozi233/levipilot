@@ -58,20 +58,20 @@ py -3.11 driver/parkour.py attempts --macro route1 \
 
 ## 精确起跳与路点
 
-这些原语在 mod tick 内闭环，Python 只发一次请求，不进入逐 tick 反馈环：
+这些原语在 mod tick 内闭环，Python 只发一次请求，不进入逐 tick 反馈环（旧脚本 `driver/transport_mod.py` 仍向后兼容）：
 
 ```bash
-py -3.11 driver/transport_mod.py jump-when --mode now
-py -3.11 driver/transport_mod.py jump-when --mode tick --after-ticks 5
-py -3.11 driver/transport_mod.py jump-when --mode distance --x 4.5 --z 0.5 \
+py -3.11 -m driver.harness.cli jump-when --mode now
+py -3.11 -m driver.harness.cli jump-when --mode tick --after-ticks 5
+py -3.11 -m driver.harness.cli jump-when --mode distance --x 4.5 --z 0.5 \
     --distance 1.0 --forward 1 --sprint --max-ticks 100
-py -3.11 driver/transport_mod.py jump-when --mode edge
+py -3.11 -m driver.harness.cli jump-when --mode edge
 
-py -3.11 driver/transport_mod.py route '[
+py -3.11 -m driver.harness.cli route '[
   {"x": 3.5, "z": 0.5, "tolerance": 0.4},
   {"x": 3.5, "z": 3.5, "tolerance": 0.4, "jump": "edge"}
 ]'
-py -3.11 driver/transport_mod.py navigate 8.5 0.5 --jump distance --jump-distance 1.0
+py -3.11 -m driver.harness.cli navigate 8.5 0.5 --jump distance --jump-distance 1.0
 ```
 
 - `distance` 会转向目标，`edge` 保留当前朝向；`--yaw` 可显式指定。
@@ -85,10 +85,10 @@ py -3.11 driver/transport_mod.py navigate 8.5 0.5 --jump distance --jump-distanc
 ## 区域扫描、存档点与事件
 
 ```bash
-py -3.11 driver/transport_mod.py scan 0 -50 0 16 -40 16 --limit 4096
-py -3.11 driver/transport_mod.py checkpoint save cp1
-py -3.11 driver/transport_mod.py checkpoint load cp1
-py -3.11 driver/transport_mod.py checkpoint list
+py -3.11 -m driver.harness.cli scan 0 -50 0 16 -40 16 --limit 4096
+py -3.11 -m driver.harness.cli checkpoint save cp1
+py -3.11 -m driver.harness.cli checkpoint load cp1
+py -3.11 -m driver.harness.cli checkpoint list
 ```
 
 - `scan` 跨 tick 执行，每 tick 最多读取 512 格；总量最多 32768 格，结果超过 `limit` 时

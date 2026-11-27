@@ -41,7 +41,9 @@ py -3.11 driver/dev.py run --world "超平坦测试"
 
 # 附着到用户桌面已运行的游戏实例（不强杀重启、不重装 mod，避开隔离桌面 exebox 不可见与失焦暂停）
 py -3.11 driver/dev.py run --attach --world "超平坦测试"
-# 就绪后执行命令；加 --stop-after 在完成后按保存门禁退出游戏
+# --background 开启防抓鼠标/后台防暂停并跳过强抢焦点；exec 可复用已打开的世界快速跑命令
+py -3.11 driver/dev.py run --world "超平坦测试" --background
+py -3.11 driver/dev.py exec "py -3.11 driver/selftest.py --connection-only"
 py -3.11 driver/dev.py run --attach --exec "py -3.11 driver/selftest.py --connection-only" --stop-after
 
 # 手动启动时也可以让 mod 自己进世界：写 mods/probe/harness.json
@@ -52,21 +54,14 @@ py -3.11 driver/dev.py run --write-config --world "超平坦测试"
 py -3.11 driver/dev.py recover --world "超平坦测试"
 # 保存门禁不能确认时默认保留进程；明确放弃未保存更改才添加 --force
 
-# 常用操作（主入口 `driver.harness.cli`；兼容旧脚本 `driver/transport_mod.py` 仍可用）
+# 常用 CLI 操作（主入口 `driver.harness.cli`；兼容旧脚本 `driver/transport_mod.py` 仍可用）
 py -3.11 -m driver.harness.cli ping
 py -3.11 -m driver.harness.cli state
-py -3.11 -m driver.harness.cli chat-history --limit 32
-py -3.11 -m driver.harness.cli worlds
 py -3.11 -m driver.harness.cli enter-world --name "超平坦测试" --wait
-py -3.11 -m driver.harness.cli leave-world
-py -3.11 -m driver.harness.cli options-set --set gfx_gamma=0.8
 py -3.11 -m driver.harness.cli set --forward 1 --ticks 40
 py -3.11 -m driver.harness.cli look --yaw 90 --pitch 0 --absolute
 py -3.11 -m driver.harness.cli teleport 0.5 -49 0.5 --yaw 0 --pitch 0
 py -3.11 -m driver.harness.cli command "fill -4 -60 -4 4 -60 4 stone"
-py -3.11 -m driver.harness.cli slot 3
-py -3.11 -m driver.harness.cli click left
-py -3.11 -m driver.harness.cli macro load --name default
 py -3.11 -m driver.harness.cli macro run
 
 # 跑酷：录制一次 macro 跑法 → 跳跃分析 → 对比 → 重复尝试
@@ -113,7 +108,7 @@ py -3.11 driver/pe_map.py --rtti <va_or_name>
 - 子系统实现与诊断语义：[`docs/mod-internals.md`](docs/mod-internals.md)
 - 当前验收与未覆盖范围：[`docs/reliability-repairs.md`](docs/reliability-repairs.md)
 - 跑酷、场景 DSL：[`docs/parkour.md`](docs/parkour.md)、[`docs/scenario-dsl.md`](docs/scenario-dsl.md)
-- 机制研究（流体、鞘翅、角度/正弦表）：[`docs/fluid-movement.md`](docs/fluid-movement.md)、[`docs/elytra-movement.md`](docs/elytra-movement.md)、[`docs/angles-wiki.md`](docs/angles-wiki.md)
+- 机制研究（已闭合流体/海豚、鞘翅、正弦表、方块碰撞箱、攀爬、减速方块、蜂蜜块、速度上限、疾跑、上台阶、潜行/爬行、创造飞行、使用物品与望远镜）：完整导航见 [`docs/README.md`](docs/README.md)，待开题清单见 [`docs/research-roadmap.md`](docs/research-roadmap.md)
 - 逆向方法与证据：[`docs/reverse-engineering.md`](docs/reverse-engineering.md)、[`docs/notes/`](docs/notes/) 与 [`reverse/dmf-mpk-analysis.md`](reverse/dmf-mpk-analysis.md)
 - 逆向实验与文档规范：[`skills/bedrock-re/`](skills/bedrock-re/)、[`skills/project-docs/`](skills/project-docs/)
 - UI 与 IDA 排障：[`docs/ui-automation.md`](docs/ui-automation.md)、[`docs/ida-mcp-troubleshooting.md`](docs/ida-mcp-troubleshooting.md)

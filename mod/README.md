@@ -1,8 +1,8 @@
 # probe — LeviPilot 客户端 mod
 
 LeviLamina 客户端 mod（Minecraft Bedrock **1.26.51.01**），通过
-`\\.\pipe\mcbe-harness` 提供 UTF-8 JSON Lines API。Python 兼容入口为
-[`../driver/transport_mod.py`](../driver/transport_mod.py)。
+`\\.\pipe\mcbe-harness` 提供 UTF-8 JSON Lines API。Python 主入口为 `driver.harness.cli`
+（向后兼容入口 [`../driver/transport_mod.py`](../driver/transport_mod.py)）。
 
 ## 构建与安装
 
@@ -275,9 +275,8 @@ profile、生命周期、pipe 写入超时和诊断统计。
   `pipe_token` 认证及 `allow_mem_read`/`allow_togglefly` 开关；`tests.test_mod_models` 支持设
   `LEVIPILOT_NATIVE_ASAN=1` 运行 ASAN，`driver/check.py` 支持 `--cpp-format` / `--cpp-format-all`。
 
-实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收与未覆盖范围见
-[`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。当前基线为离线
-**459/459**、完整现场 **1171/1171**，只在对应代码与权限前提下有效。
+实现细节见 [`../docs/mod-internals.md`](../docs/mod-internals.md)，当前验收基线与未覆盖范围统一维护在
+[`../docs/reliability-repairs.md`](../docs/reliability-repairs.md)。
 
 ## License
 

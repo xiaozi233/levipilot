@@ -12,17 +12,18 @@
 | [`re-fluid-12651.md`](re-fluid-12651.md) | 流体与移动 | 流体、疾跑和泳姿的函数、偏移、公式及静态证据 |
 | [`tick-order-12651.md`](tick-order-12651.md) | tick 顺序与 ECS | ECS 调度顺序、注册链和调用栈证据 |
 | [`bounce-12651.md`](bounce-12651.md) | 黏液反弹 | 黏液反弹覆盖高度、落差与逐 tick 证据 |
-| [`sin-table-12651.md`](sin-table-12651.md) | 正弦表与三角函数 | `65536` 项 `SIN_TABLE` 建表/查表、`269` 处/`193` 条目分工与加速筛选（Pattern A/B）、大小半角极值（`5898195°`/`-5898375°`）及客户端 `fmodf` 锁死与包级透传 |
-| [`block-collisions-12651.md`](block-collisions-12651.md) | 方块与实体碰撞箱 | `1477` 类 / `22091` 状态全量导出、`Hopper`/`Happy Ghast`/`Shelf Mushroom` 补全与 `MCBE_Parkour_wiki` 勘误校对 |
-| [`dolphins-grace-12651.md`](dolphins-grace-12651.md) | 海豚的恩惠 | `DolphinBoostSystem`（`±5.0` 盒/60t 周期/`SWIMMING` 门控）、`SwimSpeedMultiplier=2.0` 跳过 `0.546` 阻力与 `0.02(0.7+0.3L/3)×2` 闭式及迅捷反协同实测 |
-| [`climb-blocks-12651.md`](climb-blocks-12651.md) | 攀爬方块 | 7 种 `Climbable \| CanHaltWhenClimbing` 方块、`isOnLadder()` 单点 vs `BlockClimberSystem` AABB 足迹、`AutoClimb` 跳重力/阻尼、脚手架无潜行免摔、`1.5×` 细雪推墙 `+0.300` b/t 与开活板门实测 |
-| [`speed-limit-12651.md`](speed-limit-12651.md) | 速度钳位与移动边界 | `fetchCollisionShapes 0x1431c2f50` 对 `MoveRequest.mSpeed` 做三维模长 16 等比缩限（`256.0/16.0` 常量）、45° 斜向单轴 `11.3136`、灵魂疾行 III+迅捷 255 实测封顶、`mPosDelta` 无碰撞时保留 >16 动量、蓝冰 `(0.6/slip)³` 反直觉、`FLT_EPSILON` 归零与终速 `-3.92` |
-| [`sprint-12651.md`](sprint-12651.md) | 疾跑状态机 | 四系统 vtable/worker、前向 ±45° 起跑门控（`mCanSprint`）、后/侧/潜行取消、`5e-5f` 撞墙主轴判据三区间（0~20° 断、23.5~24.4° 逐拍闪烁=f65、≥24.5° 稳定；X 墙 65.58° 镜像）、地面/空中首拍 1.3× 无延迟、疾跑跳 `+0.2`（`mPosDelta` 的 sin/cos 分解，实测 0.19999~0.20000） |
-| [`stepping-12651.md`](stepping-12651.md) | 上台阶、Step-Assist Jump Cancel、固体 Blip 与 Grind | 完整准入（`isFlying`/落地拍/`OnGround`/`CanAlwaysAutoStep`）、试探前临时滤天花板盒与终点全盒复核、`Y↑→X→Z→Y↓` 与 `dx²+dz²` 采纳判据、`0.5625` 步高边界、只改 `MoveRequest.mSpeed` 不动 `mPosDelta`、贴前沿起跳 `+0.42` 被吃掉并直接站上台阶、对齐落地拍后保速固体 Blip、`MobJumpComponent::mNoJumpDelay` 长按 `10` tick / 点按 `3` tick；含 `r01-006` 撤回 |
-| [`sneaking-crawling-12651.md`](sneaking-crawling-12651.md) | 潜行、爬行与姿态尺寸 | 三档姿态高度 `1.8/1.49/0.6` 与净空阶梯（`1.875` 站、`1.75~1.5` 蹲、`1.375~0.625` 爬、`0.5` 进不去）、`PlayerBoundingBoxStateUpdateSystem 0x148FE9A20` → worker `0x148FEA2E0` 的三档盒（六面内缩 `0.01f` ⇒ 门槛 `1.79/1.48/0.59`）、`SneakingSystem 0x14B192C50` 的 `0.3+0.15×level`（上限 `1.0`）与 ADF bit1/bit114 双门、`SneakMovementSystem` 的 `0.025` 内缩 + `1.01×step` 下探 + `0.05` 回退、爬行不能疾跑/可跳、爬行仅在按住潜行时继承防跌落；含注册顺序与未闭合项 |
-| [`slowing-blocks-12651.md`](slowing-blocks-12651.md) | 减速方块、冰冻与灵魂沙 | 蜘蛛网/浆果丛/细雪三写入点与 `minss`、`0.998^3` 盒、创造 `Flying & Instabuild` 门控、细雪 `>2.5f` 下陷 `0.9`、冰冻 `+1/140`/`-2/140`/`40t` 伤与不减空速、灵魂沙 `1.225×` 摩擦与 `+0.1` 地毯半砖实测 |
-| [`honey-block-12651.md`](honey-block-12651.md) | 蜂蜜块 | 碰撞箱 `[0.0625,0,0.0625]..[0.9375,1.0,0.9375]`；`0.4`/`-0.12` 对 `0xc83bbc35` 每条目**无条件**执行，几何门只清零 `FallDistanceComponent`（`mPos.y=feet+1.62`、水平 `>` 的 OR）；五拓扑 `0.4^n`（n=1 比值 `0.3641`、n=2 `0.1449`）；蜂蜜与黏液顶面逐位相同；起跳 `0.42→0.252` 由 `BlockLegacy+0x130` bit30 门控；摔落 `×0.5` 由 `onFallOn` 静态闭合；创造飞行只免竖直钳位；`WasInWater` 为 `exclude`（水中完全跳过） |
-| [`creative-flying-12651.md`](creative-flying-12651.md) | 创造飞行物理 | 系统清单/顺序（`VerticalFlySpeedControlSystem` → `PlayerFlyingMoveSpeed` → `TravelMoveRequest` → 碰撞组 → drag → friction）；水平 `v'=0.91v+0.049`、稳态 `0.54441`、疾跑 `{2.0,1.0}@0x14E85AF40` 精确 `2×`、斜走不改模长；松键首拍 `0.91`、之后 `0.34125=0.91×0.375`（`0.375` 写点 `0x1428A7297`，`0.34125` 无 `.text` 引用故非独立常量）；竖直 `vy'=0.6vy+a`（`+0.15`/`-0.22`，稳态 `+0.375`/`-0.55`，同按清零，松手 `0.225`）；贴地/蓝冰/水中/迅捷/缓慢全部无影响；`mPosDelta=0.91·vx` 且 `vx_{n+1}=mPosDelta_n+0.049`（残差 `7.1e-06`）；落地不退出飞行 |
+| [`sin-table-12651.md`](sin-table-12651.md) | 正弦表与三角函数 | `65536` 项 `SIN_TABLE`、Pattern A/B 加速筛选、大小半角极值及 `fmodf` 锁死与发包透传 |
+| [`block-collisions-12651.md`](block-collisions-12651.md) | 方块与实体碰撞箱 | `1477` 类 / `22091` 状态导出、`Hopper`/`Happy Ghast`/`Shelf Mushroom` 补全与 Wiki 勘误 |
+| [`dolphins-grace-12651.md`](dolphins-grace-12651.md) | 海豚的恩惠 | `DolphinBoostSystem`（`±5.0` 盒/60t/`SWIMMING`）、`SwimSpeedMultiplier=2.0` 与迅捷反协同实测 |
+| [`climb-blocks-12651.md`](climb-blocks-12651.md) | 攀爬方块 | 7 种 `Climbable` 方块、`isOnLadder()` vs `BlockClimberSystem`、脚手架免摔与细雪+皮革靴 `1.5×` |
+| [`speed-limit-12651.md`](speed-limit-12651.md) | 速度钳位与移动边界 | `fetchCollisionShapes` 对 `MoveRequest.mSpeed` 三维模长 `16` 缩限、极值、`FLT_EPSILON` 与 `-3.92` |
+| [`sprint-12651.md`](sprint-12651.md) | 疾跑状态机 | 四系统与 `PlayerPreMoveSystem` 时序、±45° 起跑门控、`5e-5f` 三区间与 `f65` 转折、疾跑跳 `+0.2` 与 Intent 对照 |
+| [`stepping-12651.md`](stepping-12651.md) | 上台阶、Blip 与 Grind | `0.5625` 步高、试探滤天花板盒与终点全盒复核、`ClientVariableMaxAutoStep` 三值、`ClientAcceptanceSystem`、Blip 与点按 `3` tick |
+| [`sneaking-crawling-12651.md`](sneaking-crawling-12651.md) | 潜行、爬行与姿态尺寸 | `1.8/1.49/0.6` 级联与 `1.79/1.48/0.59` 门槛、`0.6` 写链与 `ActorDataIDs [38,53,54]`、Swift Sneak 调度序、`0.025` 防跌落与对角回退 |
+| [`slowing-blocks-12651.md`](slowing-blocks-12651.md) | 减速方块、冰冻与灵魂沙 | 蜘蛛网/浆果丛/细雪 `minss` 与 `0.998³` 盒、细雪 `1.5f`/`2.5f` VA、冰冻 `+1/140`/`-2/140` 与灵魂沙 `1.225×` 摩擦 |
+| [`honey-block-12651.md`](honey-block-12651.md) | 蜂蜜块 | `0.875×1.0×0.875` 盒、无条件 `0.4^n` 与 `-0.12`、起跳 `0.6×`、摔伤 `×0.5`、顶面/飞行与 `WasInWater` 排除 |
+| [`creative-flying-12651.md`](creative-flying-12651.md) | 创造飞行物理 | 水平 `v'=0.91v+0.049`、疾跑 `2×`、松键 `0.34125 = 0.91×0.375`、`MobMovementFriction` 玩家路径、竖直递推与 `mPosDelta` |
+| [`spyglass-item-use-12651.md`](spyglass-item-use-12651.md) | 使用物品与望远镜加速 | `ItemUseSlowdown` 三系统与 `0.35² = 0.1225`、`sizeof=4` 单拍瞬态、11 物品表、组合规则与望远镜加速证伪 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
 旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。

@@ -1,0 +1,10 @@
+{
+  "case": "creative-flying-12651",
+  "version": "1.26.51.01",
+  "goal": "Round 3 返工：纠正 MobMovementFriction 玩家路径 0.91/0.375 消费链（0x142DFE950→0x142DE2086）、修正 VerticalFlySpeedControlSystem 水平/竖直输入位与 0.75f 分支、补跑松 W 按跳/潜行与平飞松跳实测、更正 §5 相位表标签与 Java 落地退出飞行对照",
+  "environment": "",
+  "current_round": 4,
+  "status": "closed",
+  "created_at": "2026-11-27T04:09:40Z",
+  "updated_at": "2026-11-27T05:05:15Z"
+}

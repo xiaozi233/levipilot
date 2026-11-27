@@ -1,0 +1,24 @@
+# command: py -3.11 driver/dev.py exec "py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/creative-flying-12651/probes/verify_creative_flying.py"
+# cwd: <repo>
+# started: 2026-11-27T04:56:53Z
+# exit: 0
+# --- stdout ---
+attaching to Minecraft.Windows.exe (pid=34096)
+already in world; skipping menu/world entry
+exec: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/creative-flying-12651/probes/verify_creative_flying.py
+wrote out\creative-flying-1.26.51.01.json
+horizontal_forward {"friction_fit": 0.90999898, "accel_fit": 0.0489974, "residual": 3.498088e-06, "steady_45t": 0.5335331, "steady_pred": 0.54440946}
+horizontal_sprint {"friction_fit": 0.9100002, "accel_fit": 0.09799378, "residual": 1.3667598e-05, "steady_45t": 1.06491089, "steady_pred": 1.08882224, "ratio_to_walk_median": 1.99596, "ratio_to_walk_fit": 2.000006}
+horizontal_diagonal {"vx": 0.38064957, "vz": 0.38906097, "magnitude": 0.54430004, "friction_fit_x": 0.90999925, "friction_fit_z": 0.91000088, "magnitude_pred": 0.54444377, "ratio_to_walk_fit": 1.000063, "ratio_to_walk_median": 1.02018}
+glide_decay {"peak_vx": 0.53189468, "ratios": [0.90999978, 0.3412487, 0.34125499, 0.34122902, 0.3413328, 0.34108077, 0.3407155], "first_ratio": 0.90999978, "sustained_median": 0.3412487, "float32_pred_1": 0.48402417, "float32_pred_2": 0.16517322}
+vertical_up {"drag_fit": 0.59999844, "accel_fit": 0.15000059, "residual": 7.71415e-07, "steady": 0.375}
+vertical_down {"drag_fit": 0.59999994, "accel_fit": -0.22000002, "residual": 1.053909e-06, "steady": -0.54999924}
+vertical_lock {"vy_max_abs": 0.0, "y_drift": 0.0}
+vertical_release {"peak": 0.375, "ratios": [0.22499975, 0.22499958, 0.22500188]}
+ground_proximity {"stone_low_vx": 0.52854919, "stone_friction_fit": 0.90999997, "stone_accel_fit": 0.04899734, "stone_residual": 2.729192e-06, "feet_y": -59.5, "on_ground": false, "blue_ice_low_vx": 0.5252552, "blue_ice_friction_fit": 0.90999997, "blue_ice_accel_fit": 0.04899734, "blue_ice_residual": 2.729192e-06}
+water {"in_water": true, "flying": true, "wet_samples": 18, "friction_fit": 0.91000132, "accel_fit": 0.04899686, "residual": 1.874181e-06, "steady_after": 0.4294405, "air_accel_fit": 0.0489974, "air_reference": 0.5335331}
+effects {"speed2": {"vx": 0.52854919, "friction_fit": 0.90999997, "accel_fit": 0.04899734, "residual": 2.729192e-06, "accel_ratio_to_base": 0.999999, "effects": [{"ambient": false, "amplifier": 1, "duration": 590, "id": 1}]}, "slowness2": {"vx": 0.5252552, "friction_fit": 0.90999997, "accel_fit": 0.04899734, "residual": 2.729192e-06, "accel_ratio_to_base": 0.999999, "effects": [{"ambient": false, "amplifi
+phase {"moving_rows": 59, "friction_fit": 0.91000214, "accel_fit": 0.04899644, "recursion_residual_consecutive": 1.48909e-05, "mpdelta_over_velocity_median": 0.90999953, "max_phase_residual": 1.0731e-05, "median_phase_residual": 8.91879e-07, "step_accel_median": 0.04899749}
+
+# --- stderr ---
+

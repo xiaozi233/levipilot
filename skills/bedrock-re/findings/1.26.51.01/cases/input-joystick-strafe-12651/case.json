@@ -1,0 +1,10 @@
+{
+  "case": "input-joystick-strafe-12651",
+  "version": "1.26.51.01",
+  "goal": "返工修正：静态+多点实测闭合 0x144761610 望远镜阻尼 5/D（OptionID 0x256）、撤回死区过度外推并追查前端输入链、补齐 0x1404B91F0 InputMode 分流与 0x187 选项归属、修复 S4 Pitch 折回与最终 JSON 完整性",
+  "environment": "",
+  "current_round": 3,
+  "status": "closed",
+  "created_at": "2026-11-28T05:41:06Z",
+  "updated_at": "2026-11-28T06:53:43Z"
+}

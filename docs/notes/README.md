@@ -24,6 +24,7 @@
 | [`honey-block-12651.md`](honey-block-12651.md) | 蜂蜜块 | `0.875×1.0×0.875` 盒、无条件 `0.4^n` 与 `-0.12`、起跳 `0.6×`、摔伤 `×0.5`、顶面/飞行与 `WasInWater` 排除 |
 | [`creative-flying-12651.md`](creative-flying-12651.md) | 创造飞行物理 | 水平 `v'=0.91v+0.049`、疾跑 `2×`、松键 `0.34125 = 0.91×0.375`、`MobMovementFriction` 玩家路径、竖直递推与 `mPosDelta` |
 | [`spyglass-item-use-12651.md`](spyglass-item-use-12651.md) | 使用物品与望远镜加速 | `ItemUseSlowdown` 三系统与 `0.35² = 0.1225`、`sizeof=4` 单拍瞬态、11 物品表、组合规则与望远镜加速证伪 |
+| [`input-joystick-strafe-12651.md`](input-joystick-strafe-12651.md) | 输入合成与视角灵敏度 | `TickServerMoveInputHandler 0x1404495E0` 的模拟/数字双分支与 `>1` 才归一化、`PlayerAuthInputPacket` 位映射、键盘全矩阵、合成层无死区、`v=0.81(1.1S)^0.6125`、键鼠 `9600(0.15+0.6v)³×0.3÷W`、望远镜阻尼 `min(1,0.05/D)`（Wiki `5/D`）与 pitch `±89.9`；第 2 轮含勘误表 |
 | [`collisions-precision-12651.md`](collisions-precision-12651.md) | float32 碰撞箱精度与卡墙挤出 | `[Y,X,Z]` 双语义裁剪（贴面/MTD）、AABB 增量平移（跨界 `2^n` 漂移 + 重建量化 `2^20` 宽 `0.5`）、`0.1` 推向空隙写 `mPosDelta`（欧氏模长 `0.10000000`）、跨 `y=128` 连跳高度 `+1 ULP/跳`、实体推挤 `PushMode` 4 路公式与玩家免疫 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把

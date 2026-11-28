@@ -11,18 +11,12 @@
 
 ## 一、当前待研究的核心课题（尚未闭合）
 
-### 1. 现行摇杆归一化、三向斜走与手柄/触屏视角灵敏度（`Pages/joystick.md`、`Pages/triple_component_strafe.md`、`Pages/camera_movement.md`）
-
-- **现状**：`1.21.21` 修复 `11-strafe` 后的现行摇杆映射在 `Pages/joystick.md` 为 `[Todo]`；三向输入斜走异常 `Pages/triple_component_strafe.md` 为 `0` 行；`Pages/camera_movement.md` 的触屏为固定分辨率 `[WIP]`、手柄摇杆（Stick）灵敏度为 `todo`。
-- **已确认起手锚点**：`TickServerMoveInputHandler`（注册 `0x14681dcf4` → 虚表 `0x14EA34B10` slot[5] `0x148B459F0` → lambda `0x148B2D870` → 叶子 **`0x1404495e0`**）直接读取模拟输入、键盘按键位（`0x2000/0x4000/0x8000/0x10000` 及对角 bit）并按 `0.0001f` 阈值做平方根归一化，写回 `MoveInputComponent +0x24/+0x28`。
-- **研究切入点**：沿 `0x1404495e0` 与模拟输入源补齐摇杆死区、三键同按输入合成逻辑，并静态提取触屏/手柄视角的分辨率无关缩放公式。
-
-### 2. Tap 起跳实机基准表与汇总空页（`Pages/tapping.md` 等）
+### 1. Tap 起跳实机基准表与汇总空页（`Pages/tapping.md` 等）
 
 - **`Pages/tapping.md`（0 行）**：`main` 分支的 Tap 起跳表标有 `[Needs verification.]`，适合直接用 LeviPilot 的 `Hardware HID` 按键注入 + 逐 tick 录制批量产出实机基准表（walk / sprint / sneak / blocking / A7 tap）。
 - **汇总类空页**：`Pages/movement_formulas.md`、`Pages/patched_glitches.md`、`Pages/strategies.md` 均为 0 行，待上述单项机制收齐后再做统一汇编。
 
-### 3. 跳出当前 Wiki 目录的全新研究方向（零覆盖领域）
+### 2. 跳出当前 Wiki 目录的全新研究方向（零覆盖领域）
 
 `MCBE_Parkour_wiki` 两个分支目前对以下机制几乎**零文档覆盖**，适合作为新开拓方向：
 
@@ -42,6 +36,7 @@
 | 方块碰撞箱 | 双箱（Double Chest）实机配对与潜影盒（Shulker Box）开盒动态 `1.5` 态采样 | [`notes/block-collisions-12651.md`](notes/block-collisions-12651.md) |
 | 创造飞行 | `a = flySpeed × 0.98f` 乘法指令与 `0.375f` 在横向速度公式内的消费点静态定案 | [`notes/creative-flying-12651.md`](notes/creative-flying-12651.md) |
 | 上台阶与固体 Blip | `mControlledValue = 1.0625` 骑乘实测、鞘翅/水中游泳/载具乘客对照，以及 `ClientAcceptanceSystem` 形参映射定案 | [`notes/stepping-12651.md`](notes/stepping-12651.md) |
+| 移动输入与视角灵敏度 | 触屏每 tick 转角公式、**客户端手柄/触屏摇杆前端的死区**（合成层已证不做死区，前端未定位）、slot 14 的 `edx/r8d` 语义、望远镜阻尼分子 `0.05` 的虚函数来源、键鼠 `/renderWidth` 的除法指令位置（行为已实测，指令未定位） | [`notes/input-joystick-strafe-12651.md`](notes/input-joystick-strafe-12651.md) |
 | 使用物品与望远镜加速 | 刷子实机使用窗口与倍率、山羊角/弩提前结束使用的静态原因、盾牌格挡 ECS 判定、`ItemStack vtable[9]`/`VanillaClientGameplay` 之外与 FOV/载具/飞行/多人边界 | [`notes/spyglass-item-use-12651.md`](notes/spyglass-item-use-12651.md) |
 
 ---
@@ -67,6 +62,7 @@
 | **创造飞行物理** | `Pages/constants.md` L31 | 水平 `v'=0.91v+0.049`（疾跑 `2×`）、松键首拍 `0.91` 之后 `0.34125 = 0.91 × 0.375`（无独立 `0.34125` 常量）、竖直 `vy'=0.6vy+a`、`mPosDelta` 相位 | [`creative-flying-wiki.md`](creative-flying-wiki.md) / [`notes/creative-flying-12651.md`](notes/creative-flying-12651.md) |
 | **使用物品与望远镜加速** | `Pages/spyglass_glitch.md` | `ItemUseSlowdown` 默认 `0.35f` 经 `Apply` 平方一次得 `0.1225×`、单拍瞬态清空、与潜行相乘、疾跑开镜慢 1 拍过渡、切槽按新物品、**望远镜加速不存在** | [`spyglass-item-use-wiki.md`](spyglass-item-use-wiki.md) / [`notes/spyglass-item-use-12651.md`](notes/spyglass-item-use-12651.md) |
 | **float32 碰撞箱精度与卡墙挤出** | `Pages/precision_glitches.md` / `Pages/collisions.md`（待回填） | `[Y,X,Z]` 双语义裁剪（贴面/MTD argmin）、AABB 增量平移（跨界 `2^n` 行走漂移：`2^20` 往返宽 `0.375`）与重建量化（`2^20` 宽 `0.5`）、卡墙 `n̂×0.1` 写 `mPosDelta`（欧氏模长 `0.10000000`、±1 格空隙搜索外冻结）、跨 `y=128` 连跳高度 `+1 ULP/跳`、实体推挤 `Mob::pushActors`→`PushMode` 4 路公式闭合、玩家免疫 | [`collisions-precision-wiki.md`](collisions-precision-wiki.md) / [`notes/collisions-precision-12651.md`](notes/collisions-precision-12651.md) |
+| **移动输入合成与视角灵敏度** | `Pages/joystick.md` / `Pages/triple_component_strafe.md` / `Pages/camera_movement.md` | `mMove` 合成与符号（左正/前正）、模拟向量任一非 0 即整段跳过数字位、**`len²>1.0f` 才归一化**（亚单位慢走成立、模长不超 1）、`0.0001f` 为不可达防御位、**合成层不做摇杆死区**（前端未定位）、键盘 `W+A+D`/`W+S+A` 折叠与斜走不加速、非 45° 需对角位 + 正交位混用（`26.565°`）、`v=0.81(1.1S)^0.6125`、键鼠 `9600(0.15+0.6v)³×0.3÷W`（W=物理客户区宽度）、望远镜阻尼 **`min(1, 0.05/D)`（Wiki 的 `5/D`）四点实测闭合**、pitch `−89.9f`/`90°−0.1°`（`<180°` 步进稳定复现） | [`input-joystick-strafe-wiki.md`](input-joystick-strafe-wiki.md) / [`notes/input-joystick-strafe-12651.md`](notes/input-joystick-strafe-12651.md) |
 
 ---
 
@@ -74,9 +70,9 @@
 
 | 如果你的主要目标是 | 优先推荐的课题 |
 | --- | --- |
-| **尽快给 `wiki-pages` 填缺纠错** | 先迁移回填已闭合条目（`elytra`、`angles`、`dolphins-grace`、`climb-blocks`、`stepping`、`sprint`、`sneaking-crawling`、`spyglass`、`collisions-precision` 等） |
-| **破一个悬案级冷门谜题** | **摇杆归一化死区与三向斜走合成**（`Pages/joystick.md` + `Pages/triple_component_strafe.md`） |
-| **补强现行输入与视角数学模型** | **摇杆归一化、三向斜走与手柄/触屏灵敏度**（从 `TickServerMoveInputHandler 0x1404495e0` 起手） |
+| **尽快给 `wiki-pages` 填缺纠错** | 先迁移回填已闭合条目（`elytra`、`angles`、`dolphins-grace`、`climb-blocks`、`stepping`、`sprint`、`sneaking-crawling`、`spyglass`、`collisions-precision`、`joystick`/`triple_component_strafe`/`camera_movement` 等） |
+| **破一个悬案级冷门谜题** | **风弹跳（Wind Charge）与伤害击退加速**：精确三维冲量、仰角依赖与 `16 b/t` 钳位的结算顺序 |
+| **补强现行输入与视角数学模型** | **触屏每 tick 转角与手柄摇杆曲线**：从 `vtable 0x14E760FA0` 家族（slot 14 `0x1404BF490` 的 `0.4\|x\|^1.2/(n+1)`）起手，补齐 `Pages/camera_movement.md` 剩余两栏 |
 | **批量补齐剩余数据资产与收尾** | 跑完 **`tapping`** 实机表，或收掉 §二 列出的轻量尾巴（`block-collisions` 双箱/潜影盒、`angles` 实机拟合等） |
 | **开拓全新高价值专题** | **风弹跳与击退加速**、**冰船物理** 或 **服务端移动回滚（Rewind）** |
 

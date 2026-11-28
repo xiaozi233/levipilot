@@ -1,0 +1,17 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/input-joystick-strafe-12651/probes/verify_input_joystick_strafe.py --label=sens0.5
+# cwd: <repo>
+# started: 2026-11-28T06:09:42Z
+# exit: 1
+# --- stdout ---
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\input-joystick-strafe-12651\probes\verify_input_joystick_strafe.py", line 539, in <module>
+    main()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\input-joystick-strafe-12651\probes\verify_input_joystick_strafe.py", line 532, in main
+    verify()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\input-joystick-strafe-12651\probes\verify_input_joystick_strafe.py", line 471, in verify
+    assert abs(got[0] - want[0]) <= 2e-6, (row["forward"], row["strafe"], got, want)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: (0.6, 0.8, (0.800000011920929, 0.6000000238418579), (0.6, 0.8))
+

@@ -1,0 +1,9 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/input-joystick-strafe-12651/probes/verify_input_joystick_strafe.py --sens=sens0.5 --damp=damp0.5
+# cwd: <repo>
+# started: 2026-11-28T06:40:57Z
+# exit: 0
+# --- stdout ---
+wrote out\input-joystick-strafe-1.26.51.01.json
+
+# --- stderr ---
+

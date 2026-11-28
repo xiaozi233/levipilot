@@ -6,7 +6,7 @@
   "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
   "image_base": "0x140000000",
   "offsets_ref": "docs/offsets/1.26.51.01.json",
-  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。",
+  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。 2026-11-28: 移动输入合成（0x1404495E0 与 lambda 0x148B2D870）、灵敏度曲线（0x14217A260）、键鼠转角（0x1404B91F0）、FOV 阻尼（0x144761610）与 pitch 钳位（0x14677EED0）已定位；触屏/手柄转角公式、spyglassDamping 消费点、/W 除法指令记 unresolved（见 notes/input-joystick-strafe-12651.md）。 2026-11-28 返工：0x144761610 实为 Options::getSpyglassDamping(InputMode) 的 min(1,0.05/D) 阻尼（vtable+0x1A0=0x140FB5940，读 OptionID 0x256），四点实测闭合 5/D；键鼠 0.7f 的门控是 hotbar_only_touch(0x1DB) 而非 InputMode；摇杆死区结论收窄为「合成层不做死区」，前端 unresolved。",
   "roles": {
     "@tick_entity_systems": {
       "strategy": [
@@ -1327,6 +1327,218 @@
       "confidence": "code",
       "evidence": [
         "[代码] skipPush：骑乘/载具链双方检查（0x1419F2FC0 非 null 即 skip）、vtable+0x9E8 门、组件 0xAE5B853F 过滤；命中即整对跳过推挤。"
+      ]
+    },
+    "@tick_server_move_input_handler": {
+      "strategy": [
+        "string 'TickServerMoveInputHandler' 0x14EC07660",
+        "registration xref 0x14681DD0C",
+        "vtable 0x14EA34B10 slot[5] 0x148B459F0",
+        "lambda 0x148B2D870",
+        "call 0x1404495E0"
+      ],
+      "address": "0x1404495E0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 无 .pdata 叶子（0x1404495E0..0x14044980A，554B）。rcx=输出 Vec2*(=&MoveInputComponent::mMove +0x24)、rdx=MoveInputState const*、r8b=跳过潜行缩放、r9=ActorFlags、[rsp+0x28]=bool、[rsp+0x30]=float const*。模拟向量 [rdx+4]/[rdx+8] 任一非 0 即整段跳过数字位；否则按 Up(0x2000)=+y、Down(0x4000)=−y、Left(0x8000)=+x、Right(0x10000)=−x、UpLeft(0x200)/UpRight(0x400)/DownLeft(0x800)/DownRight(0x1000)=对角 ±1 相加。归一化条件 len²>1.0f（0x14E5A7060），0.0001f（0x14E75D7C4）分支在两条路径上都不可达。尾部潜伏缩放 0.3f（0x14E758C38）或组件速度，门控 bit0|bit18 与 ActorFlags bit1/58/57。"
+      ]
+    },
+    "@tick_server_move_input_handler_lambda": {
+      "strategy": [
+        "decompile 0x148B2D870"
+      ],
+      "address": "0x148B2D870",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 每 tick 清理 MoveInputState 位域（and 0xFFE0001F 清 bit5..20；MoveInputComponent bit6 Locked 时保留模拟向量与 mMove；bit7 PersistSneak 保留 SneakDown）；把 PlayerAuthInputPacketPayload::InputData(EnumSet<66> @payload+0x88) 映射到 MoveInputState::Flag（bit9→SneakDown、bit3→JumpDown、bit4→SprintDown、bit10..13→Up/Down/Left/Right、bit14/15→UpLeft/UpRight、bit51/52→DownLeft/DownRight、bit46/47→mIsPaddling）；payload 模拟向量 (+0x5C/+0x60) 拷入组件时同样按 >1.0f 归一化，mMove(+0x64/+0x68)、mInteractRotation(+0x6C/+0x70)、mCameraOrientation(+0x74..+0x7C) 逐字段拷贝。"
+      ]
+    },
+    "@camera_sensitivity_curve": {
+      "strategy": [
+        "unique f32 0.6125 @0x14E7C4C00",
+        "unique f32 0.81 @0x14E7C4C04",
+        "1.1f @0x14E7C4BFC",
+        "powf import"
+      ],
+      "address": "0x14217A260",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 读选项当前值 [entry+0x14] → ×1.1f → powf(_, 0.6125f) → ×0.81f → 经 0x14091CEB0 写回同 OptionID 的运行期映射。keyboard_mouse_sensitivity/touch_sensitivity/controller_sensitivity 三处注册都用 edx=0x183（0x144E05675/0x144E06055/0x144E06B7E）。"
+      ]
+    },
+    "@spyglass_damping_option_apply": {
+      "strategy": [
+        "sibling of 0x14217A260",
+        "r8d=0x256"
+      ],
+      "address": "0x14217A400",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 与曲线函数同构但不做曲线：读 [entry+0x14] 直接写回；r8d=0x256 对应 keyboardAndMouse.spyglassDamping（注册 0x144254987 附近，附带 100.0f 参数）与 spyglass_mouse_dampening。"
+      ]
+    },
+    "@mouse_look_handler": {
+      "strategy": [
+        "vtable 0x14E760FA0 slot15",
+        "unique f32 9600 @0x14E760F10"
+      ],
+      "address": "0x1404B91F0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] k=9600f×(0.15f+0.6f·v)³；xmm8=dx×k、xmm7=dy×k；再 ×0.3f（0x14E758C38），x 额外 ×0.7f（0x14E760F14）或 1.0f；累加进 +0x84/+0x88 并清 [this+0x34]。",
+        "[代码] 0.7f 的门控是 Options::vtable[+0x288]=getOption(0x1DB)=hotbar_only_touch 布尔：0x1404B95D4 movzx edi,al / or edi,2 → edi∈{2,3}；edi==3→0.7f，edi==2→1.0f。与 InputMode 无关（第 1 轮写成「某输入模式分支」，已更正）。",
+        "[代码] v 来自 Options::vtable[+0x1B8](edi)（=0x140FB5BA0，读 OptionID 0x18D 的派生值）。",
+        "[实测] deg/px 严格线性、dy 与 dx 同系数（差 1.5e-5°）、三种窗口尺寸下 slope×W 守恒 332.6095/332.6096/332.6099。函数内无 divss，/W 归一化在原始增量写入 +0x34 的上游（unresolved）。"
+      ]
+    },
+    "@analog_look_accumulator": {
+      "strategy": [
+        "vtable 0x14E760FA0 slot14"
+      ],
+      "address": "0x1404BF490",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] edx==r8d 时把 +0x84/+0x88 的累积值取绝对值 → powf(_,1.2f)（0x14E6AE4F4）×0.4f（0x14E602290）/(edx+1) → 带符号写入 +0x8C/+0x90 并清零累积器；无条件 ++[+0x98]。",
+        "[代码] 分支门是 OptionID 0x187=keyboard_show_full_keyboard_options：0x1404BFB16 getOption(0x187)，0x1404BFB43 cmp byte [opt+0x10],0 / jne 0x1404BFDED —— 选项为假才走 ^1.2 这一支。",
+        "[实测] 鼠标严格线性，故该分支对键鼠不生效；真实归属（触屏拖动/非全键盘手柄）与 edx/r8d 语义 unresolved。"
+      ]
+    },
+    "@camera_rotation_apply": {
+      "strategy": [
+        "decompile callee of 0x144761610"
+      ],
+      "address": "0x1447617C0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 相机旋转更新：2π(0x14E760F1C)、57.2958f(0x14E6D7C58)、0.0001f、FLT_EPSILON 1.19209e-07、180/360 与 −180 的 fmodf 折回（0x14476223A..0x144762279），与 sin-table-12651 §七 的折回点一致。"
+      ]
+    },
+    "@camera_pitch_clamp_quat": {
+      "strategy": [
+        "unique f32 89.9 @0x14E9A0D2C",
+        "only xref 0x14677EF11"
+      ],
+      "address": "0x14677EED0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] pitch=clampmax(pitch,−89.9f@0x14E9A0D28)；hit_hi=(89.9f<pitch)；angle=hit_hi?0.00174534f(0.1°):(π/2−pitch_rad)；随后组装四元数。实测上限 89.89999389648438(0x42B3CCCC，比 89.9f 低 1 ULP)、下限 −89.9000015258789(0xC2B3CCCD)。"
+      ]
+    },
+    "@touch_look_handler": {
+      "strategy": [
+        "vtable:0x14E760FA0 slots 14/15 family",
+        "live:linear mouse slope"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 同族对象 +0x34/+0x38 原始增量、+0x84/+0x88 累积转量、+0x8C/+0x90 最终转量已确认；触屏 handler 的槽位、Δt 与分辨率归一项未定位。",
+        "[实测] 键鼠 deg/px 严格线性且等于 1/W，故触屏公式不能沿用 slot15。"
+      ],
+      "note": "触屏每 tick 转角公式未定位，禁止猜测"
+    },
+    "@controller_stick_mapping": {
+      "strategy": [
+        "iat:XInput/GameInput 均无命中",
+        "string:left_stick_{up,down,left,right}",
+        "vtable:0x14E760FA0 slot14"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[常量] 本版无 XInput/GameInput 导入（--iat 0 命中）；left_stick_up/down/left/right 只以方向动作名出现（注册点 0x144377402 等），摇杆轴未定位到数值常量。",
+        "[代码] 合成层（0x1404495E0 / 0x148B2D870 / RawMoveInputComponent 全部 8 处引用）不做死区、轴向重映射或非线性重标定，唯一模拟变换是「len²>1.0f 才归一化」。",
+        "[勘误] 第 1 轮 r01-007 用「deadzone 字符串 0 命中 + 8 处 ECS 引用」外推「游戏里没有死区、死区在 OS/驱动」是无效推理，已撤回；本条只保留「合成层不做死区」这一可证部分。"
+      ],
+      "note": "客户端手柄/触屏硬件前端死区未定位，禁止用字符串缺失推断代码缺失"
+    },
+    "@mouse_delta_width_normalizer": {
+      "strategy": [
+        "live:slope×W conserved across two window widths"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[实测] 2559px→0.129976349、1706px→0.194964752，slope×W=332.6095/332.6099；只改高度斜率不变 ⇒ 分母是物理客户区宽度。",
+        "[代码] 0x1404B91F0 内无 divss；归一化发生在原始增量写入 [this+0x34] 的上游。"
+      ],
+      "note": "/renderWidth 的除法指令未定位"
+    },
+    "@old_11_strafe_diff": {
+      "strategy": [
+        "version:1.21.21 之前二进制不在仓内"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 当前版本为单向钳位（len²>1.0f 才归一化），已闭合。",
+        "旧版差异未做 diff。"
+      ],
+      "note": "历史版本对照未做，禁止把推断写成定案"
+    },
+    "@camera_look_damp_factor": {
+      "strategy": [
+        "decompile 0x144761610",
+        "Options vtable 0x14E79FF10 +0x1A0",
+        "4-point live sweep of ctrl_spyglassdamp_mouse"
+      ],
+      "address": "0x144761610",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 分子 xmm6 取自 [rbx+8]->vtable[+0x228]()；分母 D = Options::vtable[+0x1A0](InputMode)（= 0x140FB5940，读 OptionID 0x256 的按端值）；0x144761742 ucomiss xmm0,xmm6 / jbe → D<=xmm6 时 factor=1.0f，否则 0x144761751 divss xmm6,xmm0 → factor=xmm6/D；随后 mulss 到 look 增量并进 0x1447617C0。",
+        "[实测] 四点反解 xmm6=0.05：D=0.0→0.999996617、0.04→1.000000000、0.5→0.100001174、1.0→0.050000000（r02-018..r02-021）。",
+        "[勘误] 第 1 轮把这里误读成 FOV 比值（r01-012 已撤回）；本函数与 FOV 无关。"
+      ]
+    },
+    "@options_get_spyglass_damping": {
+      "strategy": [
+        "Options vtable 0x14E79FF10 slot +0x1A0",
+        "getOption idiom mov r8d,0x256 @0x140FB5963"
+      ],
+      "address": "0x140FB5940",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] Options::getSpyglassDamping(InputMode)：0x140FB5963 getOption(0x256) → 0x140FB5993..0x140FB59D8 用调用方 int 的 4 字节做 FNV-1a（基 0xcbf29ce484222325、素 0x100000001b3）→ 0x140FB59D8 and [opt+0x48] / 0x140FB59DC [+0x20] / [+0x30] 桶查找 → 命中 cmp ebx,[entry+0x10] → 0x140FB5A29 movss xmm0,[entry+0x14]；未命中回退选项基值 [opt+0x14]。",
+        "[常量] 三处注册 0x144254987 / 0x140C0117D / 0x147795131 都是 mov r8d,0x256；setter 0x140FB58C0 同样以 InputMode 为键写回。"
+      ]
+    },
+    "@options_get_sensitivity": {
+      "strategy": [
+        "Options vtable 0x14E79FF10 slot +0x1B8",
+        "getOption idiom mov r8d,0x18D @0x140FB5BC3"
+      ],
+      "address": "0x140FB5BA0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] Options::getSensitivity(int)：0x140FB5BC3 getOption(0x18D) → FNV 查表 → [entry+0x14]（与 getSpyglassDamping 同构）。0x18D 是曲线后的派生值，由 0x14217A260 写入；原始滑条是 OptionID 0x183。"
+      ]
+    },
+    "@options_get_hotbar_only_touch": {
+      "strategy": [
+        "Options vtable 0x14E79FF10 slot +0x288",
+        "getOption idiom mov r8d,0x1DB @0x140FB63FF"
+      ],
+      "address": "0x140FB63E0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 读 OptionID 0x1DB 的布尔（0x140FB6423 movzx eax, byte [opt+0x10]）。",
+        "[常量] 0x1DB 的注册名是 hotbar_only_touch（0x144E072C5 写字符串、0x144E072DF 写 edx=0x1DB）。"
       ]
     }
   }

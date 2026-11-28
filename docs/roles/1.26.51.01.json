@@ -6,7 +6,7 @@
   "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
   "image_base": "0x140000000",
   "offsets_ref": "docs/offsets/1.26.51.01.json",
-  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。 2026-11-28: 移动输入合成（0x1404495E0 与 lambda 0x148B2D870）、灵敏度曲线（0x14217A260）、键鼠转角（0x1404B91F0）、FOV 阻尼（0x144761610）与 pitch 钳位（0x14677EED0）已定位；触屏/手柄转角公式、spyglassDamping 消费点、/W 除法指令记 unresolved（见 notes/input-joystick-strafe-12651.md）。 2026-11-28 返工：0x144761610 实为 Options::getSpyglassDamping(InputMode) 的 min(1,0.05/D) 阻尼（vtable+0x1A0=0x140FB5940，读 OptionID 0x256），四点实测闭合 5/D；键鼠 0.7f 的门控是 hotbar_only_touch(0x1DB) 而非 InputMode；摇杆死区结论收窄为「合成层不做死区」，前端 unresolved。 2026-11-28 触屏专题：视角事件派发链（0x144B22290→0x144B22580→adapter→slot 27/15/14）、slot 27 动作分发、slot 14=触屏非线性级（^1.2，指数 3.6 来源）、/W 在 handler 链上游（W=2560 实测）已定位；鼠标事件生产者、触屏虚拟摇杆前端、D-pad 角键命中区、0x1DB 存档映射、invert-y 消费点记 unresolved；更正 0.7f 为俯仰分量。",
+  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。 2026-11-28: 移动输入合成（0x1404495E0 与 lambda 0x148B2D870）、灵敏度曲线（0x14217A260）、键鼠转角（0x1404B91F0）、FOV 阻尼（0x144761610）与 pitch 钳位（0x14677EED0）已定位；触屏/手柄转角公式、spyglassDamping 消费点、/W 除法指令记 unresolved（见 notes/input-joystick-strafe-12651.md）。 2026-11-28 返工：0x144761610 实为 Options::getSpyglassDamping(InputMode) 的 min(1,0.05/D) 阻尼（vtable+0x1A0=0x140FB5940，读 OptionID 0x256），四点实测闭合 5/D；键鼠 0.7f 的门控是 hotbar_only_touch(0x1DB) 而非 InputMode；摇杆死区结论收窄为「合成层不做死区」，前端 unresolved。 2026-11-28 触屏专题：视角事件派发链（0x144B22290→0x144B22580→adapter→slot 27/15/14）、slot 27 动作分发、slot 14=触屏非线性级（^1.2，指数 3.6 来源）、/W 在 handler 链上游（W=2560 实测）已定位；鼠标事件生产者、触屏虚拟摇杆前端、D-pad 角键命中区、0x1DB 存档映射、invert-y 消费点记 unresolved；更正 0.7f 为俯仰分量。 2026-11-28: 视角事件派发链、MouseMapper/TouchMapper 家族与触屏摇杆/D-pad 角色按 SDK vtable 对照登记并更正，见 docs/notes/touch-joystick-dpad-12651.md；@look_forwarder_145DC7B50 实为 ClientInstance::forEachVisibleScreen。",
   "roles": {
     "@tick_entity_systems": {
       "strategy": [
@@ -1384,29 +1384,36 @@
     "@mouse_look_handler": {
       "strategy": [
         "vtable 0x14E760FA0 slot15",
-        "unique f32 9600 @0x14E760F10"
+        "unique f32 9600 @0x14E760F10",
+        "IDA decompile 0x1404B91F0",
+        "live r01-003 (touch-joystick-dpad-12651)"
       ],
       "address": "0x1404B91F0",
       "status": "resolved",
-      "confidence": "code",
+      "confidence": "code+live",
       "evidence": [
-        "[代码] k=9600f×(0.15f+0.6f·v)³；xmm8=[+0x34]·k（俯仰轴）、xmm7=[+0x38]·k（偏航轴）；累加进 +0x84/+0x88 并清 [+0x34/+0x38]；0x1404B9E3C..E60：两轴 ×0.3f（0x14E758C38），xmm8 另 ×factor（hotbar_only_touch 时 0.7f@0x14E760F14，否则 1.0f）。",
-        "[实测] r01-017：消费拍 [+0x34,+0x38]=(-0.0390625, 0.078125)=(-dy/W, dx/W)，W=2560；其后累加拍 [+0x84,+0x88]=(-43.308548, 86.617096)=k·事件；apply=(-12.992565, 25.985130)=×0.3。",
-        "[勘误] 上一轮把 0.7f 记为「横向因子」：按本轮实测轴序，它乘的是 xmm8 即 dy/俯仰分量。",
-        "[代码] 触屏分支 0x1404B9EF1..F78：screen->vtable[+0x850]() 为真时用 [+0x8C/+0x90]·0.15·g，g=min(3.0f,(n+c)-[+0x94])，c=[screen->vtable[+0xE0]()+0x3C]，n=[+0x98]。"
+        "[代码] 签名 (this, float alpha)。键 = MinecraftInputHandler::getInputMode()（0x144353910）；仅当 InputMode==Touch 时改为 getOption(0x1DB)|2（0x1404B95C1..D7），键鼠路径键为 1。k=9600f×(0.15f+0.6f·v)³；xmm8=[+0x34]·k（俯仰轴）、xmm7=[+0x38]·k（偏航轴）；累加进 +0x84/+0x88 并清 [+0x34/+0x38]。",
+        "[代码] 0.7f 俯仰因子：键==3 时恒 0.7f（0x1404B9A80..83）；键==2 时取 getOption(0x1DB)?0.7f:1.0f，且仅在 isTouchGameplayAllowed() 为假时落到公共尾（0x1404B9B60..0x1404B9E3C）。键鼠路径不可达。",
+        "[勘误] 上一轮把 +0x850 的虚调用写成 screen->vtable[+0x850]()：原始指令 0x1404B9EF1 mov rcx,[rsi+0x1B8] 是 IClientInstance 上的 isTouchGameplayAllowed（SDK 槽序 266）。",
+        "[勘误] 上一轮把触屏分支的 c 写成 [screen->vtable[+0xE0]()+0x3C]：0x1404B921C movaps xmm6,xmm1 ⇒ c 是本函数的浮点参数，由适配器 0x140889540 传入。g=min(3.0f,(c+n)-[+0x94])，n=[+0x98]。",
+        "[实测] r01-003：W=2560 时消费拍 [+0x34,+0x38]=(−0.0390625, 0.078125)、累加拍 (−43.308548, 86.617096)、apply=(−12.992565, 25.98513)；deg/px 横纵比 0.9999994。"
       ]
     },
     "@analog_look_accumulator": {
       "strategy": [
-        "vtable 0x14E760FA0 slot14"
+        "vtable 0x14E760FA0 slot14",
+        "IDA decompile 0x1404BF490",
+        "disasm 0x1404BFB13..0x1404BFB47"
       ],
       "address": "0x1404BF490",
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] edx==r8d 时 [+0x8C]=sign·0.4f·|[+0x84]|^1.2f/(edx+1)、[+0x90] 同理，清 +0x84/+0x88，++[+0x98]；1.2f@0x14E6AE4F4、0.4f@0x14E602290。分支门 OptionID 0x187=keyboard_show_full_keyboard_options（0x1404BFB16），为真走 0x1404BFDED。",
-        "[实测] 鼠标路径上每次 mouse_event 窗口内命中 11 次、edx==r8d 恒真、装 detour 不影响转角（r01-017）。",
-        "[代码] 归属：输入是 slot 15 的线性累加器，输出只被 slot 15 的 +0x850 触屏分支消费 ⇒ 触屏视角的非线性加速级。合并后 (0.15+0.6v)^(3×1.2)=^3.6，即 Wiki 旧式指数来源。"
+        "[代码] 签名 (this, int a2, int a3)。a2==a3 时 [+0x8C]=sign·0.4f·|[+0x84]|^1.2f/(a2+1)、[+0x90] 同理，清 +0x84/+0x88；随后无条件 ++[+0x98]。1.2f@0x14E6AE4F4、0.4f@0x14E602290。",
+        "[勘误] ^1.2 段只受 a2==a3 门控，与 OptionID 0x187 无关；0x187 的存档键是 ctrl_fullkeyboardgameplay（0x1420BB150 注册表），不是 keyboard_show_full_keyboard_options。",
+        "[代码] 尾部段（每次调用都执行）：client->isInWorldAndNotShowingAnyMenuScreens()(槽+0x4F0) && allowPicking()(槽+0x4A8) && getLocalPlayer() 非空后，取玩家实体组件 0x02C628C0 的首字节 ∈{2,4} 且 getInputMode()==Mouse 时读选项 0x187（0x1404BFB13..1F）；0x1404BFB47 为真跳到尾声 0x1404BFDED，为假进入「屏上一点→0x1404C2CF0 相机反投影→0x14026E620 射线→写 *(player+0x228) 所指对象 {int 0, float 角度}→0x141A29FA0」。该段意图与组件名未定。",
+        "[实测] 鼠标路径上每次 mouse_event 窗口内命中 11 次、edx==r8d 恒真、装 detour 不影响转角（touch-input-turn-12651 r01-017）。",
+        "[代码] 归属：输入是 slot 15 的线性累加器，输出只被 slot 15 的触屏分支消费。"
       ]
     },
     "@camera_rotation_apply": {
@@ -1434,17 +1441,17 @@
     },
     "@touch_look_handler": {
       "strategy": [
-        "vtable:0x14E760FA0 slots 14/15 family",
-        "live:linear mouse slope"
+        "TouchMapper vtable 0x14E76CFA0 → 控件 vtable 表",
+        "SDK TouchTurnInteractControl::tick"
       ],
       "address": null,
       "status": "unresolved",
       "confidence": "none",
       "evidence": [
-        "[代码] 同族对象 +0x34/+0x38 原始增量、+0x84/+0x88 累积转量、+0x8C/+0x90 最终转量已确认；触屏 handler 的槽位、Δt 与分辨率归一项未定位。",
-        "[实测] 键鼠 deg/px 严格线性且等于 1/W，故触屏公式不能沿用 slot15。"
+        "[代码] 触屏视角事件由 TouchTurnInteractControl::$tick（vtable 0x14E76CE80 槽 5，0x1406EDA60）发射，经 slot 15 的触屏分支消费；处理器侧公式见 docs/notes/touch-input-turn-12651.md 与 docs/notes/touch-joystick-dpad-12651.md §4.2。",
+        "控件侧的像素→事件公式（灵敏度、按住/轻点状态机 TouchTurnState）未展开。"
       ],
-      "note": "触屏每 tick 转角公式未定位，禁止猜测"
+      "note": "触屏拖动视角的控件侧公式未展开"
     },
     "@controller_stick_mapping": {
       "strategy": [
@@ -1544,13 +1551,15 @@
     "@look_event_fire": {
       "strategy": [
         "decompile 0x144B22290",
-        "xrefs from 0x144B22230 / 0x144B2AC10"
+        "xrefs from 0x144B22230 / 0x144B2AC10",
+        "DirectionId lambda _Do_call 0x1442E4210 族"
       ],
       "address": "0x144B22290",
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] 对注册 handler 先跑 vtable+0x178 / +0x108 两遍前置，再把 16 字节 event 拷到 [rbp+0x40]/[rbp+0x50]，以 [rsp+0x30]=0 与 =1 各调一次 0x144B22580（0x144B223CA / 0x144B2241E）。上游 0x144B22230（vtable 0x14E8F7A40 slot +0x88）与 0x144B2AC10（唯一调用者 0x145DC7DB5）都只做 movups/movaps 转发，无算术。"
+        "[代码] 对注册 handler 先跑 vtable+0x178 / +0x108 两遍前置，再把 16 字节 std::function 拷到 [rbp+0x40]/[rbp+0x50]，以 [rsp+0x30]=0 与 =1 各调一次 0x144B22580（0x144B223CA / 0x144B2241E）。",
+        "[代码] 上游：InputHandler 按 DirectionId 注册的 5 个 lambda（_Do_call 0x1442E4210/0x1442E42E0/0x1442E4480/0x1442E43B0/0x1442E4550，常量 0/1/2/3/8）以适配器 0x145DDCA90 构造 std::function 并调 ClientInstance::forEachScreen（+0x7F8）。无算术。"
       ]
     },
     "@look_handler_dispatcher": {
@@ -1568,51 +1577,59 @@
     },
     "@look_slot15_adapter": {
       "strategy": [
-        "decompile 0x140889540",
-        "runtime stack frame 0x14088956B"
+        "decompile/disasm 0x140889540",
+        "runtime stack frame 0x14088956B",
+        "live r01-003 (touch-joystick-dpad-12651)"
       ],
       "address": "0x140889540",
       "status": "resolved",
-      "confidence": "code",
+      "confidence": "code+live",
       "evidence": [
-        "[代码] 取 [ctx->vtable[0x1268]()+8] 一个 float 放进 xmm1，调 handler->vtable[+0x78]（slot 15），再尾调 vtable[+0x80]（slot 16 默认空）。由 0x140889280 注册（0x1408893B3 lea 0x140889540）。"
+        "[代码] rcx=ctx、rdx=handler：rax=*(ctx)+0x1268 处取一个指针（两次 mov，不是虚调用），movss xmm1,[rax+8]；再调 handler->vtable[+0x78]（slot 15），尾调 vtable[+0x80]（slot 16 默认空）。由 0x140889280 注册。",
+        "[勘误] 上一轮写成 [ctx->vtable[0x1268]()]：它是字段读取 *(*(ctx)+0x1268)。",
+        "[实测] r01-003：该浮点两轮共 16 次采样落在 0.046669..0.886675、逐拍变化；所在对象 +0x00=20.0、+0x0C=1.0、+0x14=0.0666667。与 tick 小数/帧间隔相符（推断），结构体类型名未定。"
       ]
     },
     "@look_event_adapter": {
       "strategy": [
         "runtime stack frame 0x145DDCAEB",
-        "xrefs 5（std::function 拷贝/移动 thunk 0x1442E4210..）"
+        "xrefs 5（DirectionId lambda 0x1442E4210 族）",
+        "disasm 0x145DDCA90"
       ],
       "address": "0x145DDCA90",
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] rdi=event{float*@0,float*@8,float*@0x10,ptr*@0x18}；handler->vtable[+0x290]() 为真则短路；edx=*(byte*)event[0]（action）、xmm2=*event[8]、xmm3=*event[0x10]、cl=*(byte*)event[0x18]；调 handler->vtable[+0xD8]（slot 27）。只转发，无算术。"
+        "[代码] 捕获 rdi={DirectionId 常量@0, float* x@8, float* y@0x10, uint8* focus@0x18}；handler->vtable[+0x290]() 为真则短路；edx=*(byte*)captured[0]（DirectionId）、xmm2=*x、xmm3=*y、cl=*focus（FocusImpact）；调 handler->vtable[+0xD8]（slot 27）后再调 vtable[+0x110] 取反。只转发，无算术。"
       ]
     },
     "@look_action_dispatcher": {
       "strategy": [
         "vtable 0x14E760FA0 slot 27",
-        "decompile 0x1404C02B0"
+        "decompile 0x1404C02B0",
+        "SDK DirectionId enum"
       ],
       "address": "0x1404C02B0",
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] dl==8：getScreen 后 [rbp-0x40]=dx、[rbp-0x3C]=−dy，直接 call 0x144761610（绕过 slot 15/14）。dl==1：若 screen[+0x798] 存在且捕获输入则跳过，否则 0x1404C0662 [this+0x38]+=dy、[this+0x34]+=dx。其余 action 直接返回。",
-        "[实测] mouse_event(dx=200,dy=100) 恰产生 1 次命中、rdx 低字节=1（探索运行）；hook 会使 d_yaw=0.0（通用 detour 丢 xmm2/xmm3），不可 hook。"
+        "[代码] 第二参 dl 是 DirectionId（SDK：Move=0, Turn=1, Scroll=2, TurnRaw=3, TurnAlt=8）。dl==1（Turn）：client->getLocalPlayer()(槽+0xF8) 非空且「player->vtable[243]() 对象有效 → 其 vtable[5]() 非空 → vtable[7]()==false」时 0x1404C0662 [this+0x38]+=x、[this+0x34]+=y；dl==8（TurnAlt）：[rbp-0x40]=x、[rbp-0x3C]=−y，直接 call 0x144761610；其余直接返回。",
+        "[勘误] 上一轮称第一参对象为 screen：它是 client->getLocalPlayer()，0x144761610 即 LocalPlayer::turn。",
+        "[实测] mouse_event(dx=200,dy=100) 恰产生 1 次命中、dl=1（touch-input-turn-12651 探索运行）；hook 会使 d_yaw=0.0（通用 detour 丢 xmm2/xmm3），不可 hook。"
       ]
     },
     "@look_forwarder_145DC7B50": {
       "strategy": [
-        "vtable 0x14E9731B0 slot +0x7F0",
-        "decompile 0x145DC7B50"
+        "ClientInstance vtable 0x14E9731B0 slot +0x7F0",
+        "SDK IClientInstance.h 虚函数序（422 槽）",
+        "decompile 0x145DC7B50 / 0x144B2AC10"
       ],
       "address": "0x145DC7B50",
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] 屏幕栈/NonOwnerPointer 前置检查后，0x145DC7DA3 movups xmm0,[rsi] → [rbp-0x50]，0x145DC7DB5 call 0x144B2AC10：16 字节 event 原样转发。/W 除法不在此处，在其调用者（+0x7F0 槽全库 63 处候选）。"
+        "[勘误] 这个函数是 ClientInstance::forEachVisibleScreen(std::function)（IClientInstance 槽 254），不是视角事件转发点：0x145DC7B50 拷贝的 16 字节是 std::function，0x144B2AC10 求两个 ISceneStack 的场景数之和后调 0x144B22290。它不参与鼠标事件的生产，/W 也不在其调用者中。",
+        "[常量] 同一 vtable 的槽 255 (+0x7F8) = forEachScreen = 0x145DC8130，是 DirectionId lambda 实际调用的入口；槽 266 (+0x850) = isTouchGameplayAllowed。"
       ]
     },
     "@client_move_input_getMoveInput": {
@@ -1644,20 +1661,18 @@
     },
     "@touch_joystick_frontend": {
       "strategy": [
-        "strings textures/ui/joystick_frame|knob (0x140707DE0)",
-        ":touch_virtual_joystick_*: (0x144D89B40)",
-        "options ctrl_staticJoystick/ctrl_usetouchjoypad",
-        "hash 0x018B1887 全部引用"
+        "TouchMapper::$setMapping 0x1406FDF90 写入的控件 vtable",
+        "SDK TouchMoveAndTurnInteractControl",
+        "disasm 0x140708A60（Move 状态分支）"
       ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
+      "address": "0x140708A60",
+      "status": "resolved",
+      "confidence": "code",
       "evidence": [
-        "[常量] 虚拟摇杆 UI 控件与三个存档开关存在；合成层（0x1404495E0）只做 >1 归一化、无死区。",
-        "[代码] 0x018B1887 的全部引用（0x1401DDEAA 依赖声明、0x1404BC490 准星 tick、0x1428349CE/0x14064F4C8 视图迭代、0x14267A45F getMoveInput）都不是摇杆→mAnalogMoveVector 的写入者。",
-        "像素拖动→模拟向量的写入者、死区半径、最大半径、固定/动态中心、疾跑区均未定位。"
-      ],
-      "note": "触屏虚拟摇杆前端未定位"
+        "[代码] TouchMoveAndTurnInteractControl::$tick（vtable 0x14E76D010 槽 5，0x3664 B；IDA 反编译截断，按反汇编读）。Move 状态分支：0x140708E7D..E87 R=(moveArea.x1−x0)/3；0x140708FCF..FFC dist=hypot(触点−mMoveTouchX0/Y0)；0x140709000 dist≤25 → 死区分支；0x140709061..075 m=(min(dist,R)−25)/(R−25)，输出=(dx,dy)/dist·m；0x140709079..08B 疾跑候选 = mSprintOnMovement() && dist>1.05·R。",
+        "[代码] 离开 Move 状态时松开 mSprintButtonId（0x1407095BF，调 0x1403532D0）；发射经 0x14034DF90(queue, DirectionId=Move, …, x, y)。发射前在 0x14070BDD9..0x14070BE99 有一步内联修正，完整形状未定。",
+        "[实测] 无（本机无触摸屏）。纯静态。疾跑计时阈值、摇杆原点写入点见 @touch_joystick_sprint_timer / @touch_joystick_origin_writer。"
+      ]
     },
     "@dpad_corner_hitbox": {
       "strategy": [
@@ -1674,29 +1689,600 @@
     },
     "@hotbar_only_touch_save_tag": {
       "strategy": [
-        "live: ctrl_hotbarOnlyTouch=1 restart → dx/dy ratio 1.0",
-        "registration 0x144E072C5/0x144E072DF via 0x144CDFC30"
+        "options 注册表 0x1420BB150..0x1420F159C",
+        "disasm 0x1420C9E64"
       ],
-      "address": null,
-      "status": "unresolved",
-      "confidence": "none",
+      "address": "0x1420C9E64",
+      "status": "resolved",
+      "confidence": "constant",
       "evidence": [
-        "[实测] r01-009：ctrl_hotbarOnlyTouch:1 持久化并重启后 deg/px dx/dy 仍 1.0（hotbar_factor_applied=false）。",
-        "存档键是否映射到 OptionID 0x1DB、无触摸设备时是否被运行期覆盖：未定。"
-      ],
-      "note": "ctrl_hotbarOnlyTouch 与 OptionID 0x1DB 的映射未定"
+        "[常量] 0x1420C9D9E 写字符串 ctrl_hotbarOnlyTouch、0x1420C9E00 写 options.hotbarOnlyTouch，0x1420C9E64 mov edx,0x1DB 调 0x14091B6D0：存档键 ctrl_hotbarOnlyTouch ↔ OptionID 0x1DB。",
+        "[代码] 键鼠路径上 0.7f 不可达的原因：slot 15 的灵敏度键 = InputMode（键鼠=1），只有 InputMode==Touch 才读 0x1DB（0x1404B95C1..D7）——不是存档键不映射。",
+        "[实测] touch-input-turn-12651 r01-009：ctrl_hotbarOnlyTouch:1 重启后 deg/px dx/dy 仍 1.0，与上一条一致。"
+      ]
     },
     "@touch_invert_y_consumer": {
       "strategy": [
-        "option 0x185 registration"
+        "Options vtable 0x14E79FF10 全表槽位↔OptionID 对照",
+        "disasm 0x140FB5CB0",
+        "live r01-003 (touch-joystick-dpad-12651)"
+      ],
+      "address": "0x140FB5CB0",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] Options::vtable[+0x1D0]（槽 58）= 0x140FB5CB0：getOption(0x185) → 对 4 字节 InputMode 做 FNV-1a → 查按端表，命中取 [entry+0x14]，否则用选项基值。即按输入模式的反转 Y 布尔。",
+        "[常量] OptionID 0x185 注册三次：keyboard_mouse_invert_y_axis（0x144E05909）、controller_invert_y_axis（0x144E061C2）、touch_invert_y_axis（0x144E06F19），均 mov edx,0x185；存档键 ctrl_invertmouse（0x1420C258D），本机存档为 ctrl_invertmouse_mouse/touch/gamepad 三行。",
+        "[代码] 鼠标侧效果路径：MouseMapper::$setMapping 0x140362270..27C 写 mYAxisInversionFactor=(invertYAxis−1)|1，MouseMapper::$tick 0x140362A3E 乘到 dy 上。",
+        "[实测] r01-003：ctrl_invertmouse_mouse=0 时乘子 −1、事件 y=−dy/W、Δpitch=+12.992554；=1 重启后乘子 +1、y=+dy/W、Δpitch=−12.992554，Δyaw 不变。",
+        "选项值 → InputMapping::invertYAxis 的写入函数未定位，见 @invert_y_mapping_writer。"
+      ]
+    },
+    "@mouse_mapper_vtable": {
+      "strategy": [
+        "InputDeviceMapper 家族 vtable（共用基类槽 setWindowSize 0x140352BB0）",
+        "getInputMode 槽返回 1"
+      ],
+      "address": "0x14E759000",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] MouseMapper 的 vtable：槽1 setMapping=0x140361D50、槽2 clearMapping=0x140362340、槽3 clearInputDeviceQueue=0x140362D60、槽5 tick=0x140362490、槽7 getCursorPos=0x140362DA0、槽12 changeControllerId=0x140362DD0；槽6 返回 InputMode::Mouse(1)。",
+        "[代码] 认定依据：tick 遍历 MouseDevice 单例 0x151D29E40 的 _inputs（+0x18，步长 20）；setMapping 写 mMouseButtonToButtonIdMap(+0x58)、滚轮向量(+0x98/+0xB0)、mPrimaryGameControllerId(+0xC8)，与 SDK 布局一致。"
+      ]
+    },
+    "@mouse_mapper_tick": {
+      "strategy": [
+        "MouseMapper vtable 0x14E759000 slot 5",
+        "IDA decompile + disasm 0x140362490",
+        "live r01-003 (touch-joystick-dpad-12651)"
+      ],
+      "address": "0x140362490",
+      "status": "resolved",
+      "confidence": "code+live",
+      "evidence": [
+        "[代码] 鼠标视角 /W 的生产者。ActionMove(0) 且 dx≠0||dy≠0：0x1403627F4 movzx ebx,[rdi+4]（dx）、0x1403627F8 movsx ebp,[rdi+6]（dy）、0x140362A3E imul ebp,[r14+0x50]（×mYAxisInversionFactor）、0x140362A47 cvtsi2ss xmm8,[r14+8]（(float)mScreenWidth）、0x140362AE4 divss xmm1,xmm8（y）、0x140362AE9 divss xmm0,xmm8（x）；0x140362AEE..AFF 写事件 {头 0x203=Direction, DirectionId::Turn=1, x, y}。dx==dy==0 时改发 PointerLocation（0x140362B1E）。",
+        "[实测] r01-003：入口快照 mScreenWidth/mScreenHeight = 2560/1494（等于 GetClientRect），slot 15 消费事件 =(−0.0390625, 0.078125)=(dy×(−1)/W, dx/W)；命中顺序每拍 mapper_tick→adapter→slot15→apply。"
+      ]
+    },
+    "@mouse_mapper_set_mapping": {
+      "strategy": [
+        "MouseMapper vtable 0x14E759000 slot 1",
+        "IDA decompile 0x140361D50"
+      ],
+      "address": "0x140361D50",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 0x140362270 movzx eax,[rbx+0xA0]（InputMapping.mouseMapping.invertYAxis）/ dec eax / or eax,1 / 0x14036227C mov [rsi+0x50],eax：mYAxisInversionFactor 关闭=−1、开启=+1。"
+      ]
+    },
+    "@touch_mapper_vtable": {
+      "strategy": [
+        "InputDeviceMapper 家族 vtable",
+        "getInputMode 槽返回 2",
+        "SDK TouchMapper 覆写集合（render/setWindowSize）"
+      ],
+      "address": "0x14E76CFA0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchMapper 的 vtable：槽1 setMapping=0x1406FDF90（0x4F08）、槽2 clearMapping=0x1407078C0、槽3 clearInputDeviceQueue=0x140707CA0、槽5 tick=0x140707990、槽8 render=0x140707CE0；槽6 返回 InputMode::Touch(2)。"
+      ]
+    },
+    "@touch_mapper_tick": {
+      "strategy": [
+        "TouchMapper vtable 0x14E76CFA0 slot 5",
+        "IDA decompile 0x140707990"
+      ],
+      "address": "0x140707990",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 把 mTouchControlSet(+0x50) 里的触点复制进 touchIdsWithFlags(+0x60)，重建触点结果列表（每个触点 TouchPoint+0x20 的「未消费」标志置 1），然后对每个控件调 control->vtable[5](control, eventQueue, set, mYAxisInversionFactor(+0x58))。"
+      ]
+    },
+    "@touch_mapper_set_mapping": {
+      "strategy": [
+        "TouchMapper vtable 0x14E76CFA0 slot 1"
+      ],
+      "address": "0x1406FDF90",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchMapper::$setMapping（0x4F08 B，反编译被截断、未展开）：在其中写入的控件 vtable 为 0x14E76CDC0/0x14E76CD80/0x14E76CE00/0x14E76CE40/0x14E76D010/0x14E76CE80。读 TouchInputMapping::invertYAxis 写 mYAxisInversionFactor 的一段未展开。"
+      ]
+    },
+    "@touch_move_and_turn_vtable": {
+      "strategy": [
+        "TouchMapper::$setMapping 0x14070190F 写入",
+        "SDK TouchMoveAndTurnInteractControl 覆写 dtor/tick/render"
+      ],
+      "address": "0x14E76D010",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchMoveAndTurnInteractControl 的 vtable：槽0 dtor=0x14070EA70、槽4 render=0x140708410、槽5 tick=0x140708A60。"
+      ]
+    },
+    "@touch_move_and_turn_render": {
+      "strategy": [
+        "vtable 0x14E76D010 slot 4",
+        "xref to joystick_frame/knob 绘制 0x140707DE0"
+      ],
+      "address": "0x140708410",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] 摇杆绘制：引用 textures/ui/joystick_frame 与 joystick_knob 的函数 0x140707DE0 的唯一调用者链在此。只做绘制，无输入数学。"
+      ]
+    },
+    "@touch_turn_interact_vtable": {
+      "strategy": [
+        "TouchMapper::$setMapping 写入",
+        "SDK TouchTurnInteractControl 只覆写 dtor/tick"
+      ],
+      "address": "0x14E76CE80",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchTurnInteractControl 的 vtable：槽5 tick=0x1406EDA60（0xD8F），render/getActivePointerId 等为基类实现。函数体未展开。"
+      ]
+    },
+    "@touch_turn_interact_tick": {
+      "strategy": [
+        "vtable 0x14E76CE80 slot 5"
+      ],
+      "address": "0x1406EDA60",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchTurnInteractControl::$tick 的地址（按 vtable 形状与 SDK 覆写集合认定）；触屏视角事件的控件侧公式未展开，见 @touch_look_handler。"
+      ]
+    },
+    "@touch_glyph_button_vtable": {
+      "strategy": [
+        "TouchMapper::$setMapping 写入",
+        "SDK TouchGlyphButtonControl 覆写集合"
+      ],
+      "address": "0x14E76CDC0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonControl 的 vtable：槽1 getHoldButtonId=0x1406EC800、槽2 getActivePointerId=0x1406EC810、槽3 releaseOnClear=0x1406EC820、槽4 render=0x1406EC830、槽5 tick=0x1406ECCE0、槽6 release=0x1406ECFD0。TouchTextButtonControl 的 vtable 0x14E76CE40 与之共用 tick。"
+      ]
+    },
+    "@touch_glyph_button_tick": {
+      "strategy": [
+        "vtable 0x14E76CDC0 slot 5",
+        "IDA decompile 0x1406ECCE0"
+      ],
+      "address": "0x1406ECCE0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] TouchGlyphButtonControl::tick：mCondition() 为假直接返回；每拍先清 mButtonState；area=mArea()；跳过 captured(+16) 的触点与「mActivePointerId≠−1 且 ≠ p.id」的触点；inside = x0≤x≤x1 && y0≤y≤y1（闭矩形）；inside 且 (mTouchStateRequirement & (Triggered?2:1)) 且 (p.fresh(+20) || (mPromiscuous && wasPressed)) → mButtonState=1；!mPassThrough 时把该触点 fresh 清 0；extend 标志与活动指针仍在则保持按下；状态变化时更新 mActivePointerId 并经 0x14033F020 发 Button 事件。",
+        "[代码] D-pad 的 8 个方向绑定 promiscuous=1、extendButtonPressOutsideAreaUntilReleased=0（构造 0x1469415F0 族）。"
+      ]
+    },
+    "@client_binding_factory_ctor": {
+      "strategy": [
+        "D-pad 区域哈希 0xB2342D20 等作为 map 键的 xref",
+        "disasm 0x144343EB0",
+        "SDK ClientBindingFactory 成员表"
+      ],
+      "address": "0x144343EB0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ClientBindingFactory 构造：在 mAreaBindings(std::map<uint, std::function<RectangleArea()>>) 里按名字哈希登记区域 lambda（每个节点 +0x20 存哈希、+0x28 存 lambda vtable、+0x30 存 this）。例：0xB2342D20(up_left)→vtable 0x14E8CC0E0、0xD9BD30D5(up_right)→0x14E8CC110、0xCD6D2D03(down_left)→0x14E8CC140、0x7355D00C(down_right)→0x14E8CC170、0xA1199A88(left)→0x14E8CBDE0、0x0C42EF1D(right)→0x14E8CBE10、0x7CA2A528(up)→0x14E8CBE40、0x0E5292E5D(down)→0x14E8CBEA0。"
+      ]
+    },
+    "@dpad_base_rect": {
+      "strategy": [
+        "8 个 D-pad 区域 lambda 的共同被调用者",
+        "IDA decompile 0x14434E660"
+      ],
+      "address": "0x14434E660",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 经 client->getGuiData() 取宽高（+72/+76）；读选项 0x0FE(a)、0x101(b)、0x2A4(d)、0x2A5(c)、0x2A6(e)：cx=W·d；top=(1−a)·H/2；bottom=b·H/2；span=a·H；cy=c·span+(bottom+top)；half=(e·0.414f)·span/2；rect={cx−half,cx+half,cy−half,cy+half}；再经 0x14434EAF0 修正后返回。选项名未定位。"
+      ]
+    },
+    "@dpad_area_up_left": {
+      "strategy": [
+        "area hash 0xB2342D20",
+        "IDA decompile 0x14436E490"
+      ],
+      "address": "0x14436E490",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] S=(x1−x0)/3；返回 {x0, x0+S, y0, y0+S}。"
+      ]
+    },
+    "@dpad_area_up_right": {
+      "strategy": [
+        "area hash 0xD9BD30D5",
+        "IDA decompile 0x14436E570"
+      ],
+      "address": "0x14436E570",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 返回 {x1−S, x1, y0, y0+S}。"
+      ]
+    },
+    "@dpad_area_down_left": {
+      "strategy": [
+        "area hash 0xCD6D2D03",
+        "IDA decompile 0x14436E650"
+      ],
+      "address": "0x14436E650",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 返回 {x0, x0+S, y1−S, y1}。"
+      ]
+    },
+    "@dpad_area_down_right": {
+      "strategy": [
+        "area hash 0x7355D00C",
+        "IDA decompile 0x14436E730"
+      ],
+      "address": "0x14436E730",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 返回 {x1−S, x1, y1−S, y1}。"
+      ]
+    },
+    "@dpad_area_left": {
+      "strategy": [
+        "area hash 0xA1199A88",
+        "IDA decompile 0x14436D110"
+      ],
+      "address": "0x14436D110",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] i=S/22·1.01；cy=(y1−y0)/2+y0；返回 {x0+i, x0+S+i, cy−S/2, cy+S/2}。"
+      ]
+    },
+    "@dpad_area_right": {
+      "strategy": [
+        "area hash 0x0C42EF1D",
+        "IDA decompile 0x14436D230"
+      ],
+      "address": "0x14436D230",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 返回 {x1−S−i, x1−i, cy−S/2, cy+S/2}（i=S/22·1.01）。"
+      ]
+    },
+    "@dpad_area_up": {
+      "strategy": [
+        "area hash 0x7CA2A528",
+        "IDA decompile 0x14436D360"
+      ],
+      "address": "0x14436D360",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] cx=(x1−x0)/2+x0；返回 {cx−S/2, cx+S/2, y0+i, y0+S+i}。"
+      ]
+    },
+    "@dpad_area_down": {
+      "strategy": [
+        "area hash 0x0E5292E5D",
+        "IDA decompile 0x14436D580"
+      ],
+      "address": "0x14436D580",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 返回 {cx−S/2, cx+S/2, y1−S−i, y1−i}。"
+      ]
+    },
+    "@dpad_binding_upleft": {
+      "strategy": [
+        "xref textures/gui/controls/upleft[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x1469415F0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.upleft\"，areaBindingName=0xB2342D20，conditionBindingName=0x5D6BBE27，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_upright": {
+      "strategy": [
+        "xref textures/gui/controls/upright[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x146941840",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.upright\"，areaBindingName=0xD9BD30D5，conditionBindingName=0xA46C0340，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_downleft": {
+      "strategy": [
+        "xref textures/gui/controls/downleft[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x146941A90",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.downleft\"，areaBindingName=0xCD6D2D03，conditionBindingName=0xB8A5D0E8，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_downright": {
+      "strategy": [
+        "xref textures/gui/controls/downright[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x146941CE0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.downright\"，areaBindingName=0x7355D00C，conditionBindingName=0x8E4B10D9，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_left": {
+      "strategy": [
+        "xref textures/gui/controls/left[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x146941FC0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.left\"，areaBindingName=0xA1199A88，conditionBindingName=0xD7DC7161，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_right": {
+      "strategy": [
+        "xref textures/gui/controls/right[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x146942200",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.right\"，areaBindingName=0x0C42EF1D，conditionBindingName=0xD7DC7161，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_up": {
+      "strategy": [
+        "xref textures/gui/controls/up[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x146937850",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.up\"，areaBindingName=0x7CA2A528，conditionBindingName=0xD7DC7161，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@dpad_binding_down": {
+      "strategy": [
+        "xref textures/gui/controls/down[_pressed]",
+        "call 0x146931A00（TouchGlyphButtonBinding 构造）的实参"
+      ],
+      "address": "0x1469427A0",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] TouchGlyphButtonBinding：buttonName=\"button.down\"，areaBindingName=0x0E5292E5D，conditionBindingName=0xD7DC7161，opacityBindingName=0x20AE315B，UV 22×22，glyphScale=1.0f，promiscuous=1，extendButtonPressOutsideAreaUntilReleased=0；passThrough/touchStateRequirement 由调用者 0x146908DD0 传入。"
+      ]
+    },
+    "@direction_event_fire_move": {
+      "strategy": [
+        "xrefs to adapter 0x145DDCA90（5 处）",
+        "std::function vtable 0x14E8C6930.. 的 _Do_call 槽"
+      ],
+      "address": "0x1442E4210",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] InputHandler 注册的 DirectionId lambda 的 _Do_call：把 {DirectionId 常量, &x, &y, &focus} 作为捕获、以适配器 0x145DDCA90 构造 std::function，调 client->vtable[+0x7F8]（forEachScreen），r8b=1。常量 Move=0。"
+      ]
+    },
+    "@direction_event_fire_turn": {
+      "strategy": [
+        "xrefs to adapter 0x145DDCA90（5 处）",
+        "std::function vtable 0x14E8C6930.. 的 _Do_call 槽"
+      ],
+      "address": "0x1442E42E0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] InputHandler 注册的 DirectionId lambda 的 _Do_call：把 {DirectionId 常量, &x, &y, &focus} 作为捕获、以适配器 0x145DDCA90 构造 std::function，调 client->vtable[+0x7F8]（forEachScreen），r8b=1。常量 Turn=1。"
+      ]
+    },
+    "@direction_event_fire_scroll": {
+      "strategy": [
+        "xrefs to adapter 0x145DDCA90（5 处）",
+        "std::function vtable 0x14E8C6930.. 的 _Do_call 槽"
+      ],
+      "address": "0x1442E4480",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] InputHandler 注册的 DirectionId lambda 的 _Do_call：把 {DirectionId 常量, &x, &y, &focus} 作为捕获、以适配器 0x145DDCA90 构造 std::function，调 client->vtable[+0x7F8]（forEachScreen），r8b=1。常量 Scroll=2。"
+      ]
+    },
+    "@direction_event_fire_turn_raw": {
+      "strategy": [
+        "xrefs to adapter 0x145DDCA90（5 处）",
+        "std::function vtable 0x14E8C6930.. 的 _Do_call 槽"
+      ],
+      "address": "0x1442E43B0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] InputHandler 注册的 DirectionId lambda 的 _Do_call：把 {DirectionId 常量, &x, &y, &focus} 作为捕获、以适配器 0x145DDCA90 构造 std::function，调 client->vtable[+0x7F8]（forEachScreen），r8b=1。常量 TurnRaw=3。"
+      ]
+    },
+    "@direction_event_fire_turn_alt": {
+      "strategy": [
+        "xrefs to adapter 0x145DDCA90（5 处）",
+        "std::function vtable 0x14E8C6930.. 的 _Do_call 槽"
+      ],
+      "address": "0x1442E4550",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] InputHandler 注册的 DirectionId lambda 的 _Do_call：把 {DirectionId 常量, &x, &y, &focus} 作为捕获、以适配器 0x145DDCA90 构造 std::function，调 client->vtable[+0x7F8]（forEachScreen），r8b=1。常量 TurnAlt=8。"
+      ]
+    },
+    "@client_for_each_visible_screen": {
+      "strategy": [
+        "ClientInstance vtable 0x14E9731B0 slot +0x7F0",
+        "SDK IClientInstance.h 虚函数序"
+      ],
+      "address": "0x145DC7B50",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ClientInstance::forEachVisibleScreen(std::function)：见 @look_forwarder_145DC7B50。"
+      ]
+    },
+    "@client_for_each_screen": {
+      "strategy": [
+        "ClientInstance vtable 0x14E9731B0 slot +0x7F8",
+        "SDK IClientInstance.h 虚函数序"
+      ],
+      "address": "0x145DC8130",
+      "status": "resolved",
+      "confidence": "constant",
+      "evidence": [
+        "[常量] ClientInstance::forEachScreen(std::function, bool)（0x2B2 B）；DirectionId lambda 的调用目标。函数体未展开。"
+      ]
+    },
+    "@minecraft_input_get_input_mode": {
+      "strategy": [
+        "slot 15 对 getInput() 结果的调用 0x144353910",
+        "IDA decompile 0x144353910"
+      ],
+      "address": "0x144353910",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] MinecraftInputHandler::getInputMode()：取 mClient->vtable[304]() 的 4 字节设备类型（−1 → 返回 0），对其做 FNV-1a 后在 *(this+24) 的哈希表里查值，命中返回 [entry+0x18]，否则 0。返回值即 SDK InputMode。"
+      ]
+    },
+    "@options_get_invert_y_axis": {
+      "strategy": [
+        "Options vtable 0x14E79FF10 slot +0x1D0"
+      ],
+      "address": "0x140FB5CB0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 同 @touch_invert_y_consumer：按输入模式读取 OptionID 0x185 的布尔。"
+      ]
+    },
+    "@invert_y_mapping_writer": {
+      "strategy": [
+        "Options::vtable[+0x1D0] 调用点扫描（284 个候选函数）",
+        "InputMapping+0xA0/+0x200 字节写入扫描"
       ],
       "address": null,
       "status": "unresolved",
       "confidence": "none",
       "evidence": [
-        "dy 在进入 handler 链前已取负（r01-017）；反转选项的消费点未定位。"
+        "[代码] 已闭合的两端：Options::vtable[+0x1D0]=0x140FB5CB0（读）与 MouseMapper::$setMapping 0x140362270..27C（用 InputMapping.mouseMapping.invertYAxis）。",
+        "把 getter 结果写进 MouseInputMapping::invertYAxis / TouchInputMapping::invertYAxis 的函数未定位：按「[vtable+0x1D0] 虚调用 + 邻近 getOptions()」与「+0xA0/+0x200/+0x48/+0x158 字节写入」两种指纹扫描均无命中。"
       ],
-      "note": "touch_invert_y_axis 消费点未定位"
+      "note": "选项 0x185 → InputMapping::invertYAxis 的写入者未定位"
+    },
+    "@dpad_button_flag_registration": {
+      "strategy": [
+        ".rdata 全串搜索 upleft/downleft",
+        "movabs 内嵌字符串扫描",
+        "ClientMoveInputHandler::_registerButtonStateTracking 调用点"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 按钮名已定：button.upleft/upright/downleft/downright/up/down/left/right；触屏映射模板 0x146908DD0、0x1468EE8F0、0x1468EFDD0、0x146913180、0x1469245B0 以栈上字符串构造它们。",
+        "这些名字到 MoveInputState::UpLeft(0x200) 等位的注册点未定位：.rdata 不存在 upright 等字符串，候选注册函数里没有以 0x200..0x10000 位值为实参的调用。「角键=对角位」仍是推断。"
+      ],
+      "note": "D-pad 按钮名到 MoveInputState 位的注册点未定位"
+    },
+    "@touch_joystick_sprint_timer": {
+      "strategy": [
+        "TouchMoveAndTurnInteractControl::$tick 中 mSprintButtonId(+0x53C) 的使用点"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 只读到疾跑候选 = mSprintOnMovement() && dist>1.05·R（0x140709079..08B）与离开 Move 状态时松开 mSprintButtonId（0x1407095BF）。",
+        "mStartTimeMovingOutsideMaxZone(mState+0x40) 的写入点与按下 mSprintButtonId 的路径、计时阈值未读到。"
+      ],
+      "note": "摇杆疾跑的计时阈值未定位"
+    },
+    "@touch_joystick_origin_writer": {
+      "strategy": [
+        "TouchMoveAndTurnInteractControl::tick 中 mMoveTouchX0/Y0(+0x5AC/+0x5B0) 的写入点"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 传输函数以 mMoveTouchX0/Y0 为摇杆原点（0x140708FCF..FFC）。",
+        "原点在 mStaticJoystick(+0x1F0) 为真/假时的写入点未展开。"
+      ],
+      "note": "固定/动态摇杆的原点写入点未定位"
+    },
+    "@dpad_layout_option_names": {
+      "strategy": [
+        "options 注册表 0x1420BB150..0x1420F159C 中按 OptionID 立即数查找"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] D-pad 外框 0x14434E660 读取选项 0x0FE、0x101、0x2A4、0x2A5、0x2A6。",
+        "这五个 OptionID 的存档键名未定位（不在 0x1420BB150 注册表的 mov edx 立即数里）；.rdata 的 UIProperty 名表里有 MOVE_STICK_X/Y/SCALE、TOUCH_DPAD_X/Y/SCALE/OPACITY，对应关系是推断。"
+      ],
+      "note": "D-pad 外框用到的 5 个选项名未定位"
+    },
+    "@spyglass_damping_numerator_getter": {
+      "strategy": [
+        "LocalPlayer::turn 0x144761610 的 decompile",
+        "全库 {0.05f,0.05f} 对（0x142045A97 → 0x151D5E1BC）"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 分子 = (*(player->vtable[77]() + 8))->vtable[+0x228]() 返回值的低 32 位（0x1447616B2）；实测恒 0.05。",
+        "该虚函数的实现未定位：唯一的 {0.05f,0.05f} 静态初始化（0x142045A97）所属对象的 vtable 0x14E76DDB0 只有 11 槽，没有 +0x228 槽，不是它；SDK Actor.h 的虚表序与二进制对不上，player->vtable[77] 未命名。"
+      ],
+      "note": "望远镜阻尼分子 0.05f 的虚函数实现未定位"
+    },
+    "@gamepad_stick_frontend_deadzone": {
+      "strategy": [
+        "movsx word +4/+6（同基址）+ cvtsi2ss 扫描"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 线索：0x14480B9A0..0x14480DA23 遍历步长 0x10 的输入条目，把 +2/+4/+6 三个 short 转 float，算 xmm3=[rdi+0x200]·y+[rdi+0x204]·dx+[rdi+0x208]·dy、xmm0=(y²+dx²+dy²)−xmm3²，与 [rdi+0x1AC] 比较（0x14480C618..0x14080C68F）。形状像「沿某方向的锥形判定」，未展开。",
+        "手柄摇杆的径向死区与曲线未定位。"
+      ],
+      "note": "手柄摇杆前端死区未定位"
     }
   }
 }

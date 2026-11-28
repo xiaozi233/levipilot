@@ -1,0 +1,39 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/touch-joystick-dpad-12651/probes/verify_touch_joystick_dpad.py
+# cwd: <repo>
+# started: 2026-11-28T10:06:13Z
+# exit: 0
+# --- stdout ---
+[session invert_off] dev.py run --exec ...
+installed mod -> AppData\Local\LeviLauncher\Instances\1.26.51.01\mods\probe
+starting AppData\Local\LeviLauncher\Instances\1.26.51.01\Minecraft.Windows.exe
+game focused
+pipe ready; waiting for menu
+worlds: 超平坦测试, 我的世界
+signin: {'event': 'signin', 'known': True, 'signed_in': True, 'req_id': 5}
+entering '超平坦测试'
+in world: feet=(244.53, -60.00, 242.12) health=20.0
+player settled (on ground, still)
+exec: "AppData\Local\Programs\Python\Python311\python.exe" "skills\bedrock-re\findings\1.26.51.01\cases\touch-joystick-dpad-12651\probes\verify_touch_joystick_dpad.py" --stage=live --label=invert_off
+live invert_off: ok
+saving and leaving world (pid=39792)
+stopping target game pid=39792 after save
+[session invert_off] exit 0
+[session invert_on] dev.py run --exec ...
+installed mod -> AppData\Local\LeviLauncher\Instances\1.26.51.01\mods\probe
+starting AppData\Local\LeviLauncher\Instances\1.26.51.01\Minecraft.Windows.exe
+game focused
+pipe ready; waiting for menu
+worlds: 超平坦测试, 我的世界
+signin: {'event': 'signin', 'known': True, 'signed_in': True, 'req_id': 5}
+entering '超平坦测试'
+in world: feet=(244.53, -60.00, 242.12) health=20.0
+player settled (on ground, still)
+exec: "AppData\Local\Programs\Python\Python311\python.exe" "skills\bedrock-re\findings\1.26.51.01\cases\touch-joystick-dpad-12651\probes\verify_touch_joystick_dpad.py" --stage=live --label=invert_on
+live invert_on: ok
+saving and leaving world (pid=38848)
+stopping target game pid=38848 after save
+[session invert_on] exit 0
+summary: {"invert_off": {"W": [2560], "factor": [-1], "event": [[-0.039062, 0.078125]], "d_yaw": 25.985107, "d_pitch": 12.992554, "alpha": [0.706669, 0.526669, 0.366669, 0.526669, 0.526669, 0.206669, 0.046669, 0.526669]}, "invert_on": {"W": [2560], "factor": [1], "event": [[0.039062, 0.078125]], "d_yaw": 25.985107, "d_pitch": -12.992554, "alpha": [0.886675, 0.046675, 0.766675, 0.886675, 0.726675, 0.386675, 0.226675, 0.386675]}}
+
+# --- stderr ---
+

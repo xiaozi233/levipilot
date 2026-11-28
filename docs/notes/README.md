@@ -26,6 +26,7 @@
 | [`spyglass-item-use-12651.md`](spyglass-item-use-12651.md) | 使用物品与望远镜加速 | `ItemUseSlowdown` 三系统与 `0.35² = 0.1225`、`sizeof=4` 单拍瞬态、11 物品表、组合规则与望远镜加速证伪 |
 | [`touch-input-turn-12651.md`](touch-input-turn-12651.md) | 触屏视角与输入处理器家族 | vtable `0x14E760FA0` 107 槽全貌、视角事件回调链 `0x144B22290→0x144B22580→adapter`、slot 27 动作分发、slot 14 `|x|^1.2` 非线性级与触屏公式 `Δ=0.15·g·0.4·|A|^1.2/(n+1)`（`^3.6` 来源）、`/W` 在 handler 链上游（`W=2560` 实测）、`0.7f` 俯仰分量更正 |
 | [`input-joystick-strafe-12651.md`](input-joystick-strafe-12651.md) | 输入合成与视角灵敏度 | `TickServerMoveInputHandler 0x1404495E0` 的模拟/数字双分支与 `>1` 才归一化、`PlayerAuthInputPacket` 位映射、键盘全矩阵、合成层无死区、`v=0.81(1.1S)^0.6125`、键鼠 `9600(0.15+0.6v)³×0.3÷W`、望远镜阻尼 `min(1,0.05/D)`（Wiki `5/D`）与 pitch `±89.9`；第 2 轮含勘误表 |
+| [`touch-joystick-dpad-12651.md`](touch-joystick-dpad-12651.md) | 触屏摇杆、经典 D-pad 与鼠标 `/W` 生产者 | `MouseMapper::$tick 0x140362490` 的 `divss`（分母 `mScreenWidth`）与反转乘子 `mYAxisInversionFactor=±1`、OptionID `0x185` 三注册名与 `Options::vtable[+0x1D0]`、`ctrl_hotbarOnlyTouch`↔`0x1DB`、`DirectionId` 派发链（`0x145DC7B50` 实为 `forEachVisibleScreen`）、slot 15/14 重读（`+0x850`=`isTouchGameplayAllowed`、`c`=浮点参数、`0x187`=`ctrl_fullkeyboardgameplay`）、摇杆 `R=区域宽/3`/死区 `25`/线性/疾跑区 `1.05R`、D-pad 3×3 网格与闭矩形按压规则；§9 含对前两轮的勘误表 |
 | [`collisions-precision-12651.md`](collisions-precision-12651.md) | float32 碰撞箱精度与卡墙挤出 | `[Y,X,Z]` 双语义裁剪（贴面/MTD）、AABB 增量平移（跨界 `2^n` 漂移 + 重建量化 `2^20` 宽 `0.5`）、`0.1` 推向空隙写 `mPosDelta`（欧氏模长 `0.10000000`）、跨 `y=128` 连跳高度 `+1 ULP/跳`、实体推挤 `PushMode` 4 路公式与玩家免疫 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把

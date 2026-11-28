@@ -5,6 +5,7 @@
 > 复现脚本：[`verify_input_joystick_strafe.py`](../../skills/bedrock-re/findings/1.26.51.01/cases/input-joystick-strafe-12651/probes/verify_input_joystick_strafe.py)。
 > 原始数据：gitignored `out/input-joystick-strafe-1.26.51.01.json`（`r02-018` 全量、`r02-019`~`r02-021` 阻尼/灵敏度补点）。**本文所有 `[实测]` 数字均逐位取自该 JSON。**
 > 相位口径：`MoveInputComponent+0x24/+0x28` 是 `mMove`（xy 输入向量，非速度）；录制 `vx/vz` 是**已完成位移**。
+> **后续勘误**：`slot 15` 仅在 `InputMode == Touch` 时读 `hotbar_only_touch`（键鼠不走此分支）及 `OptionID 0x187` 实为 `ctrl_fullkeyboardgameplay` 等更正见 [`touch-joystick-dpad-12651.md` §9](touch-joystick-dpad-12651.md#9-勘误对前两轮)。
 
 ---
 

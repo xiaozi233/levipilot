@@ -5,6 +5,7 @@
 > 复现脚本：[`verify_touch_input_turn.py`](../../skills/bedrock-re/findings/1.26.51.01/cases/touch-input-turn-12651/probes/verify_touch_input_turn.py)（`r01-017` 链路与默认系数、`r01-009` `hotbarOnlyTouch=1`）。原始数据：gitignored `out/touch-input-turn-1.26.51.01.json`，本文所有 `[实测]` 数字逐位取自该文件。
 > 前置：移动输入合成与键鼠公式见 [`input-joystick-strafe-12651.md`](input-joystick-strafe-12651.md)。
 > **硬件边界**：本机无触摸屏/手柄，触屏分支全部为静态闭合；`mouse_event` 注入只覆盖键鼠路径。
+> **后续勘误**：`0x145DC7B50` 实为 `ClientInstance::forEachVisibleScreen`、`slot 15` 的 `InputMode == Touch` / `+0x850` / `c` 重读及 `OptionID 0x187` 归属等 6 处更正见 [`touch-joystick-dpad-12651.md` §9](touch-joystick-dpad-12651.md#9-勘误对前两轮)。
 
 ---
 

@@ -1,0 +1,19 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/collisions-precision-12651/probes/verify_collisions_precision.py
+# cwd: <repo>
+# started: 2026-11-28T04:26:04Z
+# exit: 1
+# --- stdout ---
+partial results saved: out\collisions-precision-1.26.51.01.json
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 879, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 860, in main
+    s4_entity_push(client, results)
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 752, in s4_entity_push
+    assert crossed, "B: player never reached the cow"
+           ^^^^^^^
+AssertionError: B: player never reached the cow
+

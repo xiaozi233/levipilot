@@ -1,0 +1,21 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/collisions-precision-12651/probes/verify_collisions_precision.py
+# cwd: <repo>
+# started: 2026-11-27T17:48:33Z
+# exit: 1
+# --- stdout ---
+partial results saved: out\collisions-precision-1.26.51.01.json
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 804, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 783, in main
+    s2_depenetration(client, results)
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 378, in s2_depenetration
+    teleport_settle(client, ex, ey, ez)
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 269, in teleport_settle
+    assert settled["ok"] and abs(feet - y) < 0.75, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: teleport_settle at (236.5,-60.0,235.5) failed after kill+respawn: settled={'event': 'settle', 'ok': True, 'ticks': 5, 'state': {'alive': True, 'bindings': {'back': 83, 'forward': 87, 'jump': 32, 'left': 65, 'right': 68, 'sneak': 16, 'sprint': 82}, 'block_above': 'minecraft:air', 'block_below': 'minecraft:air', 'block_feet': 'minecraft:air', 'block_head': 'minecraft:air', 'context': 2310051027720, 'dimension': 0, 'effects': [], 'event': 'state', 'exhaustion': 2.3499996662139893, 'feet_x': 236.5, 'feet_y': -104.0, 'feet_z': 235.5, 'flying': False, 'gamemode': 1, 'head_x': 236.5, 'head_y': -102.47998809814453, 'head_z': 235.5, 'health': 20.0, 'hunger': 20.0, 'in_water': False, 'in_world': True, 'input': {'a': False, 'action_sprint': False, 'd': False, 'jump': False, 'locked': True, 'move_x': 0.0, 'move_y': 0.0, 's': False, 'sneak': False, 'sprint': False, 'w': False}, 'item': {'aux': 0, 'count': 1, 'damage': 0, 'max_damage': 0, 'name': '望远镜', 'type': 'minecraft:spyglass'}, 'item_use_ticks': 0, 'max_health': 20.0, 'mayfly': True, 'name': 'xiaozi07219234', 'ok': True, 'on_ground': True, 'partial': False, 'pitch': 0.0, 'pos_delta_x': 0.0, 'pos_delta_y': -0.07840000092983246, 'pos_delta_z': 0.0, 'prev_pitch': 0.0, 'prev_yaw': -1.52587890625e-05, 'req_id': 543, 'runtime_id': 1, 'sample_us': 369, 'saturation': 1.0, 'selected_slot': 0, 'sneaking': False, 'sprinting': False, 'swimming': False, 'tick': 95232, 'truncated': False, 'uuid': '8cd9d200-f514-31cd-8fd9-39e590045747', 'vx': 0.0, 'vy': 0.0, 'vz': 0.0, 'x': 236.5, 'xp_level': 0.0, 'xp_progress': 0.0, 'y': -102.37998962402344, 'yaw': -1.52587890625e-05, 'z': 235.5}}, feet=-103.99999972402344
+

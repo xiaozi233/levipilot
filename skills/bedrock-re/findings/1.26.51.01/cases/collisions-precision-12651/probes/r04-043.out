@@ -1,0 +1,24 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/collisions-precision-12651/probes/verify_collisions_precision.py
+# cwd: <repo>
+# started: 2026-11-28T04:29:51Z
+# exit: 1
+# --- stdout ---
+partial results saved: out\collisions-precision-1.26.51.01.json
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 895, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 876, in main
+    s4_entity_push(client, results)
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 752, in s4_entity_push
+    info = client.entity(cow_b)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "driver\harness\commands\query.py", line 138, in entity
+    return self.request({"cmd": "entity", "runtime_id": int(runtime_id)}, "entity_info")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "driver\harness\connection.py", line 496, in request
+    raise ModProtocolError(
+driver.harness.errors.ModProtocolError: entity: entity_not_found
+

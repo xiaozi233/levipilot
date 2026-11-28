@@ -1,0 +1,22 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/collisions-precision-12651/probes/verify_collisions_precision.py
+# cwd: <repo>
+# started: 2026-11-27T17:34:06Z
+# exit: 1
+# --- stdout ---
+partial results saved: out\collisions-precision-1.26.51.01.json
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 729, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 710, in main
+    s4_entity_push(client, results)
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 639, in s4_entity_push
+    through = [r for r in rows if abs(float(r["min_x"]) - float(cow_walk0.get("x", 0.0))) < 1.2]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 639, in <listcomp>
+    through = [r for r in rows if abs(float(r["min_x"]) - float(cow_walk0.get("x", 0.0))) < 1.2]
+                                            ~^^^^^^^^^
+KeyError: 'min_x'
+

@@ -1,0 +1,10 @@
+{
+  "case": "collisions-precision-12651",
+  "version": "1.26.51.01",
+  "goal": "Round 4 返工：补测跨 2^n 边界水平行走与垂直跳跃 AABB 漂移、修正 y=101 高度引述、静态闭合 Mob::pushActors/PushMode 4 路推挤公式并修复 S4 生存模式+非零偏移夹具、修正 S2 L1/L2 模长与拍数口径并清理账本重复项",
+  "environment": "",
+  "current_round": 5,
+  "status": "closed",
+  "created_at": "2026-11-27T15:27:13Z",
+  "updated_at": "2026-11-28T04:59:03Z"
+}

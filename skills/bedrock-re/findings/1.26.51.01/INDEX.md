@@ -2,9 +2,10 @@
 
 当前版本的角色表在 [`docs/roles/1.26.51.01.json`](../../../../docs/roles/1.26.51.01.json)。各专题公开结论正主见 [`docs/README.md`](../../../../docs/README.md)；下方列出全部 case 账本。
 
-## 已结案（15）
+## 已结案（16）
 
 - [`block-collisions-12651`](cases/block-collisions-12651/report.md) — 全游戏 1477 类 / 22091 状态方块与实体碰撞箱导出及 Wiki 校对（正主：[`docs/notes/block-collisions-12651.md`](../../../../docs/notes/block-collisions-12651.md)）
+- [`collisions-precision-12651`](cases/collisions-precision-12651/report.md) — float32 碰撞箱精度、卡墙挤出 `n̂×0.1` 与方块/实体碰撞解算（正主：[`docs/notes/collisions-precision-12651.md`](../../../../docs/notes/collisions-precision-12651.md)）
 - [`climb-blocks-12651`](cases/climb-blocks-12651/report.md) — 7 种可攀爬方块、单点 vs 足迹、脚手架免摔与细雪+皮革靴 `1.5×`（正主：[`docs/notes/climb-blocks-12651.md`](../../../../docs/notes/climb-blocks-12651.md)）
 - [`creative-flying-12651`](cases/creative-flying-12651/report.md) — 创造飞行水平/竖直递推、`0.34125 = 0.91 × 0.375` 与 `MobMovementFriction`（正主：[`docs/notes/creative-flying-12651.md`](../../../../docs/notes/creative-flying-12651.md)）
 - [`dolphins-grace-12651`](cases/dolphins-grace-12651/report.md) — 海豚的恩惠扫描门控、`SwimSpeedMultiplier=2.0` 与深海探索者/迅捷交互（正主：[`docs/notes/dolphins-grace-12651.md`](../../../../docs/notes/dolphins-grace-12651.md)）

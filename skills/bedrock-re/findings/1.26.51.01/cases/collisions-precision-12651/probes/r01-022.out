@@ -1,0 +1,18 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/collisions-precision-12651/probes/verify_collisions_precision.py
+# cwd: <repo>
+# started: 2026-11-27T17:43:19Z
+# exit: 1
+# --- stdout ---
+partial results saved: out\collisions-precision-1.26.51.01.json
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 777, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 756, in main
+    s2_depenetration(client, results)
+  File "skills\bedrock-re\findings\1.26.51.01\cases\collisions-precision-12651\probes\verify_collisions_precision.py", line 425, in s2_depenetration
+    raise AssertionError(f"deep embed never engaged: aabb={aabb}")
+AssertionError: deep embed never engaged: aabb={'min': [232.1999969482422, -104.0, 235.1999969482422], 'max': [232.8000030517578, -102.19999694824219, 235.8000030517578], 'width_f32': 0.600006103515625, 'height_f32': 1.8000030517578125, 'dim': [0.6000000238418579, 1.7999999523162842]}
+

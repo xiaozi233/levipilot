@@ -1178,6 +1178,156 @@
       "evidence": [
         "[常量] hash 0x161F61EA，缓存初始化点 0x14022B594（lea rax,[0x14ECFCC70]=\"VehicleComponent]\"）；storage 由 sub_14022AD30(reg+48, 0x161F61EA) 惰性取出并缓存到 [ctx+8]，@attach_position_views_builder 拿到它就**递归调用自身**——即乘坐链：实体→载具→载具的载具。"
       ]
+    },
+    "@clip_collide": {
+      "strategy": [
+        "decompile 0x143327D80",
+        "dir table get_bytes 0x14E780AC0"
+      ],
+      "address": "0x143327D80",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] AABB 双语义裁剪：盒不相交→单轴运动裁剪（贴面，无 epsilon），相交→MTD 推出（argmin 轴 X≤Y≤Z 同值优先，push=dir*pen，dir 表 {+1.0f,-1.0f}@0x14E780AC0——pe_map 把该 8 字节注成 f64=-0.0078125 是 qword 注解假象）；死区 1e-6f(0x358637BD)；退化盒 early-return。collisions-precision-12651。"
+      ]
+    },
+    "@collision_axis_solver": {
+      "strategy": [
+        "decompile 0x1482A4890"
+      ],
+      "address": "0x1482A4890",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 公共求解器：正向遍历增量数组（ActorMoveSystem 侧构造 [Y,X,Z] 三轴增量），内层倒序遍历 24B AABB 形状，逐形状调 @clip_collide；调用方以 maxDep[axis] 与 clip.t 比较选择 pushMove/pos；每轴后盒+=增量并累计 depth(out+0xC)。调用点 0x1482D4B2A/0x1482D4B88(ClientAcceptance)、0x149028438(ActorMove)、0x1490498D6/0x149049918(AutoStep)。"
+      ]
+    },
+    "@actor_move_solve": {
+      "strategy": [
+        "decompile 0x1490283A0",
+        "view setup 0x149028150"
+      ],
+      "address": "0x1490283A0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ActorMoveSystem 逐实体解算：MoveRequest(+0x3C mSpeed) 构造 [(0,Y,0),(X,0,0),(0,0,Z)] 增量数组；解算 AABB 增量写回 AABBShapeComponent.mAABB（min/max 逐轴加，SubBBs 0x0B0822D1 子盒同拍平移同量）；+0x30=mPreCollisionSpeed、+0x54=mIsPenetrating(depth>=1e-6)；NaN 校验字符串 '1 ActorMoveSystem'/'2 ActorMoveSystem'。视图 qword 0xBAC1B3CF_4C8F7288 + 0x0B0822D1。"
+      ]
+    },
+    "@configure_depenetration": {
+      "strategy": [
+        "decompile 0x149027730",
+        "tables get_bytes"
+      ],
+      "address": "0x149027730",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 每拍写 MoveRequest+0x48 mMaxDepenetration：IsStuckItem(bit3) 或（one-way 空 且 bits∩0x15=0）→表 {1,1,1}@0x14E6D7D88，否则 {0,0,0}@0x14E6D8608；逐轴 fmaxf(表, mMinDepenetration)，mTemporaryOverride engaged(byte+52) 再 fmaxf(+40/44/48)。实测玩家 mMinDepenetration=0.01。"
+      ]
+    },
+    "@update_depenetration": {
+      "strategy": [
+        "decompile 0x14901C270"
+      ],
+      "address": "0x14901C270",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ADF byte13 bit5(ActorFlags::PushTowardsClosestSpace=109) ↔ DepenetrationComponent.mBits bit4 同步；mIsPenetrating(MoveRequest+0x54) 驱动 bit1(WasPenetratingLastFrame)→bit2(IsStuckInCollider) 进位；每拍清 mTemporaryOverride engaged；ADF109 且本拍穿透时确保 MoveTowardsClosestSpaceFlagComponent(0xE387CDF4) 存在。注册序 Configure(0x14681B0E5)→ActorMove(0x14681B173)→UpdateDepenetration(0x14681B1FD)。"
+      ]
+    },
+    "@push_toward_closest_space": {
+      "strategy": [
+        "decompile 0x1431E2010",
+        "join 0x1431E0950"
+      ],
+      "address": "0x1431E2010",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 卡墙 0.1 推挤：实体盒 x/z±1 扩张收集方块盒、剔除 mOneWayPhysicsBlocks，方向=(实体中心−剩余盒质心)(仅X/Z，死区 FLT_EPSILON)，自由空间 ±1 步试探失败则方向清零；|d|>=eps 时 n̂ 归一化 ×0.1f，仅 |mPosDelta[axis]|<|push| 时写 StateVector+0x18/+0x20=clamp(old+push,±push)。实测浅嵌弹出残差 (0.1/√2)×0.546 摩擦链吻合。系统名 'MoveTowardsClosestSpaceSystemFromActor'(0x14EBFC787)，注册 0x1431C5350（vtable 0x14E871A70），后段注册区 0x14683982B 调用。"
+      ]
+    },
+    "@push_actors_system": {
+      "strategy": [
+        "decompile 0x147CBE4D0",
+        "body 0x147CB3020"
+      ],
+      "address": "0x147CBE4D0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 实体推挤系统：注册 0x14682791A（对象 0x60，vtable 0x14EA06600 slot5），视图 {ActorOwner 0x85B93800, ActorMovementTickNeeded 0x94154CCE, MobFlag 0x14EA24A2, PushActorsRequest 0x124F2E4B}；join 后经 Actor 虚调用 *vtbl+1152(slot≈144) 执行推挤；tick 末清 PushActorsRequest 池。精确推挤公式未静态闭合（虚表实现未定位），由 S4 实测对质。"
+      ]
+    },
+    "@pushable_by_block_archetype": {
+      "strategy": [
+        "decompile 0x1433474F0"
+      ],
+      "address": "0x1433474F0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] PushableByBlockComponent(0x0DC5E610) 是活塞/方块实体推挤路径（0x144AE3E00 按运动方向逐轴计算推出距离），不是卡墙挤出；卡墙挤出=@push_toward_closest_space。"
+      ]
+    },
+    "@mob_push_actors": {
+      "strategy": [
+        "decompile 0x142086170",
+        "SDK Mob.h:147 slot 144"
+      ],
+      "address": "0x142086170",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] Mob::pushActors 本体：Actor::getAABB ±0.2f 外扩收集候选（vtable+248）、查 PushableByEntityComponent(0xE0F57B82)、骑乘根链 walker(0x1419F2FC0, 深≤0x3FF)、逐候选 0x1433DA1D0(候选,自身,canPush)；候选 PushableByEntity 缺失时走 0x1433DA7C0 分支。Round 4 collisions-precision-12651。"
+      ]
+    },
+    "@push_mode_dispatcher": {
+      "strategy": [
+        "decompile 0x1433DA1D0",
+        "jump table 0x14E880500"
+      ],
+      "address": "0x1433DA1D0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 推挤分派器：skipPush(0x1433DA7C0) 入口 → 选 preset(0x1433DAB60) → d=(mode==Default)?max(|dx|,|dz|):sqrt(dx²+dz²) → mMinDistance(+0x48) 短路（同心重叠命中）→ d−=0.5×自身宽 → mMaxDistance(+0x4C) 短路 → mode−1 跳表 4 路：Default=1→0x1433DB540、LegacyBoat=2→0x1433DB040、LegacyMinecart=3→0x1433DB2D0、Ball=4→0x1433DAF50；随后 PushedByComponent(0xBE9C0F2C) 经 0x14253A5C0 挂载、音效按 preset+0x6C/+0x70/+0x78 门控。"
+      ]
+    },
+    "@push_default_impl": {
+      "strategy": [
+        "decompile 0x1433DB540"
+      ],
+      "address": "0x1433DB540",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] PushMode::Default 推力：d=sqrt(max(|dx|,|dz|))、inv=1/d、scale=min(1.0f,inv)×mStrengthMultiplier(+0x44)×(1−对方 pushThrough[actor+0x194])；∓方向量分别乘 +0x54（候选）与 +0x58（自身，仅 canPush==0 时计算）。"
+      ]
+    },
+    "@push_apply": {
+      "strategy": [
+        "decompile 0x1433DB650"
+      ],
+      "address": "0x1433DB650",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 推力写入：向量累加进 StateVector.mPosDelta（Actor+0x218 指针字段 6/7/8 = +0x18/+0x1C/+0x20）；类型 88/83（船/矿车）且非乘客走虚表 slot 138 专用路径；写入门 = sub_1419F1ED0(…,256)/虚表 slot39（玩家侧不放行，[推断]）。"
+      ]
+    },
+    "@push_skip": {
+      "strategy": [
+        "decompile 0x1433DA7C0"
+      ],
+      "address": "0x1433DA7C0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] skipPush：骑乘/载具链双方检查（0x1419F2FC0 非 null 即 skip）、vtable+0x9E8 门、组件 0xAE5B853F 过滤；命中即整对跳过推挤。"
+      ]
     }
   }
 }

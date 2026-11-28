@@ -11,23 +11,18 @@
 
 ## 一、当前待研究的核心课题（尚未闭合）
 
-### 1. `float32` 精度与方块/实体碰撞解算（`Pages/precision_glitches.md`、`Pages/collisions.md`，均 0 行）
-
-- **现状**：社区已知“跨 $2^n$ 坐标会让碰撞箱缩涨、特定 Y 高度连续跳跃改变垂直碰撞箱、卡墙会被 `0.1` 加速度挤出”，且缺少方块碰撞解析轴序（`Y → X → Z` 与历史差异）、箱内判定与实体推力源码边界。
-- **研究切入点**：检查 `AABB::move`（确认增量平移还是每拍由位置和尺寸重算 AABB）、`UpdateDepenetration` / `ConfigureDepenetration`（`0x14681b0e5` / `0x14681b1fd`）与实体碰撞推力，配合 LeviPilot 逐 tick 回读 `float32` AABB，推导 ULP 漂移与挤出触发阈值。
-
-### 2. 现行摇杆归一化、三向斜走与手柄/触屏视角灵敏度（`Pages/joystick.md`、`Pages/triple_component_strafe.md`、`Pages/camera_movement.md`）
+### 1. 现行摇杆归一化、三向斜走与手柄/触屏视角灵敏度（`Pages/joystick.md`、`Pages/triple_component_strafe.md`、`Pages/camera_movement.md`）
 
 - **现状**：`1.21.21` 修复 `11-strafe` 后的现行摇杆映射在 `Pages/joystick.md` 为 `[Todo]`；三向输入斜走异常 `Pages/triple_component_strafe.md` 为 `0` 行；`Pages/camera_movement.md` 的触屏为固定分辨率 `[WIP]`、手柄摇杆（Stick）灵敏度为 `todo`。
 - **已确认起手锚点**：`TickServerMoveInputHandler`（注册 `0x14681dcf4` → 虚表 `0x14EA34B10` slot[5] `0x148B459F0` → lambda `0x148B2D870` → 叶子 **`0x1404495e0`**）直接读取模拟输入、键盘按键位（`0x2000/0x4000/0x8000/0x10000` 及对角 bit）并按 `0.0001f` 阈值做平方根归一化，写回 `MoveInputComponent +0x24/+0x28`。
 - **研究切入点**：沿 `0x1404495e0` 与模拟输入源补齐摇杆死区、三键同按输入合成逻辑，并静态提取触屏/手柄视角的分辨率无关缩放公式。
 
-### 3. Tap 起跳实机基准表与汇总空页（`Pages/tapping.md` 等）
+### 2. Tap 起跳实机基准表与汇总空页（`Pages/tapping.md` 等）
 
 - **`Pages/tapping.md`（0 行）**：`main` 分支的 Tap 起跳表标有 `[Needs verification.]`，适合直接用 LeviPilot 的 `Hardware HID` 按键注入 + 逐 tick 录制批量产出实机基准表（walk / sprint / sneak / blocking / A7 tap）。
 - **汇总类空页**：`Pages/movement_formulas.md`、`Pages/patched_glitches.md`、`Pages/strategies.md` 均为 0 行，待上述单项机制收齐后再做统一汇编。
 
-### 4. 跳出当前 Wiki 目录的全新研究方向（零覆盖领域）
+### 3. 跳出当前 Wiki 目录的全新研究方向（零覆盖领域）
 
 `MCBE_Parkour_wiki` 两个分支目前对以下机制几乎**零文档覆盖**，适合作为新开拓方向：
 
@@ -71,6 +66,7 @@
 | **潜行、爬行与姿态切换** | `Pages/sneaking_crawling.md` | 六面 `0.01f` 内缩级联净空门槛 `1.79/1.48/0.59`、`0.6` 写链与 `ActorDataIDs [38,53,54]`、潜行/爬行 `0.3+0.15×SwiftSneak`（`TickServerMoveInputHandler`）、`0.025` 边缘防跌落与对角回退 | [`sneaking-crawling-wiki.md`](sneaking-crawling-wiki.md) / [`notes/sneaking-crawling-12651.md`](notes/sneaking-crawling-12651.md) |
 | **创造飞行物理** | `Pages/constants.md` L31 | 水平 `v'=0.91v+0.049`（疾跑 `2×`）、松键首拍 `0.91` 之后 `0.34125 = 0.91 × 0.375`（无独立 `0.34125` 常量）、竖直 `vy'=0.6vy+a`、`mPosDelta` 相位 | [`creative-flying-wiki.md`](creative-flying-wiki.md) / [`notes/creative-flying-12651.md`](notes/creative-flying-12651.md) |
 | **使用物品与望远镜加速** | `Pages/spyglass_glitch.md` | `ItemUseSlowdown` 默认 `0.35f` 经 `Apply` 平方一次得 `0.1225×`、单拍瞬态清空、与潜行相乘、疾跑开镜慢 1 拍过渡、切槽按新物品、**望远镜加速不存在** | [`spyglass-item-use-wiki.md`](spyglass-item-use-wiki.md) / [`notes/spyglass-item-use-12651.md`](notes/spyglass-item-use-12651.md) |
+| **float32 碰撞箱精度与卡墙挤出** | `Pages/precision_glitches.md` / `Pages/collisions.md`（待回填） | `[Y,X,Z]` 双语义裁剪（贴面/MTD argmin）、AABB 增量平移（跨界 `2^n` 行走漂移：`2^20` 往返宽 `0.375`）与重建量化（`2^20` 宽 `0.5`）、卡墙 `n̂×0.1` 写 `mPosDelta`（欧氏模长 `0.10000000`、±1 格空隙搜索外冻结）、跨 `y=128` 连跳高度 `+1 ULP/跳`、实体推挤 `Mob::pushActors`→`PushMode` 4 路公式闭合、玩家免疫 | [`collisions-precision-wiki.md`](collisions-precision-wiki.md) / [`notes/collisions-precision-12651.md`](notes/collisions-precision-12651.md) |
 
 ---
 
@@ -78,8 +74,8 @@
 
 | 如果你的主要目标是 | 优先推荐的课题 |
 | --- | --- |
-| **尽快给 `wiki-pages` 填缺纠错** | 先迁移回填已闭合条目（`elytra`、`angles`、`dolphins-grace`、`climb-blocks`、`stepping`、`sprint`、`sneaking-crawling`、`spyglass` 等） |
-| **破一个悬案级冷门谜题** | **`float32` 碰撞箱漂移与碰撞解算（`precision_glitches` + `collisions`）** |
+| **尽快给 `wiki-pages` 填缺纠错** | 先迁移回填已闭合条目（`elytra`、`angles`、`dolphins-grace`、`climb-blocks`、`stepping`、`sprint`、`sneaking-crawling`、`spyglass`、`collisions-precision` 等） |
+| **破一个悬案级冷门谜题** | **摇杆归一化死区与三向斜走合成**（`Pages/joystick.md` + `Pages/triple_component_strafe.md`） |
 | **补强现行输入与视角数学模型** | **摇杆归一化、三向斜走与手柄/触屏灵敏度**（从 `TickServerMoveInputHandler 0x1404495e0` 起手） |
 | **批量补齐剩余数据资产与收尾** | 跑完 **`tapping`** 实机表，或收掉 §二 列出的轻量尾巴（`block-collisions` 双箱/潜影盒、`angles` 实机拟合等） |
 | **开拓全新高价值专题** | **风弹跳与击退加速**、**冰船物理** 或 **服务端移动回滚（Rewind）** |

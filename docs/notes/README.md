@@ -24,6 +24,7 @@
 | [`honey-block-12651.md`](honey-block-12651.md) | 蜂蜜块 | `0.875×1.0×0.875` 盒、无条件 `0.4^n` 与 `-0.12`、起跳 `0.6×`、摔伤 `×0.5`、顶面/飞行与 `WasInWater` 排除 |
 | [`creative-flying-12651.md`](creative-flying-12651.md) | 创造飞行物理 | 水平 `v'=0.91v+0.049`、疾跑 `2×`、松键 `0.34125 = 0.91×0.375`、`MobMovementFriction` 玩家路径、竖直递推与 `mPosDelta` |
 | [`spyglass-item-use-12651.md`](spyglass-item-use-12651.md) | 使用物品与望远镜加速 | `ItemUseSlowdown` 三系统与 `0.35² = 0.1225`、`sizeof=4` 单拍瞬态、11 物品表、组合规则与望远镜加速证伪 |
+| [`collisions-precision-12651.md`](collisions-precision-12651.md) | float32 碰撞箱精度与卡墙挤出 | `[Y,X,Z]` 双语义裁剪（贴面/MTD）、AABB 增量平移（跨界 `2^n` 漂移 + 重建量化 `2^20` 宽 `0.5`）、`0.1` 推向空隙写 `mPosDelta`（欧氏模长 `0.10000000`）、跨 `y=128` 连跳高度 `+1 ULP/跳`、实体推挤 `PushMode` 4 路公式与玩家免疫 |
 
 地址和函数角色只对对应版本有效。换版本先校验 `skills/bedrock-re/roles/resolve.py`，不要把
 旧地址复制到新 profile。动态观测与静态结论按原文标记区分，撤回项不能继续引用为结论。

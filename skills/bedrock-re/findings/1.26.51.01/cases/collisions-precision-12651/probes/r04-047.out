@@ -1,0 +1,10 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/collisions-precision-12651/probes/verify_collisions_precision.py
+# cwd: <repo>
+# started: 2026-11-28T04:35:57Z
+# exit: 0
+# --- stdout ---
+{"setup": {"tick": 16745, "pos": [244.5, -58.37998962402344, 240.5], "gamemode": 1}, "s1_baseline": "...", "s2_depenetration": "...", "s3_high_coords": "...", "s4_entity_push": "...", "s5_vertical_precision": "...", "s6_adf_writer": "...", "final_components": "..."}
+Saved: out\collisions-precision-1.26.51.01.json
+
+# --- stderr ---
+

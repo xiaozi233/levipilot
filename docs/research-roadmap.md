@@ -36,7 +36,7 @@
 | 方块碰撞箱 | 双箱（Double Chest）实机配对与潜影盒（Shulker Box）开盒动态 `1.5` 态采样 | [`notes/block-collisions-12651.md`](notes/block-collisions-12651.md) |
 | 创造飞行 | `a = flySpeed × 0.98f` 乘法指令与 `0.375f` 在横向速度公式内的消费点静态定案 | [`notes/creative-flying-12651.md`](notes/creative-flying-12651.md) |
 | 上台阶与固体 Blip | `mControlledValue = 1.0625` 骑乘实测、鞘翅/水中游泳/载具乘客对照，以及 `ClientAcceptanceSystem` 形参映射定案 | [`notes/stepping-12651.md`](notes/stepping-12651.md) |
-| 移动输入与视角灵敏度 | 触屏每 tick 转角公式、**客户端手柄/触屏摇杆前端的死区**（合成层已证不做死区，前端未定位）、slot 14 的 `edx/r8d` 语义、望远镜阻尼分子 `0.05` 的虚函数来源、键鼠 `/renderWidth` 的除法指令位置（行为已实测，指令未定位） | [`notes/input-joystick-strafe-12651.md`](notes/input-joystick-strafe-12651.md) |
+| 移动输入与视角灵敏度 | **触屏虚拟摇杆前端**（像素拖动→`mAnalogMoveVector` 的死区/半径/中心/疾跑区）、D-pad 角键命中区、鼠标事件生产者（`/renderWidth` 除法指令；已实测事件进入 handler 链时已是 `dx/W`）、slot 14 的 `edx` 语义与 `0x1404BFDED` 分支、`hotbar_only_touch` 存档映射、`touch_invert_y_axis` 消费点 | [`notes/touch-input-turn-12651.md`](notes/touch-input-turn-12651.md)、[`notes/input-joystick-strafe-12651.md`](notes/input-joystick-strafe-12651.md) |
 | 使用物品与望远镜加速 | 刷子实机使用窗口与倍率、山羊角/弩提前结束使用的静态原因、盾牌格挡 ECS 判定、`ItemStack vtable[9]`/`VanillaClientGameplay` 之外与 FOV/载具/飞行/多人边界 | [`notes/spyglass-item-use-12651.md`](notes/spyglass-item-use-12651.md) |
 
 ---
@@ -63,6 +63,7 @@
 | **使用物品与望远镜加速** | `Pages/spyglass_glitch.md` | `ItemUseSlowdown` 默认 `0.35f` 经 `Apply` 平方一次得 `0.1225×`、单拍瞬态清空、与潜行相乘、疾跑开镜慢 1 拍过渡、切槽按新物品、**望远镜加速不存在** | [`spyglass-item-use-wiki.md`](spyglass-item-use-wiki.md) / [`notes/spyglass-item-use-12651.md`](notes/spyglass-item-use-12651.md) |
 | **float32 碰撞箱精度与卡墙挤出** | `Pages/precision_glitches.md` / `Pages/collisions.md`（待回填） | `[Y,X,Z]` 双语义裁剪（贴面/MTD argmin）、AABB 增量平移（跨界 `2^n` 行走漂移：`2^20` 往返宽 `0.375`）与重建量化（`2^20` 宽 `0.5`）、卡墙 `n̂×0.1` 写 `mPosDelta`（欧氏模长 `0.10000000`、±1 格空隙搜索外冻结）、跨 `y=128` 连跳高度 `+1 ULP/跳`、实体推挤 `Mob::pushActors`→`PushMode` 4 路公式闭合、玩家免疫 | [`collisions-precision-wiki.md`](collisions-precision-wiki.md) / [`notes/collisions-precision-12651.md`](notes/collisions-precision-12651.md) |
 | **移动输入合成与视角灵敏度** | `Pages/joystick.md` / `Pages/triple_component_strafe.md` / `Pages/camera_movement.md` | `mMove` 合成与符号（左正/前正）、模拟向量任一非 0 即整段跳过数字位、**`len²>1.0f` 才归一化**（亚单位慢走成立、模长不超 1）、`0.0001f` 为不可达防御位、**合成层不做摇杆死区**（前端未定位）、键盘 `W+A+D`/`W+S+A` 折叠与斜走不加速、非 45° 需对角位 + 正交位混用（`26.565°`）、`v=0.81(1.1S)^0.6125`、键鼠 `9600(0.15+0.6v)³×0.3÷W`（W=物理客户区宽度）、望远镜阻尼 **`min(1, 0.05/D)`（Wiki 的 `5/D`）四点实测闭合**、pitch `−89.9f`/`90°−0.1°`（`<180°` 步进稳定复现） | [`input-joystick-strafe-wiki.md`](input-joystick-strafe-wiki.md) / [`notes/input-joystick-strafe-12651.md`](notes/input-joystick-strafe-12651.md) |
+| **触屏视角转角与输入处理器家族** | `Pages/camera_movement.md`（Touch 栏）/ `Pages/joystick.md` | 单一 vtable `0x14E760FA0` 107 槽、视角事件回调链 `0x144B22290→0x144B22580→adapter`、slot 27 动作分发（action 1 累加 / action 8 直转）、slot 14 = 触屏 `|x|^1.2/(n+1)` 非线性级 ⇒ `Δ=0.15·g·0.4·|A|^1.2/(n+1)`、`(0.15+0.6v)^3.6` 即 Wiki `^3.6` 来源、事件在 handler 链上游已是 `dx/W`（`W=2560` 实测）、`0.7f` 为俯仰分量 | [`touch-input-turn-wiki.md`](touch-input-turn-wiki.md) / [`notes/touch-input-turn-12651.md`](notes/touch-input-turn-12651.md) |
 
 ---
 
@@ -72,7 +73,7 @@
 | --- | --- |
 | **尽快给 `wiki-pages` 填缺纠错** | 先迁移回填已闭合条目（`elytra`、`angles`、`dolphins-grace`、`climb-blocks`、`stepping`、`sprint`、`sneaking-crawling`、`spyglass`、`collisions-precision`、`joystick`/`triple_component_strafe`/`camera_movement` 等） |
 | **破一个悬案级冷门谜题** | **风弹跳（Wind Charge）与伤害击退加速**：精确三维冲量、仰角依赖与 `16 b/t` 钳位的结算顺序 |
-| **补强现行输入与视角数学模型** | **触屏每 tick 转角与手柄摇杆曲线**：从 `vtable 0x14E760FA0` 家族（slot 14 `0x1404BF490` 的 `0.4\|x\|^1.2/(n+1)`）起手，补齐 `Pages/camera_movement.md` 剩余两栏 |
+| **补强现行输入与视角数学模型** | **触屏虚拟摇杆前端与 D-pad 角键命中区**：从 `0x140707DE0`（joystick_frame/knob）与 `0x144D89B40`（`:touch_virtual_joystick_*:`）起手，找像素拖动→`mAnalogMoveVector` 的写入者 |
 | **批量补齐剩余数据资产与收尾** | 跑完 **`tapping`** 实机表，或收掉 §二 列出的轻量尾巴（`block-collisions` 双箱/潜影盒、`angles` 实机拟合等） |
 | **开拓全新高价值专题** | **风弹跳与击退加速**、**冰船物理** 或 **服务端移动回滚（Rewind）** |
 

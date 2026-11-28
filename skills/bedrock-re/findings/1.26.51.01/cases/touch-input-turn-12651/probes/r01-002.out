@@ -1,0 +1,17 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/touch-input-turn-12651/probes/verify_touch_input_turn.py --label=hotbar_off
+# cwd: <repo>
+# started: 2026-11-28T07:35:39Z
+# exit: 1
+# --- stdout ---
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 298, in <module>
+    main()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 291, in main
+    verify()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 241, in verify
+    assert chain["event_action"] == 1, chain["event_action"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 16
+

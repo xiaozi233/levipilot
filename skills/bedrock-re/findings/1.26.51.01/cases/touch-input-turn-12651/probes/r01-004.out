@@ -1,0 +1,17 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/touch-input-turn-12651/probes/verify_touch_input_turn.py --label=hotbar_off
+# cwd: <repo>
+# started: 2026-11-28T07:37:07Z
+# exit: 1
+# --- stdout ---
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 302, in <module>
+    main()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 295, in main
+    verify()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 247, in verify
+    assert abs(chain["event_dx_over_w"] - chain["dx_px"] / width) <= 2e-6, (
+               ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'
+

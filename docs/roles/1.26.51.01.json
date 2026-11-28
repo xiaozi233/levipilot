@@ -6,7 +6,7 @@
   "source_binary": "Minecraft.Windows.exe 1.26.51.01 (build 1.26.51.1)",
   "image_base": "0x140000000",
   "offsets_ref": "docs/offsets/1.26.51.01.json",
-  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。 2026-11-28: 移动输入合成（0x1404495E0 与 lambda 0x148B2D870）、灵敏度曲线（0x14217A260）、键鼠转角（0x1404B91F0）、FOV 阻尼（0x144761610）与 pitch 钳位（0x14677EED0）已定位；触屏/手柄转角公式、spyglassDamping 消费点、/W 除法指令记 unresolved（见 notes/input-joystick-strafe-12651.md）。 2026-11-28 返工：0x144761610 实为 Options::getSpyglassDamping(InputMode) 的 min(1,0.05/D) 阻尼（vtable+0x1A0=0x140FB5940，读 OptionID 0x256），四点实测闭合 5/D；键鼠 0.7f 的门控是 hotbar_only_touch(0x1DB) 而非 InputMode；摇杆死区结论收窄为「合成层不做死区」，前端 unresolved。",
+  "notes": "RE roles are separate from the mod runtime offsets profile. Addresses are static VAs; follow thunks before using one as a signature. unresolved means do not guess. 2026-10-28: E14 注册链与 ActionSprint/water 顺序已静态闭合；PlayerActionComponent 写者仍未定位。 2026-10-31: 客户端 BadPacket(90) 唯一设置点已静态定位（@client_handle_packet_violation）；触发包未定。 2026-10-31: 角色地址是 image_base 下的静态 VA；实际运行的 exe 被 PeEditor 改写首选基址并 ASLR，运行期地址 = diag.module_base + (role_va - image_base)（已用 mem_read 在 0x12FA0F0 处核对到标准函数序言）。 2026-11-01: 入站逐包边界确认为 @client_packet_parse_loop（sub_1416AB0E0）；此前登记的 0x1416AA7F0 实为 NetworkSystem::runEvents task，已更正。 2026-11-28: 移动输入合成（0x1404495E0 与 lambda 0x148B2D870）、灵敏度曲线（0x14217A260）、键鼠转角（0x1404B91F0）、FOV 阻尼（0x144761610）与 pitch 钳位（0x14677EED0）已定位；触屏/手柄转角公式、spyglassDamping 消费点、/W 除法指令记 unresolved（见 notes/input-joystick-strafe-12651.md）。 2026-11-28 返工：0x144761610 实为 Options::getSpyglassDamping(InputMode) 的 min(1,0.05/D) 阻尼（vtable+0x1A0=0x140FB5940，读 OptionID 0x256），四点实测闭合 5/D；键鼠 0.7f 的门控是 hotbar_only_touch(0x1DB) 而非 InputMode；摇杆死区结论收窄为「合成层不做死区」，前端 unresolved。 2026-11-28 触屏专题：视角事件派发链（0x144B22290→0x144B22580→adapter→slot 27/15/14）、slot 27 动作分发、slot 14=触屏非线性级（^1.2，指数 3.6 来源）、/W 在 handler 链上游（W=2560 实测）已定位；鼠标事件生产者、触屏虚拟摇杆前端、D-pad 角键命中区、0x1DB 存档映射、invert-y 消费点记 unresolved；更正 0.7f 为俯仰分量。",
   "roles": {
     "@tick_entity_systems": {
       "strategy": [
@@ -1390,10 +1390,10 @@
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] k=9600f×(0.15f+0.6f·v)³；xmm8=dx×k、xmm7=dy×k；再 ×0.3f（0x14E758C38），x 额外 ×0.7f（0x14E760F14）或 1.0f；累加进 +0x84/+0x88 并清 [this+0x34]。",
-        "[代码] 0.7f 的门控是 Options::vtable[+0x288]=getOption(0x1DB)=hotbar_only_touch 布尔：0x1404B95D4 movzx edi,al / or edi,2 → edi∈{2,3}；edi==3→0.7f，edi==2→1.0f。与 InputMode 无关（第 1 轮写成「某输入模式分支」，已更正）。",
-        "[代码] v 来自 Options::vtable[+0x1B8](edi)（=0x140FB5BA0，读 OptionID 0x18D 的派生值）。",
-        "[实测] deg/px 严格线性、dy 与 dx 同系数（差 1.5e-5°）、三种窗口尺寸下 slope×W 守恒 332.6095/332.6096/332.6099。函数内无 divss，/W 归一化在原始增量写入 +0x34 的上游（unresolved）。"
+        "[代码] k=9600f×(0.15f+0.6f·v)³；xmm8=[+0x34]·k（俯仰轴）、xmm7=[+0x38]·k（偏航轴）；累加进 +0x84/+0x88 并清 [+0x34/+0x38]；0x1404B9E3C..E60：两轴 ×0.3f（0x14E758C38），xmm8 另 ×factor（hotbar_only_touch 时 0.7f@0x14E760F14，否则 1.0f）。",
+        "[实测] r01-017：消费拍 [+0x34,+0x38]=(-0.0390625, 0.078125)=(-dy/W, dx/W)，W=2560；其后累加拍 [+0x84,+0x88]=(-43.308548, 86.617096)=k·事件；apply=(-12.992565, 25.985130)=×0.3。",
+        "[勘误] 上一轮把 0.7f 记为「横向因子」：按本轮实测轴序，它乘的是 xmm8 即 dy/俯仰分量。",
+        "[代码] 触屏分支 0x1404B9EF1..F78：screen->vtable[+0x850]() 为真时用 [+0x8C/+0x90]·0.15·g，g=min(3.0f,(n+c)-[+0x94])，c=[screen->vtable[+0xE0]()+0x3C]，n=[+0x98]。"
       ]
     },
     "@analog_look_accumulator": {
@@ -1404,9 +1404,9 @@
       "status": "resolved",
       "confidence": "code",
       "evidence": [
-        "[代码] edx==r8d 时把 +0x84/+0x88 的累积值取绝对值 → powf(_,1.2f)（0x14E6AE4F4）×0.4f（0x14E602290）/(edx+1) → 带符号写入 +0x8C/+0x90 并清零累积器；无条件 ++[+0x98]。",
-        "[代码] 分支门是 OptionID 0x187=keyboard_show_full_keyboard_options：0x1404BFB16 getOption(0x187)，0x1404BFB43 cmp byte [opt+0x10],0 / jne 0x1404BFDED —— 选项为假才走 ^1.2 这一支。",
-        "[实测] 鼠标严格线性，故该分支对键鼠不生效；真实归属（触屏拖动/非全键盘手柄）与 edx/r8d 语义 unresolved。"
+        "[代码] edx==r8d 时 [+0x8C]=sign·0.4f·|[+0x84]|^1.2f/(edx+1)、[+0x90] 同理，清 +0x84/+0x88，++[+0x98]；1.2f@0x14E6AE4F4、0.4f@0x14E602290。分支门 OptionID 0x187=keyboard_show_full_keyboard_options（0x1404BFB16），为真走 0x1404BFDED。",
+        "[实测] 鼠标路径上每次 mouse_event 窗口内命中 11 次、edx==r8d 恒真、装 detour 不影响转角（r01-017）。",
+        "[代码] 归属：输入是 slot 15 的线性累加器，输出只被 slot 15 的 +0x850 触屏分支消费 ⇒ 触屏视角的非线性加速级。合并后 (0.15+0.6v)^(3×1.2)=^3.6，即 Wiki 旧式指数来源。"
       ]
     },
     "@camera_rotation_apply": {
@@ -1540,6 +1540,163 @@
         "[代码] 读 OptionID 0x1DB 的布尔（0x140FB6423 movzx eax, byte [opt+0x10]）。",
         "[常量] 0x1DB 的注册名是 hotbar_only_touch（0x144E072C5 写字符串、0x144E072DF 写 edx=0x1DB）。"
       ]
+    },
+    "@look_event_fire": {
+      "strategy": [
+        "decompile 0x144B22290",
+        "xrefs from 0x144B22230 / 0x144B2AC10"
+      ],
+      "address": "0x144B22290",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 对注册 handler 先跑 vtable+0x178 / +0x108 两遍前置，再把 16 字节 event 拷到 [rbp+0x40]/[rbp+0x50]，以 [rsp+0x30]=0 与 =1 各调一次 0x144B22580（0x144B223CA / 0x144B2241E）。上游 0x144B22230（vtable 0x14E8F7A40 slot +0x88）与 0x144B2AC10（唯一调用者 0x145DC7DB5）都只做 movups/movaps 转发，无算术。"
+      ]
+    },
+    "@look_handler_dispatcher": {
+      "strategy": [
+        "decompile 0x144B22580",
+        "runtime stack frame 0x144B225D4"
+      ],
+      "address": "0x144B22580",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 遍历 [registry+0x38] 回调列表，对每个 entry 查 +0x158/+0x290/+0x258/+0x280/+0x278/+0x168/+0x138/+0x170 门控布尔后 0x144B225CE call entry->fn(owner->m8, entry)。",
+        "[实测] slot 15 与 slot 14 的栈帧都含返回地址 0x144B225D4（r01-017 前身探索运行）：两者共用此调用点，区别只在 entry 的 fn。"
+      ]
+    },
+    "@look_slot15_adapter": {
+      "strategy": [
+        "decompile 0x140889540",
+        "runtime stack frame 0x14088956B"
+      ],
+      "address": "0x140889540",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 取 [ctx->vtable[0x1268]()+8] 一个 float 放进 xmm1，调 handler->vtable[+0x78]（slot 15），再尾调 vtable[+0x80]（slot 16 默认空）。由 0x140889280 注册（0x1408893B3 lea 0x140889540）。"
+      ]
+    },
+    "@look_event_adapter": {
+      "strategy": [
+        "runtime stack frame 0x145DDCAEB",
+        "xrefs 5（std::function 拷贝/移动 thunk 0x1442E4210..）"
+      ],
+      "address": "0x145DDCA90",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] rdi=event{float*@0,float*@8,float*@0x10,ptr*@0x18}；handler->vtable[+0x290]() 为真则短路；edx=*(byte*)event[0]（action）、xmm2=*event[8]、xmm3=*event[0x10]、cl=*(byte*)event[0x18]；调 handler->vtable[+0xD8]（slot 27）。只转发，无算术。"
+      ]
+    },
+    "@look_action_dispatcher": {
+      "strategy": [
+        "vtable 0x14E760FA0 slot 27",
+        "decompile 0x1404C02B0"
+      ],
+      "address": "0x1404C02B0",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] dl==8：getScreen 后 [rbp-0x40]=dx、[rbp-0x3C]=−dy，直接 call 0x144761610（绕过 slot 15/14）。dl==1：若 screen[+0x798] 存在且捕获输入则跳过，否则 0x1404C0662 [this+0x38]+=dy、[this+0x34]+=dx。其余 action 直接返回。",
+        "[实测] mouse_event(dx=200,dy=100) 恰产生 1 次命中、rdx 低字节=1（探索运行）；hook 会使 d_yaw=0.0（通用 detour 丢 xmm2/xmm3），不可 hook。"
+      ]
+    },
+    "@look_forwarder_145DC7B50": {
+      "strategy": [
+        "vtable 0x14E9731B0 slot +0x7F0",
+        "decompile 0x145DC7B50"
+      ],
+      "address": "0x145DC7B50",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] 屏幕栈/NonOwnerPointer 前置检查后，0x145DC7DA3 movups xmm0,[rsi] → [rbp-0x50]，0x145DC7DB5 call 0x144B2AC10：16 字节 event 原样转发。/W 除法不在此处，在其调用者（+0x7F0 槽全库 63 处候选）。"
+      ]
+    },
+    "@client_move_input_getMoveInput": {
+      "strategy": [
+        "xrefs 0x1402379B0 with 0x018B1887",
+        "decompile 0x14267A440"
+      ],
+      "address": "0x14267A440",
+      "status": "resolved",
+      "confidence": "code",
+      "evidence": [
+        "[代码] ClientMoveInputHandler::getMoveInput：以组件哈希 0x018B1887、步长 0x64 查 MoveInputComponent；唯一调用者 0x1426795CB（读 +0x34 的 mInteractDir），不是摇杆写入者。"
+      ]
+    },
+    "@mouse_event_producer_divw": {
+      "strategy": [
+        "live: event = (200/2560, -100/2560) at slot 15 entry",
+        "callers of vtable 0x14E9731B0 +0x7F0"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[实测] r01-017：进入 handler 链时 [this+0x38]=0.078125、[this+0x34]=-0.0390625（W=2560 精确），dy 已取负。",
+        "[代码] 0x145DC7B50 / 0x144B2AC10 / 0x144B22290 / 0x144B22230 只做 16 字节转发。",
+        "鼠标事件生产者（0x145DC7B50 的调用者）未定位，divss 指令未定位。"
+      ],
+      "note": "/renderWidth 的具体除法指令未定位"
+    },
+    "@touch_joystick_frontend": {
+      "strategy": [
+        "strings textures/ui/joystick_frame|knob (0x140707DE0)",
+        ":touch_virtual_joystick_*: (0x144D89B40)",
+        "options ctrl_staticJoystick/ctrl_usetouchjoypad",
+        "hash 0x018B1887 全部引用"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[常量] 虚拟摇杆 UI 控件与三个存档开关存在；合成层（0x1404495E0）只做 >1 归一化、无死区。",
+        "[代码] 0x018B1887 的全部引用（0x1401DDEAA 依赖声明、0x1404BC490 准星 tick、0x1428349CE/0x14064F4C8 视图迭代、0x14267A45F getMoveInput）都不是摇杆→mAnalogMoveVector 的写入者。",
+        "像素拖动→模拟向量的写入者、死区半径、最大半径、固定/动态中心、疾跑区均未定位。"
+      ],
+      "note": "触屏虚拟摇杆前端未定位"
+    },
+    "@dpad_corner_hitbox": {
+      "strategy": [
+        "strings dpad_up/down/left/right (0x1443765D0)"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[代码] 角键与正交键按位相加后归一化（前置案例 input-joystick-strafe-12651）。",
+        "角区命中几何、单指滑入角区是否与正交位重叠、多点触控下正交+对角并存的真实触发：未定位，本机无触摸屏。"
+      ],
+      "note": "D-pad 角键命中区未定位"
+    },
+    "@hotbar_only_touch_save_tag": {
+      "strategy": [
+        "live: ctrl_hotbarOnlyTouch=1 restart → dx/dy ratio 1.0",
+        "registration 0x144E072C5/0x144E072DF via 0x144CDFC30"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "[实测] r01-009：ctrl_hotbarOnlyTouch:1 持久化并重启后 deg/px dx/dy 仍 1.0（hotbar_factor_applied=false）。",
+        "存档键是否映射到 OptionID 0x1DB、无触摸设备时是否被运行期覆盖：未定。"
+      ],
+      "note": "ctrl_hotbarOnlyTouch 与 OptionID 0x1DB 的映射未定"
+    },
+    "@touch_invert_y_consumer": {
+      "strategy": [
+        "option 0x185 registration"
+      ],
+      "address": null,
+      "status": "unresolved",
+      "confidence": "none",
+      "evidence": [
+        "dy 在进入 handler 链前已取负（r01-017）；反转选项的消费点未定位。"
+      ],
+      "note": "touch_invert_y_axis 消费点未定位"
     }
   }
 }

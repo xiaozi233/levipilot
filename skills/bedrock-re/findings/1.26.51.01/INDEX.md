@@ -2,7 +2,7 @@
 
 当前版本的角色表在 [`docs/roles/1.26.51.01.json`](../../../../docs/roles/1.26.51.01.json)。各专题公开结论正主见 [`docs/README.md`](../../../../docs/README.md)；下方列出全部 case 账本。
 
-## 已结案（17）
+## 已结案（18）
 
 - [`block-collisions-12651`](cases/block-collisions-12651/report.md) — 全游戏 1477 类 / 22091 状态方块与实体碰撞箱导出及 Wiki 校对（正主：[`docs/notes/block-collisions-12651.md`](../../../../docs/notes/block-collisions-12651.md)）
 - [`collisions-precision-12651`](cases/collisions-precision-12651/report.md) — float32 碰撞箱精度、卡墙挤出 `n̂×0.1` 与方块/实体碰撞解算（正主：[`docs/notes/collisions-precision-12651.md`](../../../../docs/notes/collisions-precision-12651.md)）
@@ -11,6 +11,7 @@
 - [`dolphins-grace-12651`](cases/dolphins-grace-12651/report.md) — 海豚的恩惠扫描门控、`SwimSpeedMultiplier=2.0` 与深海探索者/迅捷交互（正主：[`docs/notes/dolphins-grace-12651.md`](../../../../docs/notes/dolphins-grace-12651.md)）
 - [`honey-block-12651`](cases/honey-block-12651/report.md) — 蜂蜜块 `0.4^n`、`-0.12`、起跳 `0.6×`、摔落 `×0.5` 与水中排除（正主：[`docs/notes/honey-block-12651.md`](../../../../docs/notes/honey-block-12651.md)）
 - [`input-joystick-strafe-12651`](cases/input-joystick-strafe-12651/report.md) — 移动输入合成与 `>1` 才归一化、键盘全矩阵与对角位混用、合成层无死区（前端 unresolved）、灵敏度曲线与键鼠 `9600(0.15+0.6v)³×0.3÷W`、望远镜阻尼 `min(1,0.05/D)`、pitch `±89.9`（第 2 轮含勘误）（正主：[`docs/notes/input-joystick-strafe-12651.md`](../../../../docs/notes/input-joystick-strafe-12651.md)；通俗版 [`docs/input-joystick-strafe-wiki.md`](../../../../docs/input-joystick-strafe-wiki.md)）
+- [`touch-input-turn-12651`](cases/touch-input-turn-12651/report.md) — 触屏视角转角与输入处理器家族：vtable `0x14E760FA0` 全貌、视角事件回调链、slot 27 动作分发、slot 14 `|x|^1.2` 非线性级与触屏公式（Wiki `^3.6` 来源）、`/W` 在 handler 链上游（`W=2560` 实测）、`0.7f` 更正为俯仰分量（正主：[`docs/notes/touch-input-turn-12651.md`](../../../../docs/notes/touch-input-turn-12651.md)；通俗版 [`docs/touch-input-turn-wiki.md`](../../../../docs/touch-input-turn-wiki.md)）
 - [`lava-dim-fire-depth`](cases/lava-dim-fire-depth/report.md) — 岩浆扩散维度 `drop-off`、深度与抗火无关性（正主：[`docs/fluid-movement.md`](../../../../docs/fluid-movement.md)）
 - [`liquid-falling-push`](cases/liquid-falling-push/report.md) — 下落水竖直流推邻接实心面条件（正主：[`docs/fluid-movement.md`](../../../../docs/fluid-movement.md)）
 - [`slime-bounce-coverage`](cases/slime-bounce-coverage/report.md) — 黏液块反弹与上层覆盖落差判据（正主：[`docs/notes/bounce-12651.md`](../../../../docs/notes/bounce-12651.md)）

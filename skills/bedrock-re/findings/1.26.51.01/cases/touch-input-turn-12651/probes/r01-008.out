@@ -1,0 +1,17 @@
+# command: py -3.11 skills/bedrock-re/findings/1.26.51.01/cases/touch-input-turn-12651/probes/verify_touch_input_turn.py s2 --label=hotbar_on
+# cwd: <repo>
+# started: 2026-11-28T07:42:47Z
+# exit: 1
+# --- stdout ---
+
+# --- stderr ---
+Traceback (most recent call last):
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 311, in <module>
+    main()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 304, in main
+    verify()
+  File "skills\bedrock-re\findings\1.26.51.01\cases\touch-input-turn-12651\probes\verify_touch_input_turn.py", line 277, in verify
+    assert abs(float(row["ratio_x_over_y"]) - want) <= 5e-3, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('hotbar_on', 1.0)
+
